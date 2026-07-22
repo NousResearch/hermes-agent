@@ -1610,12 +1610,6 @@ def dump_api_request_debug(
         body = copy.deepcopy(api_kwargs)
         body.pop("timeout", None)
         body = {k: v for k, v in body.items() if v is not None}
-        from agent.redact import redact_explicit_contexts
-
-        body = redact_explicit_contexts(
-            body,
-            getattr(agent, "_active_ephemeral_user_context_redactions", ()),
-        )
 
         api_key = None
         try:
@@ -1661,11 +1655,6 @@ def dump_api_request_debug(
                     _ra().logger.debug("Could not extract error response details: %s", e)
 
             dump_payload["error"] = error_info
-
-        dump_payload = redact_explicit_contexts(
-            dump_payload,
-            getattr(agent, "_active_ephemeral_user_context_redactions", ()),
-        )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         # Sanitize the session ID into a traversal-free path segment — it can

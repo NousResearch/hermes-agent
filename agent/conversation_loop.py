@@ -17,7 +17,6 @@ resolved through :func:`_ra` so those patches keep working.
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import os
 import random
@@ -63,7 +62,6 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.redact import redact_explicit_contexts
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -103,10 +101,6 @@ _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
 
-_EPHEMERAL_REPLAY_MAX_RECORDS = 512
-_EPHEMERAL_REPLAY_MAX_CHARS = 1_048_576
-
-
 def _append_ephemeral_user_context(content: Any, user_context: Optional[str]) -> Any:
     """Return an API-only copy of a user message with volatile context appended.
 
@@ -133,114 +127,6 @@ def _append_ephemeral_user_context(content: Any, user_context: Optional[str]) ->
         return copied + [{"type": "text", "text": context}]
 
     return content
-
-
-def _ephemeral_replay_message_digest(content: Any) -> str:
-    """Return a stable identity check for one clean canonical user message."""
-    try:
-        encoded = json.dumps(
-            content,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8", errors="replace")
-    except (TypeError, ValueError):
-        encoded = str(content).encode("utf-8", errors="replace")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _ephemeral_replay_scope(agent: Any) -> str:
-    """Return the live-conversation namespace for volatile replay state."""
-    explicit = getattr(agent, "_ephemeral_user_context_replay_scope", None)
-    if isinstance(explicit, str) and explicit:
-        return explicit
-    session_id = getattr(agent, "session_id", None)
-    return f"session:{session_id}" if session_id else f"agent:{id(agent)}"
-
-
-def _ephemeral_replay_store(agent: Any) -> tuple[dict, Any]:
-    """Return the bounded process-memory replay store and its optional lock."""
-    store = getattr(agent, "_ephemeral_user_context_replay_store", None)
-    if not isinstance(store, dict):
-        store = {}
-        agent._ephemeral_user_context_replay_store = store
-    return store, getattr(agent, "_ephemeral_user_context_replay_lock", None)
-
-
-def _ephemeral_replay_enabled(agent: Any) -> bool:
-    """Whether prior volatile blocks may be retained and replayed in RAM."""
-    return getattr(agent, "_ephemeral_user_context_replay_enabled", True) is not False
-
-
-def _remember_ephemeral_user_context(
-    agent: Any,
-    *,
-    user_ordinal: int,
-    clean_content: Any,
-    context: Optional[str],
-) -> None:
-    """Keep current-turn volatile bytes in bounded process memory only.
-
-    The persisted transcript deliberately stores the clean user message.  This
-    live sidecar lets a later turn replay the exact provider bytes and retain
-    prompt-cache prefix stability without writing sensitive context to disk.
-    """
-    if not _ephemeral_replay_enabled(agent):
-        return
-    normalized = context.strip() if isinstance(context, str) else ""
-    store, lock = _ephemeral_replay_store(agent)
-    key = (
-        _ephemeral_replay_scope(agent),
-        user_ordinal,
-        _ephemeral_replay_message_digest(clean_content),
-    )
-
-    def _update() -> None:
-        # Reinsert an existing key so normal dict insertion order remains an
-        # LRU-like eviction order for repeated tool-loop passes.
-        store.pop(key, None)
-        # An explicit clean resend of the same canonical turn replaces the
-        # previous wire shape. Do not let an older suffix resurrect later.
-        if normalized:
-            store[key] = normalized
-        while store and (
-            len(store) > _EPHEMERAL_REPLAY_MAX_RECORDS
-            or sum(len(value) for value in store.values() if isinstance(value, str))
-            > _EPHEMERAL_REPLAY_MAX_CHARS
-        ):
-            store.pop(next(iter(store)))
-
-    if lock is None:
-        _update()
-    else:
-        with lock:
-            _update()
-
-
-def _replayed_ephemeral_user_context(
-    agent: Any,
-    *,
-    user_ordinal: int,
-    clean_content: Any,
-) -> Optional[str]:
-    """Look up a prior live turn's volatile suffix after identity validation."""
-    if not _ephemeral_replay_enabled(agent):
-        return None
-    store, lock = _ephemeral_replay_store(agent)
-    key = (
-        _ephemeral_replay_scope(agent),
-        user_ordinal,
-        _ephemeral_replay_message_digest(clean_content),
-    )
-
-    def _read() -> Optional[str]:
-        value = store.get(key)
-        return value if isinstance(value, str) and value else None
-
-    if lock is None:
-        return _read()
-    with lock:
-        return _read()
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -754,11 +640,10 @@ def run_conversation(
             synthetic prefixes.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
+                or queuing follow-up prefetch work.
         ephemeral_user_context: Volatile platform context appended only to the
             API representation of the current user turn. It is never added to
-            canonical conversation messages or transcript persistence. During
-            the live process, a bounded in-memory sidecar replays the same bytes
-            on later turns so the provider prompt-cache prefix stays stable.
+            canonical conversation messages or transcript persistence.
 
     Returns:
         Dict: Complete conversation result with final response and message history
@@ -815,8 +700,6 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
-    _ephemeral_input_redactions: set[str] = set()
-    agent._active_ephemeral_user_context_redactions = ()
 
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
@@ -1023,12 +906,9 @@ def run_conversation(
             )
 
         api_messages = []
-        user_ordinal = -1
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
             is_user = msg.get("role") == "user"
-            if is_user:
-                user_ordinal += 1
 
             # api_content is the persistence sidecar carrying the exact bytes
             # sent to the API for this message when they differ from the clean
@@ -1076,34 +956,14 @@ def run_conversation(
                 # ``_flush_messages_to_session_db``).
                 api_msg["content"] = _api_content
 
-            # Volatile context must never enter the canonical message or its
-            # persisted api_content sidecar, but past provider bytes must remain
-            # identical while this live conversation is cached. Record the
-            # current suffix in process memory and replay it on historical user
-            # copies only when session, ordinal, and clean content all match.
-            _wire_ephemeral_context: Optional[str] = None
+            # Platform context is intentionally current-turn-only. Apply it
+            # after the persisted api_content sidecar has been substituted so
+            # exact coordinates never become durable transcript data.
             if is_current_user:
-                _remember_ephemeral_user_context(
-                    agent,
-                    user_ordinal=user_ordinal,
-                    clean_content=msg.get("content", ""),
-                    context=ephemeral_user_context,
-                )
-                _wire_ephemeral_context = ephemeral_user_context
-            elif is_user:
-                _wire_ephemeral_context = _replayed_ephemeral_user_context(
-                    agent,
-                    user_ordinal=user_ordinal,
-                    clean_content=msg.get("content", ""),
-                )
-            if _wire_ephemeral_context:
                 api_msg["content"] = _append_ephemeral_user_context(
                     api_msg.get("content", ""),
-                    _wire_ephemeral_context,
+                    ephemeral_user_context,
                 )
-                normalized_redaction = _wire_ephemeral_context.strip()
-                if normalized_redaction:
-                    _ephemeral_input_redactions.add(normalized_redaction)
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
@@ -1127,10 +987,6 @@ def run_conversation(
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
-
-        agent._active_ephemeral_user_context_redactions = tuple(
-            sorted(_ephemeral_input_redactions)
-        )
 
         # Build the final system message: cached prompt + ephemeral system prompt.
         # Ephemeral additions are API-call-time only (not persisted to session DB).
@@ -1544,18 +1400,14 @@ def run_conversation(
                         # and base64 image on every API call.
                         #
                         # The ``request_messages`` and ``conversation_history``
-                        # kwargs below are pre-existing passthroughs
+                        # kwargs below are pre-existing raw passthroughs
                         # consumed by the bundled langfuse plugin
                         # (``plugins/observability/langfuse/__init__.py:_coerce_request_messages``).
-                        # Explicitly volatile user blocks are removed from
-                        # observer views so opt-in tracing/debugging cannot
-                        # silently turn RAM-only location context into durable
-                        # instrumentation. Execution middleware still receives
-                        # the real provider request because it owns delivery.
-                        request_messages_for_hook = redact_explicit_contexts(
-                            request_messages,
-                            agent._active_ephemeral_user_context_redactions,
-                        )
+                        # They predate ``request`` and are intentionally NOT
+                        # sanitised — secrets are not expected here because
+                        # ``api_kwargs`` is the same object passed to the
+                        # provider client.  New consumers should read the
+                        # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
                         _invoke_hook(
                             "pre_api_request",
@@ -1571,8 +1423,8 @@ def run_conversation(
                             base_url=agent.base_url,
                             api_mode=agent.api_mode,
                             api_call_count=api_call_count,
-                            request_messages=list(request_messages_for_hook)
-                            if isinstance(request_messages_for_hook, list)
+                            request_messages=list(request_messages)
+                            if isinstance(request_messages, list)
                             else [],
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),
@@ -2430,11 +2282,6 @@ def run_conversation(
                             _moa_client.consume_and_save_trace(
                                 agent.session_id,
                                 aggregator_output_fallback=_agg_streamed_text or None,
-                                input_redactions=(
-                                    sorted(_ephemeral_input_redactions)
-                                    if _ephemeral_input_redactions
-                                    else None
-                                ),
                             )
                         except Exception as _moa_trace_exc:  # pragma: no cover - defensive
                             logger.debug("MoA trace flush failed: %s", _moa_trace_exc)

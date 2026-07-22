@@ -24,10 +24,6 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
-# Private Hermes-to-Hermes request field used to carry volatile platform
-# context outside the canonical message transcript.
-HERMES_EPHEMERAL_USER_CONTEXT_FIELD = "hermes_ephemeral_user_context"
-
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
@@ -1830,8 +1826,7 @@ class MessageEvent:
     # preserve the positional constructor order of the existing event fields.
     # The gateway injects it into the current API user message while persisting
     # only the original event text, so it cannot alter the cached system prefix
-    # or enter durable transcript replay. A bounded RAM-only replay is allowed
-    # only where the runtime has a single-user ownership boundary.
+    # or enter durable transcript replay.
     ephemeral_user_context: Optional[str] = None
     
     def is_command(self) -> bool:

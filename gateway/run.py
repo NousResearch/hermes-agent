@@ -1934,7 +1934,6 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
-    HERMES_EPHEMERAL_USER_CONTEXT_FIELD,
     MessageEvent,
     MessageType,
     _prefix_within_utf16_limit,
@@ -10496,7 +10495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             channel_prompt=event.channel_prompt,
                             ephemeral_user_context=event.ephemeral_user_context,
                         )
-                        self._enqueue_fifo(_quick_key, queued_event, adapter)
+                        adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
                 if _event_has_ephemeral_user_context(event):
                     # ``steer()`` stores its text inside the live agent turn.
@@ -10535,7 +10534,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         channel_prompt=event.channel_prompt,
                         ephemeral_user_context=event.ephemeral_user_context,
                     )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -18531,7 +18530,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
-        ephemeral_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -18607,13 +18605,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "messages": api_messages,
             "stream": True,
         }
-        # This is a Hermes-to-Hermes proxy extension, not a chat message.  The
-        # remote API server forwards it to AIAgent's API-only current-turn
-        # injection path so volatile platform data never enters its session
-        # transcript.
-        if isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip():
-            body[HERMES_EPHEMERAL_USER_CONTEXT_FIELD] = ephemeral_user_context
-
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
         _scfg = getattr(getattr(self, "config", None), "streaming", None)
@@ -19022,7 +19013,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
-                ephemeral_user_context=ephemeral_user_context,
             )
 
         from run_agent import AIAgent
@@ -20450,31 +20440,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
-
-            # A shared group/topic transcript can be triggered by a different
-            # participant on the next turn. Replaying one participant's RAM-
-            # only location block into that request would cross the user
-            # boundary, so shared sessions deliberately accept a cold prefix.
-            # The current sender's context is still attached to the current
-            # turn; only retention and historical replay are disabled.
-            _shared_ephemeral_session = is_shared_multi_user_session(
-                source,
-                group_sessions_per_user=getattr(
-                    self.config, "group_sessions_per_user", True
-                ),
-                thread_sessions_per_user=getattr(
-                    self.config, "thread_sessions_per_user", False
-                ),
-            )
-            agent._ephemeral_user_context_replay_enabled = (
-                not _shared_ephemeral_session
-            )
-            if _shared_ephemeral_session:
-                replay_store = getattr(
-                    agent, "_ephemeral_user_context_replay_store", None
-                )
-                if isinstance(replay_store, dict):
-                    replay_store.clear()
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

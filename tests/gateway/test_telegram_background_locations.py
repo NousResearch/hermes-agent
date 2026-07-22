@@ -161,6 +161,8 @@ async def test_background_location_is_private_state_and_never_dispatches(
     record = payload["locations"][_subject_key(adapter)]
     assert record["latitude"] == 37.7749
     assert record["source"] == "location"
+    assert "live_period" not in record
+    assert "live_expires_at" not in record
     assert record["recorded_at"].endswith("+00:00")
     assert (
         record["telegram_timestamp"]
@@ -168,6 +170,12 @@ async def test_background_location_is_private_state_and_never_dispatches(
     )
     if os.name != "nt":
         assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+
+    context = adapter._build_background_location_context(message)
+    assert context is not None
+    assert "Source: location" in context
+    assert "deliberate one-time location pin" in context
+    assert "active live location share" not in context
 
 
 @pytest.mark.parametrize(
@@ -256,6 +264,50 @@ async def test_active_live_location_is_attached_until_expiry(monkeypatch, tmp_pa
 
     assert context is not None
     assert "Source: live_location" in context
+    assert "active live location share" in context
+    assert "deliberate one-time location pin" not in context
+
+
+@pytest.mark.asyncio
+async def test_new_one_time_pin_replaces_prior_live_share_without_live_metadata(
+    monkeypatch, tmp_path
+):
+    adapter = _adapter(monkeypatch, tmp_path)
+    started_at = datetime.now(timezone.utc)
+    live = _message(
+        message_id=50,
+        latitude=51.5007,
+        longitude=-0.1246,
+        live_period=3600,
+        date=started_at,
+    )
+    await adapter._handle_location_message(_update(live), SimpleNamespace())
+
+    fixed_pin = _message(
+        message_id=51,
+        latitude=48.8584,
+        longitude=2.2945,
+        live_period=None,
+        date=started_at + timedelta(minutes=2),
+    )
+    await adapter._handle_location_message(
+        _update(fixed_pin, update_id=2), SimpleNamespace()
+    )
+
+    payload = json.loads(_state_path(adapter).read_text())
+    record = payload["locations"][_subject_key(adapter)]
+    assert record["source"] == "location"
+    assert record["message_id"] == "51"
+    assert record["latitude"] == 48.8584
+    assert record["longitude"] == 2.2945
+    assert "live_period" not in record
+    assert "live_started_at" not in record
+    assert "live_expires_at" not in record
+
+    context = adapter._build_background_location_context(_message())
+    assert context is not None
+    assert "Source: location" in context
+    assert "deliberate one-time location pin" in context
 
 
 def test_live_period_accepts_future_ptb_timedelta_shape():

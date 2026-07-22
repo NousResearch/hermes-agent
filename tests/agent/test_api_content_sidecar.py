@@ -30,10 +30,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.memory_manager import build_memory_context_block
-from agent.conversation_loop import (
-    _remember_ephemeral_user_context,
-    _replayed_ephemeral_user_context,
-)
 from agent.turn_context import build_turn_context, compose_user_api_content
 from hermes_state import SessionDB
 
@@ -584,10 +580,10 @@ class TestWireInvariant:
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
 
-    def test_volatile_context_replays_from_live_memory_but_never_persists(
+    def test_volatile_context_is_current_turn_only_and_never_persisted(
         self, wire_env
     ):
-        """The live sidecar preserves prior wire bytes without entering DB."""
+        """Coordinates reach the current provider call but not durable history."""
         make_agent, handler, db, sid = wire_env
         volatile = "[Background Telegram location context]\nLatitude: 48.8584"
         agent = make_agent()
@@ -609,7 +605,6 @@ class TestWireInvariant:
         for request in requests:
             current = _user_messages(request)[0]["content"]
             assert current == expected
-            assert current.count("PLUGIN-CTX") == 1
             assert current.count(volatile) == 1
 
         history = db.get_messages_as_conversation(sid)
@@ -617,117 +612,18 @@ class TestWireInvariant:
         assert history[0]["api_content"] == "where am I?\n\nPLUGIN-CTX"
         assert volatile not in json.dumps(history)
 
+        # The next request rebuilds history from the clean sidecar. It must
+        # not resurrect coordinates from a prior provider request.
         handler.captured_requests = []
-        agent.run_conversation(
+        make_agent().run_conversation(
             "second question",
             conversation_history=history,
             task_id="volatile-2",
         )
-        replay_request = _chat_requests(handler)[0]
-        replayed, current = _user_messages(replay_request)
-        assert replayed["content"] == expected
+        historical, current = _user_messages(_chat_requests(handler)[0])
+        assert historical["content"] == "where am I?\n\nPLUGIN-CTX"
+        assert volatile not in historical["content"]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
-
-        # Process restart deliberately drops the volatile sidecar. The durable
-        # transcript remains clean, and a fresh provider session is cache-cold
-        # anyway; exact coordinates are never recovered from SessionDB.
-        reloaded_history = db.get_messages_as_conversation(sid)
-        assert volatile not in json.dumps(reloaded_history)
-        handler.captured_requests = []
-        make_agent().run_conversation(
-            "after restart",
-            conversation_history=reloaded_history,
-            task_id="volatile-3",
-        )
-        restarted_request = _chat_requests(handler)[0]
-        restarted_users = _user_messages(restarted_request)
-        assert restarted_users[0]["content"] == "where am I?\n\nPLUGIN-CTX"
-        assert volatile not in json.dumps(restarted_users)
-
-    def test_shared_live_store_replays_across_fresh_agent_instances(self, wire_env):
-        """API-server proxy requests create agents but share process memory."""
-        make_agent, handler, db, sid = wire_env
-        volatile = "[Background Telegram location context]\nLatitude: 51.5007"
-        shared_store = {}
-        shared_lock = threading.RLock()
-
-        first = make_agent()
-        first._ephemeral_user_context_replay_store = shared_store
-        first._ephemeral_user_context_replay_lock = shared_lock
-        first._ephemeral_user_context_replay_scope = "api-session:test"
-        first.run_conversation(
-            "first question",
-            conversation_history=[],
-            task_id="shared-1",
-            ephemeral_user_context=volatile,
-        )
-
-        history = db.get_messages_as_conversation(sid)
-        assert volatile not in json.dumps(history)
-        handler.captured_requests = []
-
-        second = make_agent()
-        second._ephemeral_user_context_replay_store = shared_store
-        second._ephemeral_user_context_replay_lock = shared_lock
-        second._ephemeral_user_context_replay_scope = "api-session:test"
-        second.run_conversation(
-            "second question",
-            conversation_history=history,
-            task_id="shared-2",
-        )
-
-        replayed = _user_messages(_chat_requests(handler)[0])[0]
-        assert replayed["content"] == (
-            f"first question\n\nPLUGIN-CTX\n\n{volatile}"
-        )
-
-    def test_clean_resend_clears_same_turn_live_replay_record(self):
-        agent = types.SimpleNamespace(session_id="session-retry")
-        clean_content = "same canonical question"
-
-        _remember_ephemeral_user_context(
-            agent,
-            user_ordinal=0,
-            clean_content=clean_content,
-            context="Location: 1.0, 2.0",
-        )
-        assert _replayed_ephemeral_user_context(
-            agent,
-            user_ordinal=0,
-            clean_content=clean_content,
-        ) == "Location: 1.0, 2.0"
-
-        _remember_ephemeral_user_context(
-            agent,
-            user_ordinal=0,
-            clean_content=clean_content,
-            context=None,
-        )
-        assert _replayed_ephemeral_user_context(
-            agent,
-            user_ordinal=0,
-            clean_content=clean_content,
-        ) is None
-
-    def test_replay_can_be_disabled_at_a_shared_user_boundary(self):
-        agent = types.SimpleNamespace(
-            session_id="shared-group-session",
-            _ephemeral_user_context_replay_enabled=False,
-        )
-
-        _remember_ephemeral_user_context(
-            agent,
-            user_ordinal=0,
-            clean_content="where am I?",
-            context="Location: 1.0, 2.0",
-        )
-
-        assert _replayed_ephemeral_user_context(
-            agent,
-            user_ordinal=0,
-            clean_content="where am I?",
-        ) is None
-        assert not hasattr(agent, "_ephemeral_user_context_replay_store")
 
 
 # ---------------------------------------------------------------------------

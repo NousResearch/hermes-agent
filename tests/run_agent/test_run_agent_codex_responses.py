@@ -2932,56 +2932,6 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     assert "***" in dumped_text or "..." in dumped_text
 
 
-def test_dump_api_request_debug_omits_volatile_user_context(monkeypatch, tmp_path):
-    import json
-
-    _patch_agent_bootstrap(monkeypatch)
-    agent = run_agent.AIAgent(
-        model="gpt-4o",
-        base_url="http://127.0.0.1:9208/v1",
-        api_key="test-key",
-        quiet_mode=True,
-        max_iterations=1,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    agent.logs_dir = tmp_path
-    volatile = "[Background Telegram location context]\nLatitude: 1.0"
-    agent._active_ephemeral_user_context_redactions = (volatile,)
-
-    class ProviderError(RuntimeError):
-        response: object
-
-    echoed_request = json.dumps(
-        {
-            "messages": [
-                {"role": "user", "content": f"Where am I?\n\n{volatile}"}
-            ]
-        }
-    )
-    error = ProviderError("provider echoed request")
-    error.response = SimpleNamespace(status_code=400, text=echoed_request)
-
-    dump_file = agent._dump_api_request_debug(
-        {
-            "model": "gpt-4o",
-            "messages": [
-                {"role": "user", "content": f"Where am I?\n\n{volatile}"}
-            ],
-        },
-        reason="provider_error",
-        error=error,
-    )
-
-    dumped_text = dump_file.read_text()
-    assert volatile not in dumped_text
-    assert "[volatile user context omitted]" in dumped_text
-    payload = json.loads(dumped_text)
-    assert payload["request"]["body"]["messages"][0]["role"] == "user"
-    assert json.dumps(volatile)[1:-1] not in payload["error"]["response_text"]
-    assert "[volatile user context omitted]" in payload["error"]["response_text"]
-
-
 # --- Reasoning-only response tests (fix for empty content retry loop) ---
 
 

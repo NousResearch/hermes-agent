@@ -716,7 +716,6 @@ class QueuedSilenceAgent:
 
 class QueuedEphemeralContextAgent:
     calls = []
-    replay_enabled = []
 
     def __init__(self, **kwargs):
         self.tools = []
@@ -729,9 +728,6 @@ class QueuedEphemeralContextAgent:
         ephemeral_user_context=None,
     ):
         type(self).calls.append((message, ephemeral_user_context))
-        type(self).replay_enabled.append(
-            getattr(self, "_ephemeral_user_context_replay_enabled", True)
-        )
         return {
             "final_response": f"final response {len(type(self).calls)}",
             "messages": [],
@@ -1187,7 +1183,6 @@ async def test_recursive_queued_followup_forwards_volatile_context(
     monkeypatch, tmp_path
 ):
     QueuedEphemeralContextAgent.calls = []
-    QueuedEphemeralContextAgent.replay_enabled = []
     volatile = "Location: 1.0, 2.0"
 
     _adapter, result = await _run_with_agent(
@@ -1204,7 +1199,6 @@ async def test_recursive_queued_followup_forwards_volatile_context(
         ("hello", None),
         ("queued follow-up", volatile),
     ]
-    assert QueuedEphemeralContextAgent.replay_enabled == [False, False]
 
 
 @pytest.mark.asyncio

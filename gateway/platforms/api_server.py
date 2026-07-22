@@ -52,7 +52,6 @@ import os
 import re
 import sqlite3
 import sys
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -84,7 +83,6 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    HERMES_EPHEMERAL_USER_CONTEXT_FIELD,
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
     SendResult,
@@ -164,44 +162,6 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return default
-
-
-def _parse_ephemeral_user_context(
-    body: Dict[str, Any],
-) -> tuple[Optional[str], Optional["web.Response"]]:
-    """Read Hermes' proxy extension context field without making it a message.
-
-    Gateway proxy mode uses this field for volatile platform data such as a
-    user's current location.  Keeping it outside ``messages`` lets the agent
-    inject it into the request copy for this turn while preserving a clean
-    session transcript.
-    """
-    raw_context = body.get(HERMES_EPHEMERAL_USER_CONTEXT_FIELD)
-    if raw_context is None:
-        return None, None
-    if not isinstance(raw_context, str):
-        return None, web.json_response(
-            _openai_error(
-                f"{HERMES_EPHEMERAL_USER_CONTEXT_FIELD} must be a string",
-                code="invalid_request_error",
-                param=HERMES_EPHEMERAL_USER_CONTEXT_FIELD,
-            ),
-            status=400,
-        )
-    context = raw_context.strip()
-    if not context:
-        return None, None
-    if len(context) > MAX_NORMALIZED_TEXT_LENGTH:
-        return None, web.json_response(
-            _openai_error(
-                f"{HERMES_EPHEMERAL_USER_CONTEXT_FIELD} must be at most "
-                f"{MAX_NORMALIZED_TEXT_LENGTH} characters",
-                code="invalid_request_error",
-                param=HERMES_EPHEMERAL_USER_CONTEXT_FIELD,
-            ),
-            status=400,
-        )
-    return context, None
 
 
 def _normalize_chat_content(
@@ -1031,12 +991,6 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_db_lock: Optional[asyncio.Lock] = None  # Single-flight for lazy init
-        # A request creates a fresh AIAgent, but a session's provider prefix
-        # still spans requests. Share only the bounded, process-memory volatile
-        # replay sidecar so API-proxy turns can replay exact prior wire bytes
-        # without putting sensitive platform context in SessionDB.
-        self._ephemeral_user_context_replay_store: Dict[tuple, str] = {}
-        self._ephemeral_user_context_replay_lock = threading.RLock()
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -1790,30 +1744,6 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
-    @staticmethod
-    def _ephemeral_replay_scope_for_session(session_id: str) -> str:
-        """Return a profile-aware, non-identifying live replay namespace."""
-        from hermes_constants import get_hermes_home
-
-        namespace = hashlib.sha256(
-            f"{get_hermes_home()}\0{session_id}".encode(
-                "utf-8", errors="replace"
-            )
-        ).hexdigest()
-        return f"api-session:{namespace}"
-
-    def _clear_ephemeral_replay_for_session(self, session_id: str) -> None:
-        """Forget RAM-only volatile context when an API session is retired."""
-        scope = self._ephemeral_replay_scope_for_session(session_id)
-        with self._ephemeral_user_context_replay_lock:
-            stale = [
-                key
-                for key in self._ephemeral_user_context_replay_store
-                if isinstance(key, tuple) and key and key[0] == scope
-            ]
-            for key in stale:
-                self._ephemeral_user_context_replay_store.pop(key, None)
-
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -2457,7 +2387,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
-            self._clear_ephemeral_replay_for_session(session_id)
         session = await asyncio.to_thread(db.get_session, session_id) or session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
@@ -2472,7 +2401,6 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         deleted = await asyncio.to_thread(db.delete_session, session_id)
-        self._clear_ephemeral_replay_for_session(session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
@@ -2735,19 +2663,6 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
-        ephemeral_user_context, context_error = _parse_ephemeral_user_context(body)
-        if context_error is not None:
-            return context_error
-        if ephemeral_user_context:
-            # Do not log the sensitive value itself. Preserve an audit signal
-            # because this authenticated extension deliberately affects the
-            # model request without becoming canonical transcript content.
-            logger.info(
-                "Accepted volatile API-only user context (chars=%d) %s",
-                len(ephemeral_user_context),
-                self._request_audit_log_suffix(request),
-            )
-
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -2756,11 +2671,6 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
-        _ephemeral_context_kwargs = (
-            {"ephemeral_user_context": ephemeral_user_context}
-            if ephemeral_user_context
-            else {}
-        )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -2865,16 +2775,6 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
 
-        # Only explicit session continuity is an authenticated ownership
-        # boundary. Fingerprint-derived IDs can collide across independent API
-        # clients that happen to share their system prompt and first user text,
-        # so they must not share RAM-only volatile replay state.
-        ephemeral_replay_scope = (
-            self._ephemeral_replay_scope_for_session(session_id)
-            if provided_session_id
-            else None
-        )
-
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -2967,8 +2867,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
-                ephemeral_replay_scope=ephemeral_replay_scope,
-                **_ephemeral_context_kwargs,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2989,23 +2887,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
-                ephemeral_replay_scope=ephemeral_replay_scope,
-                **_ephemeral_context_kwargs,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(
-                body,
-                keys=[
-                    "model",
-                    "messages",
-                    "tools",
-                    "tool_choice",
-                    "stream",
-                    HERMES_EPHEMERAL_USER_CONTEXT_FIELD,
-                ],
-            )
+            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -4740,8 +4626,6 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: str,
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
-        ephemeral_user_context: Optional[str] = None,
-        ephemeral_replay_scope: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
@@ -4792,30 +4676,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         gateway_session_key=gateway_session_key,
                         route=route,
                     )
-                    if ephemeral_replay_scope:
-                        # Explicit authenticated session continuity may share
-                        # the bounded process-memory sidecar across the fresh
-                        # AIAgent instance created for each HTTP request.
-                        agent._ephemeral_user_context_replay_store = (
-                            self._ephemeral_user_context_replay_store
-                        )
-                        agent._ephemeral_user_context_replay_lock = (
-                            self._ephemeral_user_context_replay_lock
-                        )
-                        agent._ephemeral_user_context_replay_scope = (
-                            ephemeral_replay_scope
-                        )
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
-                    _conversation_kwargs = {
-                        "user_message": user_message,
-                        "conversation_history": conversation_history,
-                        "task_id": effective_task_id,
-                    }
-                    if ephemeral_user_context:
-                        _conversation_kwargs["ephemeral_user_context"] = ephemeral_user_context
-                    result = agent.run_conversation(**_conversation_kwargs)
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                    )
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -4827,17 +4695,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
-                    if (
-                        isinstance(session_id, str)
-                        and session_id
-                        and isinstance(_eff_sid, str)
-                        and _eff_sid
-                        and _eff_sid != session_id
-                    ):
-                        # Compression rotated the durable session. Its provider
-                        # prefix is cold by definition, so retain no volatile
-                        # replay records under the retired lineage node.
-                        self._clear_ephemeral_replay_for_session(session_id)
                     return result, usage
                 finally:
                     clear_session_vars(tokens)

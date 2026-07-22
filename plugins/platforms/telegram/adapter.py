@@ -8450,6 +8450,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 return self._write_background_location_records(records)
             return True
 
+        # The Bot API uses the same Location object for fixed pins and live
+        # shares. ``live_period`` is present only for an active live location;
+        # a plain Location is a deliberate one-time pin, and a Venue can never
+        # be live.
         source_kind = "venue" if venue is not None else (
             "live_location" if live_period is not None else "location"
         )
@@ -8713,13 +8717,28 @@ class TelegramAdapter(BasePlatformAdapter):
         recorded_at = self._parse_background_location_datetime(
             record.get("telegram_timestamp")
         ) or self._parse_background_location_datetime(record.get("recorded_at"))
+        source_note = {
+            "location": (
+                "This is a deliberate one-time location pin. It is fixed and "
+                "does not update automatically."
+            ),
+            "live_location": (
+                "This is the latest snapshot of an active live location share, "
+                "not a fixed one-time pin."
+            ),
+            "venue": (
+                "This is a deliberate one-time venue pin. It is fixed and does "
+                "not update automatically."
+            ),
+        }[source]
         lines = [
             "[Background Telegram location context]",
-            "This is passive, user-shared telemetry and may be stale; use it only "
-            "when relevant to the user's explicit request.",
+            f"Source: {source}",
+            source_note,
+            "The recorded position may be stale; use it only when relevant to "
+            "the user's explicit request.",
             "Recorded at (UTC): "
             + (recorded_at.isoformat() if recorded_at is not None else "unknown"),
-            f"Source: {source}",
             f"Latitude: {latitude}",
             f"Longitude: {longitude}",
         ]
@@ -8916,9 +8935,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # A live-location snapshot is volatile per-turn state, not part of
-            # the text aggregation.  Prefer the newest non-empty snapshot so
-            # split Telegram messages do not retain stale coordinates.
+            # A location snapshot is volatile per-turn state, not part of the
+            # text aggregation. Prefer the newest non-empty snapshot so split
+            # Telegram messages do not retain stale coordinates.
             incoming_context = getattr(event, "ephemeral_user_context", None)
             if isinstance(incoming_context, str) and incoming_context.strip():
                 existing.ephemeral_user_context = incoming_context

@@ -2,14 +2,13 @@
 
 When enabled, every Mixture-of-Agents turn that actually runs the reference
 fan-out (a cache MISS in ``MoAChatCompletions.create``) appends one JSON line
-to ``<hermes_home>/moa-traces/<session_id>.jsonl``. The record is the full
-turn — the messages array each reference model received (system
+to ``<hermes_home>/moa-traces/<session_id>.jsonl``. The record is the TRUE
+FULL turn — the exact messages array each reference model received (system
 prompt + advisory view, not the truncated display preview), each reference's
-full output, and the messages array the aggregator received (including
+full output, and the exact messages array the aggregator received (including
 the injected reference-context guidance block) plus its output when available
 — so a run can be audited end-to-end offline: what every model saw, what every
-model said, and what it cost. Explicitly volatile per-turn platform context is
-replaced with an omission marker before the trace is written.
+model said, and what it cost.
 
 This is a side-channel trace. It is NOT the conversation ``messages`` table and
 never enters message history or replay — MoA references are advisory side-calls
@@ -31,9 +30,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
-from agent.redact import VOLATILE_CONTEXT_OMISSION, redact_explicit_contexts
 
 logger = logging.getLogger(__name__)
+
 
 def _traces_enabled_and_dir() -> Optional[Path]:
     """Return the trace directory if ``moa.save_traces`` is on, else None.
@@ -65,20 +64,7 @@ def _sanitize_session_id(session_id: Optional[str]) -> str:
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(session_id))
 
 
-def _redact_volatile_input(value: Any, redactions: list[str]) -> Any:
-    """Clone a trace input and replace explicitly volatile context strings."""
-    return redact_explicit_contexts(
-        value,
-        redactions,
-        marker=VOLATILE_CONTEXT_OMISSION,
-    )
-
-
-def _slot_trace(
-    acct: Any,
-    label: str,
-    input_redactions: list[str],
-) -> dict[str, Any]:
+def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
     """Render one reference's _RefAccounting into a full trace dict.
 
     Includes the FULL input messages the reference received and its FULL
@@ -99,9 +85,7 @@ def _slot_trace(
         "model": getattr(acct, "model", None),
         "provider": getattr(acct, "provider", None),
         "temperature": getattr(acct, "temperature", None),
-        "input_messages": _redact_volatile_input(
-            getattr(acct, "messages", None), input_redactions
-        ),
+        "input_messages": getattr(acct, "messages", None),
         "output": getattr(acct, "output", None),
         "usage": usage_dict,
         "cost_usd": getattr(acct, "cost_usd", None),
@@ -122,7 +106,6 @@ def save_moa_turn(
     aggregator_input_messages: Any,
     aggregator_output: Optional[str],
     aggregator_streamed: bool,
-    input_redactions: Optional[list[str]] = None,
 ) -> None:
     """Append one full MoA turn record to the session's trace JSONL, if enabled.
 
@@ -141,11 +124,6 @@ def save_moa_turn(
     if base is None:
         return
     try:
-        redactions = [
-            value.strip()
-            for value in (input_redactions or [])
-            if isinstance(value, str) and value.strip()
-        ]
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{_sanitize_session_id(session_id)}.jsonl"
         # output_location tells an offline reader where the acting text lives:
@@ -163,7 +141,7 @@ def save_moa_turn(
             "session_id": session_id,
             "preset": preset_name,
             "references": [
-                _slot_trace(acct, label, redactions)
+                _slot_trace(acct, label)
                 for label, _text, acct in reference_outputs
             ],
             "aggregator": {
@@ -171,9 +149,7 @@ def save_moa_turn(
                 "model": aggregator_model,
                 "provider": aggregator_provider,
                 "temperature": aggregator_temperature,
-                "input_messages": _redact_volatile_input(
-                    aggregator_input_messages, redactions
-                ),
+                "input_messages": aggregator_input_messages,
                 "output": aggregator_output,
                 "streamed": aggregator_streamed,
                 # Where the aggregator's acting output lives for this record.

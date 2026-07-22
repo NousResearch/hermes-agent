@@ -7,75 +7,13 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
-import json
 import logging
 import os
 import re
 import shlex
-from typing import Any, Iterable
 from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
-
-VOLATILE_CONTEXT_OMISSION = "[volatile user context omitted]"
-
-
-def redact_explicit_contexts(
-    value: Any,
-    contexts: Iterable[str],
-    *,
-    marker: str = VOLATILE_CONTEXT_OMISSION,
-) -> Any:
-    """Clone JSON-like data and remove explicitly supplied context blocks.
-
-    Volatile user context is appended as its own ``\n\n``-delimited block.
-    Matching that boundary (or a standalone string value) avoids corrupting
-    unrelated text when an authenticated caller supplies a short value. JSON-
-    escaped boundary/context variants are matched too because provider errors
-    can echo the serialized request inside a string that is later debug-dumped.
-    """
-    normalized = sorted(
-        {
-            context.strip()
-            for context in contexts
-            if isinstance(context, str) and context.strip()
-        },
-        key=len,
-        reverse=True,
-    )
-    if isinstance(value, str):
-        result = value
-        for context in normalized:
-            if result == context:
-                result = marker
-            else:
-                boundary = "\n\n"
-                encoded_context = context
-                # Cover the live request plus provider echoes nested in one or
-                # two JSON strings. Keep the boundary requirement at every
-                # level so a short caller-supplied value cannot redact an
-                # unrelated substring elsewhere in the diagnostic payload.
-                for _depth in range(3):
-                    result = result.replace(
-                        f"{boundary}{encoded_context}",
-                        f"{boundary}{marker}",
-                    )
-                    boundary = json.dumps(boundary, ensure_ascii=False)[1:-1]
-                    encoded_context = json.dumps(
-                        encoded_context,
-                        ensure_ascii=False,
-                    )[1:-1]
-        return result
-    if isinstance(value, list):
-        return [redact_explicit_contexts(item, normalized, marker=marker) for item in value]
-    if isinstance(value, tuple):
-        return [redact_explicit_contexts(item, normalized, marker=marker) for item in value]
-    if isinstance(value, dict):
-        return {
-            key: redact_explicit_contexts(item, normalized, marker=marker)
-            for key, item in value.items()
-        }
-    return value
 
 # Sensitive query-string parameter names (case-insensitive exact match).
 # Ported from nearai/ironclaw#2529 — catches tokens whose values don't match

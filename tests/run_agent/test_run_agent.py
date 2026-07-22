@@ -4454,45 +4454,6 @@ class TestRunConversation:
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
-    def test_volatile_context_reaches_provider_but_not_observer_hooks(self, agent):
-        self._setup_agent(agent)
-        agent.client.chat.completions.create.return_value = _mock_response(
-            content="Done", finish_reason="stop"
-        )
-        volatile = "[Background Telegram location context]\nLatitude: 1.0"
-        hook_calls = []
-
-        def _record_hook(name, **kwargs):
-            hook_calls.append((name, kwargs))
-            return []
-
-        with (
-            patch(
-                "hermes_cli.plugins.has_hook",
-                side_effect=lambda name: name == "pre_api_request",
-            ),
-            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            agent.run_conversation(
-                "Where am I?",
-                ephemeral_user_context=volatile,
-            )
-
-        provider_payload = agent.client.chat.completions.create.call_args.kwargs
-        provider_user = next(
-            message
-            for message in provider_payload["messages"]
-            if message["role"] == "user"
-        )
-        assert volatile in provider_user["content"]
-        pre_hook = next(kwargs for name, kwargs in hook_calls if name == "pre_api_request")
-        assert volatile not in str(pre_hook["request_messages"])
-        assert volatile not in str(pre_hook["request"])
-        assert "[volatile user context omitted]" in str(pre_hook["request_messages"])
-
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False
         hook_called = False

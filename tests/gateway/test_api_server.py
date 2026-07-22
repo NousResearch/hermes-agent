@@ -27,7 +27,6 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
-    MAX_NORMALIZED_TEXT_LENGTH,
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
@@ -703,26 +702,6 @@ def auth_adapter():
 
 
 class TestAgentExecution:
-    def test_api_session_replay_cleanup_is_scoped(self, adapter):
-        first_scope = adapter._ephemeral_replay_scope_for_session("session-1")
-        second_scope = adapter._ephemeral_replay_scope_for_session("session-2")
-        adapter._ephemeral_user_context_replay_store.update(
-            {
-                (first_scope, 0, "digest-a"): "Location: 1.0, 2.0",
-                (second_scope, 0, "digest-b"): "Location: 3.0, 4.0",
-            }
-        )
-
-        adapter._clear_ephemeral_replay_for_session("session-1")
-
-        assert all(
-            key[0] != first_scope
-            for key in adapter._ephemeral_user_context_replay_store
-        )
-        assert (second_scope, 0, "digest-b") in (
-            adapter._ephemeral_user_context_replay_store
-        )
-
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
@@ -750,53 +729,6 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
-
-    @pytest.mark.asyncio
-    async def test_run_agent_forwards_ephemeral_user_context_without_rewriting_user_message(self, adapter):
-        mock_agent = MagicMock()
-        mock_agent.run_conversation.return_value = {"final_response": "ok"}
-        mock_agent.session_prompt_tokens = 1
-        mock_agent.session_completion_tokens = 2
-        mock_agent.session_total_tokens = 3
-
-        with patch.object(adapter, "_create_agent", return_value=mock_agent):
-            await adapter._run_agent(
-                user_message="hello",
-                conversation_history=[],
-                session_id="session-123",
-                ephemeral_user_context="Location: 1.0, 2.0",
-            )
-
-        mock_agent.run_conversation.assert_called_once_with(
-            user_message="hello",
-            conversation_history=[],
-            task_id="session-123",
-            ephemeral_user_context="Location: 1.0, 2.0",
-        )
-
-    @pytest.mark.asyncio
-    async def test_run_agent_shares_replay_store_only_with_explicit_scope(self, adapter):
-        mock_agent = MagicMock()
-        mock_agent.run_conversation.return_value = {"final_response": "ok"}
-        scope = adapter._ephemeral_replay_scope_for_session("session-123")
-
-        with patch.object(adapter, "_create_agent", return_value=mock_agent):
-            await adapter._run_agent(
-                user_message="hello",
-                conversation_history=[],
-                session_id="session-123",
-                ephemeral_replay_scope=scope,
-            )
-
-        assert (
-            mock_agent._ephemeral_user_context_replay_store
-            is adapter._ephemeral_user_context_replay_store
-        )
-        assert (
-            mock_agent._ephemeral_user_context_replay_lock
-            is adapter._ephemeral_user_context_replay_lock
-        )
-        assert mock_agent._ephemeral_user_context_replay_scope == scope
 
 
 # ---------------------------------------------------------------------------
@@ -1269,127 +1201,6 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_hermes_ephemeral_user_context_reaches_agent_separately(self, adapter):
-        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                mock_run.return_value = (
-                    mock_result,
-                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                )
-                response = await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [{"role": "user", "content": "Where am I?"}],
-                        "hermes_ephemeral_user_context": "Location: 1.0, 2.0",
-                    },
-                )
-
-        assert response.status == 200
-        assert mock_run.call_args.kwargs["user_message"] == "Where am I?"
-        assert mock_run.call_args.kwargs["ephemeral_user_context"] == "Location: 1.0, 2.0"
-
-    @pytest.mark.asyncio
-    async def test_hermes_ephemeral_user_context_must_be_a_string(self, adapter):
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            response = await cli.post(
-                "/v1/chat/completions",
-                json={
-                    "model": "hermes-agent",
-                    "messages": [{"role": "user", "content": "Where am I?"}],
-                    "hermes_ephemeral_user_context": {"location": "1.0, 2.0"},
-                },
-            )
-            body = await response.json()
-
-        assert response.status == 400
-        assert "hermes_ephemeral_user_context" in body["error"]["message"]
-
-    @pytest.mark.asyncio
-    async def test_hermes_ephemeral_user_context_enforces_exact_length_boundary(
-        self, adapter
-    ):
-        app = _create_app(adapter)
-        result = {"final_response": "ok", "messages": [], "api_calls": 1}
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(
-                adapter,
-                "_run_agent",
-                new_callable=AsyncMock,
-                return_value=(result, usage),
-            ):
-                accepted = await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [{"role": "user", "content": "hello"}],
-                        "hermes_ephemeral_user_context": (
-                            "x" * MAX_NORMALIZED_TEXT_LENGTH
-                        ),
-                    },
-                )
-                rejected = await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [{"role": "user", "content": "hello"}],
-                        "hermes_ephemeral_user_context": (
-                            "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1)
-                        ),
-                    },
-                )
-
-        assert accepted.status == 200
-        assert rejected.status == 400
-
-    @pytest.mark.asyncio
-    async def test_ephemeral_context_participates_in_idempotency_fingerprint(
-        self, adapter
-    ):
-        app = _create_app(adapter)
-        calls = []
-
-        async def _run_agent(**kwargs):
-            context = kwargs.get("ephemeral_user_context")
-            calls.append(context)
-            return (
-                {"final_response": context, "messages": [], "api_calls": 1},
-                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            )
-
-        headers = {"Idempotency-Key": "volatile-context-key"}
-        base_body = {
-            "model": "hermes-agent",
-            "messages": [{"role": "user", "content": "Where am I?"}],
-        }
-        with patch(
-            "gateway.platforms.api_server._idem_cache", _IdempotencyCache()
-        ), patch.object(adapter, "_run_agent", side_effect=_run_agent):
-            async with TestClient(TestServer(app)) as cli:
-                first = await cli.post(
-                    "/v1/chat/completions",
-                    headers=headers,
-                    json={**base_body, "hermes_ephemeral_user_context": "first"},
-                )
-                second = await cli.post(
-                    "/v1/chat/completions",
-                    headers=headers,
-                    json={**base_body, "hermes_ephemeral_user_context": "second"},
-                )
-                repeated = await cli.post(
-                    "/v1/chat/completions",
-                    headers=headers,
-                    json={**base_body, "hermes_ephemeral_user_context": "second"},
-                )
-
-        assert first.status == second.status == repeated.status == 200
-        assert calls == ["first", "second"]
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
@@ -3891,7 +3702,6 @@ class TestSessionIdHeader:
                 )
             assert resp.status == 200
             assert resp.headers.get("X-Hermes-Session-Id") is not None
-            assert mock_run.call_args.kwargs["ephemeral_replay_scope"] is None
 
     @pytest.mark.asyncio
     async def test_provided_session_id_is_used_and_echoed(self, auth_adapter):
@@ -3918,9 +3728,6 @@ class TestSessionIdHeader:
             assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["session_id"] == "my-session-123"
-            assert call_kwargs["ephemeral_replay_scope"] == (
-                auth_adapter._ephemeral_replay_scope_for_session("my-session-123")
-            )
 
     @pytest.mark.asyncio
     async def test_traversal_session_id_header_rejected(self, auth_adapter):

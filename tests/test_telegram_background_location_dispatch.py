@@ -8,9 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip(
+telegram_module = pytest.importorskip(
     "telegram", reason="python-telegram-bot is an optional messaging dependency"
 )
+if not isinstance(getattr(telegram_module, "__file__", None), str):
+    pytest.skip(
+        "requires the real python-telegram-bot SDK, not the gateway test mock",
+        allow_module_level=True,
+    )
 
 from telegram import Chat, Location, Message, Update, User
 
@@ -19,10 +24,10 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.asyncio
-async def test_registered_location_handler_accepts_edited_updates(
+async def test_registered_handler_distinguishes_one_time_and_edited_live_updates(
     monkeypatch, tmp_path
 ):
-    """Exercise the production MessageHandler and PTB edited-update filter."""
+    """Exercise real PTB Location shapes through the production handler."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = TelegramAdapter(
         PlatformConfig(
@@ -44,12 +49,44 @@ async def test_registered_location_handler_accepts_edited_updates(
 
     app = _RecordingApp()
     adapter._register_update_handlers(app)
-    location_handler = next(
+    location_handlers = [
         handler
         for handler in app.handlers
-        if getattr(getattr(handler, "callback", None), "__name__", "")
-        == "_handle_location_message"
+        if getattr(handler, "callback", None) == adapter._handle_location_message
+    ]
+    assert location_handlers
+    location_handler = location_handlers[0]
+
+    fixed_message = Message(
+        message_id=49,
+        date=datetime(2026, 7, 17, 11, 59, tzinfo=timezone.utc),
+        chat=Chat(id=111, type="private"),
+        from_user=User(id=111, first_name="Alice", is_bot=False),
+        location=Location(
+            latitude=48.8584,
+            longitude=2.2945,
+            horizontal_accuracy=8.5,
+        ),
     )
+    fixed_update = Update(update_id=1, message=fixed_message)
+    fixed_check_result = location_handler.check_update(fixed_update)
+    assert fixed_check_result
+    await location_handler.handle_update(
+        fixed_update,
+        app,
+        fixed_check_result,
+        SimpleNamespace(),
+    )
+
+    fixed_payload = json.loads(
+        adapter._background_location_state_path.read_text()
+    )
+    fixed_subject_key = adapter._background_location_subject_key(fixed_message)
+    assert fixed_subject_key is not None
+    fixed_record = fixed_payload["locations"][fixed_subject_key]
+    assert fixed_record["source"] == "location"
+    assert "live_period" not in fixed_record
+
     message = Message(
         message_id=50,
         date=datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc),

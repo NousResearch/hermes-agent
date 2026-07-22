@@ -2549,17 +2549,11 @@ class AIAgent:
             for key, value in (api_kwargs or {}).items()
             if key not in {"timeout", "http_client"}
         }
-        from agent.redact import redact_explicit_contexts
-
-        hook_request = redact_explicit_contexts(
+        return self._sanitize_hook_payload(
             {
                 "method": "POST",
                 "body": body,
-            },
-            getattr(self, "_active_ephemeral_user_context_redactions", ()),
-        )
-        return self._sanitize_hook_payload(
-            hook_request
+            }
         )
 
     def _api_response_payload_for_hook(

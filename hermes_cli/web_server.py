@@ -7599,26 +7599,30 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
 
 
 @app.get("/api/providers/custom-endpoints")
-def list_custom_endpoints():
+def list_custom_endpoints(profile: Optional[str] = None):
     """Return configured OpenAI-compatible custom endpoints for Desktop."""
     try:
-        return _custom_endpoint_response(load_config())
+        with _config_profile_scope(profile, current_is_sentinel=False):
+            return _custom_endpoint_response(load_config())
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/providers/custom-endpoints failed")
         raise HTTPException(status_code=500, detail="Failed to list custom endpoints")
 
 
 @app.post("/api/providers/custom-endpoints")
-def upsert_custom_endpoint(body: CustomEndpointUpdate):
+def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     try:
-        cfg = load_config()
-        endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-        save_config(cfg)
-        response = _custom_endpoint_response(cfg)
-        response["ok"] = True
-        response["id"] = endpoint_id
-        return response
+        with _config_profile_scope(profile, current_is_sentinel=False):
+            cfg = load_config()
+            endpoint_id, _entry = _write_custom_endpoint(cfg, body)
+            save_config(cfg)
+            response = _custom_endpoint_response(cfg)
+            response["ok"] = True
+            response["id"] = endpoint_id
+            return response
     except HTTPException:
         raise
     except Exception:
@@ -7627,28 +7631,29 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate):
 
 
 @app.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
-def activate_custom_endpoint(endpoint_id: str):
+def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
     try:
-        cfg = load_config()
-        provider_key = _custom_endpoint_id(endpoint_id)
-        providers = cfg.get("providers")
-        entry = providers.get(provider_key) if isinstance(providers, dict) else None
-        if not isinstance(entry, dict):
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
+        with _config_profile_scope(profile, current_is_sentinel=False):
+            cfg = load_config()
+            provider_key = _custom_endpoint_id(endpoint_id)
+            providers = cfg.get("providers")
+            entry = providers.get(provider_key) if isinstance(providers, dict) else None
+            if not isinstance(entry, dict):
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
 
-        models = _models_from_custom_endpoint_entry(entry)
-        model = str(entry.get("model") or (models[0] if models else "")).strip()
-        base_url = str(entry.get("base_url") or "").strip()
-        if not model or not base_url:
-            raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
+            models = _models_from_custom_endpoint_entry(entry)
+            model = str(entry.get("model") or (models[0] if models else "")).strip()
+            base_url = str(entry.get("base_url") or "").strip()
+            if not model or not base_url:
+                raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-        model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-        if entry.get("api_key"):
-            model_cfg["api_key"] = entry["api_key"]
-        cfg["model"] = model_cfg
-        save_config(cfg)
-        return {"ok": True, "provider": provider_key, "model": model}
+            model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
+            if entry.get("api_key"):
+                model_cfg["api_key"] = entry["api_key"]
+            cfg["model"] = model_cfg
+            save_config(cfg)
+            return {"ok": True, "provider": provider_key, "model": model}
     except HTTPException:
         raise
     except Exception:
@@ -7657,21 +7662,22 @@ def activate_custom_endpoint(endpoint_id: str):
 
 
 @app.delete("/api/providers/custom-endpoints/{endpoint_id}")
-def delete_custom_endpoint(endpoint_id: str):
+def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Remove a configured custom endpoint from ``providers``."""
     try:
-        cfg = load_config()
-        provider_key = _custom_endpoint_id(endpoint_id)
-        providers = cfg.get("providers")
-        if not isinstance(providers, dict) or provider_key not in providers:
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
-        providers.pop(provider_key, None)
-        cfg["providers"] = providers
-        _detach_main_model_from_provider(cfg, provider_key)
-        save_config(cfg)
-        response = _custom_endpoint_response(cfg)
-        response["ok"] = True
-        return response
+        with _config_profile_scope(profile, current_is_sentinel=False):
+            cfg = load_config()
+            provider_key = _custom_endpoint_id(endpoint_id)
+            providers = cfg.get("providers")
+            if not isinstance(providers, dict) or provider_key not in providers:
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
+            providers.pop(provider_key, None)
+            cfg["providers"] = providers
+            _detach_main_model_from_provider(cfg, provider_key)
+            save_config(cfg)
+            response = _custom_endpoint_response(cfg)
+            response["ok"] = True
+            return response
     except HTTPException:
         raise
     except Exception:
@@ -15190,7 +15196,9 @@ def _profile_scope(profile: Optional[str]):
 
 
 @contextmanager
-def _config_profile_scope(profile: Optional[str]):
+def _config_profile_scope(
+    profile: Optional[str], *, current_is_sentinel: bool = True
+):
     """Await-safe, config-only profile scope for handlers that ``await``.
 
     Unlike ``_profile_scope`` this touches ONLY the context-local
@@ -15203,10 +15211,17 @@ def _config_profile_scope(profile: Optional[str]):
     which is all endpoints that resolve ``get_hermes_home()`` at call time
     (config, env, gateway status) actually need.
 
-    None/""/"current" means the dashboard's own profile — no override.
+    None/"" means the dashboard's own profile — no override. ``"current"``
+    retains that legacy sentinel meaning by default. Callers whose profile
+    value is an explicit named-profile selection can set
+    ``current_is_sentinel=False`` so a valid profile literally named
+    ``current`` resolves to its own directory instead of the server's launch
+    profile.
     """
     requested = (profile or "").strip()
-    if not requested or requested.lower() == "current":
+    if not requested or (
+        current_is_sentinel and requested.lower() == "current"
+    ):
         yield None
         return
 

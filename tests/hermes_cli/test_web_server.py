@@ -4281,6 +4281,97 @@ class TestWebServerEndpoints:
         assert data["endpoints"][0]["source"] == "direct-config"
         assert data["endpoints"][0]["has_api_key"] is True
 
+    @pytest.mark.parametrize("profile_name", ["worker", "current"])
+    def test_custom_endpoint_crud_honors_profile_param(
+        self, monkeypatch, tmp_path, profile_name
+    ):
+        """Global-remote Desktop requests must mutate only their active profile."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        primary_home = get_hermes_home()
+        worker_home = profiles_mod.get_profile_dir(profile_name)
+        worker_home.mkdir(parents=True)
+
+        primary_config = {
+            "model": {"provider": "primary-only", "default": "primary-model"},
+            "providers": {
+                "primary-only": {
+                    "name": "Primary only",
+                    "base_url": "https://primary.invalid/v1",
+                    "model": "primary-model",
+                    "models": {"primary-model": {}},
+                }
+            },
+        }
+        worker_config = {
+            "model": {"provider": "worker-existing", "default": "worker-model"},
+            "providers": {
+                "worker-existing": {
+                    "name": "Worker existing",
+                    "base_url": "https://worker.invalid/v1",
+                    "model": "worker-model",
+                    "models": {"worker-model": {}},
+                }
+            },
+        }
+        primary_path = primary_home / "config.yaml"
+        worker_path = worker_home / "config.yaml"
+        primary_path.write_text(yaml.safe_dump(primary_config), encoding="utf-8")
+        worker_path.write_text(yaml.safe_dump(worker_config), encoding="utf-8")
+
+        listed = self.client.get(
+            "/api/providers/custom-endpoints", params={"profile": profile_name}
+        )
+        assert listed.status_code == 200
+        listed_ids = {entry["id"] for entry in listed.json()["endpoints"]}
+        assert "worker-existing" in listed_ids
+        assert "primary-only" not in listed_ids
+
+        saved = self.client.post(
+            "/api/providers/custom-endpoints",
+            params={"profile": profile_name},
+            json={
+                "id": "worker-new",
+                "name": "Worker new",
+                "base_url": "https://worker-new.invalid/v1",
+                "model": "worker-new-model",
+            },
+        )
+        assert saved.status_code == 200
+        assert "worker-new" in yaml.safe_load(worker_path.read_text(encoding="utf-8"))["providers"]
+        assert yaml.safe_load(primary_path.read_text(encoding="utf-8")) == primary_config
+
+        activated = self.client.post(
+            "/api/providers/custom-endpoints/worker-new/activate",
+            params={"profile": profile_name},
+            json={},
+        )
+        assert activated.status_code == 200
+        worker_after_activate = yaml.safe_load(worker_path.read_text(encoding="utf-8"))
+        assert worker_after_activate["model"]["provider"] == "worker-new"
+        assert yaml.safe_load(primary_path.read_text(encoding="utf-8")) == primary_config
+
+        deleted = self.client.request(
+            "DELETE",
+            "/api/providers/custom-endpoints/worker-new",
+            params={"profile": profile_name},
+        )
+        assert deleted.status_code == 200
+        worker_after_delete = yaml.safe_load(worker_path.read_text(encoding="utf-8"))
+        assert "worker-new" not in worker_after_delete["providers"]
+        assert yaml.safe_load(primary_path.read_text(encoding="utf-8")) == primary_config
+
+    def test_custom_endpoints_reject_unknown_profile(self):
+        resp = self.client.get(
+            "/api/providers/custom-endpoints", params={"profile": "missing-profile"}
+        )
+
+        assert resp.status_code == 404
+        assert "does not exist" in resp.json()["detail"]
+
     def test_custom_endpoint_upsert_persists_provider_and_sets_default(self):
         """Desktop can persist an OpenAI-compatible proxy in providers and make
         it the default for new chats.

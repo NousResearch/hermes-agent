@@ -51,6 +51,7 @@ import {
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
+  isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -4651,6 +4652,13 @@ async function waitForHermes(baseUrl, token, signal?) {
 
       return
     } catch (error) {
+      // Authentication cannot recover by polling. Surface it immediately so
+      // the caller can open the sign-in flow rather than waiting out the full
+      // readiness window and then a retry budget.
+      if (isGatewayAuthRejection(error)) {
+        throw error
+      }
+
       lastError = error
       await new Promise((resolve, reject) => {
         const timer = setTimeout(resolve, 500)
@@ -6929,7 +6937,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       }
     }
 
-    const err = new Error(error.message) as any
+    const err = new Error(error.message, { cause: error }) as any
+
+    err.kind = error.kind || 'unknown'
     err.sshError = error.kind || 'unknown'
     err.isSshBootstrap = true
     throw err

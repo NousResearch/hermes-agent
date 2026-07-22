@@ -163,6 +163,53 @@ test('OAuth readiness retries resolve a fresh single-use ticket', async () => {
   assert.equal(result?.wsUrl, 'wss://remote.example/ws?ticket=fresh-2')
 })
 
+test('readiness authentication failures bypass retry', async () => {
+  let readinessAttempts = 0
+  let resolverAttempts = 0
+  const authError = Object.assign(new Error('forbidden'), { statusCode: 403 })
+
+  await assert.rejects(
+    () =>
+      resolveReadyRemoteConnectionWithRetry(
+        async () => {
+          resolverAttempts += 1
+
+          return { baseUrl: 'https://remote.example' }
+        },
+        async () => {
+          readinessAttempts += 1
+          throw authError
+        },
+        { maxAttempts: 5, sleep: async () => undefined }
+      ),
+    error => error === authError
+  )
+
+  assert.equal(resolverAttempts, 1)
+  assert.equal(readinessAttempts, 1)
+})
+
+test('SSH wrappers preserve transient and permanent classification', () => {
+  const refused = Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED', kind: 'unreachable' })
+
+  const transientWrapper = Object.assign(new Error(refused.message, { cause: refused }), {
+    isSshBootstrap: true,
+    kind: refused.kind,
+    sshError: refused.kind
+  })
+
+  const auth = Object.assign(new Error('Permission denied (publickey).'), { kind: 'auth-failed' })
+
+  const permanentWrapper = Object.assign(new Error(auth.message, { cause: auth }), {
+    isSshBootstrap: true,
+    kind: auth.kind,
+    sshError: auth.kind
+  })
+
+  assert.equal(isRetryableRemoteConnectionError(transientWrapper), true)
+  assert.equal(isRetryableRemoteConnectionError(permanentWrapper), false)
+})
+
 test('offline and refused connections remain retryable ordinary transport errors', async () => {
   for (const error of [
     Object.assign(new Error('offline'), { code: 'ERR_INTERNET_DISCONNECTED' }),

@@ -18849,10 +18849,25 @@ class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
     enable: bool = True
+    catalog_name: Optional[str] = None
 
 
 def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in p.items() if not k.startswith("_")}
+
+
+def _plugin_runtime_status(aliases: set, enabled_set: set, disabled_set: set) -> str:
+    """Map a plugin's name aliases onto enabled/disabled/inactive.
+
+    Both the path-derived key (nested category plugins) and the bare
+    manifest name count for enabled/disabled state, matching the runtime
+    loader's back-compat lookup.
+    """
+    if aliases & disabled_set:
+        return "disabled"
+    if aliases & enabled_set:
+        return "enabled"
+    return "inactive"
 
 
 def _merged_plugins_hub() -> Dict[str, Any]:
@@ -18866,6 +18881,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
     )
+    from hermes_cli.plugin_catalog import find_removed
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -18881,18 +18897,10 @@ def _merged_plugins_hub() -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
 
     for name, version, description, source, dir_str, key in _discover_all_plugins():
-        # Both the path-derived key (nested category plugins) and the bare
-        # manifest name count for enabled/disabled state, matching the runtime
-        # loader's back-compat lookup.
         aliases = {name}
         if key:
             aliases.add(key)
-        if aliases & disabled_set:
-            runtime_status = "disabled"
-        elif aliases & enabled_set:
-            runtime_status = "enabled"
-        else:
-            runtime_status = "inactive"
+        runtime_status = _plugin_runtime_status(aliases, enabled_set, disabled_set)
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
@@ -18926,6 +18934,14 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             except Exception:
                 pass
 
+        removed_reason = None
+        try:
+            removed = find_removed(name)
+            if removed is not None:
+                removed_reason = removed.reason or "removed from the plugin catalog"
+        except Exception:
+            removed_reason = None
+
         rows.append({
             "name": name,
             "version": version or "",
@@ -18940,6 +18956,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
+            "removed_reason": removed_reason,
         })
 
     agent_names = {r["name"] for r in rows}
@@ -18981,15 +18998,123 @@ async def get_plugins_hub(request: Request):
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
 
 
+def _plugins_catalog_payload() -> Dict[str, Any]:
+    """Catalog entries merged with installed-state for the dashboard.
+
+    Each entry carries the static catalog metadata plus:
+
+    * ``installed`` — a plugin with the same name is discoverable locally.
+    * ``installed_sha`` — pinned SHA recorded in the plugin's
+      ``.hermes-catalog.json`` sidecar at install time (``None`` when the
+      sidecar is absent, e.g. a pre-catalog raw-git install).
+    * ``update_available`` — sidecar SHA differs from the catalog pin.
+    * ``runtime_status`` — enabled/disabled/inactive for installed entries,
+      ``None`` otherwise.
+    """
+    from hermes_cli.plugin_catalog import (
+        entry_capability_summary,
+        load_catalog,
+        load_removed_list,
+    )
+    from hermes_cli.plugins_cmd import (
+        _discover_all_plugins,
+        _get_disabled_set,
+        _get_enabled_set,
+        read_catalog_sidecar,
+    )
+
+    disabled_set = _get_disabled_set()
+    enabled_set = _get_enabled_set()
+
+    installed: Dict[str, Dict[str, Any]] = {}
+    for name, _version, _description, _source, dir_str, key in _discover_all_plugins():
+        aliases = {name}
+        if key:
+            aliases.add(key)
+        info = {
+            "dir": dir_str,
+            "runtime_status": _plugin_runtime_status(aliases, enabled_set, disabled_set),
+        }
+        for alias in aliases:
+            installed[alias] = info
+
+    entries: List[Dict[str, Any]] = []
+    for entry in load_catalog():
+        caps = entry.capabilities
+        local = installed.get(entry.name)
+        installed_sha = None
+        if local is not None:
+            sidecar = read_catalog_sidecar(Path(local["dir"]))
+            if sidecar:
+                raw_sha = sidecar.get("sha")
+                installed_sha = str(raw_sha) if raw_sha else None
+        entries.append({
+            "name": entry.name,
+            "description": entry.description,
+            "repo": entry.repo,
+            "sha": entry.sha,
+            "sha_short": entry.sha[:7],
+            "tier": entry.tier,
+            "maintainer": entry.maintainer,
+            "requires_hermes": entry.requires_hermes,
+            "platforms": entry.platforms,
+            "capabilities": {
+                "provides_tools": caps.provides_tools,
+                "provides_hooks": caps.provides_hooks,
+                "provides_middleware": caps.provides_middleware,
+                "requires_env": caps.requires_env,
+            },
+            "docs_url": entry.docs_url,
+            "capability_summary": entry_capability_summary(entry),
+            "installed": local is not None,
+            "installed_sha": installed_sha,
+            "update_available": bool(installed_sha) and installed_sha != entry.sha,
+            "runtime_status": local["runtime_status"] if local is not None else None,
+        })
+
+    removed = [
+        {"name": r.name, "repo": r.repo, "reason": r.reason, "date": r.date}
+        for r in load_removed_list()
+    ]
+
+    return {
+        "entries": entries,
+        "removed": removed,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+@app.get("/api/dashboard/plugins/catalog")
+async def get_plugins_catalog(request: Request):
+    """Curated plugin catalog merged with installed-state (session protected)."""
+    _require_token(request)
+    try:
+        return _plugins_catalog_payload()
+    except Exception as exc:
+        _log.warning("plugins/catalog failed: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="Failed to build plugins catalog."
+        ) from exc
+
+
 @app.post("/api/dashboard/agent-plugins/install")
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
+    catalog_name = (body.catalog_name or "").strip()
+    identifier = body.identifier.strip()
+    if not identifier and not catalog_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide an identifier or a catalog_name.",
+        )
+
     result = dashboard_install_plugin(
-        body.identifier.strip(),
+        identifier,
         force=body.force,
         enable=body.enable,
+        catalog_name=catalog_name or None,
     )
     if not result.get("ok"):
         raise HTTPException(

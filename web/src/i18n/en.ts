@@ -402,6 +402,21 @@ export const en: Translations = {
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
+    catalogHeading: "Plugin catalog",
+    catalogHint:
+      "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
+    catalogSearchPlaceholder: "Search catalog...",
+    catalogEmpty: "No catalog entries match.",
+    catalogEmptyDocsLink: "Learn about Hermes plugins",
+    catalogInstallBtn: "Install",
+    catalogInstalledBadge: "Installed ✓",
+    catalogUpdateBtn: "Update available",
+    catalogRemovedBadge: "Removed",
+    catalogConfirmTitle: "Install this plugin?",
+    catalogConfirmInstallNote:
+      "Plugins install disabled; enable it after install to activate.",
+    catalogRequiresEnv: "Requires env",
+    removedFromCatalog: "Removed from catalog",
   },
 
   skills: {

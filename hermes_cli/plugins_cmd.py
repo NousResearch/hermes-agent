@@ -1825,30 +1825,113 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
     print()
 
 
+_CATALOG_SIDECAR_FILENAME = ".hermes-catalog.json"
+
+
+def write_catalog_sidecar(target: Path, entry: Any) -> None:
+    """Record catalog provenance next to an installed plugin.
+
+    The ``.hermes-catalog.json`` sidecar lets ``hermes plugins list`` and the
+    dashboard tell a catalog-pinned install apart from a raw git install and
+    detect when the catalog has moved to a newer pinned SHA.
+    """
+    from datetime import datetime, timezone
+
+    payload = {
+        "catalog_name": entry.name,
+        "repo": entry.repo,
+        "sha": entry.sha,
+        "installed_at": datetime.now(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "tier": entry.tier,
+    }
+    (target / _CATALOG_SIDECAR_FILENAME).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def read_catalog_sidecar(plugin_dir: Path) -> Optional[dict]:
+    """Read a plugin dir's ``.hermes-catalog.json`` sidecar, or ``None``.
+
+    Returns ``None`` for missing, unreadable, or non-mapping sidecars —
+    callers degrade to "installed, provenance unknown".
+    """
+    path = plugin_dir / _CATALOG_SIDECAR_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def dashboard_install_plugin(
     identifier: str,
     *,
     force: bool,
     enable: bool,
+    catalog_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
+    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict.
+
+    When *catalog_name* is given the identifier is resolved from the plugin
+    catalog and the pinned commit SHA is checked out (``ref=``). Removed
+    (blocklisted) plugins are refused with the recorded reason — the
+    dashboard deliberately has no bypass flag (CLI-only decision).
+    """
     warnings: list[str] = []
-    try:
-        git_url, _subdir = _resolve_git_url(identifier)
-        if git_url.startswith(("http://", "file://")):
-            warnings.append(
-                "Insecure URL scheme; prefer https:// or git@ for production installs.",
-            )
-    except ValueError:
-        pass
+    entry = None
+    ref: Optional[str] = None
+
+    if catalog_name:
+        from hermes_cli.plugin_catalog import find_removed, get_catalog_entry
+
+        removed = find_removed(catalog_name)
+        if removed is not None:
+            detail = removed.reason or "no reason recorded"
+            if removed.date:
+                detail += f" (removed {removed.date})"
+            return {
+                "ok": False,
+                "error": (
+                    f"Plugin '{removed.name}' was removed from the Hermes "
+                    f"plugin catalog and is blocked from installation: {detail}"
+                ),
+            }
+        entry = get_catalog_entry(catalog_name)
+        if entry is None:
+            return {
+                "ok": False,
+                "error": f"'{catalog_name}' is not in the Hermes plugin catalog.",
+            }
+        identifier = f"{entry.repo}#{entry.subdir}" if entry.subdir else entry.repo
+        ref = entry.sha
+    else:
+        try:
+            git_url, _subdir = _resolve_git_url(identifier)
+            if git_url.startswith(("http://", "file://")):
+                warnings.append(
+                    "Insecure URL scheme; prefer https:// or git@ for production installs.",
+                )
+        except ValueError:
+            pass
 
     try:
         target, installed_manifest, installed_name = _install_plugin_core(
             identifier,
             force=force,
+            ref=ref,
         )
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
+
+    if entry is not None:
+        try:
+            write_catalog_sidecar(target, entry)
+        except OSError as exc:
+            warnings.append(f"Could not record catalog provenance: {exc}")
 
     missing_env = _missing_requires_env_names(installed_manifest)
     if enable:

@@ -204,8 +204,10 @@ def _run_helper(
     except subprocess.TimeoutExpired:
         # Hard timeout: kill the whole process group (a helper script may
         # have forked children that would otherwise keep the pipe open).
+        # POSIX-only by construction: _run_helper early-returns on Windows
+        # before ever spawning, so this line can't execute there.
         try:
-            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)  # windows-footgun: ok
         except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
         try:

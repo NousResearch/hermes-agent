@@ -2050,6 +2050,14 @@ def list_authenticated_providers(
                         pass
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
+        # Google Gemini OAuth stores its real credentials in
+        # ~/.hermes/auth/google_oauth.json instead of the generic auth store.
+        if not has_creds and hermes_slug == "google-gemini-cli":
+            try:
+                from hermes_cli.auth import get_gemini_oauth_auth_status
+                has_creds = bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
+            except Exception as exc:
+                logger.debug("Gemini OAuth status check failed: %s", exc)
         # Fallback: check external credential files directly.
         # The credential pool gates anthropic behind
         # is_provider_explicitly_configured() to prevent auxiliary tasks

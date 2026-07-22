@@ -26,6 +26,7 @@ import re
 import fnmatch
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -826,8 +827,9 @@ def format_scan_report(result: ScanResult) -> str:
         for f in sorted_findings:
             sev = f.severity.upper().ljust(8)
             cat = f.category.ljust(14)
+            pattern = f.pattern_id.ljust(24)
             loc = f"{f.file}:{f.line}".ljust(30)
-            lines.append(f"  {sev} {cat} {loc} \"{f.match[:60]}\"")
+            lines.append(f"  {sev} {cat} {pattern} {loc} \"{f.match[:60]}\"")
 
         lines.append("")
 
@@ -951,8 +953,11 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 description=f"binary/executable file ({ext}) should not be in a skill",
             ))
 
+        mode = f.stat().st_mode
+        script_exts = {'.sh', '.bash', '.py', '.rb', '.pl'}
+
         # Executable permission on non-script files
-        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
+        if ext not in script_exts and mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -961,6 +966,28 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 line=0,
                 match="executable bit set",
                 description="file has executable permission but is not a recognized script type",
+            ))
+
+        # Shipped scripts should be directly executable. Limit this to shebang
+        # files and conventional scripts/ helpers so ordinary library modules
+        # do not get flagged for having no executable bit.
+        is_script_helper = rel.startswith("scripts/") and ext in script_exts
+        has_shebang = False
+        if ext in script_exts:
+            try:
+                with f.open("rb") as fh:
+                    has_shebang = fh.read(2) == b"#!"
+            except OSError:
+                has_shebang = False
+        if (is_script_helper or has_shebang) and not mode & 0o111:
+            findings.append(Finding(
+                pattern_id="script_not_executable",
+                severity="medium",
+                category="structural",
+                file=rel,
+                line=0,
+                match="missing executable bit",
+                description="script file is not executable",
             ))
 
     # File count limit

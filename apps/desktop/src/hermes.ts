@@ -710,7 +710,14 @@ export function saveMemoryProviderConfig(provider: string, values: Record<string
 export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {
   return window.hermesDesktop.api<Record<string, EnvVarInfo>>({
     ...profileScoped(),
-    path: '/api/env'
+    path: '/api/env',
+    // The backend's ``_catalog_provider_env_metadata()`` caches the result, but
+    // the first call triggers provider-plugin discovery which can perform
+    // expensive synchronous I/O (e.g. the Bedrock provider importing boto3 and
+    // scanning AWS credential files), stalling the async event loop.  Give it
+    // the same generous ceiling as the startup burst (60s) so a cold or
+    // overloaded backend doesn't surface a spurious timeout (issue #69462).
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

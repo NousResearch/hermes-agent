@@ -7036,6 +7036,9 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+_catalog_provider_env_cache: dict | None = None
+
+
 def _catalog_provider_env_metadata() -> dict:
     """Map provider env vars → desktop card metadata, derived from the catalog.
 
@@ -7049,11 +7052,24 @@ def _catalog_provider_env_metadata() -> dict:
 
     Hand ``OPTIONAL_ENV_VARS`` prose is layered ON TOP of this in the endpoint;
     this only supplies membership + grouping + sensible fallbacks.
+
+    The result is cached after the first call because ``provider_catalog()``
+    triggers provider-plugin discovery which can perform expensive synchronous
+    I/O (e.g. the Bedrock provider importing boto3 and scanning AWS credential
+    files). Without caching, every ``GET /api/env`` request pays that cost,
+    which can stall the async event loop for tens of seconds and surface as
+    timeouts in the desktop API Keys page on macOS (issue #69462).
     """
+    global _catalog_provider_env_cache
+
+    if _catalog_provider_env_cache is not None:
+        return _catalog_provider_env_cache
+
     try:
         from hermes_cli.provider_catalog import provider_catalog
     except Exception:
-        return {}
+        _catalog_provider_env_cache = {}
+        return _catalog_provider_env_cache
 
     # Env vars already declared with a NON-provider category (e.g. the shared
     # GITHUB_TOKEN, which is a Skills-Hub "tool" credential) must not be
@@ -7140,6 +7156,7 @@ def _catalog_provider_env_metadata() -> dict:
                 "advanced": existing.get("advanced", True),
                 "category": "provider",
             }
+    _catalog_provider_env_cache = meta
     return meta
 
 

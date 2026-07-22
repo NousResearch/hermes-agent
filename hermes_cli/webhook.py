@@ -3,6 +3,8 @@
 Usage:
     hermes webhook subscribe <name> [options]
     hermes webhook list
+    hermes webhook disable <name>
+    hermes webhook enable <name>
     hermes webhook remove <name>
     hermes webhook test <name> [--payload '{"key": "value"}']
 
@@ -142,7 +144,7 @@ def webhook_command(args):
     sub = getattr(args, "webhook_action", None)
 
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|disable|enable|remove|test}")
         print("Run 'hermes webhook --help' for details.")
         return
 
@@ -153,14 +155,22 @@ def webhook_command(args):
         _cmd_subscribe(args)
     elif sub in {"list", "ls"}:
         _cmd_list(args)
+    elif sub == "disable":
+        _cmd_set_enabled(args, enabled=False)
+    elif sub == "enable":
+        _cmd_set_enabled(args, enabled=True)
     elif sub in {"remove", "rm"}:
         _cmd_remove(args)
     elif sub == "test":
         _cmd_test(args)
 
 
+def _normalize_subscription_name(name: str) -> str:
+    return name.strip().lower().replace(" ", "-")
+
+
 def _cmd_subscribe(args):
-    name = args.name.strip().lower().replace(" ", "-")
+    name = _normalize_subscription_name(args.name)
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
         return
@@ -171,6 +181,7 @@ def _cmd_subscribe(args):
     secret = args.secret or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    existing_route = subs.get(name, {})
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
@@ -178,6 +189,7 @@ def _cmd_subscribe(args):
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
+        "enabled": existing_route.get("enabled", True),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -205,6 +217,7 @@ def _cmd_subscribe(args):
 
     print(f"\n  {status} webhook subscription: {name}")
     print(f"  URL:    {base_url}/webhooks/{name}")
+    print(f"  Status: {'enabled' if route.get('enabled', True) else 'disabled'}")
     print(f"  Secret: {secret}")
     if events:
         print(f"  Events: {', '.join(events)}")
@@ -238,11 +251,13 @@ def _cmd_list(args):
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
+        enabled = route.get("enabled", True)
         desc = route.get("description", "")
-        print(f"  ◆ {name}")
+        print(f"  ◆ {name} ({'enabled' if enabled else 'disabled'})")
         if desc:
             print(f"    {desc}")
         print(f"    URL:     {base_url}/webhooks/{name}")
+        print(f"    Status:  {'enabled' if enabled else 'disabled'}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
         if route.get("script"):
@@ -250,8 +265,26 @@ def _cmd_list(args):
         print()
 
 
+def _cmd_set_enabled(args, *, enabled: bool):
+    name = _normalize_subscription_name(args.name)
+    subs = _load_subscriptions()
+
+    if name not in subs:
+        print(f"  No subscription named '{name}'.")
+        print("  Note: Static routes from config.yaml must be edited in config.yaml.")
+        return
+
+    updated_subs = {
+        **subs,
+        name: {**subs[name], "enabled": enabled},
+    }
+    _save_subscriptions(updated_subs)
+    status = "Enabled" if enabled else "Disabled"
+    print(f"  {status} webhook subscription: {name}")
+
+
 def _cmd_remove(args):
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
 
     if name not in subs:
@@ -266,7 +299,7 @@ def _cmd_remove(args):
 
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
 
     if name not in subs:

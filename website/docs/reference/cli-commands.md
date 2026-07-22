@@ -653,7 +653,7 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 ## `hermes webhook`
 
 ```bash
-hermes webhook <subscribe|list|remove|test>
+hermes webhook <subscribe|list|disable|enable|remove|test>
 ```
 
 Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
@@ -662,6 +662,8 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 |------------|-------------|
 | `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
 | `list` / `ls` | Show all agent-created subscriptions. |
+| `disable` | Pause a dynamic subscription without deleting it. |
+| `enable` | Resume a disabled dynamic subscription. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
 
@@ -683,7 +685,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 
-Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
+Subscriptions, including their enabled or disabled state, persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 
 ## `hermes doctor`
 

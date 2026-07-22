@@ -86,6 +86,20 @@ def test_single_handler_builders(name, builder, kw, argv):
     assert ns.func is handler
 
 
+@pytest.mark.parametrize("action", ["disable", "enable"])
+def test_webhook_builder_parses_subscription_toggle(action):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("webhook")
+    build_webhook_parser(sub, cmd_webhook=handler)
+
+    ns = parser.parse_args(["webhook", action, "nightly-build"])
+
+    assert ns.func is handler
+    assert ns.webhook_action == action
+    assert ns.name == "nightly-build"
+
+
 def test_config_get_unset_subcommands_parse():
     """`hermes config get/unset` parse key args (and --json for get)."""
     parser = argparse.ArgumentParser(prog="hermes")

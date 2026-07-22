@@ -537,10 +537,11 @@ class TestFreshnessHelpers:
 
 
 @pytest.mark.asyncio
-async def test_drain_timeout_marks_resume_pending():
+async def test_drain_timeout_marks_resume_pending(tmp_path, monkeypatch):
     """End-to-end: a drain timeout during gateway stop should flag every
     active session as resume_pending BEFORE the interrupt fires, so the
     next startup's suspend_recently_active() does not destroy them."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     runner._restart_drain_timeout = 0.05
@@ -569,11 +570,118 @@ async def test_drain_timeout_marks_resume_pending():
     assert marked == {session_key_one, session_key_two}
     for args in calls:
         assert args[0][1] == "shutdown_timeout"
+    assert not (tmp_path / ".clean_shutdown").exists(), (
+        "interrupted chats rely on exact markers, not a clean-shutdown claim"
+    )
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_keeps_crash_fallback_when_exact_mark_fails(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_drain_timeout = 0.05
+    runner._running_agents = {"agent:main:telegram:dm:A": MagicMock()}
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=False)
+    runner.session_store = session_store
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    assert not (tmp_path / ".clean_shutdown").exists()
+    assert session_store.mark_resume_pending.call_count >= 2, (
+        "the timeout boundary must re-verify a pre-drain marker"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_cannot_clear_shutdown_reserved_resume_marker():
+    """Close the completion-clear vs timeout-boundary marking race."""
+    runner, _adapter = make_restart_runner()
+    session_key = "agent:main:telegram:dm:A"
+    session_store = MagicMock()
+    session_store.clear_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+    runner._shutdown_resume_pending_keys = {session_key}
+
+    await runner._clear_resume_pending_after_success(session_key)
+    session_store.clear_resume_pending.assert_not_called()
+
+    runner._shutdown_resume_pending_keys.clear()
+    await runner._clear_resume_pending_after_success(session_key)
+    session_store.clear_resume_pending.assert_called_once_with(session_key)
 
 
 # ---------------------------------------------------------------------------
 # Gateway startup auto-resume
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clean_shutdown_suppresses_stale_exact_resume_marker():
+    """A failed centralized clear cannot replay a turn that drained cleanly."""
+    runner, adapter = make_restart_runner()
+    runner._previous_shutdown_clean = True
+    source = make_restart_source(chat_id="completed-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:completed-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="shutdown_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    assert runner._schedule_resume_pending_sessions() == 0
+    await asyncio.sleep(0)
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.resume_pending is True
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_defers_heuristic_crash_recovery():
+    """Heuristic crash recovery must wait for the next real user message.
+
+    ``suspend_recently_active()`` cannot distinguish an interrupted turn from
+    a recently idle chat. Synthesizing startup events for these entries caused
+    restart fan-out across unrelated topics; exact shutdown-time markers retain
+    auto-resume, while ``restart_interrupted`` remains pending for re-entry.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="crash-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:crash-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.resume_pending is True
 
 
 @pytest.mark.asyncio
@@ -634,7 +742,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
         platform=Platform.TELEGRAM,
         chat_type="dm",
         resume_pending=True,
-        resume_reason="restart_interrupted",
+        resume_reason="restart_timeout",
         last_resume_marked_at=datetime.now(),
     )
     discord_entry = SessionEntry(
@@ -646,7 +754,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
         platform=Platform.DISCORD,
         chat_type="dm",
         resume_pending=True,
-        resume_reason="restart_interrupted",
+        resume_reason="restart_timeout",
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {
@@ -685,7 +793,7 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
         platform=Platform.TELEGRAM,
         chat_type="dm",
         resume_pending=True,
-        resume_reason="restart_interrupted",
+        resume_reason="restart_timeout",
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
@@ -724,6 +832,45 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     await finish_task
 
     assert seen == ["resume-start", "inbound:hello"]
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_rechecks_queue_before_releasing_gate():
+    """An inbound event arriving at drain handoff must not be stranded."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    late_inbound = MessageEvent(
+        text="late",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    replayed: list[MessageEvent] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        replayed.append(event)
+
+    adapter.handle_message = fake_handle_message
+    real_drain = runner._drain_startup_restore_queue
+    injected = False
+
+    async def drain_with_handoff_arrival() -> int:
+        nonlocal injected
+        drained = await real_drain()
+        if not injected:
+            injected = True
+            assert await runner._handle_message(late_inbound) is None
+        return drained
+
+    runner._drain_startup_restore_queue = drain_with_handoff_arrival
+
+    await runner._finish_startup_restore()
+
+    assert replayed == [late_inbound]
     assert runner._startup_restore_queue == []
     assert runner._startup_restore_in_progress is False
 
@@ -845,7 +992,7 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
         platform=Platform.TELEGRAM,
         chat_type="dm",
         resume_pending=True,
-        resume_reason="restart_interrupted",
+        resume_reason="restart_timeout",
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
@@ -914,7 +1061,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
         platform=Platform.TELEGRAM,
         chat_type="dm",
         resume_pending=True,
-        resume_reason="restart_interrupted",
+        resume_reason="restart_timeout",
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {session_key: pending_entry}

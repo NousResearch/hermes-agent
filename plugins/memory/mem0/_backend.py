@@ -123,8 +123,6 @@ class OSSBackend(Mem0Backend):
             "embedder": oss_config["embedder"],
             "version": "v1.1",
         }
-        if "reranker" in oss_config:
-            config["reranker"] = oss_config["reranker"]
         # Forward `custom_instructions` (mem0 MemoryConfig schema, base.py
         # line 54-57) so self-hosted users can control fact-extraction
         # behavior. The cloud PlatformBackend path doesn't have this issue

@@ -253,9 +253,9 @@ class TestOSSBackendInitConfigForwarding:
                 return _FakeMemory()
 
         # `Memory` is imported lazily inside OSSBackend.__init__ as
-        # `from mem0 import Memory`. Patch it on the mem0 module so the
-        # lazy import resolves to our shim.
-        monkeypatch.setattr("mem0.Memory", _MemoryShim, raising=False)
+        # `from mem0 import Memory`. Patch it on the mem0 module (which
+        # is injected as a fake via conftest.py since mem0 is optional).
+        monkeypatch.setattr("mem0.Memory", _MemoryShim)
         return captured
 
     def test_init_forwards_custom_instructions_when_present(self, monkeypatch):
@@ -283,19 +283,3 @@ class TestOSSBackendInitConfigForwarding:
 
         assert "custom_instructions" not in captured["config"]
 
-    def test_init_forwards_reranker_when_present(self, monkeypatch):
-        """OSSBackend already handles `reranker` (forwarded if present);
-        this test guards that the same conditional pattern now extends to
-        custom_instructions without breaking the reranker branch."""
-        from plugins.memory.mem0._backend import OSSBackend
-
-        captured = self._patch_memory_from_config(monkeypatch)
-        cfg = self._make_oss_config(
-            custom_instructions="Focus on stable preferences.",
-            reranker={"provider": "cohere", "config": {"model": "rerank-english-v3.0"}},
-        )
-
-        OSSBackend(cfg)
-
-        assert captured["config"].get("custom_instructions") == "Focus on stable preferences."
-        assert "reranker" in captured["config"]

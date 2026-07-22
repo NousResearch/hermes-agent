@@ -375,7 +375,7 @@ def _is_protected_cron_path(p: Path) -> bool:
             # Only regular artifacts below cron/output/<job>/ are disposable.
             # Every other descendant is scheduler control-plane state.
             return not (
-                len(parts) >= 4
+                len(parts) >= 3
                 and parts[1] == "output"
                 and p.is_file()
                 and not p.is_symlink()

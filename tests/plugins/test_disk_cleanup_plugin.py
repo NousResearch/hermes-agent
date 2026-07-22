@@ -338,6 +338,23 @@ class TestStaleCronEntryMigration:
         assert summary["deleted"] == 1, "valid old cron-output should be deleted"
         assert not run_md.exists()
 
+    def test_direct_cron_output_audit_file_still_deleted(self, _isolate_env):
+        """Gateway audit output is written directly below cron/output/."""
+        dg = _load_lib()
+        output = _isolate_env / "cron" / "output" / "job_1_20260722.txt"
+        output.parent.mkdir(parents=True)
+        output.write_text("audit output")
+        from datetime import datetime, timezone, timedelta
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+
+        assert dg.track(str(output), "cron-output", silent=True)
+        tracked = dg.load_tracked()
+        tracked[0]["timestamp"] = old_ts
+        dg.save_tracked(tracked)
+
+        assert dg.quick()["deleted"] == 1
+        assert not output.exists()
+
 
 class TestTrackForgetQuick:
     def test_track_then_quick_deletes_test(self, _isolate_env):

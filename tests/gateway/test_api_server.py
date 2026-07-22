@@ -2542,6 +2542,63 @@ class TestResponsesStreaming:
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
 
     @pytest.mark.asyncio
+    async def test_stream_truncates_oversized_tool_output(self, adapter):
+        """Tool outputs exceeding _MAX_SSE_TOOL_OUTPUT_CHARS are truncated to
+        prevent SSE events that break clients with line-read limits (#45647)."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            big_output = "x" * 40000  # exceeds _MAX_SSE_TOOL_OUTPUT_CHARS (32768)
+
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb("call_big", "read_file", {"path": "/big.txt"})
+                if complete_cb:
+                    complete_cb("call_big", "read_file", {"path": "/big.txt"}, big_output)
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {
+                        "final_response": "Done.",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_big",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"/big.txt"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_big",
+                                "content": big_output,
+                            },
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read big", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                # Truncation marker present
+                assert "[truncated: tool output exceeded SSE safe limit]" in body
+                # Full output not present (40000 x's would make the body > 40KB)
+                assert "x" * 35000 not in body
+
+    @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

@@ -137,6 +137,15 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return default
 
 
+# Maximum chars of a tool result to embed in a single SSE event for the
+# Responses streaming endpoint.  aiohttp (used by OpenWebUI and other
+# Python clients) reads at most 131072 bytes per line; a 32K-char cap
+# leaves ample headroom for JSON framing, multi-byte UTF-8, and other
+# fields in the same event.  Tool outputs larger than this are truncated
+# with a visible marker so the client receives a well-formed event
+# instead of a connection reset.  See issue #45647.
+_MAX_SSE_TOOL_OUTPUT_CHARS = 32768
+
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
 
@@ -3484,6 +3493,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 # function_call_output added (result)
                 result_str = result if isinstance(result, str) else json.dumps(result)
+                # Truncate oversized tool outputs to prevent SSE events that
+                # exceed common client line-read limits (e.g. aiohttp's 128 KiB).
+                # See issue #45647.
+                if len(result_str) > _MAX_SSE_TOOL_OUTPUT_CHARS:
+                    result_str = (
+                        result_str[:_MAX_SSE_TOOL_OUTPUT_CHARS]
+                        + "\n...[truncated: tool output exceeded SSE safe limit]"
+                    )
                 output_parts = [{"type": "input_text", "text": result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",

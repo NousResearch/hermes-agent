@@ -50,13 +50,13 @@ def test_collect_masked_input_raises_keyboard_interrupt():
     assert "".join(output) == "API key: \r\n"
 
 
-def test_masked_secret_prompt_falls_back_to_getpass_for_non_tty(monkeypatch):
+def test_masked_secret_prompt_raises_on_non_tty(monkeypatch):
     class NonTty:
         def isatty(self):
             return False
 
     monkeypatch.setattr("sys.stdin", NonTty())
     monkeypatch.setattr("sys.stdout", NonTty())
-    monkeypatch.setattr("getpass.getpass", lambda prompt: f"value from {prompt}")
 
-    assert masked_secret_prompt("API key: ") == "value from API key: "
+    with pytest.raises(RuntimeError, match="Secret input requires an interactive terminal"):
+        masked_secret_prompt("API key: ")

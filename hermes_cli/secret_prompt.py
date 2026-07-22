@@ -63,7 +63,13 @@ def masked_secret_prompt(prompt: str, *, mask: str = "*") -> str:
     stdout = sys.stdout
 
     if not _stream_is_tty(stdin) or not _stream_is_tty(stdout):
-        return getpass.getpass(prompt)
+        # Cannot control echo — getpass.getpass() will fail silently on non-TTY.
+        # Raise an explicit error so the caller can provide actionable guidance.
+        raise RuntimeError(
+            "Secret input requires an interactive terminal. "
+            "Run this command in a native terminal (not a multiplexer, IDE, or piped input), "
+            "or configure platforms non-interactively via `hermes config set` and .env files."
+        )
 
     if os.name == "nt":
         try:

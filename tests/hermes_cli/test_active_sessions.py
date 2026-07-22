@@ -36,6 +36,32 @@ def test_resolve_max_concurrent_sessions_values(caplog):
     )
 
 
+def test_coerce_max_concurrent_sessions_valid_values():
+    coerce = active_sessions.coerce_max_concurrent_sessions
+    assert coerce(16) == 16
+    assert coerce("8") == 8
+    assert coerce("  20  ") == 20
+    assert coerce(4.0) == 4  # integer-valued float is accepted
+
+
+def test_coerce_max_concurrent_sessions_disabled_values():
+    coerce = active_sessions.coerce_max_concurrent_sessions
+    assert coerce(None) is None
+    assert coerce(0) is None
+    assert coerce(-5) is None
+
+
+def test_coerce_max_concurrent_sessions_rejects_bool_and_invalid(caplog):
+    coerce = active_sessions.coerce_max_concurrent_sessions
+    caplog.set_level(logging.WARNING)
+    # bool is an int subclass but is never a valid session cap
+    assert coerce(True) is None
+    assert coerce(False) is None
+    assert coerce("abc") is None
+    assert coerce(3.5) is None  # non-integer float is rejected
+    assert any("Ignoring invalid" in r.message for r in caplog.records)
+
+
 def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

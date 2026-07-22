@@ -1265,57 +1265,83 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+      const alreadyArchived = session?.archived === true
+      // When the session is already archived, the ⋮ action is "Unarchive" — flip
+      // the flag back to false instead of re-archiving it.
+      const nextArchived = !alreadyArchived
+
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
-      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
+      const archivedPinId = session ? sessionPinId(session) : storedSessionId
 
-      // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
-      // Archived sessions are hidden by the listSessions(min_messages=1) query
-      // on the next refresh, so they count as "removed" for the load-more
-      // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+      // Optimistically hide (archive) or surface (unarchive) in the sidebar.
+      if (nextArchived) {
+        setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+        tombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
+        // Archived sessions are hidden by the listSessions(min_messages=1) query
+        // on the next refresh, so they count as "removed" for the load-more
+        // footer math.
+        setSessionsTotal(prev => Math.max(0, prev - 1))
+        $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+      } else {
+        setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+        untombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
+      }
 
-      if (wasSelected) {
+      if (wasSelected && nextArchived) {
         startFreshSessionDraft(true)
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, archived?.profile)
-        // A sidebar refresh can race the optimistic removal while the PATCH is
-        // in flight and briefly reinsert the still-unarchived backend row. Win
-        // that race after the mutation succeeds so right-click → Archive does
-        // not appear to do nothing until the next full refresh.
-        setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
-        // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        await setSessionArchived(storedSessionId, nextArchived, session?.profile)
+        // A sidebar refresh can race the optimistic update while the PATCH is
+        // in flight and briefly reinsert the row with the old flag. Win that
+        // race after the mutation succeeds so right-click -> Archive/Unarchive
+        // does not appear to do nothing until the next full refresh.
 
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
+        if (nextArchived) {
+          setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+          $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
+          // An archived session is hidden from the sidebar; its tile must go too.
+          const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+          closeSessionTile(storedSessionId)
+
+          if (tiledRuntimeId) {
+            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
+            dropSessionState(tiledRuntimeId)
+          }
+        } else {
+          // Unarchived: drop it from the archived-only view so it disappears
+          // from the "Show archived" list (it reappears in recents on next pull).
+          setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
+          untombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
         }
 
-        notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
+        notify({ durationMs: 2_000, kind: 'success', message: nextArchived ? copy.archived : t.settings.sessions.restored })
       } catch (err) {
-        if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+        if (nextArchived) {
+          setSessions(prev => [session!, ...prev.filter(s => !sessionMatchesStoredId(s, storedSessionId))])
           setSessionsTotal(prev => prev + 1)
+        } else {
+          untombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
         }
 
-        untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
         $pinnedSessionIds.set(previousPinned)
-        notifyError(err, copy.archiveFailed)
+        notifyError(err, nextArchived ? copy.archiveFailed : t.settings.sessions.unarchiveFailed)
       }
     },
-    [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
+    [
+      copy,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft,
+      t
+    ]
   )
 
   return {

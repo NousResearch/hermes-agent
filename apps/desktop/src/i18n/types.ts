@@ -1368,6 +1368,7 @@ export interface Translations {
     groupAriaUngrouped: string
     showProjects: string
     showSessions: string
+    showArchived: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
     allPinned: string
@@ -1449,6 +1450,7 @@ export interface Translations {
       branchFrom: string
       rename: string
       archive: string
+      unarchive: string
       newWindow: string
       hideTabBar: string
       openInNewTab: string

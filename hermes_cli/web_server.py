@@ -4715,6 +4715,7 @@ def get_profiles_sessions_sidebar(
     recents_profile: str = "all",
     recents_limit: int = 20,
     recents_exclude: str = None,
+    recents_archived: str = "exclude",
     cron_limit: int = 50,
     messaging_limit: int = 100,
     messaging_exclude: str = None,
@@ -4754,6 +4755,15 @@ def get_profiles_sessions_sidebar(
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
     messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
 
+    # 'only'  -> include archived and restrict to archived rows
+    # 'include' -> include archived alongside live rows
+    # 'exclude' (default) -> live rows only
+    recents_archived_raw = (recents_archived or "exclude").strip().lower()
+    if recents_archived_raw not in ("exclude", "only", "include"):
+        raise HTTPException(status_code=400, detail=f"recents_archived must be one of exclude|only|include, got {recents_archived!r}")
+    recents_include_archived = recents_archived_raw in ("only", "include")
+    recents_archived_only = recents_archived_raw == "only"
+
     recents_cap = min(max(recents_limit, 1), 500)
     cron_cap = min(max(cron_limit, 1), 500)
     messaging_cap = min(max(messaging_limit, 1), 500)
@@ -4777,15 +4787,15 @@ def get_profiles_sessions_sidebar(
             s["archived"] = bool(s.get("archived"))
         return rows
 
-    def _slice(db, *, source=None, exclude=None, cap):
+    def _slice(db, *, source=None, exclude=None, cap, include_archived=False, archived_only=False):
         return db.list_sessions_rich(
             source=source,
             exclude_sources=exclude or None,
             limit=cap,
             offset=0,
             min_message_count=1,
-            include_archived=False,
-            archived_only=False,
+            include_archived=include_archived,
+            archived_only=archived_only,
             order_by_last_active=True,
             compact_rows=True,
         )
@@ -4802,13 +4812,22 @@ def get_profiles_sessions_sidebar(
         try:
             if recents_scope == "all" or name == recents_scope:
                 recents_rows.extend(
-                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
+                    _tag(
+                        _slice(
+                            db,
+                            exclude=recents_exclude_list,
+                            cap=recents_cap,
+                            include_archived=recents_include_archived,
+                            archived_only=recents_archived_only,
+                        ),
+                        name,
+                    )
                 )
                 rtotal = db.session_count(
                     exclude_sources=recents_exclude_list or None,
                     min_message_count=1,
-                    include_archived=False,
-                    archived_only=False,
+                    include_archived=recents_include_archived,
+                    archived_only=recents_archived_only,
                     exclude_children=True,
                 )
                 recents_total += rtotal

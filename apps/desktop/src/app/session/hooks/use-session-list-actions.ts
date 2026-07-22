@@ -67,12 +67,13 @@ function sessionsToKeep(scope?: string): Set<string> {
 
 interface UseSessionListActionsArgs {
   profileScope: string
+  showArchived?: boolean
 }
 
 /** Owns the sidebar's session-list fetching + paging: recents, cron runs/jobs,
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
-export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+export function useSessionListActions({ profileScope, showArchived = false }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
 
   // Messaging-platform sessions as their own slice, fetched separately from
@@ -168,10 +169,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // Batched: one request opens each profile DB once and returns all three
       // source-scoped slices, instead of three separate listAllProfileSessions
       // calls that each reopened + re-counted every profile DB per refresh.
+      // Pass archived='only' when the user flips "Show archived" so the recents
+      // slice returns archived sessions instead of hiding them.
       const result = await listSidebarSessions({
         recentsProfile: sessionProfile,
         recentsLimit: limit,
         recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+        archived: showArchived ? 'only' : 'exclude',
         cronLimit: CRON_SECTION_LIMIT,
         messagingLimit: MESSAGING_SECTION_LIMIT,
         messagingExclude: MESSAGING_EXCLUDED_SOURCES
@@ -220,7 +224,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
     void refreshCronJobs()
-  }, [profileScope, refreshCronJobs])
+  }, [profileScope, showArchived, refreshCronJobs])
 
   const loadMoreSessions = useCallback(async () => {
     bumpSessionsLimit()

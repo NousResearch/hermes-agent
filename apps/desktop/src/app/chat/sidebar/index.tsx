@@ -36,6 +36,7 @@ import {
   $dismissedAutoProjectIds,
   $panesFlipped,
   $pinnedSessionIds,
+  $showArchivedSessions,
   $sidebarAgentsGrouped,
   $sidebarCronOpen,
   $sidebarMessagingOpenIds,
@@ -285,6 +286,7 @@ export function ChatSidebar({
 
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
+  const showArchived = useStore($showArchivedSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
@@ -1375,6 +1377,25 @@ export function ChatSidebar({
                             </Button>
                           </Tip>
                         ) : null}
+                      </div>
+                      <div className="grid size-6 place-items-center">
+                        <Button
+                          aria-label={s.showArchived}
+                          aria-pressed={showArchived}
+                          className={cn(
+                            HEADER_NAV_BTN,
+                            showArchived && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                          )}
+                          onClick={event => {
+                            event.stopPropagation()
+                            $showArchivedSessions.set(!showArchived)
+                          }}
+                          size="icon-xs"
+                          title={s.showArchived}
+                          variant="ghost"
+                        >
+                          <Codicon name="archive" size="0.75rem" />
+                        </Button>
                       </div>
                     </div>
                   )

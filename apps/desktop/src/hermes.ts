@@ -421,6 +421,9 @@ export interface SidebarSessionsRequest {
   recentsProfile: 'all' | (string & {})
   recentsLimit: number
   recentsExclude: string[]
+  /** Pass 'only' to fetch archived recents (the sidebar's "Show archived" toggle);
+   *  omit/'exclude' to hide them. Cron + messaging slices are always live. */
+  archived?: 'exclude' | 'include' | 'only'
   cronLimit: number
   messagingLimit: number
   messagingExclude: string[]
@@ -467,8 +470,10 @@ function isEndpointMissingError(err: unknown): boolean {
 // cron + messaging cross-profile). Rides the same Electron remote-splice
 // interception as the pre-batching desktop, so remote profiles stay correct.
 async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
+  const archived = req.archived ?? 'exclude'
+
   const [recents, cron, messaging] = await Promise.all([
-    listAllProfileSessions(req.recentsLimit, 1, 'exclude', 'recent', req.recentsProfile, {
+    listAllProfileSessions(req.recentsLimit, 1, archived, 'recent', req.recentsProfile, {
       excludeSources: req.recentsExclude
     }),
     listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', 'all', { source: 'cron' }),
@@ -498,6 +503,12 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
     cron_limit: String(Math.max(1, req.cronLimit)),
     messaging_limit: String(Math.max(1, req.messagingLimit))
   })
+
+  const archived = req.archived ?? 'exclude'
+
+  if (archived !== 'exclude') {
+    params.set('recents_archived', archived)
+  }
 
   if (req.recentsExclude.length) {
     params.set('recents_exclude', req.recentsExclude.join(','))

@@ -135,6 +135,10 @@ export const $sidebarMessagingOpenIds = persistentAtom(
   Codecs.stringArray
 )
 export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+// When true, the sessions sidebar shows only archived sessions (and the
+// archive/unarchive actions are inverted). Persisted so the view survives
+// app restarts.
+export const $showArchivedSessions = persistentAtom('hermes.desktop.showArchivedSessions', false, Codecs.bool)
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)

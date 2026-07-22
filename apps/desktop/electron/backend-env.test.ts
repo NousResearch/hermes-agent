@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
@@ -7,6 +9,9 @@ import {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  buildProfileBackendParentEnv,
+  buildProfileScopedParentEnv,
+  dotenvKeyNames,
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES
@@ -103,4 +108,72 @@ test('Windows PATH casing and delimiter are preserved without POSIX sane entries
 
 test('appendUniquePathEntries drops empty entries and keeps first occurrence', () => {
   assert.equal(appendUniquePathEntries([':/a::/b', ['/a', '/c']], { delimiter: ':' }), '/a:/b:/c')
+})
+
+test('profile-scoped parent env removes credentials declared by any profile dotenv', () => {
+  const env = buildProfileScopedParentEnv({
+    currentEnv: {
+      HOME: '/Users/test',
+      PATH: '/usr/bin:/bin',
+      TLON_SHIP_URL: 'https://example.invalid',
+      TLON_SHIP_NAME: '~example',
+      TLON_SHIP_CODE: 'secret'
+    },
+    profileEnvContents: [
+      'TLON_SHIP_URL=https://example.invalid\nTLON_SHIP_NAME=~example',
+      '# another profile\nexport TLON_SHIP_CODE = secret\nINVALID LINE'
+    ],
+    platform: 'linux'
+  })
+
+  assert.deepEqual(env, {
+    HOME: '/Users/test',
+    PATH: '/usr/bin:/bin'
+  })
+  assert.deepEqual(dotenvKeyNames('  export API_KEY = value\n# TOKEN=x\nNAME='), ['API_KEY', 'NAME'])
+})
+
+test('profile-scoped parent env matches credential names case-insensitively on Windows', () => {
+  const env = buildProfileScopedParentEnv({
+    currentEnv: { Path: 'C:\\Windows', Telegram_Bot_Token: 'secret', TEMP: 'C:\\Temp' },
+    profileEnvContents: ['TELEGRAM_BOT_TOKEN=secret'],
+    platform: 'win32'
+  })
+
+  assert.deepEqual(env, { Path: 'C:\\Windows', TEMP: 'C:\\Temp' })
+})
+
+test('named profile backend removes inherited variables owned by Hermes dotenv scopes', () => {
+  const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-profile-env-'))
+
+  try {
+    fs.writeFileSync(path.join(hermesHome, '.env'), 'TLON_SHIP_CODE=root-secret\nOPENAI_API_KEY=root-key\n')
+    fs.mkdirSync(path.join(hermesHome, 'profiles', 'work'), { recursive: true })
+    fs.writeFileSync(path.join(hermesHome, 'profiles', 'work', '.env'), 'ANTHROPIC_API_KEY=work-key\n')
+
+    const env = buildProfileBackendParentEnv({
+      hermesHome,
+      profile: 'work',
+      currentEnv: {
+        HOME: '/Users/test',
+        TLON_SHIP_CODE: 'root-secret',
+        OPENAI_API_KEY: 'root-key',
+        ANTHROPIC_API_KEY: 'stale-work-key'
+      },
+      platform: 'linux'
+    })
+
+    assert.deepEqual(env, { HOME: '/Users/test' })
+  } finally {
+    fs.rmSync(hermesHome, { recursive: true, force: true })
+  }
+})
+
+test('unscoped backend environment preserves inherited variables', () => {
+  const currentEnv = { HOME: '/Users/test', OPENAI_API_KEY: 'shell-key' }
+
+  assert.deepEqual(
+    buildProfileBackendParentEnv({ hermesHome: '/Users/test/.hermes', profile: null, currentEnv }),
+    currentEnv
+  )
 })

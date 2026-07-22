@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildGroups, firstVisibleGroupIndex, type MessageGroup } from './list'
+import { buildGroups, firstVisibleGroupIndex, isVirtualizedGroup, LIVE_TAIL_GROUPS, type MessageGroup } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
@@ -78,5 +78,35 @@ describe('firstVisibleGroupIndex', () => {
 
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
+  })
+})
+
+describe('isVirtualizedGroup', () => {
+  it('never virtualizes the newest turns (the live tail)', () => {
+    const count = 20
+
+    for (let i = count - LIVE_TAIL_GROUPS; i < count; i++) {
+      expect(isVirtualizedGroup(i, count)).toBe(false)
+    }
+  })
+
+  it('virtualizes older turns that sit before the live tail', () => {
+    const count = 20
+
+    expect(isVirtualizedGroup(0, count)).toBe(true)
+    expect(isVirtualizedGroup(count - LIVE_TAIL_GROUPS - 1, count)).toBe(true)
+  })
+
+  it('keeps every turn rendered when the whole transcript fits in the tail', () => {
+    const count = LIVE_TAIL_GROUPS
+
+    for (let i = 0; i < count; i++) {
+      expect(isVirtualizedGroup(i, count)).toBe(false)
+    }
+  })
+
+  it('honors a custom tail size', () => {
+    expect(isVirtualizedGroup(5, 10, 3)).toBe(true)
+    expect(isVirtualizedGroup(7, 10, 3)).toBe(false)
   })
 })

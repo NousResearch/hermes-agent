@@ -104,17 +104,18 @@ function runningAssistantMessage(id: string, text: string): ThreadMessage {
   } as ThreadMessage
 }
 
-function Harness({ messages }: { messages: ThreadMessage[] }) {
+function Harness({ messages, isRunning = false }: { messages: ThreadMessage[]; isRunning?: boolean }) {
   // isRunning: false at the runtime level — per-message `status: {type:
   // 'running'}` is what drives StreamStallIndicator mounting/gating.
-  // Passing isRunning: true here would make useExternalStoreRuntime
-  // auto-append a synthetic empty trailing assistant placeholder whenever
-  // the last message isn't already a running assistant (e.g. the "trailing
-  // user prompt" / "trailing system row" cases below), which would then be
-  // the real last-assistant-role message and hide behind isPlaceholder.
+  // Passing isRunning: true makes useExternalStoreRuntime auto-append a
+  // synthetic empty trailing assistant placeholder whenever the last message
+  // isn't already a running assistant (e.g. the "trailing user prompt" /
+  // "trailing system row" cases below). That is the real production flow —
+  // exercised explicitly by the isRunning:true regression below to prove the
+  // gate skips that placeholder rather than latching onto it.
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages,
-    isRunning: false,
+    isRunning,
     onNew: async () => {}
   })
 
@@ -196,6 +197,33 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
           userMessage('user-1', 'Summarize this thread for me'),
           runningAssistantMessage('assistant-1', 'Working on it'),
           systemMessage('system-steer-1', 'steer:focus on the errors')
+        ]}
+      />
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+
+    const indicators = screen.getAllByRole('status', { name: 'Summarizing thread' })
+    expect(indicators.length).toBe(1)
+  })
+
+  // Production flow (isRunning: true): a trailing queued user prompt makes the
+  // runtime auto-append an empty optimistic assistant placeholder AFTER the
+  // real running bubble. The placeholder is the true last assistant-role
+  // message but renders null (isPlaceholder). The gate must skip it and keep
+  // the indicator on the real running bubble — without the skip this renders
+  // ZERO indicators. This is the case the isRunning:false tests above cannot
+  // reach.
+  it('still renders the indicator when the runtime appends an optimistic placeholder (isRunning:true)', () => {
+    render(
+      <Harness
+        isRunning
+        messages={[
+          userMessage('user-1', 'Summarize this thread for me'),
+          runningAssistantMessage('assistant-1', 'Working on it'),
+          userMessage('user-2', 'hola?')
         ]}
       />
     )

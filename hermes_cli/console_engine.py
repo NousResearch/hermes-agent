@@ -1554,6 +1554,7 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
     if len(args) != 1:
         raise ConsoleCommandError("Usage: cron resume <job>")
     from cron.jobs import AmbiguousJobReference, resume_job
+    from hermes_cli.cron import _warn_if_gateway_not_running
 
     try:
         job = resume_job(args[0])
@@ -1561,6 +1562,7 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
         raise ConsoleCommandError(str(exc)) from exc
     if not job:
         raise ConsoleCommandError(f"Job not found: {args[0]}")
+    _warn_if_gateway_not_running()
     return _format_job(job, "Resumed")
 
 

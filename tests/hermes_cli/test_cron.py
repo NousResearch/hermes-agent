@@ -211,6 +211,52 @@ class TestGatewayNotRunningWarning:
         out = capsys.readouterr().out
         assert "Gateway is not running" in out
 
+    def test_resume_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
+        job = create_job(prompt="Daily report", schedule="0 11 * * *")
+        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
+        capsys.readouterr()
+
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        cron_command(Namespace(cron_command="resume", job_id=job["id"]))
+
+        out = capsys.readouterr().out
+        assert "Resumed job" in out
+        assert "Gateway is not running" in out
+
+    def test_resume_silent_when_gateway_running(self, tmp_cron_dir, capsys, monkeypatch):
+        job = create_job(prompt="Daily report", schedule="0 11 * * *")
+        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
+        capsys.readouterr()
+
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4242])
+        cron_command(Namespace(cron_command="resume", job_id=job["id"]))
+
+        out = capsys.readouterr().out
+        assert "Resumed job" in out
+        assert "Gateway is not running" not in out
+
+    def test_interactive_cli_resume_warns_when_gateway_absent(self, capsys, monkeypatch):
+        """The interactive /cron front end must share the resume warning."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools.cronjob",
+            lambda **_kwargs: (
+                '{"success": true, "job": {"name": "Daily report", '
+                '"next_run_at": "2026-07-15T11:00:00Z"}}'
+            ),
+        )
+        monkeypatch.setattr(
+            cron_cli,
+            "_warn_if_gateway_not_running",
+            lambda: print("Gateway is not running"),
+        )
+
+        CLICommandsMixin()._handle_cron_command("/cron resume job-1")
+
+        out = capsys.readouterr().out
+        assert "Resumed job" in out
+        assert "Gateway is not running" in out
 
 class TestExternalCronProviderStatus:
     """With an external cron provider (e.g. Chronos), jobs fire via a

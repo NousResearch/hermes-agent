@@ -6040,33 +6040,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._enqueue_fifo(session_key, event, adapter)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        # --- Authorization gate (#17775) ---
-        # The cold path (_handle_message) checks _is_user_authorized before
-        # creating a session.  The busy path must enforce the same check;
-        # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
-        # can inject messages into an active session they don't own.
-        if not self._is_user_authorized(event.source):
-            logger.warning(
-                "Dropping message from unauthorized user in active session: "
-                "user=%s (%s), platform=%s, session=%s",
-                event.source.user_id,
-                event.source.user_name,
-                event.source.platform.value if event.source.platform else "unknown",
-                session_key,
-            )
-            return True  # handled (silently dropped); do not fall through
-
         # Plugin hooks normally run on the idle path inside _handle_message.
         # The busy path bypasses that, so handover / listen-only / ambient-buffer
         # plugins never get a chance to silence an inbound that arrives while
         # an agent is mid-run (the user types during a customer handover,
-        # owner sends an aside, etc.).  Consult pre_gateway_dispatch first and
-        # short-circuit on `skip`.  Other return shapes (rewrite/allow) are
-        # intentionally NOT honored on the busy path: rewriting an event
-        # we're about to interrupt with is racy, and the only consumer that
-        # emits skip today is gateway-policy (handover / listen-only).  The
-        # invocation signature mirrors the idle path in _handle_message so
-        # plugin contracts stay identical for the skip case.
+        # owner sends an aside, etc.).  Consult pre_gateway_dispatch BEFORE
+        # the authorization gate — same contract as the idle path — so plugins
+        # can skip unauthorized senders without falling into pairing/drop.
+        # Other return shapes (rewrite/allow) are intentionally NOT honored on
+        # the busy path: rewriting an event we're about to interrupt with is
+        # racy, and the only consumer that emits skip today is gateway-policy
+        # (handover / listen-only).  allow / no-action fall through to auth.
         is_internal = bool(getattr(event, "internal", False))
         if not is_internal:
             try:
@@ -6100,6 +6084,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         getattr(event.source, "chat_id", None) or "unknown",
                     )
                     return True
+
+        # --- Authorization gate (#17775) ---
+        # The cold path (_handle_message) checks _is_user_authorized before
+        # creating a session.  The busy path must enforce the same check;
+        # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
+        # can inject messages into an active session they don't own.
+        # Runs after pre_gateway_dispatch so a plugin `skip` can still handle
+        # unauthorized senders (e.g. customer handover ingest) without auth drop.
+        if not self._is_user_authorized(event.source):
+            logger.warning(
+                "Dropping message from unauthorized user in active session: "
+                "user=%s (%s), platform=%s, session=%s",
+                event.source.user_id,
+                event.source.user_name,
+                event.source.platform.value if event.source.platform else "unknown",
+                session_key,
+            )
+            return True  # handled (silently dropped); do not fall through
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:

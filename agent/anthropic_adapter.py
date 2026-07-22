@@ -654,6 +654,7 @@ def _build_anthropic_client_with_bearer_hook(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    header_timeout: float = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -684,7 +685,11 @@ def _build_anthropic_client_with_bearer_hook(
     from agent.azure_identity_adapter import build_bearer_http_client
 
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
-    timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
+    _header = float(header_timeout) if (isinstance(header_timeout, (int, float)) and header_timeout > 0) else None
+    if _header is not None:
+        timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0, read=_header)
+    else:
+        timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
 
     # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
     normalized_base_url = _normalize_base_url_text(base_url)
@@ -730,6 +735,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    header_timeout: float = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -771,6 +777,7 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            header_timeout=header_timeout,
         )
 
     normalize_proxy_env_vars()
@@ -782,8 +789,13 @@ def build_anthropic_client(
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    _header = float(header_timeout) if (isinstance(header_timeout, (int, float)) and header_timeout > 0) else None
+    if _header is not None:
+        _timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0, read=_header)
+    else:
+        _timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
     kwargs = {
-        "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
+        "timeout": _timeout_obj,
         # Delegate all rate-limit / 5xx retry to hermes's outer conversation
         # loop, which honors Retry-After. The SDK default (max_retries=2) uses
         # its own 1-2s backoff that ignores Retry-After and double-retries

@@ -5035,7 +5035,7 @@ def _normalize_custom_provider_entry(
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
-        "request_timeout_seconds", "stale_timeout_seconds",
+        "request_timeout_seconds", "stale_timeout_seconds", "header_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
     }

@@ -536,16 +536,21 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
   it('gives tool + thinking their own keys, defaulting to accent + muted', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 
-    // Independent override: recolor tool markers without touching accent.
-    const themed = fromSkin({ ui_accent: '#111111', ui_tool: '#ff0000', ui_thinking: '#00ff00' }, {})
+    // Independent override: recoloring tool/thinking doesn't leak into accent.
+    // (Values flow through #20379's contrast adaptation, so assert the
+    //  independence contract, not raw pre-adaptation hexes.)
+    const themed = fromSkin({ ui_accent: '#3aa0ff', ui_tool: '#ff0000', ui_thinking: '#00ff00' }, {})
+    const baseline = fromSkin({ ui_accent: '#3aa0ff' }, {})
     expect(themed.color.tool).toBe('#ff0000')
     expect(themed.color.thinking).toBe('#00ff00')
-    expect(themed.color.accent).toBe('#111111')
+    expect(themed.color.tool).not.toBe(themed.color.accent)
+    expect(themed.color.accent).toBe(baseline.color.accent) // override didn't touch accent
 
-    // Default: tool follows accent, thinking follows muted.
-    const fallback = fromSkin({ ui_accent: '#abcdef', banner_dim: '#123456' }, {})
-    expect(fallback.color.tool).toBe('#abcdef')
-    expect(fallback.color.thinking).toBe('#123456')
+    // Default: tool follows accent, thinking follows muted — same source →
+    // identical after adaptation.
+    const fallback = fromSkin({ ui_accent: '#3aa0ff', banner_dim: '#8a8a8a' }, {})
+    expect(fallback.color.tool).toBe(fallback.color.accent)
+    expect(fallback.color.thinking).toBe(fallback.color.muted)
   })
 
   it('gives code syntax its own keys, defaulting to accent/text/border/muted', async () => {
@@ -602,8 +607,13 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { color } = fromSkin({ background: '#0a0a0a', banner_text: '#fafafa', ui_error: '#dd2222' }, {})
 
+    // background paints the surface → status/completion bg; banner_text → status
+    // fg; ui_error → critical. Semantic hues flow through contrast adaptation,
+    // so `statusCritical` is asserted to track `ui_error` identically rather
+    // than pinning an adapted hex.
     expect(color.statusBg).toBe('#0a0a0a')
+    expect(color.completionBg).toBe('#0a0a0a')
     expect(color.statusFg).toBe('#fafafa')
-    expect(color.statusCritical).toBe('#dd2222')
+    expect(color.statusCritical).toBe(fromSkin({ ui_error: '#dd2222' }, {}).color.error)
   })
 })

@@ -2080,6 +2080,13 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
         shutil.move(str(final_source), str(profile_dir))
 
+    # Register the gateway service for the imported profile so that
+    # `hermes -p <name> gateway start` works immediately (#69163).
+    try:
+        _maybe_register_gateway_service(canon)
+    except Exception:
+        pass  # Best-effort: user can re-register manually later
+
     return profile_dir
 
 

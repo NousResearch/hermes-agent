@@ -323,6 +323,40 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_azure_foundry_apim_base_url_adds_api_key_header(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="azure-static-key",
+        base_url="https://apim-n1ai-usw2-89fbd882c.azure-api.net/openai/v1",
+        model="gpt-5.4",
+        provider="azure-foundry",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["api-key"] == "azure-static-key"
+
+
+@patch("run_agent.OpenAI")
+def test_custom_azure_apim_base_url_adds_api_key_header(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="azure-static-key",
+        base_url="https://apim-n1ai-usw2-89fbd882c.azure-api.net/openai/v1",
+        model="gpt-5.4",
+        provider="custom",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["api-key"] == "azure-static-key"
+
+
+@patch("run_agent.OpenAI")
 def test_copilot_enterprise_base_url_applies_copilot_default_headers(mock_openai):
     """Enterprise Copilot endpoints (api.<tenant>.githubcopilot.com) must apply
     the same default_headers — including Copilot-Integration-Id: vscode-chat —

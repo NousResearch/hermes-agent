@@ -1380,11 +1380,14 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     #    input tokens, for a total of at least 131073 tokens. Please reduce
     #    the length of the input prompt or the number of requested output
     #    tokens."
-    # Available output = window - input. When the input alone is at or over
-    # the window this stays None, so the caller correctly falls through to
-    # compression instead of futilely shrinking the output cap.
+    # IMPORTANT: ``at least N`` is vLLM's tokenizer cutoff, not an exact
+    # prompt size. It stops counting once N + requested_output exceeds the
+    # window. On a retry, lowering max_tokens merely makes N rise by the same
+    # amount, so treating the lower bound as exact loops forever at
+    # context_window + 1. Only exact input counts can yield an output budget;
+    # lower-bound counts must fall through to input compression.
     _m_vllm_input = re.search(
-        r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
+        r'prompt contains (?!at least )(\d+)\s*input tokens', error_lower
     )
     if _m_ctx_tok and _m_vllm_input:
         _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))

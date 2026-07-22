@@ -88,6 +88,11 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+
+    # Tool support — set False for providers that don't support function calling
+    # (e.g. local vLLM without --tool-call-parser to avoid qwen3_xml deadlock).
+    # When False, the transport will not send tools or tool_choice.
+    supports_tools: bool = True
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )

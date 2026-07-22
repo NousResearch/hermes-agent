@@ -141,9 +141,12 @@ class TestParseVllmTokenBasedOutputCap:
         "output tokens."
     )
 
-    def test_vllm_token_based_format(self):
-        # available output = 131072 - 65537 = 65535
-        assert parse_available_output_tokens_from_error(self._VLLM_MSG) == 65535
+    def test_vllm_token_based_lower_bound_routes_to_compression(self):
+        # ``at least`` is an early tokenizer cutoff, not the real prompt size.
+        # Lowering max_tokens makes the lower bound rise by the same amount and
+        # still totals context+1, so it cannot provide a safe output budget.
+        assert parse_available_output_tokens_from_error(self._VLLM_MSG) is None
+        assert is_output_cap_error(self._VLLM_MSG) is False
 
     def test_vllm_without_at_least_qualifier(self):
         # Some versions omit the "at least" hedge.
@@ -152,9 +155,12 @@ class TestParseVllmTokenBasedOutputCap:
                "100000 input tokens, for a total of 104096 tokens.")
         assert parse_available_output_tokens_from_error(msg) == 31072
 
-    def test_vllm_retry_fits_inside_window(self):
-        # The retried cap plus the reported input must fit in the window.
-        available = parse_available_output_tokens_from_error(self._VLLM_MSG)
+    def test_vllm_exact_count_retry_fits_inside_window(self):
+        # Exact-count variants still provide a usable retry budget.
+        msg = ("This model's maximum context length is 131072 tokens. However, "
+               "you requested 65536 output tokens and your prompt contains "
+               "65537 input tokens, for a total of 131073 tokens.")
+        available = parse_available_output_tokens_from_error(msg)
         assert available is not None
         assert available + 65537 <= 131072
 

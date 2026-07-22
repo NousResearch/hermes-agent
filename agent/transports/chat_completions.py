@@ -555,7 +555,7 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["timeout"] = timeout
 
         # Tools — apply Moonshot/Kimi schema sanitization regardless of path
-        if tools:
+        if tools and profile.supports_tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools

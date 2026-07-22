@@ -2,7 +2,9 @@
 
 Hermes plugin inspired by [soichi11208/LM-twitterer](https://github.com/soichi11208/LM-twitterer).
 
-The original app is a Gradio bot around local GGUF or OpenAI-compatible endpoints. This plugin keeps **text generation inside Hermes** (`ctx.llm`) and uses **X session cookies** (`auth_token`, `ct0`) only for posting and replying. X Premium / Grok is not the generation backend unless you explicitly point Hermes at a Grok/xAI provider.
+The original app is a Gradio bot around local GGUF or OpenAI-compatible endpoints. This plugin keeps **text generation inside Hermes** (`ctx.llm`) and uses an ordinary signed-in **X session cookie** (`auth_token`, `ct0`) for posting and replying. Posting does not require X Premium, SuperGrok, `XAI_API_KEY`, or `x_search`. X Premium / Grok is used only if you explicitly point Hermes generation at a Grok/xAI provider.
+
+`x_search` is an optional search-only source for public X posts. The plugin never calls `x_search` internally, never uses it to authenticate, and never treats its success or failure as posting readiness.
 
 Outgoing posts are signed as **`はくあ #hermesagent`** by default so the account stays transparent about the Hermes/Hakua-assisted voice.
 
@@ -18,7 +20,15 @@ hermes lm-twitterer post "today's AI tooling note"
 hermes lm-twitterer post "today's AI tooling note" --live
 ```
 
-`status` prints JSON readiness, including `effective_generation_provider` and `generation_uses_grok_backend`.
+`status` prints JSON readiness, including `effective_generation_provider`, `generation_uses_grok_backend`, `posting_transport`, `posting_requires_x_premium`, and `x_search_required_for_posting`.
+
+## Role separation
+
+| Component | Role | Required for posting? |
+| --- | --- | --- |
+| `lm-twitterer` | Drafts with Hermes and publishes through the logged-in X cookie session. | Yes |
+| `x_search` | Searches public X posts for optional research context. It never authenticates or publishes. | No |
+| `twitter-api-safe-relay` | Performs GET-only public reads when a current X request template is needed. | No |
 
 ## Authentication
 
@@ -93,6 +103,13 @@ hermes lm-twitterer post --text "Reviewed release note" --media output\daily_pos
 - **Explicit text:** `--text` skips generation and uses the reviewed text as the post body.
 - **Media:** repeat `--media <path>` to attach local images, GIFs, or videos through cookie-backed X media upload.
 - **Gateway:** `/lm-twitterer post [topic...] [--live]`
+
+Use `x_search` only outside this plugin when the user asks for current public-X
+research. Summarize any useful public findings into the post topic yourself, or
+prepare the final reviewed post text and pass it through `--text`. If `x_search`
+is unavailable, returns 403, runs out of quota, or has no useful results,
+posting still works from a topic or exact reviewed `--text` as long as the X
+cookie auth check passes.
 
 ### Topic safety (`validate_public_topic`)
 

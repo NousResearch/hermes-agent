@@ -414,7 +414,7 @@ class TestUpdateJob:
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
 
-    def test_update_rejects_id_change(self, tmp_cron_dir):
+    def test_id_field_cannot_be_updated(self, tmp_cron_dir):
         """Job IDs are filesystem path components — must be immutable."""
         job = create_job(prompt="Original", schedule="every 1h")
 
@@ -424,6 +424,47 @@ class TestUpdateJob:
         # Original job still resolvable, no rename happened.
         assert get_job(job["id"]) is not None
         assert get_job("../escape") is None
+
+    def test_update_job_rejects_unknown_field_typo(self, tmp_cron_dir):
+        """Regression for #67625: a typo like ``promt`` instead of ``prompt``
+        must raise ValueError so the API returns a 4xx instead of silently
+        dropping the update and cluttering jobs.json."""
+        job = create_job(prompt="Original", schedule="every 1h")
+
+        with pytest.raises(ValueError, match=r"unknown field"):
+            update_job(job["id"], {"promt": "typo value"})
+
+        # Real field unchanged, garbage key not persisted.
+        db = load_jobs()
+        assert db[0]["prompt"] == "Original"
+        assert "promt" not in db[0]
+
+    def test_update_job_rejects_multiple_unknown_keys(self, tmp_cron_dir):
+        """The error message lists every unknown key in a single response."""
+        job = create_job(prompt="x", schedule="every 1h")
+
+        with pytest.raises(ValueError) as excinfo:
+            update_job(
+                job["id"],
+                {"promt": "a", "modle": "b", "description": "ok"},
+            )
+        msg = str(excinfo.value)
+        assert "promt" in msg
+        assert "modle" in msg
+        # ``description`` is whitelisted so it must not be listed.
+        assert "description" not in msg
+
+    def test_update_job_accepts_explicit_metadata(self, tmp_cron_dir):
+        """The ``metadata`` escape valve lets integration code stash
+        arbitrary bookkeeping in a sanctioned slot without polluting the
+        top-level schema."""
+        job = create_job(prompt="x", schedule="every 1h")
+        update_job(
+            job["id"],
+            {"metadata": {"ticket": "ABC-123", "team": "ops"}},
+        )
+        refreshed = get_job(job["id"])
+        assert refreshed["metadata"] == {"ticket": "ABC-123", "team": "ops"}
 
 
 class TestPauseResumeJob:

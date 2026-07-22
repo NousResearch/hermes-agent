@@ -97,6 +97,37 @@ class TestParseResponse:
         )
         assert r is None
 
+    # ── #67890: response-shaping transforms return a bare string ─────────
+    def test_transform_llm_output_json_string_returns_bare_str(self):
+        """Reproducer idiom: stdout is a JSON string literal. Must come
+        back as a plain string so the turn-finalizer replacement
+        (``isinstance(result, str)``) actually fires."""
+        r = shell_hooks._parse_response(
+            "transform_llm_output", '"replaced text"\n',
+        )
+        assert r == "replaced text"
+        assert isinstance(r, str)
+
+    def test_transform_tool_result_dict_with_text_field(self):
+        """A dict with a single ``text`` field is a documented alternative
+        for scripts that want to ship metadata alongside the body."""
+        r = shell_hooks._parse_response(
+            "transform_tool_result", '{"text": "rewritten tool output"}',
+        )
+        assert r == "rewritten tool output"
+
+    def test_transform_terminal_output_dict_with_content_field(self):
+        r = shell_hooks._parse_response(
+            "transform_terminal_output", '{"content": "ok done"}',
+        )
+        assert r == "ok done"
+
+    def test_transform_event_no_body_returns_none(self):
+        """Empty JSON object isn't a replacement — let the turn finish
+        with the original text."""
+        assert shell_hooks._parse_response("transform_llm_output", "{}") is None
+        assert shell_hooks._parse_response("transform_llm_output", "") is None
+
     def test_pre_verify_continue_canonical(self):
         r = shell_hooks._parse_response(
             "pre_verify", '{"action": "continue", "message": "run checks"}',

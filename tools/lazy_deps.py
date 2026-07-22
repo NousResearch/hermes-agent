@@ -661,11 +661,16 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
+        # --python is required: without it, uv may fall back to its own
+        # managed Python instead of the active venv on Windows, causing
+        # packages to install to the wrong location.  sys.executable is
+        # always the running interpreter, so it points at the correct venv
+        # regardless of PATH, VIRTUAL_ENV, or overlay mounts.
         uv_bin = shutil.which("uv")
         if uv_bin:
             try:
                 r = subprocess.run(
-                    [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
+                    [uv_bin, "pip", "install", *target_args, *constraint_args, "--python", sys.executable, *specs],
                     capture_output=True, text=True, timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                 )

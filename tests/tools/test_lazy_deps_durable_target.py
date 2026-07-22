@@ -233,6 +233,26 @@ class TestInstallArgConstruction:
         assert "--target" not in captured["cmd"]
         assert "--constraint" not in captured["cmd"]
 
+    def test_uv_pip_install_passes_python_flag(self, monkeypatch):
+        """uv pip install must include --python sys.executable so uv targets
+        the active venv instead of falling back to its managed Python."""
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        # Make uv discoverable.
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "/fake/uv" if name == "uv" else None)
+        captured = {}
+
+        def fake_run(cmd, *a, **k):
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        result = ld._venv_pip_install(("somepkg==1.0",))
+        assert result.success
+        cmd = captured["cmd"]
+        assert "--python" in cmd, f"--python flag missing from uv command: {cmd}"
+        python_idx = cmd.index("--python")
+        assert cmd[python_idx + 1] == sys.executable
+
 
 @pytest.mark.skipif(
     os.environ.get("HERMES_RUN_NETWORK_TESTS") != "1",

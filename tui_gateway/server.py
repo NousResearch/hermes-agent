@@ -599,21 +599,21 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     force-quit (double Ctrl‑C, terminal‑close, SIGHUP) while the agent
     is mid‑turn.
     """
-    if not session or session.get("_finalized"):
+    if not session:
         return
-    session["_finalized"] = True
+    lock = session.get("history_lock")
+    guard = lock if lock is not None else contextlib.nullcontext()
+    with guard:
+        if session.get("_finalized"):
+            return
+        session["_finalized"] = True
+        history = list(session.get("history", []))
     _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
 
     agent = session.get("agent")
-    lock = session.get("history_lock")
-    if lock is not None:
-        with lock:
-            history = list(session.get("history", []))
-    else:
-        history = list(session.get("history", []))
 
     # ── Persist unflushed messages to SQLite ──────────────────────────
     # Flush ``agent._session_messages`` via ``_persist_session``'s marker-based
@@ -5774,22 +5774,25 @@ def _handle_busy_submit(
     mode = _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
+        if session.get("_finalized"):
+            return _err(rid, 4001, "session not found")
         if not session.get("running"):
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
-        try:
-            if agent.steer(text):
-                with session["history_lock"]:
+        if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+            try:
+                if agent.steer(text):
                     session["last_active"] = time.time()
-                return _ok(rid, {"status": "steered"})
-        except Exception:
-            pass  # fall through to queue
+                    return _ok(rid, {"status": "steered"})
+            except Exception:
+                pass  # fall through to queue
     # Queue before asking the live turn to stop. In particular, never call a
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
     with session["history_lock"]:
+        if session.get("_finalized"):
+            return _err(rid, 4001, "session not found")
         if not session.get("running"):
             return None
         _enqueue_prompt(session, text, transport)
@@ -5808,6 +5811,8 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
     with session["history_lock"]:
+        if session.get("_finalized"):
+            return False
         queued = session.get("queued_prompt")
         if not queued or session.get("running"):
             return False
@@ -5817,6 +5822,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["transport"] = queued["transport"]
     try:
         if _session_uses_compute_host(session):
+            with session["history_lock"]:
+                if session.get("_finalized"):
+                    raise RuntimeError("TUI session finalized before prompt acceptance")
+                _start_inflight_turn(session, queued["text"])
             resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
@@ -5834,6 +5843,17 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         )
         with session["history_lock"]:
             session["running"] = False
+            if session.get("_finalized"):
+                pending = session.get("queued_prompt")
+                session["queued_prompt"] = queued
+                if pending is not None:
+                    # Merge normally, then keep Q1's pinned transport and metadata.
+                    _enqueue_prompt(
+                        session, pending.get("text"), pending.get("transport")
+                    )
+                    queued["text"] = session["queued_prompt"]["text"]
+                    session["queued_prompt"] = queued
+                return False
     return True
 
 
@@ -9618,6 +9638,8 @@ def _(rid, params: dict) -> dict:
     while True:
         busy_transport = None
         with session["history_lock"]:
+            if session.get("_finalized"):
+                return _err(rid, 4001, "session not found")
             if session.get("running"):
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
@@ -9634,6 +9656,8 @@ def _(rid, params: dict) -> dict:
         # queue whose drain already ran.
 
     with session["history_lock"]:
+        if session.get("_finalized"):
+            return _err(rid, 4001, "session not found")
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -9884,6 +9908,128 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
+    """Inject one claimed terminal Kanban notification for this TUI session."""
+    if not session.get("session_key"):
+        return False
+
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception:
+        return False
+
+    # ponytail: scans all boards at most twice per second; add a subscription index if board count grows.
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        boards = [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+
+    seen_db_paths = set()
+    for board_meta in boards:
+        board = board_meta.get("slug") or kb.DEFAULT_BOARD
+        try:
+            db_path = str(kb.kanban_db_path(board).resolve())
+        except Exception:
+            db_path = f"board:{board}"
+        if db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(db_path)
+
+        try:
+            conn = kb.connect(board=board)
+        except Exception as exc:
+            logger.debug("TUI Kanban poll cannot open board %s: %s", board, exc)
+            continue
+        try:
+            subs = kb.list_notify_subs(conn)
+            for sub in subs:
+                if (
+                    (sub.get("platform") or "").lower() != "tui"
+                ):
+                    continue
+                sub_event = {"session_key": str(sub.get("chat_id") or "")}
+                if _notification_event_belongs_elsewhere(sid, session, sub_event):
+                    continue
+                if not _session_owns_notification_event(sid, session, sub_event):
+                    continue
+
+                reserved = False
+                reservation_lost = False
+                events = []
+                prompt_start = None
+                prompt_thread = None
+                try:
+                    # ponytail: board-wide writer lock spans only prompt acceptance;
+                    # use durable in-flight ranges if dispatch latency becomes material.
+                    with kb.write_txn(conn):
+                        _, _, events = kb.claim_unseen_events_for_sub(
+                            conn,
+                            task_id=sub["task_id"],
+                            platform=sub["platform"],
+                            chat_id=sub["chat_id"],
+                            thread_id=sub.get("thread_id") or "",
+                            kinds=("completed", "blocked", "gave_up", "crashed", "timed_out"),
+                        )
+                        if not events:
+                            continue
+                        with session["history_lock"]:
+                            if session.get("running") or session.get("_finalized"):
+                                reservation_lost = True
+                                raise RuntimeError("TUI Kanban session reservation lost")
+                            session["running"] = True
+                            reserved = True
+
+                        lines = []
+                        for event in events:
+                            if event.kind == "blocked" and event.payload and event.payload.get("reason"):
+                                lines.append(
+                                    f"⏸ Kanban {event.task_id} blocked: {event.payload['reason']}"
+                                )
+                            else:
+                                lines.append(
+                                    f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
+                                )
+                        prompt_start = queue.SimpleQueue()
+                        prompt_thread = _run_prompt_submit(
+                            f"__kanban__{int(time.time() * 1000)}",
+                            sid,
+                            session,
+                            "\n\n".join(lines),
+                            start_handoff=prompt_start,
+                        )
+                except Exception as exc:
+                    if prompt_start is not None:
+                        prompt_start.put(False)
+                    if prompt_thread is not None:
+                        prompt_thread.join()
+                    if reservation_lost:
+                        return False
+                    logger.warning("TUI Kanban notification dispatch failed: %s", exc)
+                    if reserved and prompt_thread is None:
+                        with session["history_lock"]:
+                            session["running"] = False
+                    return False
+                if prompt_start is not None:
+                    prompt_start.put(True)
+                if any(event.kind == "completed" for event in events):
+                    try:
+                        kb.remove_notify_sub(
+                            conn,
+                            task_id=sub["task_id"],
+                            platform=sub["platform"],
+                            chat_id=sub["chat_id"],
+                            thread_id=sub.get("thread_id") or "",
+                        )
+                    except Exception as exc:
+                        logger.warning("TUI Kanban completed subscription cleanup failed: %s", exc)
+                return True
+        except Exception as exc:
+            logger.debug("TUI Kanban poll failed for board %s: %s", board, exc)
+        finally:
+            conn.close()
+    return False
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9900,7 +10046,13 @@ def _notification_poller_loop(
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    next_kanban_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
+        now = time.monotonic()
+        if now >= next_kanban_poll:
+            next_kanban_poll = now + 0.5
+            if _poll_tui_kanban_subscriptions(sid, session):
+                continue
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
@@ -9946,23 +10098,22 @@ def _notification_poller_loop(
         if not text:
             continue
 
-        # Only emit the same notification identity to TUI once — re-queued
-        # completions get re-emitted every 0.5s otherwise when session is busy,
-        # while distinct watch_match events from the same process must remain
-        # visible independently.
+        # Emit only after the finalized check below has accepted this event.
         _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
         _requeued = False
         with session["history_lock"]:
+            if session.get("_finalized"):
+                process_registry.completion_queue.put(evt)
+                break
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
                 _requeued = True
             else:
                 session["running"] = True
         if _requeued:
+            if _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                _emitted.add(_dedup_key)
             # Back off before re-polling: the re-queued event keeps the queue
             # non-empty, so without a sleep this loop spins at full speed
             # (100% CPU, GIL churn) for as long as the session stays busy.
@@ -9977,8 +10128,10 @@ def _notification_poller_loop(
         if _claim is None:
             continue
         try:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            if _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                _emitted.add(_dedup_key)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9989,6 +10142,8 @@ def _notification_poller_loop(
             )
             with session["history_lock"]:
                 session["running"] = False
+                if session.get("_finalized"):
+                    process_registry.completion_queue.put(evt)
 
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
@@ -10000,6 +10155,10 @@ def _notification_poller_loop(
             evt = process_registry.completion_queue.get_nowait()
         except Exception:
             break
+        with session["history_lock"]:
+            if session.get("_finalized"):
+                deferred.append(evt)
+                continue
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
@@ -10027,15 +10186,21 @@ def _notification_poller_loop(
             continue
 
         _dedup_key = _notification_event_dedup_key(evt)
-        if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
-            _emitted.add(_dedup_key)
-
+        _requeued = False
         with session["history_lock"]:
+            if session.get("_finalized"):
+                deferred.append(evt)
+                continue
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
-                break
-            session["running"] = True
+                _requeued = True
+            else:
+                session["running"] = True
+        if _requeued:
+            if _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                _emitted.add(_dedup_key)
+            break
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
@@ -10045,8 +10210,10 @@ def _notification_poller_loop(
         if _claim is None:
             continue
         try:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            if _dedup_key not in _emitted:
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                _emitted.add(_dedup_key)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10057,6 +10224,8 @@ def _notification_poller_loop(
             )
             with session["history_lock"]:
                 session["running"] = False
+                if session.get("_finalized"):
+                    deferred.append(evt)
 
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
@@ -10121,8 +10290,20 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    start_handoff: queue.SimpleQueue | None = None,
+) -> threading.Thread:
     with session["history_lock"]:
+        accepted_turn = session.get("running") and isinstance(
+            session.get("inflight_turn"), dict
+        )
+        if session.get("_finalized") and not accepted_turn:
+            raise RuntimeError("TUI session finalized before prompt acceptance")
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
@@ -10135,15 +10316,25 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             agent.clear_interrupt()
         except Exception:
             pass
-    _emit("message.start", sid)
+    if start_handoff is None:
+        _emit("message.start", sid)
 
     def run():
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
-        one_turn_restore = session.pop("one_turn_model_restore", None)
+        one_turn_restore = None
         try:
+            if start_handoff is not None:
+                if not start_handoff.get():
+                    with session["history_lock"]:
+                        session["attached_images"] = images + list(
+                            session.get("attached_images", [])
+                        )
+                    return
+                _emit("message.start", sid)
+            one_turn_restore = session.pop("one_turn_model_restore", None)
             from tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,
@@ -10617,13 +10808,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # we check that guard before re-firing.
         if goal_followup:
             with session["history_lock"]:
-                if session.get("running"):
+                if session.get("_finalized") or session.get("running"):
                     # User already sent something — their turn wins,
                     # the judge will re-run on the next turn anyway.
                     return
                 session["running"] = True
             try:
-                _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)
             except Exception as _cont_exc:
                 print(
@@ -10645,6 +10835,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         try:
             from tools.process_registry import process_registry
 
+            with session["history_lock"]:
+                if session.get("_finalized"):
+                    return
             # Positive-proof ownership (compression-chain aware) — the same
             # fail-closed gate the poller uses, so the post-turn drain can't
             # adopt another session's addressed notification while a
@@ -10657,7 +10850,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
-                    if session.get("running"):
+                    if session.get("_finalized") or session.get("running"):
                         for pending_evt, _pending_synth in drained[index:]:
                             process_registry.completion_queue.put(pending_evt)
                         break
@@ -10669,7 +10862,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if _claim is None:
                     continue
                 try:
-                    _emit("message.start", sid)
                     _run_prompt_submit(rid, sid, session, synth)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
@@ -10681,6 +10873,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     )
                     with session["history_lock"]:
                         session["running"] = False
+                        if session.get("_finalized"):
+                            process_registry.completion_queue.put(_evt)
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "
@@ -10690,7 +10884,18 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
     run_thread = threading.Thread(target=run, daemon=True)
     session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        run_thread.start()
+    except Exception:
+        session.pop("_run_thread", None)
+        with session["history_lock"]:
+            session["attached_images"] = images + list(
+                session.get("attached_images", [])
+            )
+            session["running"] = False
+            _clear_inflight_turn(session)
+        raise
+    return run_thread
 
 
 @method("clipboard.paste")

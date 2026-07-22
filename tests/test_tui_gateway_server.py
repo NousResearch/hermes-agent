@@ -3146,6 +3146,155 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         server._sessions.pop("trunc-sid", None)
 
 
+def test_prompt_submit_rejects_when_finalization_wins_before_acceptance(monkeypatch):
+    """A resolved session reference cannot be accepted after finalization."""
+    session = _session(agent=None, attached_images=["still-attached.png"])
+    server._sessions["finalize-race"] = session
+    resolved = threading.Event()
+    finalized = threading.Event()
+    response = []
+    errors = []
+    side_effects = []
+    real_thread = threading.Thread
+
+    def _pause_after_session_lookup():
+        resolved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return {
+            "turn_isolation": False,
+            "compute_host_heartbeat_secs": 15,
+            "compute_host_respawn_max": 3,
+        }
+
+    def _submit():
+        try:
+            response.append(
+                server.handle_request(
+                    {
+                        "id": "submit",
+                        "method": "prompt.submit",
+                        "params": {
+                            "session_id": "finalize-race",
+                            "text": "must not be accepted",
+                        },
+                    }
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    class _CapturedRunThread:
+        def __init__(self, *args, **kwargs):
+            side_effects.append("run-thread-created")
+
+        def start(self):
+            side_effects.append("run-thread-started")
+
+    monkeypatch.setattr(
+        server, "_load_dashboard_process_isolation_config", _pause_after_session_lookup
+    )
+    monkeypatch.setattr(
+        server,
+        "_ensure_session_db_row",
+        lambda *_args: side_effects.append("db-row"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_persist_branch_seed",
+        lambda *_args: side_effects.append("branch-seed"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: side_effects.append("agent-build"),
+    )
+    monkeypatch.setattr(server, "_emit", lambda event, *_args: side_effects.append(event))
+    monkeypatch.setattr(server.threading, "Thread", _CapturedRunThread)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    submitter = real_thread(target=_submit, name="prompt-finalize-race")
+    try:
+        submitter.start()
+        assert resolved.wait(5)
+        assert server._close_session_by_id("finalize-race") is True
+        finalized.set()
+        submitter.join(5)
+        assert not submitter.is_alive()
+
+        assert errors == []
+        assert response and "error" in response[0]
+        assert response[0].get("result") != {"status": "streaming"}
+        assert side_effects == []
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert "inflight_turn" not in session
+        assert "_run_thread" not in session
+        assert session["attached_images"] == ["still-attached.png"]
+    finally:
+        finalized.set()
+        submitter.join(5)
+        server._sessions.pop("finalize-race", None)
+
+
+def test_busy_prompt_submit_rejects_when_finalization_wins_before_queue(monkeypatch):
+    session = _session(running=True)
+    server._sessions["busy-finalize-race"] = session
+    entered = threading.Event()
+    finalized = threading.Event()
+    response = []
+    real_handle_busy_submit = server._handle_busy_submit
+
+    def _pause_before_busy_acceptance(*args):
+        entered.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return real_handle_busy_submit(*args)
+
+    monkeypatch.setattr(server, "_handle_busy_submit", _pause_before_busy_acceptance)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    submitter = threading.Thread(
+        target=lambda: response.append(
+            server.handle_request(
+                {
+                    "id": "submit",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": "busy-finalize-race",
+                        "text": "must not be queued",
+                    },
+                }
+            )
+        ),
+        name="busy-prompt-finalize-race",
+    )
+    try:
+        submitter.start()
+        assert entered.wait(5)
+        server._finalize_session(session)
+        finalized.set()
+        submitter.join(5)
+        assert not submitter.is_alive()
+
+        assert response and "error" in response[0]
+        assert session.get("queued_prompt") is None
+        assert session.get("_finalized") is True
+    finally:
+        finalized.set()
+        submitter.join(5)
+        server._sessions.pop("busy-finalize-race", None)
+
+
 class _StopAfterOneNotificationPoll:
     def __init__(self):
         self._checks = 0
@@ -3153,6 +3302,944 @@ class _StopAfterOneNotificationPoll:
     def is_set(self):
         self._checks += 1
         return self._checks > 1
+
+
+def test_tui_kanban_no_event_claim_does_not_strand_prompt_submit(monkeypatch, tmp_path):
+    """A real prompt wins when a poll finds no terminal event."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="idle subscription", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+    finally:
+        conn.close()
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+    submitted = []
+    response = {}
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_args: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_args: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: None)
+
+    def _run_user_prompt(_rid, _sid, active_session, text):
+        submitted.append(text)
+        active_session["running"] = False
+
+    def _claim_while_user_submits(*_args, **_kwargs):
+        response["value"] = server.handle_request(
+            {
+                "id": "user",
+                "method": "prompt.submit",
+                "params": {"session_id": "live", "text": "real user prompt"},
+            }
+        )["result"]
+        return 0, 0, []
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _run_user_prompt)
+    monkeypatch.setattr(kb, "claim_unseen_events_for_sub", _claim_while_user_submits)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is False
+        assert response["value"] == {"status": "streaming"}
+        assert submitted == ["real user prompt"]
+        assert session.get("queued_prompt") is None
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_provider_starts_after_claim_commit(monkeypatch, tmp_path):
+    """The provider must not enter while the claimed-event transaction is open."""
+    from contextlib import contextmanager
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="post-commit provider", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.block_task(conn, task_id, reason="provider must wait")
+    finally:
+        conn.close()
+
+    transaction_open = threading.Event()
+    transaction_active = threading.Event()
+    release_commit = threading.Event()
+    provider_entered = threading.Event()
+    observed_transactions = []
+    real_write_txn = kb.write_txn
+
+    @contextmanager
+    def _child_first_write_txn(active_conn):
+        try:
+            with real_write_txn(active_conn):
+                transaction_active.set()
+                yield active_conn
+                transaction_open.set()
+                assert release_commit.wait(5)
+        finally:
+            transaction_active.clear()
+
+    class _Agent:
+        session_id = "live-key"
+
+        def run_conversation(self, _prompt, **_kwargs):
+            observed_transactions.append(transaction_active.is_set())
+            provider_entered.set()
+            return {"final_response": "", "messages": []}
+
+    session = _session(agent=_Agent(), session_key="live-key")
+    server._sessions["live"] = session
+    monkeypatch.setattr(kb, "write_txn", _child_first_write_txn)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda *_args: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_args: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *_args: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(server, "_load_interim_assistant_messages", lambda: False)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: False)
+
+    result = []
+    errors = []
+
+    def _poll():
+        try:
+            result.append(server._poll_tui_kanban_subscriptions("live", session))
+        except BaseException as exc:
+            errors.append(exc)
+
+    poller = threading.Thread(target=_poll, name="kanban-provider-commit-race")
+
+    try:
+        poller.start()
+        assert transaction_open.wait(5)
+        entered_before_commit = provider_entered.wait(1)
+        release_commit.set()
+        poller.join(5)
+        assert not poller.is_alive()
+        assert errors == []
+        assert result == [True]
+        assert provider_entered.wait(5)
+        session["_run_thread"].join(5)
+        assert not session["_run_thread"].is_alive()
+        assert entered_before_commit is False
+        assert observed_transactions == [False]
+    finally:
+        release_commit.set()
+        poller.join(5)
+        server._sessions.pop("live", None)
+
+
+def test_run_prompt_submit_cancelled_handoff_restores_accepted_state(monkeypatch):
+    import queue
+
+    called = []
+    agent = types.SimpleNamespace(
+        run_conversation=lambda *_args, **_kwargs: called.append(True)
+    )
+    session = _session(agent=agent, running=True, attached_images=["pending.png"])
+    handoff = queue.SimpleQueue()
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    server._run_prompt_submit(
+        "rid", "sid", session, "notification", start_handoff=handoff
+    )
+    handoff.put(False)
+    session["_run_thread"].join(5)
+
+    assert called == []
+    assert session["attached_images"] == ["pending.png"]
+    assert session["running"] is False
+    assert session.get("inflight_turn") is None
+
+
+def test_tui_kanban_commit_failure_waits_for_cancel_cleanup(monkeypatch, tmp_path):
+    import sqlite3
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="failed commit cleanup", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.block_task(conn, task_id, reason="force commit failure")
+    finally:
+        conn.close()
+
+    class _ControlledHandoff:
+        def __init__(self):
+            self.get_entered = threading.Event()
+            self.release_get = threading.Event()
+            self.value = None
+
+        def get(self):
+            self.get_entered.set()
+            assert self.release_get.wait(5)
+            return self.value
+
+        def put(self, value):
+            self.value = value
+
+    handoff = _ControlledHandoff()
+    provider_entered = threading.Event()
+
+    class _Agent:
+        session_id = "live-key"
+
+        def clear_interrupt(self):
+            pass
+
+        def run_conversation(self, _prompt, **_kwargs):
+            provider_entered.set()
+            return {"final_response": "", "messages": []}
+
+    session = _session(
+        agent=_Agent(), session_key="live-key", attached_images=["pending.png"]
+    )
+    server._sessions["live"] = session
+    monkeypatch.setattr(server.queue, "SimpleQueue", lambda: handoff)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    real_boundary = kb._execute_boundary_with_retry
+
+    def _fail_commit(active_conn, sql):
+        if sql == "COMMIT":
+            assert handoff.get_entered.wait(5)
+            raise sqlite3.OperationalError("forced COMMIT failure")
+        return real_boundary(active_conn, sql)
+
+    monkeypatch.setattr(kb, "_execute_boundary_with_retry", _fail_commit)
+    result = []
+    errors = []
+    poll_done = threading.Event()
+
+    def _poll():
+        try:
+            result.append(server._poll_tui_kanban_subscriptions("live", session))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            poll_done.set()
+
+    poller = threading.Thread(target=_poll, name="kanban-commit-cleanup-race")
+    try:
+        poller.start()
+        assert handoff.get_entered.wait(5)
+        assert not poll_done.wait(0.2)
+        with session["history_lock"]:
+            assert session["running"] is True
+            assert isinstance(session.get("inflight_turn"), dict)
+            assert session["attached_images"] == []
+
+        handoff.release_get.set()
+        poller.join(5)
+        assert not poller.is_alive()
+        assert errors == []
+        assert result == [False]
+        assert not provider_entered.is_set()
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session["attached_images"] == ["pending.png"]
+
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 0
+        finally:
+            conn.close()
+    finally:
+        handoff.release_get.set()
+        poller.join(5)
+        run_thread = session.get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(5)
+        server._sessions.pop("live", None)
+
+
+def test_run_prompt_submit_start_failure_restores_accepted_state(monkeypatch):
+    class _BrokenThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread start failed")
+
+    session = _session(running=True, attached_images=["pending.png"])
+    monkeypatch.setattr(server.threading, "Thread", _BrokenThread)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="thread start failed"):
+        server._run_prompt_submit("rid", "sid", session, "notification")
+
+    assert session.get("_run_thread") is None
+    assert session["attached_images"] == ["pending.png"]
+    assert session["running"] is False
+    assert session.get("inflight_turn") is None
+
+
+def test_tui_kanban_subscription_follows_compression_lineage(monkeypatch, tmp_path):
+    """A parent-key TUI subscription wakes its compressed continuation."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="compressed subscription", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="parent-key")
+        kb.block_task(conn, task_id, reason="needs input")
+    finally:
+        conn.close()
+
+    class _LineageDb:
+        def resolve_resume_session_id(self, key):
+            return "child-key" if key == "parent-key" else key
+
+    delivered = []
+    session = _session(
+        agent=types.SimpleNamespace(session_id="child-key"), session_key="child-key"
+    )
+    server._sessions["live"] = session
+    monkeypatch.setattr(server, "_get_db", lambda: _LineageDb())
+
+    def _deliver(_rid, _sid, active_session, text, **_kwargs):
+        delivered.append(text)
+        active_session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        assert delivered == [f"⏸ Kanban {task_id} blocked: needs input"]
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_subscription_prefers_live_compressed_child(monkeypatch, tmp_path):
+    """A stale parent poller cannot claim a live child's subscription first."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="stale parent", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="parent-key")
+        kb.block_task(conn, task_id, reason="wake child")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked'",
+            (task_id,),
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+
+    class _LineageDb:
+        def resolve_resume_session_id(self, key):
+            return "child-key" if key == "parent-key" else key
+
+    delivered = []
+    parent = _session(session_key="parent-key")
+    child = _session(agent=types.SimpleNamespace(session_id="child-key"), session_key="child-key")
+    server._sessions.update({"parent": parent, "child": child})
+    monkeypatch.setattr(server, "_get_db", lambda: _LineageDb())
+
+    def _deliver(_rid, sid, active_session, text, **_kwargs):
+        delivered.append((sid, text))
+        active_session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("parent", parent) is False
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 0
+        finally:
+            conn.close()
+
+        assert server._poll_tui_kanban_subscriptions("child", child) is True
+        assert delivered == [("child", f"⏸ Kanban {task_id} blocked: wake child")]
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == event_id
+        finally:
+            conn.close()
+    finally:
+        server._sessions.pop("parent", None)
+        server._sessions.pop("child", None)
+
+
+def test_tui_kanban_completed_delivery_removes_only_final_subscription(monkeypatch, tmp_path):
+    """Completed subscriptions end after delivery; retryable terminal states remain."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        completed_task = kb.create_task(conn, title="completed", assignee="worker")
+        blocked_task = kb.create_task(conn, title="blocked", assignee="worker")
+        kb.add_notify_sub(conn, task_id=completed_task, platform="tui", chat_id="live-key")
+        kb.add_notify_sub(conn, task_id=blocked_task, platform="tui", chat_id="live-key")
+        kb.complete_task(conn, completed_task, summary="done")
+        kb.block_task(conn, blocked_task, reason="needs input")
+    finally:
+        conn.close()
+
+    delivered = []
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+
+    def _deliver(_rid, _sid, active_session, text, **_kwargs):
+        delivered.append(text)
+        active_session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        conn = kb.connect()
+        try:
+            remaining = {sub["task_id"] for sub in kb.list_notify_subs(conn)}
+        finally:
+            conn.close()
+        assert completed_task not in remaining
+        assert blocked_task in remaining
+        assert len(delivered) == 2
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_completed_cleanup_failure_preserves_accepted_turn(monkeypatch, tmp_path):
+    """A failed completed-sub cleanup cannot roll back its accepted delivery."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="cleanup failure", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.complete_task(conn, task_id, summary="done")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (task_id,),
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+
+    delivered = []
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text, **_kwargs: delivered.append(text),
+    )
+    monkeypatch.setattr(
+        kb,
+        "remove_notify_sub",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("remove failed")),
+    )
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        assert delivered == [f"Kanban {task_id} completed"]
+        assert session["running"] is True
+        conn = kb.connect()
+        try:
+            sub = kb.list_notify_subs(conn, task_id)[0]
+            assert sub["last_event_id"] == event_id
+        finally:
+            conn.close()
+
+        assert server._poll_tui_kanban_subscriptions("live", session) is False
+        assert delivered == [f"Kanban {task_id} completed"]
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_notification_poller_delivers_tui_kanban_subscription(monkeypatch, tmp_path):
+    """A TUI subscription wakes the durable session that created the task."""
+    import queue as _queue_mod
+
+    from hermes_cli import kanban_db as kb
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="wake Main", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="tui",
+            chat_id="live-tui-key",
+        )
+        kb.block_task(conn, task_id, reason="needs input")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked'",
+            (task_id,),
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+
+    class _EmptyQueue:
+        def get(self, **_kwargs):
+            raise _queue_mod.Empty
+
+        def empty(self):
+            return True
+
+    delivered = []
+    session = _session(session_key="live-tui-key")
+    server._sessions["live-tui"] = session
+    monkeypatch.setattr(process_registry, "completion_queue", _EmptyQueue())
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text, **_kwargs: delivered.append(text),
+    )
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "live-tui", session
+        )
+        conn = kb.connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+        assert (delivered, cursor) == (
+            [f"⏸ Kanban {task_id} blocked: needs input"],
+            event_id,
+        )
+    finally:
+        server._sessions.pop("live-tui", None)
+
+
+def test_notification_poller_tui_kanban_preserves_busy_and_foreign_cursors(
+    monkeypatch, tmp_path
+):
+    """A busy or foreign TUI session cannot consume a Kanban notification."""
+    import queue as _queue_mod
+
+    from hermes_cli import kanban_db as kb
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="mine", assignee="worker")
+        foreign_task_id = kb.create_task(conn, title="foreign", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.add_notify_sub(
+            conn,
+            task_id=foreign_task_id,
+            platform="tui",
+            chat_id="foreign-key",
+        )
+        kb.block_task(conn, task_id, reason="wait")
+        kb.block_task(conn, foreign_task_id, reason="not mine")
+    finally:
+        conn.close()
+
+    class _EmptyQueue:
+        def get(self, **_kwargs):
+            raise _queue_mod.Empty
+
+        def empty(self):
+            return True
+
+    delivered = []
+    session = _session(session_key="live-key", running=True)
+    server._sessions["live"] = session
+    monkeypatch.setattr(process_registry, "completion_queue", _EmptyQueue())
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **_kwargs: pytest.fail("busy session must not inject a notification"),
+    )
+
+    try:
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        conn = kb.connect()
+        try:
+            cursors = {
+                sub["task_id"]: sub["last_event_id"]
+                for sub in kb.list_notify_subs(conn)
+            }
+        finally:
+            conn.close()
+        assert cursors == {task_id: 0, foreign_task_id: 0}
+
+        session["running"] = False
+
+        def _deliver(_rid, _sid, active_session, text, **_kwargs):
+            delivered.append(text)
+            active_session["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+
+        conn = kb.connect()
+        try:
+            cursors = {
+                sub["task_id"]: sub["last_event_id"]
+                for sub in kb.list_notify_subs(conn)
+            }
+        finally:
+            conn.close()
+        assert len(delivered) == 1
+        assert cursors[task_id] > 0
+        assert cursors[foreign_task_id] == 0
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_busy_two_poller_claims_keep_full_range_retryable(
+    monkeypatch, tmp_path
+):
+    """Busy pollers cannot strand an older event behind a newer claim."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="range safe", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        assert kb.block_task(conn, task_id, reason="first", kind="needs_input")
+    finally:
+        conn.close()
+
+    sessions = {
+        "kanban-poller-a": _session(session_key="live-key", running=True),
+        "kanban-poller-b": _session(session_key="live-key", running=True),
+    }
+    server._sessions.update(sessions)
+    original_claim = kb.claim_unseen_events_for_sub
+    condition = threading.Condition()
+    states = {}
+    gates = {name: threading.Event() for name in sessions}
+    results = {}
+    errors = []
+
+    def _claim_then_pause(*args, **kwargs):
+        result = original_claim(*args, **kwargs)
+        name = threading.current_thread().name
+        if name in gates and result[2]:
+            with condition:
+                states[name] = (
+                    "claimed_in_txn" if args[0].in_transaction else "claimed"
+                )
+                condition.notify_all()
+            if not gates[name].wait(5):
+                raise TimeoutError(f"timed out releasing {name}")
+        return result
+
+    def _poll(name):
+        try:
+            results[name] = server._poll_tui_kanban_subscriptions(
+                name, sessions[name]
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            with condition:
+                states.setdefault(name, "unclaimed")
+                condition.notify_all()
+
+    def _wait_state(name):
+        with condition:
+            assert condition.wait_for(lambda: name in states, timeout=5)
+            return states[name]
+
+    monkeypatch.setattr(kb, "claim_unseen_events_for_sub", _claim_then_pause)
+    poller_a = threading.Thread(
+        target=_poll, args=("kanban-poller-a",), name="kanban-poller-a"
+    )
+    poller_b = threading.Thread(
+        target=_poll, args=("kanban-poller-b",), name="kanban-poller-b"
+    )
+
+    try:
+        poller_a.start()
+        state_a = _wait_state("kanban-poller-a")
+
+        if state_a == "claimed_in_txn":
+            gates["kanban-poller-a"].set()
+            poller_a.join(5)
+            assert not poller_a.is_alive()
+
+        conn = kb.connect()
+        try:
+            assert kb.unblock_task(conn, task_id)
+            assert kb.block_task(conn, task_id, reason="second", kind="capability")
+            blocked_events = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+                "ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert [row["id"] for row in blocked_events] == [2, 4]
+
+        poller_b.start()
+        state_b = _wait_state("kanban-poller-b")
+
+        if state_a != "claimed_in_txn":
+            gates["kanban-poller-a"].set()
+            poller_a.join(5)
+            assert not poller_a.is_alive()
+        if state_b != "unclaimed":
+            gates["kanban-poller-b"].set()
+        poller_b.join(5)
+        assert not poller_b.is_alive()
+        assert errors == []
+        assert results == {"kanban-poller-a": False, "kanban-poller-b": False}
+
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 0
+        finally:
+            conn.close()
+        assert state_a == state_b == "claimed_in_txn"
+
+        delivered = []
+        sessions["kanban-poller-a"]["running"] = False
+
+        def _deliver(_rid, _sid, active_session, text, **_kwargs):
+            delivered.append(text)
+            active_session["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+        assert server._poll_tui_kanban_subscriptions(
+            "kanban-poller-a", sessions["kanban-poller-a"]
+        ) is True
+        assert server._poll_tui_kanban_subscriptions(
+            "kanban-poller-a", sessions["kanban-poller-a"]
+        ) is False
+        assert delivered == [
+            f"⏸ Kanban {task_id} blocked: first\n\n"
+            f"⏸ Kanban {task_id} blocked: second"
+        ]
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 4
+        finally:
+            conn.close()
+    finally:
+        for gate in gates.values():
+            gate.set()
+        poller_a.join(5)
+        poller_b.join(5)
+        for name in sessions:
+            server._sessions.pop(name, None)
+
+
+def test_tui_kanban_finalization_before_acceptance_rolls_back_claim(
+    monkeypatch, tmp_path
+):
+    """Finalization winning before acceptance leaves the event retryable."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    real_connect = kb.connect
+    conn = real_connect()
+    try:
+        task_id = kb.create_task(conn, title="finalize race", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        assert kb.block_task(conn, task_id, reason="retry after finalize")
+    finally:
+        conn.close()
+
+    opened = []
+
+    class _TrackedConnection:
+        def __init__(self, inner):
+            self.inner = inner
+            self.closed = False
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def close(self):
+            self.inner.close()
+            self.closed = True
+
+    def _tracked_connect(*args, **kwargs):
+        tracked = _TrackedConnection(real_connect(*args, **kwargs))
+        opened.append(tracked)
+        return tracked
+
+    session = _session(
+        session_key="live-key",
+        attached_images=["still-attached.png"],
+    )
+    session["agent"] = None
+    server._sessions["live"] = session
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    errors = []
+    emitted = []
+    handoffs = []
+    original_submit = server._run_prompt_submit
+
+    def _pause_before_acceptance(*args, **kwargs):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return original_submit(*args, **kwargs)
+
+    def _poll():
+        try:
+            result.append(server._poll_tui_kanban_subscriptions("live", session))
+        except BaseException as exc:
+            errors.append(exc)
+
+    class _CapturedRunThread:
+        def __init__(self, *args, **kwargs):
+            handoffs.append("created")
+
+        def start(self):
+            handoffs.append("started")
+
+    poller = threading.Thread(target=_poll, name="finalize-race-poller")
+    monkeypatch.setattr(kb, "connect", _tracked_connect)
+    monkeypatch.setattr(server, "_run_prompt_submit", _pause_before_acceptance)
+    monkeypatch.setattr(server, "_emit", lambda event, *_args: emitted.append(event))
+    monkeypatch.setattr(server.threading, "Thread", _CapturedRunThread)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    try:
+        poller.start()
+        assert reserved.wait(5)
+        server._finalize_session(session)
+        assert session.get("_finalized") is True
+        finalized.set()
+        poller.join(5)
+        assert not poller.is_alive()
+
+        conn = real_connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+
+        assert errors == []
+        assert result == [False]
+        assert cursor == 0
+        assert handoffs == []
+        assert emitted == []
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert "inflight_turn" not in session
+        assert "_run_thread" not in session
+        assert session["attached_images"] == ["still-attached.png"]
+        assert opened and all(connection.closed for connection in opened)
+    finally:
+        finalized.set()
+        poller.join(5)
+        server._sessions.pop("live", None)
+
+
+def test_notification_poller_tui_kanban_rewinds_failed_injection(monkeypatch, tmp_path):
+    """A failed TUI injection leaves the claimed Kanban event retryable."""
+    import queue as _queue_mod
+
+    from hermes_cli import kanban_db as kb
+    from tools.process_registry import process_registry
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="retry wake", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.block_task(conn, task_id, reason="retry me")
+    finally:
+        conn.close()
+
+    class _EmptyQueue:
+        def get(self, **_kwargs):
+            raise _queue_mod.Empty
+
+        def empty(self):
+            return True
+
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+    monkeypatch.setattr(process_registry, "completion_queue", _EmptyQueue())
+
+    def _fail_injection(*_args, **_kwargs):
+        raise RuntimeError("injection failed")
+
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        _fail_injection,
+    )
+
+    try:
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        conn = kb.connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+        assert cursor == 0
+        assert session["running"] is False
+
+        delivered = []
+
+        def _deliver(_rid, _sid, active_session, text, **_kwargs):
+            delivered.append(text)
+            active_session["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+        server._notification_poller_loop(_StopAfterOneNotificationPoll(), "live", session)
+
+        conn = kb.connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+        assert len(delivered) == 1
+        assert cursor > 0
+    finally:
+        server._sessions.pop("live", None)
 
 
 def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
@@ -3290,7 +4377,7 @@ def test_notification_poller_live_loop_drops_addressed_orphan(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kwargs: delivered.append(text),
     )
     server._sessions["sid-live-orphan"] = session
     process_registry._completion_consumed.discard(event["session_id"])
@@ -3331,7 +4418,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kwargs: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
@@ -3397,7 +4484,7 @@ def test_notification_poller_delivers_owned_events(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kwargs: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
 
@@ -3482,6 +4569,193 @@ class _RecordingAgent:
     ):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
+
+
+def test_prompt_submit_continues_when_acceptance_wins_before_finalization(
+    monkeypatch, tmp_path
+):
+    """Finalization cannot revoke an ordinary prompt already accepted under lock."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
+    turns = []
+    events = []
+    accepted = threading.Event()
+    release_agent = threading.Event()
+    completed = threading.Event()
+    session = _session(agent=_RecordingAgent(turns))
+    server._sessions["accepted-finalize-race"] = session
+
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {
+            "turn_isolation": False,
+            "compute_host_heartbeat_secs": 15,
+            "compute_host_respawn_max": 3,
+        },
+    )
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_args: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_args: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: None)
+
+    def _wait_after_acceptance(active_session, _rid):
+        with active_session["history_lock"]:
+            assert active_session["running"] is True
+            assert isinstance(active_session.get("inflight_turn"), dict)
+        accepted.set()
+        if not release_agent.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return None
+
+    def _record_emit(event, *_args):
+        events.append(event)
+        if event == "message.complete":
+            completed.set()
+
+    monkeypatch.setattr(server, "_wait_agent", _wait_after_acceptance)
+    monkeypatch.setattr(server, "_emit", _record_emit)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "submit",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "accepted-finalize-race",
+                    "text": "accepted prompt",
+                },
+            }
+        )
+
+        assert response.get("result") == {"status": "streaming"}
+        assert accepted.wait(5)
+        server._finalize_session(session)
+        release_agent.set()
+        assert completed.wait(5)
+
+        assert turns == ["accepted prompt"]
+        assert "message.start" in events
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+    finally:
+        release_agent.set()
+        run_thread = session.get("_run_thread")
+        if isinstance(run_thread, threading.Thread):
+            run_thread.join(5)
+        server._sessions.pop("accepted-finalize-race", None)
+
+
+def test_goal_followup_does_not_restart_a_finalized_session(monkeypatch, tmp_path):
+    from hermes_cli import goals
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    turns = []
+    emitted = []
+
+    class _Agent(_RecordingAgent):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            turns.append(prompt)
+            return {
+                "final_response": "keep going",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "keep going"},
+                ],
+            }
+
+    class _GoalManager:
+        def __init__(self, **_kwargs):
+            pass
+
+        def is_active(self):
+            return True
+
+        def evaluate_after_turn(self, *_args, **_kwargs):
+            return {
+                "message": "continue",
+                "should_continue": True,
+                "continuation_prompt": "automatic followup",
+            }
+
+    session = _session(agent=_Agent(turns), running=True)
+    monkeypatch.setattr(goals, "GoalManager", _GoalManager)
+    monkeypatch.setattr(goals, "gather_background_processes", lambda: [])
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, *_args: emitted.append((event, bool(session.get("_finalized")))),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    def _finalize_before_followup(*_args):
+        server._finalize_session(session)
+        return False
+
+    monkeypatch.setattr(server, "_drain_queued_prompt", _finalize_before_followup)
+
+    server._run_prompt_submit("rid", "sid", session, "primary prompt")
+
+    assert turns == ["primary prompt"]
+    assert not [event for event in emitted if event == ("message.start", True)]
+    assert session.get("_finalized") is True
+    assert session["running"] is False
+
+
+def test_post_turn_drain_requeues_events_when_session_finalizes(monkeypatch, tmp_path):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    event = {
+        "type": "completion",
+        "session_id": "post_turn_finalize_race",
+        "command": "echo done",
+        "exit_code": 0,
+        "output": "done",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    emitted = []
+    session = _session(agent=_RecordingAgent([]), running=True)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_name, *_args: emitted.append(
+            (event_name, bool(session.get("_finalized")))
+        ),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    def _finalize_after_drain(**_kwargs):
+        server._finalize_session(session)
+        return [(event, "formatted completion")]
+
+    monkeypatch.setattr(process_registry, "drain_notifications", _finalize_after_drain)
+
+    server._run_prompt_submit("rid", "sid", session, "primary prompt")
+
+    assert not [item for item in emitted if item == ("message.start", True)]
+    assert session.get("_finalized") is True
+    assert session["running"] is False
+    assert isolated_queue.get_nowait() == event
+    assert isolated_queue.empty()
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
@@ -7369,6 +8643,191 @@ def test_interrupt_drops_queued_prompt_for_session():
         server._sessions.pop("sid", None)
 
 
+def test_queued_prompt_stays_pending_after_session_finalization(monkeypatch):
+    queued = {"text": "next prompt", "transport": None}
+    session = _session(queued_prompt=queued, _finalized=True)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, *_args: emitted.append(event))
+
+    assert server._drain_queued_prompt("rid", "sid", session) is False
+    assert session["queued_prompt"] is queued
+    assert session["running"] is False
+    assert emitted == []
+
+
+def test_queued_prompt_is_restored_when_finalization_wins_before_acceptance(
+    monkeypatch,
+):
+    queued = {"text": "next prompt", "transport": None}
+    session = _session(queued_prompt=queued)
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    real_submit = server._run_prompt_submit
+
+    def _pause_before_acceptance(*args, **kwargs):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return real_submit(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _pause_before_acceptance)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    worker = threading.Thread(
+        target=lambda: result.append(
+            server._drain_queued_prompt("rid", "sid", session)
+        ),
+        name="queued-prompt-finalize-race",
+    )
+    try:
+        worker.start()
+        assert reserved.wait(5)
+        server._finalize_session(session)
+        finalized.set()
+        worker.join(5)
+        assert not worker.is_alive()
+
+        assert result == [False]
+        assert session["queued_prompt"] is queued
+        assert session["running"] is False
+        assert session.get("_finalized") is True
+    finally:
+        finalized.set()
+        worker.join(5)
+
+
+def test_queued_compute_host_prompt_is_restored_when_finalization_wins_before_dispatch(
+    monkeypatch,
+):
+    queued = {"text": "next prompt", "transport": None}
+    session = _session(queued_prompt=queued)
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    dispatched = []
+
+    def _pause_during_compute_host_selection(_session):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return True
+
+    def _dispatch(*args):
+        dispatched.append(args)
+        return server._ok("rid", {"status": "streaming", "turn_isolation": True})
+
+    monkeypatch.setattr(
+        server, "_session_uses_compute_host", _pause_during_compute_host_selection
+    )
+    monkeypatch.setattr(server, "_submit_prompt_to_compute_host", _dispatch)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    worker = threading.Thread(
+        target=lambda: result.append(
+            server._drain_queued_prompt("rid", "sid", session)
+        ),
+        name="queued-compute-host-finalize-race",
+    )
+    try:
+        worker.start()
+        assert reserved.wait(5)
+        server._finalize_session(session)
+        finalized.set()
+        worker.join(5)
+        assert not worker.is_alive()
+
+        assert result == [False]
+        assert dispatched == []
+        assert session["queued_prompt"] is queued
+        assert session["running"] is False
+        assert session.get("_finalized") is True
+        assert "inflight_turn" not in session
+    finally:
+        finalized.set()
+        worker.join(5)
+
+
+def test_queued_compute_host_rollback_merges_prompt_queued_during_reservation(
+    monkeypatch,
+):
+    q1_transport = object()
+    q1_metadata = object()
+    queued = {
+        "text": "first prompt",
+        "transport": q1_transport,
+        "metadata": q1_metadata,
+    }
+    session = _session(queued_prompt=queued)
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    dispatched = []
+
+    def _pause_during_compute_host_selection(_session):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return True
+
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(
+        server, "_session_uses_compute_host", _pause_during_compute_host_selection
+    )
+    monkeypatch.setattr(
+        server, "_submit_prompt_to_compute_host", lambda *args: dispatched.append(args)
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    worker = threading.Thread(
+        target=lambda: result.append(
+            server._drain_queued_prompt("rid", "sid", session)
+        ),
+        name="queued-compute-host-merge-finalize-race",
+    )
+    try:
+        worker.start()
+        assert reserved.wait(5)
+
+        q2_transport = object()
+        response = server._handle_busy_submit(
+            "busy", "sid", session, "second prompt", q2_transport
+        )
+        assert response["result"]["status"] == "queued"
+
+        server._finalize_session(session)
+        finalized.set()
+        worker.join(5)
+        assert not worker.is_alive()
+
+        assert result == [False]
+        assert dispatched == []
+        assert session["queued_prompt"] is queued
+        assert queued == {
+            "text": "first prompt\n\nsecond prompt",
+            "transport": q1_transport,
+            "metadata": q1_metadata,
+        }
+        assert session["running"] is False
+        assert session.get("_finalized") is True
+        assert "inflight_turn" not in session
+    finally:
+        finalized.set()
+        worker.join(5)
+
+
 def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     """Stop during lazy agent startup must not start the turn after init finishes."""
     threads = []
@@ -10216,6 +11675,79 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_restores_event_when_finalization_wins_after_format(
+    monkeypatch,
+):
+    """A formatted completion remains retryable when its session finalizes."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    event = {
+        "type": "completion",
+        "session_id": "proc_finalize_race",
+        "command": "echo done",
+        "exit_code": 0,
+        "output": "done",
+    }
+    isolated_queue.put(event)
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    formatted = threading.Event()
+    finalized = threading.Event()
+    emitted = []
+    stop = threading.Event()
+    session = _session(agent=None, _notif_stop=stop)
+    session["agent"] = None
+    server._sessions["poll-finalize-race"] = session
+
+    def _pause_after_pop(_event):
+        formatted.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return "formatted completion"
+
+    monkeypatch.setattr(
+        "tools.process_registry.format_process_notification", _pause_after_pop
+    )
+    monkeypatch.setattr(server, "_poll_tui_kanban_subscriptions", lambda *_args: False)
+    monkeypatch.setattr(server, "_emit", lambda event_name, *_args: emitted.append(event_name))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    poller = threading.Thread(
+        target=server._notification_poller_loop,
+        args=(stop, "poll-finalize-race", session),
+        name="completion-finalize-race",
+    )
+    try:
+        poller.start()
+        assert formatted.wait(5)
+        assert server._close_session_by_id("poll-finalize-race") is True
+        finalized.set()
+        poller.join(5)
+        assert not poller.is_alive()
+
+        assert emitted == []
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert isolated_queue.get_nowait() == event
+        assert isolated_queue.empty()
+    finally:
+        finalized.set()
+        stop.set()
+        poller.join(5)
+        server._sessions.pop("poll-finalize-race", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
 
 
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):

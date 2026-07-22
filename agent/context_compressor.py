@@ -2796,6 +2796,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary,
         )
         task_snapshot = match.group(1).strip() if match else ""
+        # NOTE: the "User asked:" scan covers the WHOLE summary, so tool output
+        # quoted verbatim in e.g. Completed Actions can false-positive in a
+        # zero-user session. That is acceptable: the RuntimeError only rides
+        # the existing retry/deterministic-fallback path (which emits the
+        # no-user sentinel itself), so a rare false positive costs one retry
+        # rather than letting fabricated user attribution persist.
         if (
             task_snapshot != _NO_USER_TASK_SENTINEL
             or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE)

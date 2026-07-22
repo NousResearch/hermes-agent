@@ -71,6 +71,58 @@ def _emit_compaction_done(agent: Any) -> None:
         logger.debug("status_callback error in compaction completion", exc_info=True)
 
 
+# ── Routine compression status templates ────────────────────────────────────
+# Every ROUTINE (non-failure, non-manual-/compress) compression status line the
+# agent emits lives here so the gateway noise filter and its tests can couple
+# to the real emitted wording instead of hand-copied literals. These are
+# suppressed on human-facing chat platforms by _TELEGRAM_NOISY_STATUS_RE
+# (gateway/run.py) — when rewording ANY of them, update that regex and the
+# pinned data in tests/gateway/test_telegram_noise_filter.py in the same PR.
+# Failure notices (⚠ Compression aborted / empty transcript / codex compaction
+# failed) and manual /compress feedback (manual_compression_feedback.py) are
+# deliberate carve-outs from silence and must NOT be added here.
+PRE_API_COMPRESSION_STATUS_TEMPLATE = (
+    "📦 Pre-API compression: ~{tokens:,} tokens "
+    "near the context/output limit. Compacting before the next model call."
+)
+PREFLIGHT_COMPRESSION_STATUS_TEMPLATE = (
+    "📦 Preflight compression: ~{tokens:,} tokens "
+    ">= {threshold:,} threshold. This may take a moment."
+)
+IDLE_COMPACTION_STATUS_TEMPLATE = (
+    "💤 Resumed after {idle_seconds}s idle — compacting "
+    "~{tokens:,} tokens before continuing."
+)
+COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE = (
+    "🗜️ Context too large (~{tokens:,} tokens) — compressing ({attempt}/{cap})..."
+)
+COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE = (
+    "🗜️ Compressed {before} → {after} messages, retrying..."
+)
+COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = (
+    "🗜️ Compressed ~{before:,} → ~{after:,} tokens, retrying..."
+)
+COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
+    "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
+)
+
+# Sample-formatted instances of every routine compression status line, for
+# behavioral tests that iterate the ACTUAL emitted wording (formatted from the
+# same constants the emission sites use) through the gateway noise filter.
+ROUTINE_COMPRESSION_STATUS_SAMPLES = (
+    COMPACTION_STATUS,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
+    PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
+    IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
+    COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE.format(tokens=250000, attempt=1, cap=3),
+    COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=30, after=12),
+    COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=250000, after=120000),
+    COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
+        new_ctx=120000, old_ctx=250000
+    ),
+)
+
+
 def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
     """Return the built-in memory text that can affect a system prompt.
 

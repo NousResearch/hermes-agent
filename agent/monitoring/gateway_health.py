@@ -31,8 +31,11 @@ class GatewayHealthSnapshot:
 
 _RUNNING_PLATFORM_STATES = {"running", "connected", "ok", "ready"}
 _FATAL_PLATFORM_STATES = {"fatal", "degraded", "error", "failed"}
-_KNOWN_STATES = _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES | {
+_KNOWN_GATEWAY_STATES = {
     "starting", "draining", "stopping", "stopped", "startup_failed", "unknown"
+} | _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES
+_KNOWN_PLATFORM_STATES = _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES | {
+    "connecting", "disconnected", "disabled", "paused", "retrying", "unknown"
 }
 _SUPERVISION_MODES = {"systemd", "s6", "container", "launchd", "manual", "unknown"}
 
@@ -95,9 +98,9 @@ def classify_exit_reason(
     return classified
 
 
-def _bounded_state(raw: Any) -> str:
+def _bounded_state(raw: Any, *, allowed: set[str]) -> str:
     state = str(raw or "unknown").lower()
-    return state if state in _KNOWN_STATES else "unknown"
+    return state if state in allowed else "unknown"
 
 
 def _safe_metric_value(raw: Any, *, limit: int = 128) -> str:
@@ -192,7 +195,9 @@ def build_gateway_health_snapshot(
 ) -> GatewayHealthSnapshot:
     """Convert gateway_state.json-compatible runtime state into P0 signals."""
     runtime = runtime or {}
-    gateway_state = _bounded_state(runtime.get("gateway_state"))
+    gateway_state = _bounded_state(
+        runtime.get("gateway_state"), allowed=_KNOWN_GATEWAY_STATES
+    )
     active_agents = _parse_active_agents(runtime.get("active_agents", 0))
     busy = _derive_busy(gateway_running, gateway_state, active_agents)
     drainable = _derive_drainable(gateway_running, gateway_state)
@@ -213,7 +218,9 @@ def build_gateway_health_snapshot(
     events: list[GatewayHealthEvent | GatewayDiagnosticEvent] = []
     for platform, pdata in platforms.items():
         pdata = pdata if isinstance(pdata, dict) else {}
-        state = _bounded_state(pdata.get("state"))
+        state = _bounded_state(
+            pdata.get("state"), allowed=_KNOWN_PLATFORM_STATES
+        )
         raw_error = pdata.get("error_code") or pdata.get("error_message")
         error_code = classify_gateway_error(raw_error)
         is_up = state in _RUNNING_PLATFORM_STATES
@@ -289,8 +296,12 @@ def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: 
         out: list[GatewayHealthEvent | GatewayDiagnosticEvent] = []
         profile = _safe_profile()
         version = _safe_version()
-        old_gateway_state = _bounded_state((previous or {}).get("gateway_state")) if (previous or {}).get("gateway_state") is not None else None
-        new_gateway_state = _bounded_state(current.get("gateway_state")) if current.get("gateway_state") is not None else None
+        old_gateway_state = _bounded_state(
+            (previous or {}).get("gateway_state"), allowed=_KNOWN_GATEWAY_STATES
+        ) if (previous or {}).get("gateway_state") is not None else None
+        new_gateway_state = _bounded_state(
+            current.get("gateway_state"), allowed=_KNOWN_GATEWAY_STATES
+        ) if current.get("gateway_state") is not None else None
         if old_gateway_state != new_gateway_state and new_gateway_state:
             out.append(GatewayHealthEvent(
                 name="gateway.lifecycle",
@@ -345,8 +356,12 @@ def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: 
             pdata = pdata if isinstance(pdata, dict) else {}
             prev_raw = old_platforms.get(platform, {})
             prev = prev_raw if isinstance(prev_raw, dict) else {}
-            old_state = _bounded_state(prev.get("state")) if prev.get("state") is not None else None
-            new_state = _bounded_state(pdata.get("state")) if pdata.get("state") is not None else None
+            old_state = _bounded_state(
+                prev.get("state"), allowed=_KNOWN_PLATFORM_STATES
+            ) if prev.get("state") is not None else None
+            new_state = _bounded_state(
+                pdata.get("state"), allowed=_KNOWN_PLATFORM_STATES
+            ) if pdata.get("state") is not None else None
             if old_state == new_state or not new_state:
                 continue
             error_code = classify_gateway_error(pdata.get("error_code") or pdata.get("error_message"))

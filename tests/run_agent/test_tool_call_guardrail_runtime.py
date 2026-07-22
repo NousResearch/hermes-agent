@@ -153,6 +153,73 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
+def test_default_sequential_path_soft_blocks_after_exact_failure_threshold_without_halting():
+    agent = _make_agent("web_search")
+    args = {"query": "same"}
+    _seed_exact_failures(agent, "web_search", args, count=5)
+    starts = []
+    agent.tool_start_callback = lambda *a, **k: starts.append((a, k))
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-softblock")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_not_called()
+    assert starts == []
+    assert len(messages) == 1
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_call_id"] == "c-softblock"
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+    # Soft block must not end the turn.
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_default_run_conversation_soft_blocks_identical_failures_and_recovers_without_halt():
+    agent = _make_agent("web_search", max_iterations=12)
+    same_args = {"query": "same"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 8)
+    ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search repeatedly")
+
+    # Attempts 1-5 execute and fail; attempts 6-7 are soft-blocked without
+    # executing; the model then answers and the turn ends normally.
+    assert mock_hfc.call_count == 5
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "guardrail" not in result
+    assert result["final_response"] == "done"
+
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    blocked = [c for c in tool_contents if "repeated_exact_failure_block" in c]
+    assert len(blocked) == 2
+    # Consecutive soft blocks must not read identically — varied wording is
+    # what breaks the self-conditioning loop.
+    assert blocked[0] != blocked[1]
+
+    # Every assistant tool_call still has a matching tool result.
+    for m in result["messages"]:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            call_ids = [tc["id"] for tc in m["tool_calls"]]
+            results = [t for t in result["messages"] if t.get("role") == "tool" and t.get("tool_call_id") in call_ids]
+            assert len(results) == len(call_ids)
+
+
 def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     agent = _make_agent("terminal")
     guardrails = getattr(agent, "_tool_guardrails")
@@ -218,6 +285,36 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert started_events == [("tool.started", "web_search", allowed_args, {})]
     assert len(completed_events) == 1
     assert completed_events[0][1] == "web_search"
+
+
+def test_default_concurrent_path_soft_blocks_without_halting_and_preserves_result_order():
+    agent = _make_agent("web_search")
+    blocked_args = {"query": "blocked"}
+    allowed_args = {"query": "allowed"}
+    _seed_exact_failures(agent, "web_search", blocked_args, count=5)
+    starts = []
+    agent.tool_start_callback = lambda tool_call_id, name, args: starts.append((tool_call_id, name, args))
+    calls = [
+        _mock_tool_call("web_search", json.dumps(blocked_args), "c-softblock"),
+        _mock_tool_call("web_search", json.dumps(allowed_args), "c-allow"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+    executed = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        executed.append((name, args, kwargs["tool_call_id"]))
+        return json.dumps({"ok": args["query"]})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert executed == [("web_search", allowed_args, "c-allow")]
+    assert starts == [("c-allow", "web_search", allowed_args)]
+    assert [m["tool_call_id"] for m in messages] == ["c-softblock", "c-allow"]
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+    assert json.loads(messages[1]["content"]) == {"ok": "allowed"}
+    assert agent._tool_guardrail_halt_decision is None
 
 
 def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():

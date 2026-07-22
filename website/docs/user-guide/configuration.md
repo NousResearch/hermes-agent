@@ -1404,14 +1404,15 @@ agent:
 
 ## Tool-Loop Guardrails
 
-Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
+Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it first injects a **warning**, then **soft-blocks** an exact repeated failure or idempotent no-progress call at the configured threshold. A soft block skips that call, returns recovery guidance to the model, and lets the turn continue. It does not end the turn.
 
 For unattended gateway / server deployments, enable hard stops so a stuck agent is circuit-broken instead of burning the iteration budget:
 
 ```yaml
 tool_loop_guardrails:
   warnings_enabled: true       # inject warnings into tool results (default: true)
-  hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
+  block_enabled: true          # soft-block exact/no-progress loops (default: true)
+  hard_stop_enabled: false     # end the turn at a hard-stop threshold (default: false)
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
@@ -1422,7 +1423,7 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 ```
 
-`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+Set `block_enabled: false` to restore warning-only behavior. `hard_stop_enabled` is a separate, stronger circuit breaker: it defaults to `false` because interactive sessions have a human in the loop, but unattended deployments (gateway, cron, kanban workers) can set it to `true` to end a stuck turn at the hard-stop threshold. See also [Docker / unattended deployments](docker.md).
 
 ## TTS Configuration
 

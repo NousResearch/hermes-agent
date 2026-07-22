@@ -108,3 +108,45 @@ def test_status_marks_validation_as_not_checked_without_bws_binary(monkeypatch, 
     assert "Token validation" in out
     assert "not checked" in out
     assert "bws not installed" in out
+
+
+def _override_existing_row(out: str) -> str:
+    for line in out.splitlines():
+        if "Override existing" in line:
+            return line
+    raise AssertionError(f"'Override existing' row not found in status output:\n{out}")
+
+
+def test_status_reports_override_existing_default_true_when_key_absent(monkeypatch, capsys):
+    """A config block that omits ``override_existing`` must display the same
+    default the runtime uses (``True``), not ``False``.
+
+    ``BitwardenSource.override_existing({})`` — the path the startup
+    orchestrator actually calls — resolves an absent key to ``True`` (see
+    ``agent/secret_sources/bitwarden.py`` and DEFAULT_CONFIG). The status
+    readout previously defaulted to ``False``, so it told users
+    "Override existing  no" while Bitwarden really did override at startup.
+    """
+    from agent.secret_sources.bitwarden import BitwardenSource
+    from hermes_cli import secrets_cli
+
+    # Sanity-anchor to the authoritative runtime resolver.
+    assert BitwardenSource().override_existing({}) is True
+
+    config = _bitwarden_config()
+    # Drop the explicit key so the CLI must fall back to its default.
+    config["secrets"]["bitwarden"].pop("override_existing")
+
+    monkeypatch.setattr(secrets_cli, "load_config", lambda: config)
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.token-present")
+    monkeypatch.setattr(
+        secrets_cli.bw,
+        "find_bws",
+        lambda install_if_missing=False: None,
+    )
+
+    assert secrets_cli.cmd_status(Namespace()) == 0
+
+    row = _override_existing_row(capsys.readouterr().out)
+    assert "yes" in row
+    assert "no" not in row

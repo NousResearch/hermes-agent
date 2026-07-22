@@ -20,6 +20,36 @@ def test_ensure_dependency_returns_false_when_missing_noninteractive():
             assert result is False
 
 
+def test_ensure_dependency_skips_install_without_tty_when_interactive():
+    """Interactive request with no TTY (gateway/scheduled task) must skip the
+    install instead of running it and hanging on an unanswerable prompt."""
+    from hermes_cli.dep_ensure import ensure_dependency
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"browser": lambda: False}), \
+         patch("hermes_cli.dep_ensure._find_install_script",
+               return_value=("/fake/install.sh", "bash")), \
+         patch("subprocess.run") as mock_run, \
+         patch("sys.stdin") as mock_stdin:
+        mock_stdin.isatty.return_value = False
+        result = ensure_dependency("browser", interactive=True)
+        assert result is False
+        mock_run.assert_not_called()
+
+
+def test_ensure_dependency_noninteractive_still_installs_without_tty(tmp_path):
+    """interactive=False is an explicit unattended install — it must NOT be
+    blocked by the no-TTY guard."""
+    from hermes_cli.dep_ensure import ensure_dependency
+    with patch("hermes_cli.dep_ensure._DEP_CHECKS", {"node": lambda: False}), \
+         patch("hermes_cli.dep_ensure._find_install_script",
+               return_value=(tmp_path / "install.sh", "bash")), \
+         patch("subprocess.run") as mock_run, \
+         patch("sys.stdin") as mock_stdin:
+        mock_stdin.isatty.return_value = False
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+        ensure_dependency("node", interactive=False)
+        mock_run.assert_called_once()
+
+
 def test_find_install_script_from_checkout(tmp_path):
     """_find_install_script finds scripts/install.sh in a git checkout."""
     from hermes_cli.dep_ensure import _find_install_script

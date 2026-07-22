@@ -660,16 +660,11 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Attachments — upload / list / download / delete (#35338)
 # ---------------------------------------------------------------------------
 
-# The size cap, filename sanitiser, and collision resolver now live in
-# ``kanban_db`` so the dashboard, the agent toolset, and the CLI share one
-# implementation and cannot drift. ``_safe_attachment_name`` raises a plain
-# ``ValueError`` there; the upload handler's ``except ValueError`` below maps
-# it to a 400, preserving the previous response.
-from hermes_cli.kanban_db import (  # noqa: E402
-    KANBAN_ATTACHMENT_MAX_BYTES,
-    _collision_free_path,
-    _safe_attachment_name,
-)
+# The size cap and persistence path live in ``kanban_db`` so the dashboard,
+# the agent toolset, and the CLI share one implementation and cannot drift.
+# ``store_attachment_bytes`` sanitises names and publishes with O_EXCL /
+# O_NOFOLLOW before recording exact deletion provenance.
+from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES  # noqa: E402
 
 
 @router.get("/tasks/{task_id}/attachments")
@@ -707,49 +702,35 @@ async def upload_task_attachment(
         if kanban_db.get_task(conn, task_id) is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
-        safe_name = _safe_attachment_name(file.filename or "")
-
-        # Stream to disk with a hard size cap so a huge upload can't fill
-        # the disk. Read in chunks; abort + clean up if the cap is hit.
-        dest_dir = kanban_db.task_attachments_dir(task_id, board=board)
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        # Read no more than cap+1 bytes. Oversize uploads never receive a
+        # destination pathname, so cleanup cannot unlink a concurrent file.
+        data = await file.read(KANBAN_ATTACHMENT_MAX_BYTES + 1)
+        if len(data) > KANBAN_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"attachment exceeds "
+                    f"{KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit"
+                ),
+            )
 
         # Resolve name collisions: foo.pdf → foo (1).pdf, foo (2).pdf, …
-        dest_path = _collision_free_path(dest_dir, safe_name)
-        candidate = dest_path.name
-
-        total = 0
         try:
-            with open(dest_path, "wb") as out:
-                while True:
-                    chunk = await file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > KANBAN_ATTACHMENT_MAX_BYTES:
-                        out.close()
-                        dest_path.unlink(missing_ok=True)
-                        raise HTTPException(
-                            status_code=413,
-                            detail=(
-                                f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit"
-                            ),
-                        )
-                    out.write(chunk)
-        except HTTPException:
-            raise
+            att_id = kanban_db.store_attachment_bytes(
+                conn,
+                task_id,
+                file.filename or "",
+                data,
+                content_type=file.content_type,
+                uploaded_by=(uploaded_by or "dashboard"),
+                board=board,
+                max_bytes=KANBAN_ATTACHMENT_MAX_BYTES,
+            )
+        except kanban_db.AttachmentTooLarge as exc:
+            # Defensive parity if the shared cap changes independently.
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
-
-        att_id = kanban_db.add_attachment(
-            conn,
-            task_id,
-            filename=candidate,
-            stored_path=str(dest_path.resolve()),
-            content_type=file.content_type,
-            size=total,
-            uploaded_by=(uploaded_by or "dashboard"),
-        )
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}
     except ValueError as e:

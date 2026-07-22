@@ -315,6 +315,99 @@ def test_upload_name_collision_gets_suffixed(client):
     assert names == ["dup (1).txt", "dup.txt"]
 
 
+def test_dashboard_upload_preserves_symlink_race_winner(
+    client, kanban_home, monkeypatch
+):
+    task_id = _create_task_via_api(client)
+    attachment_dir = kb.task_attachments_dir(task_id)
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    destination = attachment_dir / "race.txt"
+    human_file = kanban_home / "human-race-winner.txt"
+    human_file.write_bytes(b"human bytes")
+
+    # Skip only on Windows hosts where developer-mode/elevation does not allow
+    # symlink creation; the regular-file race is covered at the shared layer.
+    probe = kanban_home / "symlink-probe"
+    try:
+        probe.symlink_to(human_file)
+    except OSError:
+        pytest.skip("host does not permit symlink creation")
+    else:
+        probe.unlink()
+
+    real_open = kb.os.open
+    injected = False
+
+    def race_open(path, flags, *args, **kwargs):
+        nonlocal injected
+        if Path(path) == destination and flags & kb.os.O_EXCL and not injected:
+            injected = True
+            destination.symlink_to(human_file)
+            raise FileExistsError(str(destination))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(kb.os, "open", race_open)
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("race.txt", b"agent bytes", "text/plain")},
+    )
+
+    assert response.status_code == 200, response.text
+    attachment = response.json()["attachment"]
+    assert injected
+    assert destination.is_symlink()
+    assert human_file.read_bytes() == b"human bytes"
+    assert attachment["filename"] == "race (1).txt"
+    assert Path(attachment["stored_path"]).read_bytes() == b"agent bytes"
+
+
+def test_dashboard_upload_preserves_regular_file_race_winner(
+    client, monkeypatch
+):
+    task_id = _create_task_via_api(client)
+    destination = kb.task_attachments_dir(task_id) / "race.txt"
+    real_open = kb.os.open
+    injected = False
+
+    def race_open(path, flags, *args, **kwargs):
+        nonlocal injected
+        if Path(path) == destination and flags & kb.os.O_EXCL and not injected:
+            injected = True
+            destination.write_bytes(b"human winner")
+            raise FileExistsError(str(destination))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(kb.os, "open", race_open)
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("race.txt", b"agent bytes", "text/plain")},
+    )
+
+    assert response.status_code == 200, response.text
+    attachment = response.json()["attachment"]
+    assert injected
+    assert destination.read_bytes() == b"human winner"
+    assert attachment["filename"] == "race (1).txt"
+    assert Path(attachment["stored_path"]).read_bytes() == b"agent bytes"
+
+
+def test_dashboard_upload_oversize_returns_413_without_blob(client, monkeypatch):
+    task_id = _create_task_via_api(client)
+    plugin = sys.modules["hermes_dashboard_plugin_kanban_attach_test"]
+    monkeypatch.setattr(plugin, "KANBAN_ATTACHMENT_MAX_BYTES", 4)
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("large.bin", b"12345", "application/octet-stream")},
+    )
+
+    assert response.status_code == 413
+    with kb.connect() as conn:
+        assert kb.list_attachments(conn, task_id) == []
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or list(attachment_dir.iterdir()) == []
+
+
 def test_upload_unknown_task_404(client):
     r = client.post(
         "/api/plugins/kanban/tasks/t_nope/attachments",

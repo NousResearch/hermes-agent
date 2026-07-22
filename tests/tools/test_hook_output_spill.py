@@ -26,6 +26,10 @@ class GetSpillConfigTests(unittest.TestCase):
         self.assertEqual(cfg["preview_head"], hos.DEFAULT_PREVIEW_HEAD)
         self.assertEqual(cfg["preview_tail"], hos.DEFAULT_PREVIEW_TAIL)
         self.assertIsNone(cfg["directory"])
+        self.assertEqual(cfg["retention_seconds"], hos.DEFAULT_RETENTION_SECONDS)
+        self.assertEqual(
+            cfg["max_files_per_session"], hos.DEFAULT_MAX_FILES_PER_SESSION
+        )
 
     def test_user_overrides_are_respected(self):
         user_cfg = {
@@ -36,6 +40,8 @@ class GetSpillConfigTests(unittest.TestCase):
                     "preview_head": 25,
                     "preview_tail": 10,
                     "directory": "/tmp/spill-test",
+                    "retention_seconds": 3600,
+                    "max_files_per_session": 25,
                 }
             }
         }
@@ -46,6 +52,8 @@ class GetSpillConfigTests(unittest.TestCase):
         self.assertEqual(cfg["preview_head"], 25)
         self.assertEqual(cfg["preview_tail"], 10)
         self.assertEqual(cfg["directory"], "/tmp/spill-test")
+        self.assertEqual(cfg["retention_seconds"], 3600)
+        self.assertEqual(cfg["max_files_per_session"], 25)
 
     def test_bad_values_fall_back_to_defaults(self):
         user_cfg = {
@@ -442,7 +450,7 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertEqual(removed, 0)
         self.assertEqual(human.read_text(), "keep")
 
-    def test_spill_refuses_to_adopt_preexisting_unmarked_session(self):
+    def test_spill_routes_around_preexisting_unmarked_legacy_session(self):
         session = Path(self.tmpdir) / "existing-session"
         session.mkdir()
         human = session / "human-notes.txt"
@@ -454,10 +462,47 @@ class SpillIfOversizedTests(unittest.TestCase):
             config=self._cfg(max_chars=10),
         )
 
-        self.assertIn("spill write failed", result)
+        self.assertNotIn("spill write failed", result)
         self.assertEqual(human.read_text(), "keep")
         self.assertFalse((session / ".hermes-managed").exists())
         self.assertEqual(list(session.glob("*.txt")), [human])
+        v2_dirs = [
+            path
+            for path in Path(self.tmpdir).iterdir()
+            if path.name.startswith("s-") and path.is_dir()
+        ]
+        self.assertEqual(len(v2_dirs), 1)
+        spills = list(v2_dirs[0].glob("*.txt"))
+        self.assertEqual(len(spills), 1)
+        self.assertIn(str(spills[0]), result)
+        self.assertEqual(
+            (v2_dirs[0] / ".hermes-managed").read_text().strip(),
+            f"hook_outputs:v2:{v2_dirs[0].name}",
+        )
+
+    def test_spill_retries_when_first_v2_name_is_foreign(self):
+        session_id = "existing-session"
+        legacy = Path(self.tmpdir) / session_id
+        legacy.mkdir()
+        (legacy / "legacy.txt").write_text("keep")
+        first_v2 = next(hos._spill_v2_candidates(Path(self.tmpdir), session_id))
+        first_v2.mkdir()
+        human = first_v2 / "human.txt"
+        human.write_text("keep too")
+
+        result = hos.spill_if_oversized(
+            "x" * 500,
+            session_id=session_id,
+            config=self._cfg(max_chars=10),
+        )
+
+        self.assertNotIn("spill write failed", result)
+        self.assertEqual((legacy / "legacy.txt").read_text(), "keep")
+        self.assertEqual(human.read_text(), "keep too")
+        second_v2 = first_v2.with_name(f"{first_v2.name}-1")
+        spills = list(second_v2.glob("*.txt"))
+        self.assertEqual(len(spills), 1)
+        self.assertIn(str(spills[0]), result)
 
     def test_failed_marker_creation_does_not_poison_new_session_path(self):
         session = Path(self.tmpdir) / "retryable-session"

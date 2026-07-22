@@ -1569,6 +1569,39 @@ class TestSafeCopyDb:
         assert backup_mod._safe_copy_db(src, dst) is False
         assert not dst.exists()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX rename-open-restore ABA")
+    def test_source_swap_during_sqlite_connect_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "source.db"
+        attacker = tmp_path / "attacker.db"
+        dst = tmp_path / "copy.db"
+        for path, value in ((src, "owned"), (attacker, "foreign")):
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE state (value TEXT)")
+                conn.execute("INSERT INTO state VALUES (?)", (value,))
+        original = tmp_path / "source-original.db"
+        real_connect = backup_mod.sqlite3.connect
+
+        def swap_for_connect(database, *args, **kwargs):
+            if str(database).startswith(f"file:{src}"):
+                src.rename(original)
+                attacker.rename(src)
+                connection = real_connect(database, *args, **kwargs)
+                src.rename(attacker)
+                original.rename(src)
+                return connection
+            return real_connect(database, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", swap_for_connect)
+
+        assert backup_mod._safe_copy_db(src, dst) is False
+        assert not dst.exists()
+        with sqlite3.connect(src) as conn:
+            assert conn.execute("SELECT value FROM state").fetchone() == ("owned",)
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
@@ -1597,6 +1630,69 @@ class TestQuickSnapshot:
         conn.commit()
         conn.close()
         return home
+
+    def test_maintenance_lock_refuses_hardlink_without_writing(self, tmp_path):
+        import hermes_cli.backup as backup_mod
+
+        root = tmp_path / "state-snapshots"
+        root.mkdir()
+        external = tmp_path / "operator.txt"
+        external.write_bytes(b"")
+        lock_path = root / backup_mod._BACKUP_LOCK_FILENAME
+        try:
+            lock_path.hardlink_to(external)
+        except OSError as exc:
+            pytest.skip(f"hardlinks unavailable: {exc}")
+
+        with pytest.raises(OSError, match="not exclusively owned"):
+            with backup_mod._backup_maintenance_lock(root):
+                pass
+
+        assert external.read_bytes() == b""
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+    def test_snapshot_directory_junction_swap_never_writes_external(
+        self, hermes_home, tmp_path, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        external = tmp_path / "operator-data"
+        external.mkdir()
+        external_config = external / "config.yaml"
+        external_config.write_text("human", encoding="utf-8")
+        real_writer = backup_mod._write_exclusive_snapshot_file
+        calls = 0
+        displaced = None
+
+        def swap_after_marker(snapshot_dir, snapshot_identity, relative_name, chunks):
+            nonlocal calls, displaced
+            calls += 1
+            if calls == 2:
+                displaced = snapshot_dir.with_name(f"{snapshot_dir.name}-original")
+                snapshot_dir.rename(displaced)
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(snapshot_dir), str(external)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if created.returncode:
+                    pytest.skip(
+                        f"junction creation unavailable: {created.stderr.strip()}"
+                    )
+            return real_writer(
+                snapshot_dir, snapshot_identity, relative_name, chunks
+            )
+
+        monkeypatch.setattr(
+            backup_mod, "_write_exclusive_snapshot_file", swap_after_marker
+        )
+        assert backup_mod.create_quick_snapshot(hermes_home=hermes_home) is None
+
+        assert external_config.read_text(encoding="utf-8") == "human"
+        assert not (external / "state.db").exists()
+        assert not (external / "manifest.json").exists()
+        assert displaced is not None and displaced.exists()
 
     def test_creates_snapshot(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
@@ -1876,7 +1972,9 @@ class TestQuickSnapshot:
         human.write_text("keep")
         old = time.time() - backup_mod._QUICK_IN_PROGRESS_MAX_AGE_SECONDS - 60
         os.utime(marker, (old, old))
-        monkeypatch.setattr(backup_mod.os.path, "samestat", lambda _a, _b: False)
+        monkeypatch.setattr(
+            backup_mod, "_same_snapshot_object", lambda _a, _b: False
+        )
 
         assert backup_mod.prune_quick_snapshots(
             keep=20, hermes_home=hermes_home
@@ -2362,9 +2460,9 @@ class TestQuickSnapshotProjectsKanban:
         called = {"db": []}
         real = bk._safe_copy_db
 
-        def _spy(src, dst):
+        def _spy(src, dst, **kwargs):
             called["db"].append(str(src))
-            return real(src, dst)
+            return real(src, dst, **kwargs)
 
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)

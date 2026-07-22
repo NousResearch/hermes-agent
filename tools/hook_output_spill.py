@@ -27,6 +27,8 @@ Config (``config.yaml``)::
         preview_head: 500      # chars shown at the start of the preview
         preview_tail: 500      # chars shown at the end of the preview
         directory: null        # default: <HERMES_HOME>/hook_outputs
+        retention_seconds: 604800      # default: 7 days
+        max_files_per_session: 100     # default: keep newest 100
 
 Design invariants
 -----------------
@@ -42,13 +44,14 @@ Design invariants
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import stat
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,7 @@ DEFAULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_MAX_FILES_PER_SESSION = 100
 _OWNERSHIP_MARKER = ".hermes-managed"
 _OWNERSHIP_VALUE = "hook_outputs"
+_OWNERSHIP_V2_PREFIX = "hook_outputs:v2:"
 _DELETE_QUARANTINE_TOKEN = ".hermes-delete-"
 
 
@@ -167,6 +171,17 @@ def _resolve_spill_dir(directory_override: Optional[str], session_id: Optional[s
     return base / session_segment
 
 
+def _spill_v2_candidates(
+    base: Path, session_id: Optional[str]
+) -> Iterator[Path]:
+    """Yield deterministic, hash-bound fallbacks for a legacy path collision."""
+    storage_session = session_id or "no-session"
+    digest = hashlib.sha256(storage_session.encode("utf-8")).hexdigest()[:24]
+    for suffix in range(32):
+        name = f"s-{digest}" if suffix == 0 else f"s-{digest}-{suffix}"
+        yield base / name
+
+
 def _build_preview(
     text: str,
     head: int,
@@ -193,52 +208,112 @@ def _build_preview(
     return "\n".join(parts)
 
 
-def _is_owned_spill_dir(path: Path) -> bool:
+def _is_owned_spill_dir(path: Path, *, expected_marker: Optional[str] = None) -> bool:
     """Return whether a session directory has exact, non-symlink ownership."""
     marker = path / _OWNERSHIP_MARKER
+    fd: Optional[int] = None
     try:
-        path_attrs = int(getattr(path.lstat(), "st_file_attributes", 0))
-        marker_attrs = int(getattr(marker.lstat(), "st_file_attributes", 0))
+        path_stat = path.lstat()
+        marker_stat = marker.lstat()
+        path_attrs = int(getattr(path_stat, "st_file_attributes", 0))
+        marker_attrs = int(getattr(marker_stat, "st_file_attributes", 0))
+        if (
+            not stat.S_ISDIR(path_stat.st_mode)
+            or path.is_symlink()
+            or path_attrs & 0x400
+            or not stat.S_ISREG(marker_stat.st_mode)
+            or marker.is_symlink()
+            or marker_attrs & 0x400
+        ):
+            return False
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(marker, flags)
+        opened_marker = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened_marker.st_mode)
+            or not os.path.samestat(marker_stat, opened_marker)
+        ):
+            return False
+        with os.fdopen(fd, "r", encoding="utf-8") as marker_file:
+            fd = None
+            value = marker_file.read(129)
+        if len(value) > 128:
+            return False
+        value = value.strip()
+        marker_matches = (
+            value == expected_marker
+            if expected_marker is not None
+            else value == _OWNERSHIP_VALUE
+            or (
+                path.name.startswith("s-")
+                and value == f"{_OWNERSHIP_V2_PREFIX}{path.name}"
+            )
+        )
         return (
-            path.is_dir()
-            and not path.is_symlink()
-            and not (path_attrs & 0x400)
-            and marker.is_file()
-            and not marker.is_symlink()
-            and not (marker_attrs & 0x400)
-            and marker.read_text(encoding="utf-8").strip() == _OWNERSHIP_VALUE
+            marker_matches
+            and os.path.samestat(path_stat, path.lstat())
+            and os.path.samestat(marker_stat, marker.lstat())
         )
     except (OSError, UnicodeError):
         return False
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
-def _prepare_owned_spill_dir(path: Path) -> bool:
+def _prepare_owned_spill_dir(
+    path: Path, *, marker_value: str = _OWNERSHIP_VALUE
+) -> bool:
     """Create and mark a new session dir, or verify an existing owned one."""
     try:
         path.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
         # Never adopt a pre-existing directory by stamping a marker into it.
-        return _is_owned_spill_dir(path)
+        return _is_owned_spill_dir(path, expected_marker=marker_value)
     except OSError:
         return False
 
     marker = path / _OWNERSHIP_MARKER
     try:
         with marker.open("x", encoding="utf-8") as marker_file:
-            marker_file.write(f"{_OWNERSHIP_VALUE}\n")
+            marker_file.write(f"{marker_value}\n")
     except (FileExistsError, OSError):
         try:
             path.rmdir()
         except OSError:
             pass
         return False
-    if _is_owned_spill_dir(path):
+    if _is_owned_spill_dir(path, expected_marker=marker_value):
         return True
     try:
         path.rmdir()
     except OSError:
         pass
     return False
+
+
+def _resolve_writable_spill_dir(
+    directory_override: Optional[str], session_id: Optional[str]
+) -> Optional[Path]:
+    """Return an owned write directory without adopting legacy state.
+
+    Pre-marker Hermes releases created ``<base>/<session_id>`` directories.
+    They are indistinguishable from a user-created directory, so keep them
+    read-only and publish new spills into a deterministic v2 namespace. A
+    bounded suffix search preserves the feature even if a v2 name is occupied
+    by foreign state.
+    """
+    legacy_path = _resolve_spill_dir(directory_override, session_id)
+    if _prepare_owned_spill_dir(legacy_path):
+        return legacy_path
+
+    for candidate in _spill_v2_candidates(legacy_path.parent, session_id):
+        marker_value = f"{_OWNERSHIP_V2_PREFIX}{candidate.name}"
+        if _prepare_owned_spill_dir(candidate, marker_value=marker_value):
+            return candidate
+    return None
 
 
 def _atomic_unlink_spill(path: Path, expected: os.stat_result) -> bool:
@@ -462,16 +537,20 @@ def spill_if_oversized(
     # something bounded — never let a disk failure blow up the turn.
     saved_path: Optional[str] = None
     try:
-        spill_dir = _resolve_spill_dir(directory_override, session_id)
+        legacy_spill_dir = _resolve_spill_dir(directory_override, session_id)
         prune_spill_files(
-            spill_dir.parent,
+            legacy_spill_dir.parent,
             retention_seconds=cfg.get("retention_seconds", DEFAULT_RETENTION_SECONDS),
             max_files_per_session=cfg.get(
                 "max_files_per_session", DEFAULT_MAX_FILES_PER_SESSION
             ),
         )
-        if not _prepare_owned_spill_dir(spill_dir):
-            raise OSError(f"spill directory is not exclusively Hermes-owned: {spill_dir}")
+        spill_dir = _resolve_writable_spill_dir(directory_override, session_id)
+        if spill_dir is None:
+            raise OSError(
+                f"no exclusively Hermes-owned spill directory under "
+                f"{legacy_spill_dir.parent}"
+            )
         filename = f"{uuid.uuid4().hex}.txt"
         spill_path = spill_dir / filename
         # Write the raw text plus a trailing newline so tail readers

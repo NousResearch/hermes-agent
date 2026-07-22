@@ -13,10 +13,12 @@ import posixpath
 import shlex
 import shutil
 import signal
+import stat
 import tarfile
 import tempfile
 import threading
 import time
+import uuid
 
 try:
     import fcntl
@@ -35,6 +37,70 @@ from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 
 logger = logging.getLogger(__name__)
+
+
+def _remove_created_sync_lock(path: Path, expected: os.stat_result) -> None:
+    quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
+    try:
+        current = path.lstat()
+        if not os.path.samestat(expected, current):
+            return
+        os.replace(path, quarantine)
+        moved = quarantine.lstat()
+        if os.path.samestat(expected, moved):
+            quarantine.unlink()
+    except OSError:
+        return
+
+
+def _open_owned_sync_lock(lock_path: Path):
+    """Open a regular single-link lock without writing through aliases."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    parent_identity = lock_path.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent_identity.st_mode)
+        or int(getattr(parent_identity, "st_file_attributes", 0)) & 0x400
+    ):
+        raise OSError(f"sync lock parent is not a regular directory: {lock_path.parent}")
+    flags = os.O_RDWR
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    created = False
+    try:
+        fd = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        selected = lock_path.lstat()
+        fd = os.open(lock_path, flags)
+        opened = os.fstat(fd)
+        current = lock_path.lstat()
+        if (
+            not stat.S_ISREG(selected.st_mode)
+            or int(getattr(selected, "st_file_attributes", 0)) & 0x400
+            or selected.st_nlink != 1
+            or opened.st_nlink != 1
+            or not os.path.samestat(selected, opened)
+            or not os.path.samestat(opened, current)
+        ):
+            os.close(fd)
+            raise OSError(f"sync lock is not exclusively owned: {lock_path}")
+    opened = os.fstat(fd)
+    current_parent = lock_path.parent.lstat()
+    current = lock_path.lstat()
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or int(getattr(opened, "st_file_attributes", 0)) & 0x400
+        or opened.st_nlink != 1
+        or not os.path.samestat(opened, current)
+        or not os.path.samestat(parent_identity, current_parent)
+    ):
+        os.close(fd)
+        if created:
+            _remove_created_sync_lock(lock_path, opened)
+        raise OSError("sync lock provenance changed")
+    return os.fdopen(fd, "r+b", closefd=True)
 
 # Keep retry sleeps patchable without mutating the shared stdlib ``time``
 # module. Patching ``tools.environments.file_sync.time.sleep`` replaces
@@ -331,7 +397,7 @@ class FileSyncManager:
     def _sync_back_locked(self, lock_path: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""
         if fcntl is not None:
-            lock_fd = open(lock_path, "a+b")
+            lock_fd = _open_owned_sync_lock(lock_path)
             try:
                 fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
                 self._sync_back_impl()
@@ -346,14 +412,9 @@ class FileSyncManager:
         if msvcrt is None:  # pragma: no cover - unsupported platform
             raise OSError("no supported file-lock primitive")
 
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_fd = open(lock_path, "a+b")
+        lock_fd = _open_owned_sync_lock(lock_path)
         locked = False
         try:
-            lock_fd.seek(0, os.SEEK_END)
-            if lock_fd.tell() == 0:
-                lock_fd.write(b"0")
-                lock_fd.flush()
             lock_fd.seek(0)
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
             locked = True

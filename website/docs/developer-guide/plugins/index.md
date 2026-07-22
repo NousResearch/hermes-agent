@@ -638,7 +638,7 @@ Any non-None, non-empty return with a `"context"` key (or a plain non-empty stri
 
 #### Oversized-context spill
 
-Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to `$HERMES_HOME/hook_outputs/<session_id>/<uuid>.txt` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:
+Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to an owned session directory below `$HERMES_HOME/hook_outputs/` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. Pre-marker session directories from older releases remain read-only; resumed sessions write new spills to a hash-bound `s-<session-hash>/` directory instead. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:
 
 ```yaml
 hooks:
@@ -648,6 +648,8 @@ hooks:
     preview_head: 500      # chars shown at the top of the preview
     preview_tail: 500      # chars shown at the bottom of the preview
     # directory: null      # default: $HERMES_HOME/hook_outputs
+    retention_seconds: 604800   # default: prune files older than 7 days
+    max_files_per_session: 100  # default: also keep at most 100 newest files
 ```
 
 #### How injection works

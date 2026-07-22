@@ -544,6 +544,35 @@ detect_os() {
 # Dependency checks
 # ============================================================================
 
+cleanup_broken_uv_shell_env_hooks() {
+    # Astral's installer may have added a shell startup hook such as
+    # `. "$HOME/.local/bin/env"`. Hermes manages PATH itself, and if that
+    # helper file is missing macOS bash prints this on every new Terminal:
+    #   -bash: /Users/.../.local/bin/env: No such file or directory
+    # Only remove the exact uv helper hook when the helper file is absent.
+    if [ -e "$HOME/.local/bin/env" ]; then
+        return 0
+    fi
+
+    local shell_configs=()
+    [ -f "$HOME/.bash_profile" ] && shell_configs+=("$HOME/.bash_profile")
+    [ -f "$HOME/.bashrc" ] && shell_configs+=("$HOME/.bashrc")
+    [ -f "$HOME/.profile" ] && shell_configs+=("$HOME/.profile")
+    [ -f "$HOME/.zprofile" ] && shell_configs+=("$HOME/.zprofile")
+    [ -f "$HOME/.zshrc" ] && shell_configs+=("$HOME/.zshrc")
+
+    local shell_config tmp_file
+    for shell_config in "${shell_configs[@]}"; do
+        if grep -qE '^[[:space:]]*(\.|source)[[:space:]]+"?\$HOME/\.local/bin/env"?[[:space:]]*$' "$shell_config" 2>/dev/null; then
+            tmp_file="$(mktemp)"
+            grep -vE '^[[:space:]]*(\.|source)[[:space:]]+"?\$HOME/\.local/bin/env"?[[:space:]]*$' "$shell_config" > "$tmp_file" || true
+            cat "$tmp_file" > "$shell_config"
+            rm -f "$tmp_file"
+            log_success "Removed broken uv PATH hook from $shell_config"
+        fi
+    done
+}
+
 install_uv() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Termux detected — using Python's stdlib venv + pip instead of uv"
@@ -583,7 +612,12 @@ install_uv() {
     fi
     # UV_UNMANAGED_INSTALL tells the astral installer to place the binary
     # directly into $HERMES_HOME/bin instead of ~/.local/bin.
-    if UV_UNMANAGED_INSTALL="$HERMES_HOME/bin" sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
+    #
+    # Hermes manages PATH itself in setup_path(), so also keep uv's installer
+    # from adding shell startup hooks like `. "$HOME/.local/bin/env"` via
+    # INSTALLER_NO_MODIFY_PATH=1.  Those hooks can break every new macOS bash
+    # login shell if the helper file is missing.
+    if INSTALLER_NO_MODIFY_PATH=1 UV_UNMANAGED_INSTALL="$HERMES_HOME/bin" sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
         rm -f "$_uv_installer"
         if [ -x "$_managed_uv" ]; then
             UV_CMD="$_managed_uv"
@@ -3115,6 +3149,7 @@ main() {
     detect_os
     resolve_install_layout
     install_uv
+    cleanup_broken_uv_shell_env_hooks
     check_python
     check_git
     check_node

@@ -69,15 +69,25 @@ class DeepSeekProfile(ProviderProfile):
         if not enabled:
             return extra_body, top_level
 
-        # Effort mapping. Pass low/medium/high through; stronger levels → max.
-        # When no effort is set we omit reasoning_effort so DeepSeek applies
-        # its server default (currently high).
+        # Effort mapping. Pass low/medium/high through; stronger levels → max,
+        # 'minimal' → low (DeepSeek's floor). When no effort is set we omit
+        # reasoning_effort so DeepSeek applies its server default (currently
+        # high).
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort in {"xhigh", "max", "ultra"}:
                 top_level["reasoning_effort"] = "max"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+            elif effort == "minimal":
+                # DeepSeek's API has no 'minimal' tier — 'low' is the floor.
+                # Clamp down to the nearest supported level instead of omitting
+                # it: an omitted effort falls through to DeepSeek's server
+                # default (currently 'high'), i.e. the strongest tier — the
+                # OPPOSITE of the user's least-effort request. Mirrors both the
+                # xhigh/max → max ceiling clamp just above and the canonical
+                # minimal → low clamp used elsewhere (auxiliary/codex/xai).
+                top_level["reasoning_effort"] = "low"
 
         return extra_body, top_level
 

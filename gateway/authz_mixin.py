@@ -43,6 +43,21 @@ def _auth_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _coerce_allow_set(raw) -> set[str]:
+    """Parse allowlist values from config or env var into a set of strings.
+
+    Handles both list inputs (YAML sequences) and comma-separated string
+    inputs (env vars or scalar YAML values).  A scalar string is split on
+    commas so ``allow_from: "123,456"`` yields ``{"123", "456"}``, not
+    ``{"1", "2", "3", ",", ...}``.
+    """
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -369,7 +384,7 @@ class GatewayAuthorizationMixin:
                     extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
                     adapter_group_allowed = extra.get("group_allowed_chats")
                     if adapter_group_allowed:
-                        allowed = {str(c).strip() for c in adapter_group_allowed if str(c).strip()}
+                        allowed = _coerce_allow_set(adapter_group_allowed)
                         if "*" in allowed or source.chat_id in allowed:
                             return True
             except Exception:
@@ -550,12 +565,12 @@ class GatewayAuthorizationMixin:
             adapter = self._adapter_for_source(source)
             if adapter is not None:
                 extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
-                if source.chat_type in {"group", "forum"}:
+                if source.chat_type in {"group", "forum", "channel"}:
                     adapter_allow = extra.get("group_allow_from")
                 else:
                     adapter_allow = extra.get("allow_from")
                 if adapter_allow:
-                    allowed = {str(u).strip() for u in adapter_allow if str(u).strip()}
+                    allowed = _coerce_allow_set(adapter_allow)
                     if user_id in allowed or "*" in allowed:
                         return True
             # No allowlists configured -- check global allow-all flag

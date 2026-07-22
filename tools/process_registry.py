@@ -92,7 +92,11 @@ def _format_ndjson_progress(output_buffer: str) -> str:
 
     Returns a compact human-readable string showing the latest activity,
     replacing spinner glyphs with structured tool/thinking/result events.
+    Includes environment friction detection: composite friction_index
+    from error rate, context velocity, and retry density.
     """
+    from collections import Counter
+
     lines = output_buffer.strip().split("\n")
     events = []
     for line in lines[-50:]:
@@ -114,12 +118,35 @@ def _format_ndjson_progress(output_buffer: str) -> str:
     result_event = None
     init_event = None
 
-    for ev in events:
+    error_count = 0
+    tool_result_count = 0
+    context_ratios = []
+    tool_call_signatures = []
+
+    _ERROR_PATTERNS = (
+        "Traceback (most recent call last)",
+        "ModuleNotFoundError",
+        "ImportError",
+        "Permission denied",
+        "No such file or directory",
+        "command not found",
+        "ConnectionError",
+        "kalloc",
+    )
+
+    for i, ev in enumerate(events):
         ev_type = ev.get("type", "")
         if ev_type == "system" and ev.get("subtype") == "init":
             init_event = ev
         elif ev_type == "assistant":
             msg = ev.get("message", {})
+
+            if msg.get("stop_reason") is not None:
+                usage = msg.get("usage", {})
+                ratio = usage.get("context_usage_ratio")
+                if ratio is not None:
+                    context_ratios.append((i, float(ratio)))
+
             for block in msg.get("content", []):
                 bt = block.get("type", "")
                 if bt == "tool_use":
@@ -136,12 +163,42 @@ def _format_ndjson_progress(output_buffer: str) -> str:
                     elif name == "Agent" and "description" in inp:
                         detail = f" ({inp['description']})"
                     tool_uses.append(f"{name}{detail}")
+
+                    sig_input = (inp.get("command") or inp.get("file_path")
+                                 or inp.get("pattern") or inp.get("prompt")
+                                 or inp.get("url") or inp.get("description")
+                                 or (str(inp)[:80] if inp else ""))
+                    tool_call_signatures.append(f"{name}:{str(sig_input)[:80]}")
+
                 elif bt == "thinking":
                     last_thinking_len = len(block.get("thinking", ""))
                 elif bt == "text":
                     text = block.get("text", "")
                     if text:
                         parts.append(f"Response: {text[:120]}")
+
+        elif ev_type == "user":
+            tool_use_result = ev.get("tool_use_result", {})
+            exit_code = tool_use_result.get("exitCode")
+
+            msg = ev.get("message", {})
+            for block in msg.get("content", []):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_result_count += 1
+
+                if exit_code is not None and exit_code != 0:
+                    error_count += 1
+                    continue
+
+                content = block.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", "") for c in content if isinstance(c, dict)
+                    )
+                if any(pat in content for pat in _ERROR_PATTERNS):
+                    error_count += 1
+
         elif ev_type == "result":
             result_event = ev
 
@@ -167,6 +224,39 @@ def _format_ndjson_progress(output_buffer: str) -> str:
         if result_text:
             summary += f": {result_text[:100]}"
         parts.append(summary)
+
+    # Friction index: (error_rate + ctx_velocity_norm + retry_density) / 3
+    error_rate = error_count / max(tool_result_count, 1)
+
+    ctx_velocity = 0.0
+    if len(context_ratios) >= 3:
+        first_idx, first_ratio = context_ratios[0]
+        last_idx, last_ratio = context_ratios[-1]
+        span = last_idx - first_idx
+        if span > 0:
+            ctx_velocity = (last_ratio - first_ratio) / span
+    ctx_velocity_norm = min(ctx_velocity / 0.02, 1.0)
+
+    sig_counts = Counter(tool_call_signatures)
+    retry_density = max(sig_counts.values(), default=0) / max(len(tool_call_signatures), 1)
+
+    friction_index = (error_rate + ctx_velocity_norm + retry_density) / 3
+
+    if friction_index >= 0.40:
+        signals = []
+        if error_rate > 0.3:
+            signals.append(f"HIGH-ERROR ({error_count}/{tool_result_count})")
+        if ctx_velocity > 0.02:
+            signals.append(f"CTX-VELOCITY +{ctx_velocity:.1%}/ev")
+        if retry_density > 0.3:
+            worst = max(sig_counts.items(), key=lambda x: x[1])
+            tool_name = worst[0].split(":")[0]
+            signals.append(f"RETRY {tool_name} x{worst[1]}")
+        if context_ratios and context_ratios[-1][1] > 0.85:
+            signals.append(f"CTX-FULL {context_ratios[-1][1]:.0%}")
+        parts.append(f"\u26a0 Friction: {' | '.join(signals)}")
+    elif friction_index >= 0.15:
+        parts.append(f"errors: {error_count}/{tool_result_count}")
 
     return " | ".join(parts) if parts else "[NDJSON: processing...]"
 

@@ -1,7 +1,7 @@
 ---
 name: qodercli
 description: "Delegate coding to Qoder CLI (features, PRs, refactors)."
-version: 2.4.0
+version: 2.5.0
 author: explicitcontextualunderstanding
 license: MIT
 platforms: [linux, macos, windows]
@@ -117,6 +117,27 @@ process(action="write", session_id="<id>", data="\x03")
 - If files are being written, keep waiting. If no file changes after 5 minutes, then investigate with `process(action="log")`.
 
 **NDJSON progress (automatic):** Background qodercli tasks are automatically spawned in pipe mode with `--output-format stream-json`. `process(poll)` returns structured progress like `Tools used: Read (src/auth.py), Edit (src/routes.ts) | Thinking... (2400 chars)` instead of spinner glyphs. You will see exactly which tool qodercli is using — no patience guessing needed.
+
+**Environment friction detection:** Poll output includes a runtime friction index computed from the NDJSON stream (error rate, context velocity, retry density). When the background session hits environment problems (missing packages, broken imports, permission errors), you will see:
+
+- `errors: N/M` — mild friction (some tool calls failing)
+- `⚠ Friction: HIGH-ERROR (N/M) | RETRY Bash x4` — heavy friction (session is stuck in fix→fail loops)
+
+**When you see `⚠ Friction` — this is a regime response, not a task decision:**
+
+The friction signal means the *environment* is broken, not the task or the skill. Your response should treat the regime signal: change how you interact with qodercli, not what you ask it to do.
+
+1. The session is burning context on remediation loops — it will likely timeout or produce incomplete work.
+2. Kill it: `process(action="kill", session_id="<id>")`
+3. Diagnose: check `process(action="log")` output for the specific errors (ModuleNotFoundError, Permission denied, etc.)
+4. Fix the environment (install missing deps, fix permissions) BEFORE retrying.
+5. **Retry with `-p` (print mode).** Do NOT retry with `-i` or `background=true` — that re-enters the same monitoring loop that friction broke. Print mode is one-shot: no polling, no NDJSON stream, no friction accumulation.
+
+```
+terminal(command="qodercli -p '<same task, tighter scope>' --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
+```
+
+Clean sessions show zero friction overhead — no indicator appears when the environment is healthy.
 
 ### Folder trust dialog (interactive mode only)
 

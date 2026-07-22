@@ -111,6 +111,7 @@ models-dev-upstream/
 .codex/
 .cursor/
 .gemini/
+.qoder/
 .zed/
 .mcp.json
 opencode.json

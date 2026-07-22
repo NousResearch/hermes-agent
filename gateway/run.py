@@ -16509,6 +16509,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
+    async def _wait_adapter_send_ready(self, adapter: Any) -> None:
+        """Wait for platform-specific send readiness (e.g. Telegram polling).
+
+        On v0.19.0+ the faster cold-start path reaches restart-notification send
+        before Telegram's polling has made its first successful getUpdates
+        request, causing send_path_degraded failures (#69370).
+
+        Uses duck-typing: if the adapter exposes a ``_polling_progress_event``
+        (as the Telegram adapter does), we wait on it with a bounded timeout.
+        Other adapters have no-op.
+        """
+        progress_event = getattr(adapter, "_polling_progress_event", None)
+        if progress_event is not None and not progress_event.is_set():
+            try:
+                await asyncio.wait_for(progress_event.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "Timeout waiting for adapter send readiness "
+                    "(polling progress) — proceeding anyway"
+                )
+
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
@@ -16542,6 +16563,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform_str,
                 )
                 return None
+
+            # Wait for the platform adapter's send path to be healthy before
+            # attempting delivery.  The generic 1 s settle in start() helps,
+            # but Telegram's polling-based adapters need their first successful
+            # getUpdates round to clear _send_path_degraded.
+            await self._wait_adapter_send_ready(adapter)
 
             metadata = self._thread_metadata_for_target(
                 platform,
@@ -16620,6 +16647,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.thread_id,
                     adapter=adapter,
                 )
+                # Wait for the platform adapter's send path to be healthy
+                # before attempting the startup notification broadcast.
+                # See _wait_adapter_send_ready docstring (#69370).
+                await self._wait_adapter_send_ready(adapter)
                 if metadata:
                     result = await adapter.send(
                         str(home.chat_id),

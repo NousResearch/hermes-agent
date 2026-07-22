@@ -254,6 +254,7 @@ def _run_agent(
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
+    from hermes_cli.mcp_startup import wait_for_mcp_discovery
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
@@ -326,6 +327,12 @@ def _run_agent(
     toolsets_list = _normalize_toolsets(toolsets)
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+
+    # CLI startup discovers MCP servers in the background. Match the normal
+    # chat path's bounded wait before AIAgent snapshots the tool registry;
+    # otherwise a fast one-shot can permanently miss every configured MCP
+    # tool and incorrectly tell the caller that none are available.
+    wait_for_mcp_discovery()
 
     session_db = _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers

@@ -39,6 +39,14 @@ class TestFalCatalog:
     def test_default_model_in_catalog(self, image_tool):
         assert image_tool.DEFAULT_MODEL in image_tool.FAL_MODELS
 
+    def test_nano_banana_2_in_catalog(self, image_tool):
+        meta = image_tool.FAL_MODELS["fal-ai/nano-banana-2"]
+
+        assert meta["display"] == "Nano Banana 2 (Gemini 3.1 Flash Image)"
+        assert meta["size_style"] == "aspect_ratio"
+        assert meta["edit_endpoint"] == "fal-ai/nano-banana-2/edit"
+        assert meta["max_reference_images"] == 14
+
     def test_all_entries_have_required_keys(self, image_tool):
         required = {
             "display", "speed", "strengths", "price",
@@ -118,6 +126,24 @@ class TestAspectRatioFamily:
     def test_nano_banana_portrait_uses_aspect_ratio(self, image_tool):
         p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hello", "portrait")
         assert p["aspect_ratio"] == "9:16"
+
+    def test_nano_banana_2_uses_aspect_ratio_and_flash_defaults(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/nano-banana-2", "hello", "landscape")
+
+        assert p["aspect_ratio"] == "16:9"
+        assert p["resolution"] == "1K"
+        assert p["limit_generations"] is True
+        assert "image_size" not in p
+
+    def test_nano_banana_2_allows_thinking_level(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/nano-banana-2",
+            "hello",
+            "square",
+            overrides={"thinking_level": "minimal"},
+        )
+
+        assert p["thinking_level"] == "minimal"
 
 
 class TestGptLiteralFamily:

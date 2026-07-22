@@ -299,6 +299,28 @@ def test_instance_id_hash_is_stable_and_distinguishes_instances():
     assert "install-1" not in first
 
 
+def test_runtime_resource_attributes_include_stable_hashed_instance():
+    from agent.monitoring.gateway_health_export import _runtime_resource_attributes
+
+    config = {
+        "monitoring": {
+            "install_id": "private-install-id",
+            "gateway_health_export": {
+                "resource_attributes": {"deployment.environment.name": "staging"}
+            },
+        }
+    }
+
+    attrs = _runtime_resource_attributes(config, telemetry_scope="gateway_health")
+
+    assert attrs["service.name"] == "hermes-gateway"
+    assert attrs["service.instance.id"].startswith("sha256:")
+    assert len(attrs["service.instance.id"]) == len("sha256:") + 24
+    assert "private-install-id" not in str(attrs)
+    assert attrs["deployment.environment.name"] == "staging"
+    assert attrs["telemetry.scope"] == "gateway_health"
+
+
 def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
     from agent.monitoring.gateway_health_export import _diagnostic_log_attributes
 

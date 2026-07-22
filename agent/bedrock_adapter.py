@@ -987,10 +987,19 @@ def build_converse_kwargs(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    performance_config: Optional[Dict] = None,
+    service_tier: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for ``bedrock-runtime.converse()`` or ``converse_stream()``.
 
     Converts OpenAI-format inputs to Converse API parameters.
+
+    Args:
+        performance_config: Latency optimization config.
+            Example: ``{"latency": "optimized"}``
+        service_tier: Bedrock service tier for cost/latency tradeoff.
+            One of: "priority", "default", "flex", "reserved".
+            "flex" trades latency for ~50% cost reduction.
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
 
@@ -1035,6 +1044,12 @@ def build_converse_kwargs(
 
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
+
+    if performance_config:
+        kwargs["performanceConfig"] = performance_config
+
+    if service_tier:
+        kwargs["serviceTier"] = {"type": service_tier}
 
     return kwargs
 

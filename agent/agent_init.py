@@ -948,6 +948,20 @@ def init_agent(
                     agent._bedrock_guardrail_config["trace"] = _gr["trace"]
         except Exception:
             pass
+        # Service tier and performance config — read from config.yaml.
+        agent._bedrock_service_tier = None
+        agent._bedrock_performance_config = None
+        try:
+            from hermes_cli.config import load_config as _load_st_cfg
+            _br = _load_st_cfg().get("bedrock", {})
+            _st = (_br.get("service_tier") or "").strip()
+            if _st:
+                agent._bedrock_service_tier = _st
+            _lat = (_br.get("latency") or "").strip()
+            if _lat:
+                agent._bedrock_performance_config = {"latency": _lat}
+        except Exception:
+            pass
         agent.client = None
         agent._client_kwargs = {}
         if not agent.quiet_mode:

@@ -1590,6 +1590,18 @@ DEFAULT_CONFIG = {
             "stream_processing_mode": "async",  # "sync" or "async"
             "trace": "disabled",         # "enabled", "disabled", or "enabled_full"
         },
+        # Service tier — controls cost/latency tradeoff.
+        # "default" = standard on-demand pricing and latency.
+        # "flex"    = ~50% cheaper, trades higher/variable latency (batch-like).
+        # "priority"= lowest latency, higher cost.
+        # "reserved"= committed throughput (requires capacity reservation).
+        # Leave empty to use Bedrock's default ("default").
+        "service_tier": "",
+        # Performance config — latency optimization.
+        # "standard"  = normal inference latency.
+        # "optimized" = latency-optimized inference (where available).
+        # Leave empty to use Bedrock's default ("standard").
+        "latency": "",
     },
 
     # Auxiliary model config — provider:model for each side task.

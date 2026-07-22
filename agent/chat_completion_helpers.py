@@ -1013,6 +1013,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _bt = agent._get_transport()
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
+        service_tier = getattr(agent, "_bedrock_service_tier", None)
+        performance_config = getattr(agent, "_bedrock_performance_config", None)
         return _bt.build_kwargs(
             model=agent.model,
             messages=api_messages,
@@ -1020,6 +1022,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens or 4096,
             region=region,
             guardrail_config=guardrail,
+            service_tier=service_tier,
+            performance_config=performance_config,
         )
 
     if agent.api_mode == "codex_responses":

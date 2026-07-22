@@ -700,6 +700,36 @@ class TestBuildConverseKwargs:
         )
         assert "toolConfig" not in kwargs
 
+    def test_service_tier_flex(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model", messages=[{"role": "user", "content": "Hi"}],
+            service_tier="flex",
+        )
+        assert kwargs["serviceTier"] == {"type": "flex"}
+
+    def test_service_tier_not_included_when_empty(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model", messages=[{"role": "user", "content": "Hi"}],
+        )
+        assert "serviceTier" not in kwargs
+
+    def test_performance_config_optimized(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model", messages=[{"role": "user", "content": "Hi"}],
+            performance_config={"latency": "optimized"},
+        )
+        assert kwargs["performanceConfig"] == {"latency": "optimized"}
+
+    def test_performance_config_not_included_when_none(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model", messages=[{"role": "user", "content": "Hi"}],
+        )
+        assert "performanceConfig" not in kwargs
+
 
 # ---------------------------------------------------------------------------
 # Model discovery

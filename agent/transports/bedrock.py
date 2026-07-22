@@ -50,6 +50,8 @@ class BedrockTransport(ProviderTransport):
 
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
+        performance_config = params.get("performance_config")
+        service_tier = params.get("service_tier")
 
         kwargs = build_converse_kwargs(
             model=model,
@@ -58,6 +60,8 @@ class BedrockTransport(ProviderTransport):
             max_tokens=params.get("max_tokens", 4096),
             temperature=params.get("temperature"),
             guardrail_config=guardrail,
+            performance_config=performance_config,
+            service_tier=service_tier,
         )
         # Sentinel keys for dispatch — agent pops these before the boto3 call
         kwargs["__bedrock_converse__"] = True

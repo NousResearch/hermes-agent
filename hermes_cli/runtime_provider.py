@@ -2036,6 +2036,13 @@ def resolve_runtime_provider(
             }
         if guardrail_config:
             runtime["guardrail_config"] = guardrail_config
+        # Service tier and performance config
+        _svc_tier = (_bedrock_cfg.get("service_tier") or "").strip()
+        if _svc_tier:
+            runtime["service_tier"] = _svc_tier
+        _latency = (_bedrock_cfg.get("latency") or "").strip()
+        if _latency:
+            runtime["performance_config"] = {"latency": _latency}
         return runtime
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)

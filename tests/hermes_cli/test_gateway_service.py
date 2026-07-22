@@ -237,12 +237,18 @@ class TestSystemdServiceRefresh:
         async def fake_start_gateway(**kwargs):
             return True
 
+        # Preserve the process-level exit contract without terminating pytest.
+        exit_codes = []
         monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+        monkeypatch.setattr(
+            "gateway.run._exit_after_graceful_shutdown", exit_codes.append
+        )
 
         gateway_cli.run_gateway()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
+        assert exit_codes == [0]
 
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch

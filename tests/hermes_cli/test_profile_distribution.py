@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -305,6 +306,73 @@ class TestInstall:
         # Install again with --force succeeds
         plan = install_distribution(str(staged), name="target", force=True)
         assert plan.target_dir.is_dir()
+
+    def test_force_install_preserves_existing_dir_when_new_copy_fails(self, profile_env, monkeypatch):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="target")
+        skill = plan.target_dir / "skills" / "demo" / "SKILL.md"
+        skill.write_text("old skill\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("new skill\n")
+        original_copytree = shutil.copytree
+
+        def fail_skills_copy(src, dst, *args, **kwargs):
+            if Path(src).name == "skills":
+                raise OSError("[WinError 145] The directory is not empty")
+            return original_copytree(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_cli.profile_distribution.shutil.copytree",
+            fail_skills_copy,
+        )
+
+        with pytest.raises(OSError, match="WinError 145"):
+            install_distribution(str(staged), name="target", force=True)
+
+        assert skill.read_text() == "old skill\n"
+
+    def test_force_install_restores_existing_dir_when_staged_swap_fails(
+        self, profile_env, monkeypatch
+    ):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="target")
+        skill = plan.target_dir / "skills" / "demo" / "SKILL.md"
+        skill.write_text("old skill\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("new skill\n")
+        original_rename = Path.rename
+
+        def fail_staged_swap(path, target):
+            if ".skills.hermes-dist-staging-" in path.name:
+                raise OSError("staged swap failed")
+            return original_rename(path, target)
+
+        monkeypatch.setattr(Path, "rename", fail_staged_swap)
+
+        with pytest.raises(OSError, match="staged swap failed"):
+            install_distribution(str(staged), name="target", force=True)
+
+        assert skill.read_text() == "old skill\n"
+        assert not list(plan.target_dir.parent.glob(".skills.hermes-dist-*"))
+
+    def test_force_install_succeeds_when_old_dir_cleanup_fails(self, profile_env, monkeypatch):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="target")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("new skill\n")
+        original_rmtree = shutil.rmtree
+
+        def fail_old_backup_cleanup(path, *args, **kwargs):
+            if "hermes-dist-old" in str(path):
+                raise OSError("[WinError 145] The directory is not empty")
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_cli.profile_distribution.shutil.rmtree",
+            fail_old_backup_cleanup,
+        )
+        monkeypatch.setattr("hermes_cli.profile_distribution.time.sleep", lambda *_args: None)
+
+        plan = install_distribution(str(staged), name="target", force=True)
+
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "new skill\n"
 
     def test_install_rejects_default_name(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")

@@ -73,6 +73,18 @@ def test_x_posting_workflow_keeps_public_write_safety_rules():
     assert "URL and the final posted text" in body
     assert "Never read or print local credential stores" in body
     assert "stores only public post metadata" in body
+    assert "twitter_request_catalog" in body
+    assert "reviewed exact `text`" in body
+    assert "degraded=false" in body
+    assert "`GET` method only" in body
+    assert "direct messages, bookmarks, drafts, account settings" in body
+    assert "success=false" in body
+    assert "cursor-free" in body
+    assert "X Premium" in body
+    assert "`x_search` is search-only" in body
+    assert "Skip `x_search` for posting-only requests" in body
+    assert "block a `lm-twitterer` post" in body
+    assert "x_search_required_for_posting=false" in body
 
 
 def test_memory_plugin_skill_links_reference_and_blocks_real_home_writes():

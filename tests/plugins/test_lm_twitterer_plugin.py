@@ -89,6 +89,8 @@ def test_register_exposes_tools_and_cli_command():
         "lm_twitterer_auth_check",
         "lm_twitterer_mentions",
     }
+    post_tool = next(tool for tool in ctx.tools if tool["name"] == "lm_twitterer_post")
+    assert "research_context" not in post_tool["schema"]["parameters"]["properties"]
     assert ctx.commands[0][0][0] == "lm-twitterer"
     assert ctx.cli_commands[0]["name"] == "lm-twitterer"
 
@@ -224,6 +226,47 @@ def test_post_generation_includes_relevant_ebbinghaus_memory_context(tmp_path):
     user_message = captured["messages"][1]["content"]
     assert "Use these trusted Hakua/Hermes memory notes" in user_message
     assert "embodiment shell" in user_message
+
+
+def test_explicit_post_text_skips_generation(tmp_path):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path)
+
+    core.bind_llm_factory(
+        lambda: (_ for _ in ()).throw(
+            AssertionError("LLM should not run when explicit text is supplied")
+        )
+    )
+    result = core.post(
+        dry_run=True,
+        text="Reviewed public text",
+        cfg=cfg,
+    )
+
+    assert result["ok"] is True
+    assert result["tweet_text"] == "Reviewed public text"
+    assert result["posting_transport"] == core.POSTING_TRANSPORT
+
+
+def test_status_declares_cookie_posting_independent_of_x_search_and_premium(tmp_path, monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path, auth_token="auth", ct0="csrf")
+
+    monkeypatch.setattr(core, "settings", lambda: cfg)
+    monkeypatch.setattr(
+        core,
+        "_active_model_config",
+        lambda: {"provider": "opencode-zen", "model": "auto-free"},
+    )
+
+    status = core.status()
+
+    assert status["posting_transport"] == "x_cookie_session"
+    assert status["posting_requires_x_premium"] is False
+    assert status["x_search_role"] == "public_post_search_only"
+    assert status["x_search_required_for_posting"] is False
 
 
 def test_safe_post_create_tweet_clears_default_quote_attachment(monkeypatch):
@@ -552,6 +595,7 @@ def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, 
     assert result["posted"] is True
     assert result["url"] == "https://x.com/i/web/status/999"
     assert result["media_ids"] == ["12345"]
+    assert result["posting_transport"] == "x_cookie_session"
     assert uploaded == ["clip.mp4"]
 
 

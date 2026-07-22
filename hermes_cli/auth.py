@@ -1799,6 +1799,21 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
+    # 5. Check fallback_providers in config.yaml — allows no-auth local
+    # providers (hypura, llama.cpp, etc.) to appear in the explicit-only
+    # desktop picker when the user has added them to their fallback chain.
+    try:
+        from hermes_cli.config import load_config
+
+        _cfg = load_config()
+        for _fp in (_cfg.get("fallback_providers") or []):
+            if isinstance(_fp, dict):
+                _slug = str(_fp.get("provider") or "").strip().lower()
+                if _slug == normalized:
+                    return True
+    except Exception:
+        pass
+
     return False
 
 

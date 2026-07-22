@@ -38,6 +38,8 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         captured["env"] = kwargs.get("env")
+        captured["encoding"] = kwargs.get("encoding")
+        captured["errors"] = kwargs.get("errors")
         return _fake_completed_process(json.dumps({"tree_markdown": "root"}))
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -50,6 +52,8 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
     assert "ANTHROPIC_API_KEY" not in captured["env"]
     # Sanitization filters secrets, not everything — an ordinary var survives.
     assert captured["env"].get("PATH") == "/usr/bin:/bin"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
 
 
 def test_cli_fallback_applies_telemetry_policy(monkeypatch):

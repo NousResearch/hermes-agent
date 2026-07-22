@@ -41,6 +41,10 @@ DEFAULT_IDENTITY_NAME = "はくあ"
 DEFAULT_REQUIRED_HASHTAG = "#hermesagent"
 
 _MAX_PUBLIC_TOPIC_CHARS = 240
+POSTING_TRANSPORT = "x_cookie_session"
+POSTING_REQUIRES_X_PREMIUM = False
+X_SEARCH_ROLE = "public_post_search_only"
+X_SEARCH_REQUIRED_FOR_POSTING = False
 _FORBIDDEN_TOPIC_CHECKS: list[tuple[str, re.Pattern[str]]] = [
     ("windows user profile path", re.compile(r"C:\\Users", re.I)),
     ("wsl hermes home path", re.compile(r"/c/Users", re.I)),
@@ -1544,14 +1548,16 @@ def post(
         media = _coerce_media_paths(media_paths, cfg)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
-    tweet_text = (text or "").strip() or generate_post_text(topic, cfg)
+    explicit_text = (text or "").strip()
+    tweet_text = explicit_text or generate_post_text(topic, cfg)
     result: dict[str, Any] = {
         "ok": True,
         "dry_run": bool(dry_run),
         "tweet_text": tweet_text,
         "chars": len(tweet_text),
-        "generation_provider": "explicit text" if (text or "").strip() else (cfg.provider or "active Hermes default"),
-        "generation_model": "explicit text" if (text or "").strip() else (cfg.model or "active Hermes default"),
+        "generation_provider": "explicit text" if explicit_text else (cfg.provider or "active Hermes default"),
+        "generation_model": "explicit text" if explicit_text else (cfg.model or "active Hermes default"),
+        "posting_transport": POSTING_TRANSPORT,
     }
     if media:
         result["media_paths"] = [str(path) for path in media]
@@ -1862,6 +1868,10 @@ def status() -> dict[str, Any]:
         "effective_generation_provider": effective_provider,
         "effective_generation_model": effective_model,
         "generation_uses_grok_backend": _is_grok_provider(effective_provider),
+        "posting_transport": POSTING_TRANSPORT,
+        "posting_requires_x_premium": POSTING_REQUIRES_X_PREMIUM,
+        "x_search_role": X_SEARCH_ROLE,
+        "x_search_required_for_posting": X_SEARCH_REQUIRED_FOR_POSTING,
         "memory_bridge_enabled": cfg.memory_bridge_enabled,
         "memory_db": str(cfg.memory_db) if cfg.memory_db else "",
         "memory_db_exists": bool(cfg.memory_db and cfg.memory_db.exists()),

@@ -313,13 +313,12 @@ class TestGatewayQuickCommands:
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_custom_commands(self):
-        from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = GatewayConfig(
-            commands={"custom": {"limits": {"type": "exec", "command": "echo ok"}}}
-        )
+        runner.config = {
+            "commands": {"custom": {"limits": {"type": "exec", "command": "echo ok"}}}
+        }
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)

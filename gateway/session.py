@@ -586,6 +586,23 @@ def build_session_context_prompt(
             "If the user needs a detailed answer, give the short version first "
             "and offer to elaborate."
         )
+    elif context.source.platform == Platform.FEISHU:
+        # Inject chat_id and chat_type so the agent can determine which
+        # persona to use (e.g., multi-agent setup with different Feishu groups).
+        # Fields are independent — chat_type is useful even without chat_id.
+        # Sanitize: strip backticks and newlines to prevent prompt injection
+        # via crafted IDs or chat type values.
+        _chat_id = getattr(context.source, "chat_id", None)
+        _chat_type = getattr(context.source, "chat_type", None)
+        if _chat_id:
+            _safe_id = _chat_id.replace("`", "").replace("\n", " ").replace("\r", "").strip()
+            if _safe_id:
+                lines.append("")
+                lines.append(f"**Feishu Chat ID:** `{_safe_id}`")
+        if _chat_type:
+            _safe_type = _chat_type.replace("`", "").replace("\n", " ").replace("\r", "").strip()
+            if _safe_type:
+                lines.append(f"**Chat Type:** {_safe_type}")
     elif context.source.platform == Platform.YUANBAO:
         lines.append("")
         lines.append(

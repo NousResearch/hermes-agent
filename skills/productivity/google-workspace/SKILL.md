@@ -200,6 +200,12 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 
 ### Calendar
 
+Calendar writes must be closed-loop verified. Do not tell the user an event is
+saved until the command output includes `"verified": true` or you have separately
+listed/read the event by ID and confirmed the title plus exact start/end time.
+If verification fails, say the save failed or is unverified, and show the user
+the exact follow-up needed instead of saying it was saved.
+
 ```bash
 # List events (defaults to next 7 days)
 $GAPI calendar list
@@ -294,7 +300,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
-- **Calendar create**: `{status: "created", id, summary, htmlLink}`
+- **Calendar create**: `{status: "created", id, summary, htmlLink, verified}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
 - **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
 - **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`

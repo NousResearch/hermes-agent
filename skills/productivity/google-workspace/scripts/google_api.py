@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -534,22 +535,108 @@ def calendar_create(args):
             params={"calendarId": args.calendar},
             body=event,
         )
+        verified = _calendar_get_verified_gws(args.calendar, result["id"], event)
         print(json.dumps({
             "status": "created",
             "id": result["id"],
-            "summary": result.get("summary", ""),
-            "htmlLink": result.get("htmlLink", ""),
-        }, indent=2))
+            "summary": verified.get("summary", ""),
+            "htmlLink": verified.get("htmlLink", ""),
+            "verified": True,
+        }, indent=2, ensure_ascii=False))
         return
 
     service = build_service("calendar", "v3")
     result = service.events().insert(calendarId=args.calendar, body=event).execute()
+    verified = _calendar_get_verified_service(service, args.calendar, result["id"], event)
     print(json.dumps({
         "status": "created",
         "id": result["id"],
-        "summary": result.get("summary", ""),
-        "htmlLink": result.get("htmlLink", ""),
-    }, indent=2))
+        "summary": verified.get("summary", ""),
+        "htmlLink": verified.get("htmlLink", ""),
+        "verified": True,
+    }, indent=2, ensure_ascii=False))
+
+
+def _calendar_get_verified_gws(calendar_id: str, event_id: str, expected: dict) -> dict:
+    last_error = None
+    for _ in range(3):
+        try:
+            found = _run_gws(
+                ["calendar", "events", "get"],
+                params={"calendarId": calendar_id, "eventId": event_id},
+            )
+            if _calendar_event_matches(found, expected):
+                return found
+            last_error = "created event was readable but did not match requested fields"
+        except SystemExit:
+            raise
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(1)
+
+    print(
+        f"ERROR: Calendar create returned id {event_id}, but verification failed: {last_error}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _calendar_get_verified_service(service, calendar_id: str, event_id: str, expected: dict) -> dict:
+    last_error = None
+    for _ in range(3):
+        try:
+            found = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+            if _calendar_event_matches(found, expected):
+                return found
+            last_error = "created event was readable but did not match requested fields"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(1)
+
+    print(
+        f"ERROR: Calendar create returned id {event_id}, but verification failed: {last_error}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _calendar_event_matches(found: dict, expected: dict) -> bool:
+    if found.get("status") == "cancelled":
+        return False
+    if found.get("summary", "") != expected.get("summary", ""):
+        return False
+
+    found_start = found.get("start", {}).get("dateTime", found.get("start", {}).get("date", ""))
+    found_end = found.get("end", {}).get("dateTime", found.get("end", {}).get("date", ""))
+    if not _calendar_time_matches(found_start, expected.get("start", {}).get("dateTime", "")):
+        return False
+    if not _calendar_time_matches(found_end, expected.get("end", {}).get("dateTime", "")):
+        return False
+    return True
+
+
+def _calendar_time_matches(found_value: str, expected_value: str) -> bool:
+    if found_value == expected_value:
+        return True
+    if not found_value or not expected_value:
+        return False
+    if "T" not in found_value or "T" not in expected_value:
+        return False
+
+    try:
+        found_dt = _parse_rfc3339_datetime(found_value)
+        expected_dt = _parse_rfc3339_datetime(expected_value)
+    except ValueError:
+        return False
+    return found_dt.astimezone(timezone.utc) == expected_dt.astimezone(timezone.utc)
+
+
+def _parse_rfc3339_datetime(value: str) -> datetime:
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 

@@ -545,6 +545,39 @@ def _list_projects(store: Path) -> List[Dict]:
     return out
 
 
+def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
+    """Return pre-v2 per-project shadow repos still directly under ``base``.
+
+    Pre-v2 layout kept one shadow git repo per working directory directly
+    under ``CHECKPOINT_BASE`` (identified by a ``HEAD`` file).  This is the
+    single source of truth for that scan so a preview built from it (e.g.
+    ``store_status``) always matches what ``prune_checkpoints`` deletes.
+    """
+    out: List[Dict] = []
+    if not base.exists():
+        return out
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name == _STORE_DIRNAME or child.name.startswith(_LEGACY_PREFIX):
+            continue
+        if not (child / "HEAD").exists():
+            continue
+        workdir: Optional[str] = None
+        wd_marker = child / "HERMES_WORKDIR"
+        if wd_marker.exists():
+            try:
+                workdir = wd_marker.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError):
+                workdir = None
+        out.append({
+            "path": child,
+            "workdir": workdir,
+            "exists": bool(workdir) and Path(workdir).exists(),
+        })
+    return out
+
+
 def _dir_file_count(path: str) -> int:
     """Quick file count estimate (stops early if over _MAX_FILES)."""
     count = 0
@@ -1325,22 +1358,16 @@ def prune_checkpoints(
             except OSError as exc:
                 result["errors"] += 1
                 logger.warning("Failed to delete legacy archive %s: %s", child, exc)
-            continue
-        # Only count as a pre-v2 shadow repo if it has a HEAD.
-        if not (child / "HEAD").exists():
-            continue
+
+    # Pre-v2 per-project shadow repos.  Scanned via the same helper
+    # `store_status()` uses for its orphan preview, so a confirmation prompt
+    # built from that preview always matches what gets deleted here.
+    for repo in _pre_v2_shadow_repos(base):
+        child = repo["path"]
         result["scanned"] += 1
         reason: Optional[str] = None
-        if delete_orphans:
-            workdir: Optional[str] = None
-            wd_marker = child / "HERMES_WORKDIR"
-            if wd_marker.exists():
-                try:
-                    workdir = wd_marker.read_text(encoding="utf-8").strip()
-                except (OSError, UnicodeDecodeError):
-                    workdir = None
-            if workdir is None or not Path(workdir).exists():
-                reason = "orphan"
+        if delete_orphans and not repo["exists"]:
+            reason = "orphan"
         if reason is None and retention_days > 0:
             newest = 0.0
             try:
@@ -1572,7 +1599,14 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
 
     ``{"base": path, "store_size_bytes": N, "legacy_size_bytes": N,
        "total_size_bytes": N, "project_count": N, "projects": [...],
-       "legacy_archives": [...]}``
+       "pre_v2_projects": [...], "legacy_archives": [...]}``
+
+    ``pre_v2_projects`` covers shadow repos still on the pre-v2 per-project
+    layout (``base/<hash>/HEAD``) — distinct from ``legacy_archives``, which
+    are already-migrated ``legacy-<ts>/`` dirs. Callers that preview an
+    orphan-deletion sweep must include both ``projects`` and
+    ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
+    both layouts.
     """
     base = checkpoint_base or CHECKPOINT_BASE
     out: Dict = {
@@ -1582,6 +1616,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
         "total_size_bytes": 0,
         "project_count": 0,
         "projects": [],
+        "pre_v2_projects": [],
         "legacy_archives": [],
     }
     if not base.exists():
@@ -1612,6 +1647,15 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
                     "commits": commits,
                 })
     out["project_count"] = len(out["projects"])
+
+    out["pre_v2_projects"] = [
+        {
+            "path": str(r["path"]),
+            "workdir": r["workdir"],
+            "exists": r["exists"],
+        }
+        for r in _pre_v2_shadow_repos(base)
+    ]
 
     for child in base.iterdir():
         if child.is_dir() and child.name.startswith(_LEGACY_PREFIX):

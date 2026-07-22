@@ -1351,6 +1351,68 @@ def test_send_email_is_idempotent_browser_mode():
         assert again.get("skipped") is True         # not re-sent
 
 
+def _drive_to_reappeared(sid, broker):
+    ledger.transition(sid, broker, "found", found=True)
+    ledger.transition(sid, broker, "submitted")
+    ledger.transition(sid, broker, "awaiting_processing")
+    ledger.transition(sid, broker, "confirmed_removed")
+    ledger.transition(sid, broker, "reappeared")
+
+
+def test_ledger_reappeared_can_be_refiled():
+    # A reappearance re-scan already confirmed the listing is back, so the opt-out is re-filed
+    # straight from `reappeared`. Before this fix `reappeared -> submitted` raised.
+    with temp_env():
+        sid = "sub_test01"
+        _drive_to_reappeared(sid, "radaris")
+        assert ledger.transition(sid, "radaris", "submitted")["state"] == "submitted"
+
+
+def test_ledger_awaiting_processing_can_reappear():
+    # A verify_removal that finds an awaiting_processing listing still up after the window records
+    # reappeared. Before this fix `awaiting_processing -> reappeared` raised.
+    with temp_env():
+        sid = "sub_test01"
+        ledger.transition(sid, "radaris", "found", found=True)
+        ledger.transition(sid, "radaris", "submitted")
+        ledger.transition(sid, "radaris", "awaiting_processing")
+        assert ledger.transition(sid, "radaris", "reappeared")["state"] == "reappeared"
+
+
+def test_send_email_refiles_reappeared_case():
+    # The autopilot re-queues a reappeared case as an opt-out; send-email must record it as submitted
+    # (and then the idempotency guard prevents a duplicate). Before this fix the transition raised
+    # after the send, leaving the case stuck in `reappeared` and re-sendable.
+    with temp_env():
+        config.save_config({"email_mode": "browser"})
+        sid = _run(["intake", "--full-name", "Jane Q. Public",
+                    "--email", "jane@example.com", "--consent"])["subject_id"]
+        _drive_to_reappeared(sid, "radaris")
+        out = _run(["send-email", sid, "radaris", "--listing", "https://radaris.com/p/x"])
+        assert out.get("state") == "submitted"
+        again = _run(["send-email", sid, "radaris", "--listing", "https://radaris.com/p/x"])
+        assert again.get("skipped") is True
+
+
+def test_send_email_refuses_unfilable_state_before_sending():
+    # A send is an irreversible legal request; from a state with no `-> submitted` transition the
+    # command must exit (SystemExit) up front, not raise mid-record after the send/disclosure.
+    with temp_env():
+        config.save_config({"email_mode": "browser"})
+        sid = _run(["intake", "--full-name", "Jane Q. Public",
+                    "--email", "jane@example.com", "--consent"])["subject_id"]
+        ledger.transition(sid, "radaris", "not_found")
+        try:
+            _run(["send-email", sid, "radaris", "--listing", "https://radaris.com/p/x"])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("send-email from an unfilable state should exit")
+        case = ledger.get_case(sid, "radaris")
+        assert case["state"] == "not_found"                  # unchanged
+        assert not case.get("disclosure_log")                # exited before any disclosure/send
+
+
 def test_show_reads_back_case_state_and_evidence():
     with temp_env():
         sid = _run(["intake", "--full-name", "Jane Q. Public",

@@ -922,40 +922,26 @@ class ShellFileOperations(FileOperations):
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:
-        """
-        Expand shell-style paths like ~ and ~user to absolute paths.
-        
+        """Expand shell-style paths like ~ and ~user to absolute paths.
+
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
+
+        Uses Python's os.path.expanduser() which resolves ~ via the
+        Python process's HOME (never the subprocess sandbox HOME),
+        ensuring correct behavior in sandboxed profiles where the
+        subprocess HOME is overridden to the profile sandbox directory.
+
+        Fixes #28456.
         """
         if not path:
             return path
-        
-        # Handle ~ and ~user
+
         if path.startswith('~'):
-            # Get home directory via the terminal environment
-            result = self._exec("echo $HOME")
-            if result.exit_code == 0 and result.stdout.strip():
-                home = result.stdout.strip()
-                if path == '~':
-                    return home
-                elif path.startswith('~/'):
-                    return home + path[1:]  # Replace ~ with home
-                # ~username format - extract and validate username before
-                # letting shell expand it (prevent shell injection via
-                # paths like "~; rm -rf /").
-                rest = path[1:]  # strip leading ~
-                slash_idx = rest.find('/')
-                username = rest[:slash_idx] if slash_idx >= 0 else rest
-                if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
-                    # Only expand ~username (not the full path) to avoid shell
-                    # injection via path suffixes like "~user/$(malicious)".
-                    expand_result = self._exec(f"echo ~{username}")
-                    if expand_result.exit_code == 0 and expand_result.stdout.strip():
-                        user_home = expand_result.stdout.strip()
-                        suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
-                        return user_home + suffix
-        
+            expanded = os.path.expanduser(path)
+            if expanded != path:
+                return expanded
+
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:

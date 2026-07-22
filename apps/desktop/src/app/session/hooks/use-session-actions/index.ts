@@ -578,6 +578,13 @@ export function useSessionActions({
 
       await ensureGatewayProfile(sessionProfile)
 
+      // A slower profile activation can finish after a newer sidebar click has
+      // already won. Stop before the stale request can repaint selection,
+      // messages, or runtime mappings for the session the user left.
+      if (resumeRequestRef.current !== requestId) {
+        return
+      }
+
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
       // purges a cross-wired mapping before we trust the fast-path.

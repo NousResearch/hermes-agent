@@ -39,6 +39,15 @@ import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 
+const { ensureGatewayProfileMock } = vi.hoisted(() => ({
+  ensureGatewayProfileMock: vi.fn(async (_profile?: string | null) => undefined)
+}))
+
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ensureGatewayProfile: ensureGatewayProfileMock
+}))
+
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
@@ -612,10 +621,12 @@ function ResumeHarness({
 describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
+    ensureGatewayProfileMock.mockReset()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    $selectedStoredSessionId.set(null)
     vi.restoreAllMocks()
   })
 
@@ -862,6 +873,61 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('ignores a stale resume released after a newer profile switch wins', async () => {
+    setSessions([
+      storedSession({ id: 'stored-a', profile: 'profile-a' }),
+      storedSession({ id: 'stored-b', profile: 'profile-b' })
+    ])
+
+    let releaseFirstProfile!: () => void
+
+    const firstProfileGate = new Promise<void>(resolve => {
+      releaseFirstProfile = resolve
+    })
+
+    ensureGatewayProfileMock.mockImplementation(async profile => {
+      if (profile === 'profile-a') {
+        await firstProfileGate
+      }
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [],
+          session_id: `runtime-${params?.session_id}`
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const staleResume = resume!('stored-a', true)
+    await waitFor(() => expect(ensureGatewayProfileMock).toHaveBeenCalledWith('profile-a'))
+
+    await act(async () => {
+      await resume!('stored-b', true)
+    })
+    expect($selectedStoredSessionId.get()).toBe('stored-b')
+
+    await act(async () => {
+      releaseFirstProfile()
+      await staleResume
+    })
+
+    expect($selectedStoredSessionId.get()).toBe('stored-b')
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: 'stored-b' }))
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ session_id: 'stored-a' })
+    )
   })
 
   it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {

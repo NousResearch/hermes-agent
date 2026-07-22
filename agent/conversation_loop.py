@@ -5160,6 +5160,49 @@ def run_conversation(
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
                 
+                # Close streaming display (response box, reasoning box)
+                # before processing the final response.  The tool-call
+                # path does this via stream_delta_callback(None) before
+                # executing tools; the text-only path must do it here
+                # so buffered content is flushed and the response box
+                # footer (╰─...╯) is drawn.
+                if agent.stream_delta_callback:
+                    try:
+                        agent.stream_delta_callback(None)
+                    except Exception:
+                        pass
+                    # Mark the response as already previewed (streamed live)
+                    # so the CLI skips the second Rich Panel render.  The
+                    # flush above calls _flush_stream (footer drawn) but also
+                    # _reset_stream_state, which clears _stream_started and
+                    # _stream_box_opened — without this flag the CLI thinks
+                    # nothing was streamed and renders the response again.
+                    #
+                    # We must only set this flag when visible content was
+                    # actually streamed.  If the callback was configured but
+                    # the response produced no visible text (e.g. only a
+                    # <think> block, or content the partial-tag detector
+                    # swallowed and never recovered), setting
+                    # _response_was_previewed=True would tell the CLI to
+                    # skip the final render — silently hiding
+                    # the assistant's reply.
+                    #
+                    # _flush_stream() snapshots _stream_flushed_chars into
+                    # _last_stream_had_visible BEFORE _reset_stream_state
+                    # zeroes the counter, so we read the persistent snapshot
+                    # rather than the already-reset live counter.
+                    # Non-CLI callbacks (gateway platforms) don't set
+                    # stream_delta_callback at all, so the outer `if`
+                    # already protects them.
+                    _streamed_visible = False
+                    _cb_self = getattr(agent.stream_delta_callback, "__self__", None)
+                    if _cb_self is not None:
+                        _streamed_visible = bool(
+                            getattr(_cb_self, "_last_stream_had_visible", False)
+                        )
+                    if _streamed_visible:
+                        agent._response_was_previewed = True
+                
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

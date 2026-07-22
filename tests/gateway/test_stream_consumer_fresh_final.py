@@ -174,6 +174,91 @@ class TestFreshFinalForLongLivedPreviews:
         assert consumer._should_send_fresh_final() is False
 
 
+class TestTransformedFinalDelivery:
+    """Plugin-transformed finals replace previews through the safe fresh path."""
+
+    @pytest.mark.asyncio
+    async def test_success_preserves_topic_metadata_and_deletes_preview(self):
+        adapter = _make_adapter()
+        adapter.send.return_value = SimpleNamespace(
+            success=True, message_id="transformed-final",
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            metadata={"thread_id": "77", "reply_to_message_id": "41"},
+        )
+        consumer._message_id = "preview"
+        consumer._track_preview_id("preview")
+
+        delivered = await consumer.deliver_transformed_final("complete transformed reply")
+
+        assert delivered is True
+        adapter.send.assert_awaited_once_with(
+            chat_id="chat",
+            content="complete transformed reply",
+            metadata={
+                "thread_id": "77",
+                "reply_to_message_id": "41",
+                "notify": True,
+            },
+        )
+        adapter.delete_message.assert_awaited_once_with("chat", "preview")
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_failure_keeps_preview_and_does_not_confirm_delivery(self):
+        adapter = _make_adapter()
+        adapter.send.return_value = SimpleNamespace(success=False, error="flood_control")
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            metadata={"thread_id": "77"},
+        )
+        consumer._message_id = "preview"
+        consumer._track_preview_id("preview")
+
+        delivered = await consumer.deliver_transformed_final("complete transformed reply")
+
+        assert delivered is False
+        adapter.delete_message.assert_not_awaited()
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_later_chunk_failure_never_confirms_or_deletes_preview(self):
+        adapter = _make_adapter()
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="chunk-1"),
+            SimpleNamespace(success=False, error="continuation failed"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            metadata={"thread_id": "77", "reply_to_message_id": "41"},
+        )
+        consumer._message_id = "preview"
+        consumer._track_preview_id("preview")
+        final_text = "word " * 1800
+
+        delivered = await consumer.deliver_transformed_final(final_text)
+
+        assert delivered is False
+        assert adapter.send.await_count == 2
+        first = adapter.send.await_args_list[0].kwargs
+        second = adapter.send.await_args_list[1].kwargs
+        assert first["content"].endswith(" (1/3)")
+        assert second["content"].endswith(" (2/3)")
+        assert len(first["content"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert len(second["content"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert first["metadata"]["thread_id"] == "77"
+        assert second["metadata"]["thread_id"] == "77"
+        adapter.delete_message.assert_not_awaited()
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+
 class TestSegmentBreakDoesNotMarkFinalSent:
     """Regression for #29346 — silent response loss after tool calls.
 

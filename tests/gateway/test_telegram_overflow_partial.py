@@ -96,6 +96,36 @@ async def test_edit_overflow_split_reports_partial_failure_when_continuation_fai
 
 
 @pytest.mark.asyncio
+async def test_edit_overflow_split_first_edit_rate_limit_requires_full_resend(telegram_adapter):
+    """A rate-limited finalize edit cannot establish a numbered chunk 1."""
+    class RetryAfterLike(RuntimeError):
+        retry_after = 167
+
+    content = "word " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(
+        side_effect=RetryAfterLike("Flood control exceeded. Retry in 167 seconds")
+    )
+    telegram_adapter._bot.send_message = AsyncMock()
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=True, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.error == "overflow_first_chunk_edit_rate_limited"
+    assert result.message_id == "201"
+    assert result.raw_response["partial_overflow"] is True
+    assert result.raw_response["delivered_chunks"] == 1
+    assert result.raw_response["total_chunks"] > 1
+    assert result.raw_response["last_message_id"] == "201"
+    assert result.raw_response["delivered_prefix"]
+    assert result.raw_response["resend_full_final"] is True
+    assert result.continuation_message_ids == ()
+    telegram_adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     """A partial overflow edit enters fallback instead of marking final delivered."""
     adapter = MagicMock()
@@ -136,5 +166,59 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     assert adapter.send.await_args.kwargs["content"] == "world"
     assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "77", "notify": True}
     adapter.delete_message.assert_not_awaited()
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_first_chunk_rate_limit_resends_full_numbered_final_and_deletes_preview():
+    """Recovery replaces an unnumbered preview with a complete numbered reply."""
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 160
+    adapter.edit_message = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            message_id="preview-1",
+            error="overflow_first_chunk_edit_rate_limited",
+            retryable=True,
+            raw_response={
+                "partial_overflow": True,
+                "delivered_chunks": 1,
+                "total_chunks": 4,
+                "last_message_id": "preview-1",
+                "delivered_prefix": "word " * 25,
+                "resend_full_final": True,
+            },
+        )
+    )
+    next_message_id = 0
+
+    async def send_numbered_chunk(**_kwargs):
+        nonlocal next_message_id
+        next_message_id += 1
+        return SendResult(success=True, message_id=f"final-{next_message_id}")
+
+    adapter.send = AsyncMock(side_effect=send_numbered_chunk)
+    adapter.delete_message = AsyncMock(return_value=True)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1", metadata={"thread_id": "77"})
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "word " * 25
+    final_text = "word " * 180
+
+    ok = await consumer._send_or_edit(final_text, finalize=True)
+    assert ok is False
+
+    await consumer._send_fallback_final(final_text)
+
+    delivered = [call.kwargs["content"] for call in adapter.send.await_args_list]
+    assert len(delivered) > 1
+    assert all(
+        chunk.endswith(f" ({index}/{len(delivered)})")
+        for index, chunk in enumerate(delivered, 1)
+    )
+    assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in delivered)
+    assert "".join(chunk.rsplit(" (", 1)[0] for chunk in delivered) == final_text
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True

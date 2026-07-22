@@ -1217,6 +1217,11 @@ def run_conversation(
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
         max_compression_attempts = 3
+        # Pre-declared so the post-loop success paths can read it even when
+        # the API response omits `usage` (some providers don't report it).
+        # The retry loop reassigns this from normalize_usage(response.usage)
+        # at the top of each successful iteration. (#47201)
+        canonical_usage = None
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -4778,6 +4783,14 @@ def run_conversation(
                         }
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    # Per-message token accounting (#47201). The session-level
+                    # aggregate is updated separately via update_token_counts();
+                    # this writes the per-message output_tokens to the msg dict
+                    # so _flush_messages_to_session_db() can persist it on the
+                    # messages.token_count column. None-tolerant: some providers
+                    # omit `usage` on streaming or error responses.
+                    if canonical_usage is not None:
+                        assistant_msg["token_count"] = canonical_usage.output_tokens
                     messages.append(assistant_msg)
                     for tc in assistant_message.tool_calls:
                         _tc_name = tc.function.name
@@ -5488,6 +5501,10 @@ def run_conversation(
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                # Per-message token accounting (#47201). See the matching
+                # comment on the tool-call success path above.
+                if canonical_usage is not None:
+                    final_msg["token_count"] = canonical_usage.output_tokens
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a

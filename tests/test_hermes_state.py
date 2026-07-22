@@ -244,6 +244,61 @@ class TestSessionLifecycle:
         assert session["input_tokens"] == 300
         assert session["output_tokens"] == 150
 
+    def test_append_message_persists_token_count(self, db):
+        """Per-message token_count round-trips through the messages table (#47201).
+
+        The schema has had a ``token_count INTEGER`` column since the
+        initial session-store commit, but no production caller ever
+        populated it. This test guards the contract so the new
+        call-site plumbed by #47201 stays wired.
+        """
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message(
+            "s1",
+            role="assistant",
+            content="hello",
+            token_count=42,
+        )
+
+        messages = db.get_messages("s1")
+        target = next(m for m in messages if m["id"] == msg_id)
+        assert target["token_count"] == 42
+
+    def test_append_message_without_token_count_defaults_to_null(self, db):
+        """Omitting token_count leaves the column NULL (legacy behaviour) (#47201).
+
+        The migration to populate the column is opt-in: messages that
+        were persisted before the fix stay NULL, and new messages
+        without a token_count (user/tool turns, scaffolding) also
+        stay NULL. Only successful assistant API responses write a
+        non-null value.
+        """
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="hi")
+
+        messages = db.get_messages("s1")
+        target = next(m for m in messages if m["id"] == msg_id)
+        assert target["token_count"] is None
+
+    def test_append_message_token_count_zero_is_persisted(self, db):
+        """A 0 token_count (e.g. short empty-recovery turn) is NOT dropped (#47201).
+
+        Defends against a future refactor that coalesces the value
+        with ``or None`` — that would silently turn a legitimate 0
+        into NULL and skew any per-message token-burn analytics.
+        """
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message(
+            "s1",
+            role="assistant",
+            content="(empty)",
+            token_count=0,
+        )
+
+        messages = db.get_messages("s1")
+        target = next(m for m in messages if m["id"] == msg_id)
+        assert target["token_count"] == 0
+
     def test_update_token_counts_tracks_api_call_count(self, db):
         """api_call_count increments with each update_token_counts call."""
         db.create_session(session_id="s1", source="cli")

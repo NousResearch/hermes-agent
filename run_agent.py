@@ -2032,6 +2032,14 @@ class AIAgent:
                     tool_name=msg.get("tool_name"),
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
+                    # Per-message token accounting (#47201). Pre-assembled
+                    # by the conversation loop on successful API responses
+                    # from canonical_usage.output_tokens; None for user/tool
+                    # messages and for interim/recovery scaffolding that
+                    # never reached a real model turn. append_message's
+                    # token_count signature is `int = None` so None passes
+                    # through without coercion.
+                    token_count=msg.get("token_count"),
                     finish_reason=msg.get("finish_reason"),
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,

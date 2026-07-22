@@ -1,6 +1,6 @@
 ---
 name: simplify-code
-description: "Parallel 3-agent cleanup of recent code changes."
+description: "Simplify or clean up a user's recent code diff on request."
 version: 1.0.0
 author: Hermes Agent (inspired by Claude Code /simplify)
 license: MIT

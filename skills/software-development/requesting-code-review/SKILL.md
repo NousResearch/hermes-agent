@@ -1,6 +1,6 @@
 ---
 name: requesting-code-review
-description: "Pre-commit review: security scan, quality gates, auto-fix."
+description: "Review a concrete code diff before committing it."
 version: 2.0.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT

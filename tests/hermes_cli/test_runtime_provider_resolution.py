@@ -1387,6 +1387,115 @@ def test_model_config_codex_api_mode_still_applies_to_direct_openai_url(monkeypa
     assert resolved["base_url"] == "https://api.openai.com/v1"
 
 
+def test_openai_api_gpt53_codex_overrides_stale_chat_completions(monkeypatch):
+    """Official OpenAI API must route Responses-only models to /v1/responses."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-api")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-api",
+            "base_url": "https://api.openai.com/v1",
+            "default": "gpt-5.3-codex",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+    resolved = rp.resolve_runtime_provider(requested="openai-api")
+
+    assert resolved["provider"] == "openai-api"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+
+
+def test_openai_api_gpt4o_uses_chat_completions_despite_stale_responses(monkeypatch):
+    """Official OpenAI API should not force chat models through Responses only by URL."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-api")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-api",
+            "base_url": "https://api.openai.com/v1",
+            "default": "gpt-4o",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+    resolved = rp.resolve_runtime_provider(requested="openai-api")
+
+    assert resolved["provider"] == "openai-api"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+
+
+def test_openai_api_target_model_switch_recomputes_api_mode(monkeypatch):
+    """/model switches should route by target model, not persisted default/api_mode."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-api")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-api",
+            "base_url": "https://api.openai.com/v1",
+            "default": "gpt-4o",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="openai-api",
+        target_model="gpt-5.3-codex",
+    )
+
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_openai_api_pool_entry_routes_by_target_model(monkeypatch):
+    """Credential-pool OpenAI API entries must still use model-specific routing."""
+    entry = SimpleNamespace(
+        provider="openai-api",
+        runtime_api_key="pool-key",
+        runtime_base_url="https://api.openai.com/v1",
+        source="pool",
+    )
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return entry
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-api")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-api",
+            "base_url": "https://api.openai.com/v1",
+            "default": "gpt-4o",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "credential_pool_matches_provider", lambda *a, **k: True)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="openai-api",
+        target_model="gpt-5.3-codex",
+    )
+
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["api_key"] == "pool-key"
+
+
 def test_model_config_api_mode_ignored_when_provider_differs(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
     monkeypatch.setattr(

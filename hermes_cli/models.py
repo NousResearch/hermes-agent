@@ -3557,6 +3557,32 @@ _AZURE_FOUNDRY_RESPONSES_PREFIXES = (
 )
 
 
+def _bare_model_id(model_name: Optional[str]) -> str:
+    raw = str(model_name or "").strip().lower()
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+    return raw
+
+
+def openai_api_model_api_mode(model_name: Optional[str]) -> Optional[str]:
+    """Infer the official api.openai.com endpoint from the model name.
+
+    The official OpenAI API serves current GPT-5/Codex/o-series reasoning
+    models through the Responses API, while GPT-4-era chat models such as
+    ``gpt-4o`` still work through Chat Completions.  Return ``None`` for
+    unknown/non-OpenAI model names so explicit user configuration can still
+    handle forward-compatible cases.
+    """
+    raw = _bare_model_id(model_name)
+    if not raw:
+        return None
+    if raw.startswith(_AZURE_FOUNDRY_RESPONSES_PREFIXES):
+        return "codex_responses"
+    if raw.startswith(("gpt-4", "gpt-3.5")):
+        return "chat_completions"
+    return None
+
+
 def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     """Infer Azure Foundry api_mode from a deployment/model name.
 
@@ -3571,12 +3597,9 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     ``runtime_provider._detect_api_mode_for_url`` and by the user setting
     ``model.api_mode: anthropic_messages`` explicitly.
     """
-    raw = str(model_name or "").strip().lower()
+    raw = _bare_model_id(model_name)
     if not raw:
         return None
-    # Strip any vendor/ prefix a user may have copied from OpenRouter / Copilot.
-    if "/" in raw:
-        raw = raw.rsplit("/", 1)[-1]
     # gpt-5-mini speaks chat completions on Copilot but Azure Foundry deploys
     # the full gpt-5 family uniformly on Responses API — don't carve an
     # exception here.

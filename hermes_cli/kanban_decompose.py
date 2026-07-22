@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
@@ -191,6 +191,8 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    # kanban.auto_review policy ({review_roles, reviewer}) or {}; opt-in.
+    auto_review: dict = field(default_factory=dict)
 
 
 def _load_routing() -> _Routing:
@@ -207,6 +209,7 @@ def _load_routing() -> _Routing:
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        auto_review=_review_policy(cfg),
     )
 
 
@@ -270,6 +273,10 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     children, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
+    # Policy-gated review pairing: append a reviewer task behind each impl
+    # child whose role is in kanban.auto_review.review_roles. No-op when the
+    # policy is unset (opt-in).
+    children = _pair_review_tasks(children, routing.auto_review)
     try:
         with kbc.connect_closing() as conn:
             child_ids = decompose_triage_task(
@@ -290,6 +297,67 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )
+
+
+def _review_policy(cfg: object) -> dict:
+    """Return the ``kanban.auto_review`` policy dict, or ``{}`` when unset.
+
+    Shape: ``{"review_roles": [...], "reviewer": "<profile>"}``. Missing or
+    malformed config returns ``{}`` so callers treat review-pairing as
+    disabled (opt-in).
+    """
+    kanban_cfg = (cfg or {}).get("kanban", {}) if isinstance(cfg, dict) else {}
+    policy = kanban_cfg.get("auto_review")
+    if not isinstance(policy, dict):
+        return {}
+    roles = policy.get("review_roles")
+    reviewer = policy.get("reviewer")
+    if not isinstance(roles, list) or not isinstance(reviewer, str):
+        return {}
+    clean_roles = [str(r).strip() for r in roles if str(r).strip()]
+    reviewer = reviewer.strip()
+    if not clean_roles or not reviewer:
+        return {}
+    return {"review_roles": clean_roles, "reviewer": reviewer}
+
+
+def _pair_review_tasks(children: list[dict], policy: dict) -> list[dict]:
+    """Append a reviewer task for each impl child whose assignee is a review role.
+
+    Pure transform: takes the built ``children`` list (each a dict with
+    ``title``/``body``/``assignee``/``parents`` where parents are indices into
+    this list) and returns a NEW list with review children appended. Each
+    review child is gated behind its impl child via ``parents=[impl_index]``.
+    Review children are appended AFTER all impl children so every pre-existing
+    parent index stays valid.
+
+    Empty/None ``policy`` (or missing reviewer/roles) returns ``children``
+    unchanged. A child already assigned to the reviewer is never paired
+    (no review of a review).
+    """
+    if not policy:
+        return children
+    review_roles = set(policy.get("review_roles") or [])
+    reviewer = (policy.get("reviewer") or "").strip()
+    if not review_roles or not reviewer:
+        return children
+    out = list(children)
+    for idx, child in enumerate(children):
+        assignee = child.get("assignee")
+        if assignee == reviewer or assignee not in review_roles:
+            continue
+        out.append({
+            "title": f"review: {child.get('title', '')}".strip()[:200],
+            "body": (
+                "Review the work produced by the parent task. Read the diff for "
+                "correctness, run its tests and confirm they pass, and verify the "
+                "work matches the task spec. Approve, or send it back with precise "
+                "change requests."
+            ),
+            "assignee": reviewer,
+            "parents": [idx],
+        })
+    return out
 
 
 def decompose_task(

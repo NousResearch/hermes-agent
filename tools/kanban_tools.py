@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SHOW_SCHEMA, KANBAN_SUBMIT_REVIEW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +615,31 @@ def _handle_complete(args: dict, **kw) -> str:
         return _ok(task_id=tid, run_id=run.id if run else None)
 
 
+@_kanban_handler("kanban_submit_review")
+def _handle_submit_review(args: dict, **kw) -> str:
+    """Hand the current running task to a reviewer (running -> review)."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    with _board(args.get("board")) as (kb, conn):
+        ok = kb.submit_review_task(
+            conn, tid, expected_run_id=_worker_run_id(tid),
+        )
+        if not ok:
+            return tool_error(
+                f"could not submit {tid} for review (not running, or a "
+                f"newer run has superseded this one)"
+            )
+        run = kb.latest_run(conn, tid)
+        return _ok(task_id=tid, status="review",
+                   run_id=run.id if run else None)
+
+
 @_kanban_handler("kanban_block")
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
@@ -995,6 +1020,7 @@ _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
+    ("kanban_submit_review", KANBAN_SUBMIT_REVIEW_SCHEMA, _handle_submit_review, "🔍"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),

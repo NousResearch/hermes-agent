@@ -436,6 +436,10 @@ export interface ModelOptionsResponse {
 export interface ReloadMcpResponse {
   status?: string
   message?: string
+  /** The mcp_rev the server actually loaded (re-hashed after discovery).
+   *  The client records THIS as its accepted revision, not the one it
+   *  requested — a reload that raced a config edit reports the newer rev. */
+  loaded_rev?: string
 }
 
 export interface ReloadEnvResponse {

@@ -2,8 +2,15 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
-import { $workingSessionIds } from '@/store/session'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import {
+  $parkedQueueSessions,
+  $queuedPromptsBySession,
+  enqueueQueuedPrompt,
+  getQueuedPrompts,
+  parkQueuedPrompts
+} from '@/store/composer-queue'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -32,6 +39,7 @@ function Harness({
 describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
+    clearAllSessionStates()
   })
 
   afterEach(() => {
@@ -39,7 +47,8 @@ describe('useBackgroundQueueDrain', () => {
     vi.restoreAllMocks()
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
-    $workingSessionIds.set([])
+    $parkedQueueSessions.set({})
+    clearAllSessionStates()
   })
 
   it('drains an idle queued prompt for a non-selected background session', async () => {
@@ -47,7 +56,7 @@ describe('useBackgroundQueueDrain', () => {
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
-    $workingSessionIds.set([])
+    clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
@@ -68,7 +77,7 @@ describe('useBackgroundQueueDrain', () => {
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'visible queue entry', attachments: [] })
-    $workingSessionIds.set([])
+    clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-a" submitText={submitText} />)
 
@@ -83,7 +92,27 @@ describe('useBackgroundQueueDrain', () => {
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'wait for current turn', attachments: [] })
-    $workingSessionIds.set(['stored-session-a'])
+    // Mark the session as working (busy) so the drain should skip it
+    publishSessionState('rt-session-a', { ...createClientSessionState('stored-session-a'), busy: true })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('does not drain a parked background session, even when idle', async () => {
+    // A Stop in a tile parks that session's queue; when the user then focuses
+    // another chat, THIS drainer takes over the tile's queue — it must honor
+    // the park just like the mounted ChatBar drainer does.
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'halted by stop', attachments: [] })
+    parkQueuedPrompts('stored-session-a')
+    clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 

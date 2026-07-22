@@ -1114,6 +1114,30 @@ def test_configure_callback_port_reuses_cached_client_redirect_port(tmp_path, mo
     assert cfg["_resolved_port"] == 57727
 
 
+def test_configure_callback_reuses_cached_https_redirect_uri(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+    )
+
+    storage = HermesTokenStorage("hosted")
+    storage._client_info_path().parent.mkdir(parents=True)
+    storage._client_info_path().write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["https://agent.example/api/mcp/oauth/callback/hosted"],
+    }))
+
+    cfg: dict = {}
+    _configure_callback_port(cfg, storage)
+    metadata = _build_client_metadata(cfg)
+
+    assert str(metadata.redirect_uris[0]) == (
+        "https://agent.example/api/mcp/oauth/callback/hosted"
+    )
+
+
 def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path, monkeypatch):
     """Explicit config wins over any cached registration."""
     from tools.mcp_oauth import _configure_callback_port

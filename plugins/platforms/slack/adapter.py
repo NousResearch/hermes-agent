@@ -421,6 +421,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    # Slack's typing indicator is a text status line (assistant.threads
+    # .setStatus), so the gateway feeds it live per-tool phrases.
+    supports_status_text = True
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
@@ -1574,7 +1577,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 
-        Displays "is thinking..." next to the bot name in a thread.
+        Displays "is thinking..." next to the bot name in a thread, or the
+        platform's ``typing_status_text`` config value when set.
         Requires the assistant:write or chat:write scope.
         Auto-clears when the bot sends a reply to the thread.
         """
@@ -1599,10 +1603,15 @@ class SlackAdapter(BasePlatformAdapter):
                 "team_id": str(team_id) if team_id else "",
             }
         try:
+            _status = (
+                getattr(self, "_status_text", {}).get(str(chat_id))
+                or getattr(self.config, "typing_status_text", None)
+                or "is thinking..."
+            )
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status="is thinking...",
+                status=_status,
             )
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
@@ -3793,6 +3802,7 @@ class SlackAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
@@ -3829,7 +3839,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "value": session_key,
                 },
             ]
-            if not smart_denied:
+            if not smart_denied and allow_session:
                 actions.append({
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
@@ -4214,6 +4224,26 @@ class SlackAdapter(BasePlatformAdapter):
         if self._approval_resolved.pop(msg_ts, True):
             return
 
+        # Resolve the approval FIRST — this unblocks the agent thread. Render
+        # after, so a click that lands past the approval timeout (count == 0)
+        # shows "expired" instead of falsely claiming the command was approved.
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count,
+                session_key,
+                choice,
+                user_name,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve gateway approval from Slack button: %s", exc
+            )
+            count = 0
+
         # Update the message to show the decision and remove buttons
         label_map = {
             "once": f"✅ Approved once by {user_name}",
@@ -4222,6 +4252,11 @@ class SlackAdapter(BasePlatformAdapter):
             "deny": f"❌ Denied by {user_name}",
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
+        if not count:
+            decision_text = (
+                "⌛ Approval expired — command was not run "
+                "(already timed out or resolved elsewhere)"
+            )
 
         # Get original text from the section block
         original_text = ""
@@ -4256,24 +4291,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to update approval message: %s", e)
 
-        # Resolve the approval — this unblocks the agent thread
-        try:
-            from tools.approval import resolve_gateway_approval
-
-            count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count,
-                session_key,
-                choice,
-                user_name,
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to resolve gateway approval from Slack button: %s", exc
-            )
-
-        # (approval state already consumed by atomic pop above)
+        # (approval already resolved above; state consumed by atomic pop)
 
     # ----- Thread context fetching -----
 

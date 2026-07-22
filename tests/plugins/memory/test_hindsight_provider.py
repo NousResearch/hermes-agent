@@ -321,6 +321,33 @@ class TestConfig:
         """Auto-recall must filter to observation by default."""
         assert provider._recall_types == ["observation"]
 
+    def test_config_schema_exposes_recall_routes(self, provider):
+        fields = {field["key"]: field for field in provider.get_config_schema()}
+        assert {
+            "recall_routes",
+            "recall_max_results",
+            "recall_skip_low_signal_queries",
+            "recall_low_signal_min_chars",
+            "recall_domain_signal_keywords",
+        } <= fields.keys()
+        assert "chat_ids" in fields["recall_routes"]["description"]
+
+    def test_recall_routes_accept_json_from_config_ui(self, provider_with_config):
+        p = provider_with_config(
+            recall_routes=json.dumps(
+                {"support": {"keywords": ["incident"], "tags": ["scope:support"]}}
+            )
+        )
+        assert p._recall_routes == {
+            "support": {"keywords": ["incident"], "tags": ["scope:support"]}
+        }
+        assert p._recall_domain_routing is True
+
+    def test_invalid_recall_routes_json_disables_routing(self, provider_with_config):
+        p = provider_with_config(recall_routes="{not-json")
+        assert p._recall_routes == {}
+        assert p._select_recall_route("anything") is None
+
     def test_recall_types_explicit_list_overrides_default(self, provider_with_config):
         p = provider_with_config(recall_types=["world", "experience", "observation"])
         assert p._recall_types == ["world", "experience", "observation"]
@@ -709,6 +736,273 @@ class TestToolHandlers:
         assert call_kwargs["tags"] == ["tag1"]
         assert call_kwargs["tags_match"] == "all"
 
+    def test_recall_routes_exact_chat_overrides_global_tags(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags=["global"],
+            recall_tags_match="all",
+            recall_domain_routing=True,
+            recall_routes={
+                "alpha": {
+                    "chat_ids": ["chat-alpha"],
+                    "tags": ["project:alpha", "topic:team-alpha"],
+                    "tags_match": "any_strict",
+                    "query_prefix": "Route: Team Alpha.",
+                },
+                "tools": {
+                    "keywords": ["automation"],
+                    "tags": ["project:tools"],
+                },
+            },
+        )
+        p._chat_id = "chat-alpha"
+        p._chat_name = "Team Alpha"
+        p.handle_tool_call("hindsight_recall", {"query": "automation update"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["project:alpha", "topic:team-alpha"]
+        assert call_kwargs["tags_match"] == "any_strict"
+        assert call_kwargs["query"].startswith("Route: Team Alpha.")
+
+    @pytest.mark.parametrize(
+        ("chat_id", "chat_name", "query", "expected_tag"),
+        [
+            ("chat-alpha", "Team Beta", "research update", "scope:id"),
+            ("chat-unknown", "TEAM BETA", "research update", "scope:name"),
+            ("chat-unknown", "unknown", "Research update", "scope:keyword"),
+        ],
+    )
+    def test_recall_route_signal_priority_matrix(
+        self, provider_with_config, chat_id, chat_name, query, expected_tag
+    ):
+        p = provider_with_config(
+            recall_routes={
+                "keyword": {"keywords": ["research"], "tags": ["scope:keyword"]},
+                "name": {"chat_names": ["team beta"], "tags": ["scope:name"]},
+                "id": {"chat_ids": ["chat-alpha"], "tags": ["scope:id"]},
+            }
+        )
+        p._chat_id = chat_id
+        p._chat_name = chat_name
+
+        p.handle_tool_call("hindsight_recall", {"query": query})
+
+        assert p._client.arecall.call_args.kwargs["tags"] == [expected_tag]
+
+    def test_recall_route_same_signal_uses_config_order(self, provider_with_config):
+        p = provider_with_config(
+            recall_routes={
+                "first": {"keywords": ["shared"], "tags": ["scope:first"]},
+                "second": {"keywords": ["shared"], "tags": ["scope:second"]},
+            }
+        )
+
+        p.handle_tool_call("hindsight_recall", {"query": "shared context"})
+
+        assert p._client.arecall.call_args.kwargs["tags"] == ["scope:first"]
+
+    def test_routed_recall_service_failure_remains_safe(self, provider_with_config):
+        p = provider_with_config(
+            recall_routes={
+                "support": {"keywords": ["incident"], "tags": ["scope:support"]}
+            }
+        )
+        p._client.arecall.side_effect = ConnectionError("service unavailable")
+
+        result = json.loads(
+            p.handle_tool_call("hindsight_recall", {"query": "incident status"})
+        )
+
+        assert "error" in result
+        assert "service unavailable" in result["error"]
+
+    def test_recall_routes_unknown_chat_falls_back_to_global_tags(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags=["global"],
+            recall_tags_match="all",
+            recall_domain_routing=True,
+            recall_routes={"alpha": {"chat_ids": ["chat-alpha"], "tags": ["project:alpha"]}},
+        )
+        p._chat_id = "chat-unknown"
+        p.handle_tool_call("hindsight_recall", {"query": "plain query"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["global"]
+        assert call_kwargs["tags_match"] == "all"
+        assert call_kwargs["query"] == "plain query"
+
+    def test_retain_adds_active_route_tags(self, provider_with_config):
+        p = provider_with_config(
+            retain_tags=["global-retain"],
+            recall_domain_routing=True,
+            recall_routes={
+                "alpha": {
+                    "chat_ids": ["chat-alpha"],
+                    "retain_tags": ["project:alpha", "topic:team-alpha"],
+                }
+            },
+        )
+        p._chat_id = "chat-alpha"
+        p.handle_tool_call("hindsight_retain", {"content": "alpha fact", "tags": ["manual"]})
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == [
+            "global-retain",
+            "project:alpha",
+            "topic:team-alpha",
+            "manual",
+        ]
+
+    def test_retain_adds_keyword_route_tags_from_content(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_routes={
+                "memory": {
+                    "keywords": "hindsight",
+                    "retain_tags": ["route:memory"],
+                }
+            },
+        )
+
+        p.handle_tool_call(
+            "hindsight_retain",
+            {"content": "Hindsight route filtering is required."},
+        )
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["route:memory"]
+
+    def test_recall_route_exclude_tags_uses_tag_groups(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_routes={
+                "memory": {
+                    "chat_ids": ["chat-memory"],
+                    "tags": ["topic:memory"],
+                    "tags_match": "any_strict",
+                    "exclude_tags": ["archive:legacy"],
+                }
+            },
+        )
+        p._chat_id = "chat-memory"
+        p.handle_tool_call("hindsight_recall", {"query": "route test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "tags" not in call_kwargs
+        assert call_kwargs["tag_groups"] == [
+            {
+                "and": [
+                    {"tags": ["topic:memory"], "match": "any_strict"},
+                    {"not": {"tags": ["archive:legacy"], "match": "any_strict"}},
+                ]
+            }
+        ]
+
+    def test_recall_route_exclude_tags_post_filters_results_and_caps(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_max_results=1,
+            recall_routes={
+                "memory": {
+                    "chat_ids": ["chat-memory"],
+                    "tags": ["topic:memory"],
+                    "exclude_tags": ["archive:legacy"],
+                }
+            },
+        )
+        p._chat_id = "chat-memory"
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(id="bad", text="bad", tags=["archive:legacy"]),
+                    SimpleNamespace(id="good1", text="good1", tags=["topic:memory"]),
+                    SimpleNamespace(id="good2", text="good2", tags=["topic:memory"]),
+                ]
+            )
+        )
+        raw = p.handle_tool_call("hindsight_recall", {"query": "route test"})
+        assert json.loads(raw)["result"] == "1. good1"
+
+    def test_recall_route_max_results_overrides_global_cap(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_max_results=1,
+            recall_routes={
+                "memory": {
+                    "chat_ids": ["chat-memory"],
+                    "tags": ["topic:memory"],
+                    "max_results": 2,
+                }
+            },
+        )
+        p._chat_id = "chat-memory"
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(id="one", text="one", tags=[]),
+                    SimpleNamespace(id="two", text="two", tags=[]),
+                    SimpleNamespace(id="three", text="three", tags=[]),
+                ]
+            )
+        )
+
+        raw = p.handle_tool_call("hindsight_recall", {"query": "route test"})
+
+        assert json.loads(raw)["result"] == "1. one\n2. two"
+
+    def test_recall_route_priority_tags_are_recalled_first(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_routes={
+                "memory": {
+                    "chat_ids": ["chat-memory"],
+                    "tags": ["topic:memory"],
+                    "priority_tags": ["memory_kind:guardrail", "memory_kind:correction"],
+                    "priority_tags_match": "any_strict",
+                }
+            },
+        )
+        p._chat_id = "chat-memory"
+        p._client.arecall = AsyncMock(
+            side_effect=[
+                SimpleNamespace(results=[SimpleNamespace(id="p", text="priority", tags=["memory_kind:guardrail"])]),
+                SimpleNamespace(results=[SimpleNamespace(id="n", text="normal", tags=[])]),
+            ]
+        )
+        raw = p.handle_tool_call("hindsight_recall", {"query": "route test"})
+        assert json.loads(raw)["result"] == "1. priority\n2. normal"
+        first_call = p._client.arecall.call_args_list[0].kwargs
+        assert first_call["tag_groups"][0]["and"][1] == {
+            "tags": ["memory_kind:guardrail", "memory_kind:correction"],
+            "match": "any_strict",
+        }
+
+    def test_recall_route_min_results_broadens_types_once(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_routes={"memory": {"chat_ids": ["chat-memory"], "tags": ["topic:memory"], "min_results": 1}},
+        )
+        p._chat_id = "chat-memory"
+        p._client.arecall = AsyncMock(
+            side_effect=[
+                SimpleNamespace(results=[]),
+                SimpleNamespace(results=[SimpleNamespace(id="fresh", text="fresh", tags=["topic:memory"])]),
+            ]
+        )
+        raw = p.handle_tool_call("hindsight_recall", {"query": "route test"})
+        assert json.loads(raw)["result"] == "1. fresh"
+        assert "types" in p._client.arecall.call_args_list[0].kwargs
+        assert "types" not in p._client.arecall.call_args_list[1].kwargs
+
+    def test_low_signal_recall_skips_short_ack_but_allows_domain_keyword(self, provider_with_config):
+        p = provider_with_config(
+            recall_skip_low_signal_queries=True,
+            recall_low_signal_min_chars=12,
+            recall_domain_signal_keywords=["memory", "记忆"],
+        )
+        p.queue_prefetch("嗯嗯")
+        assert p._prefetch_thread is None
+        assert json.loads(p.handle_tool_call("hindsight_recall", {"query": "嗯嗯"}))["result"] == "No relevant memories found."
+        p.queue_prefetch("记忆")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        assert p._client.arecall.called
+
     def test_recall_passes_types(self, provider_with_config):
         p = provider_with_config(recall_types=["world", "experience"])
         p.handle_tool_call("hindsight_recall", {"query": "test"})
@@ -733,6 +1027,65 @@ class TestToolHandlers:
             "hindsight_reflect", {"query": "summarize"}
         ))
         assert result["result"] == "Synthesized answer"
+
+    def test_reflect_applies_route_tags_and_exclusions(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_routes={
+                "memory": {
+                    "chat_names": "Memory Team",
+                    "tags": ["route:memory"],
+                    "tags_match": "all_strict",
+                    "exclude_tags": ["archive:legacy"],
+                }
+            },
+        )
+        p._chat_name = "Memory Team"
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize route guardrails"}
+        ))
+
+        assert result["result"] == "Synthesized answer"
+        call_kwargs = p._client.areflect.call_args.kwargs
+        assert call_kwargs["tag_groups"] == [
+            {
+                "and": [
+                    {"tags": ["route:memory"], "match": "all_strict"},
+                    {"not": {"tags": ["archive:legacy"], "match": "any_strict"}},
+                ]
+            }
+        ]
+
+    def test_reflect_falls_back_to_routed_recall_when_synthesis_has_no_information(self, provider_with_config):
+        p = provider_with_config(
+            recall_domain_routing=True,
+            recall_routes={
+                "direct": {
+                    "chat_ids": ["chat-direct"],
+                    "tags": ["project:assistant", "target:direct-message"],
+                    "tags_match": "any_strict",
+                    "priority_tags": ["memory_kind:canonical_repair_summary"],
+                    "priority_tags_match": "any_strict",
+                }
+            },
+        )
+        p._chat_id = "chat-direct"
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="The retry loop was caused by a stale pending-state marker.",
+                    tags=["project:assistant", "memory_kind:canonical_repair_summary"],
+                )
+            ]
+        )
+        p._client.areflect.return_value = SimpleNamespace(text="I don't have information.")
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_reflect", {"query": "What caused the retry loop?"}
+        ))
+
+        assert "retry loop was caused by a stale pending-state marker" in result["result"]
 
     def test_reflect_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -837,6 +1190,26 @@ class TestPrefetch:
         # The query passed to arecall should be truncated
         if original_query is not None:
             assert len(original_query) <= 10
+
+    def test_queue_prefetch_selects_route_before_query_truncation(self, provider_with_config):
+        p = provider_with_config(
+            recall_max_input_chars=10,
+            recall_tags=["scope:global"],
+            recall_routes={
+                "research": {
+                    "keywords": ["route-marker"],
+                    "tags": ["scope:research"],
+                }
+            },
+        )
+
+        p.queue_prefetch("prefix text route-marker")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["query"] == "prefix tex"
+        assert call_kwargs["tags"] == ["scope:research"]
 
     def test_queue_prefetch_passes_recall_params(self, provider_with_config):
         p = provider_with_config(

@@ -255,16 +255,17 @@ class TestFromGlobalConfig:
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://config-host:9000"
 
-    def test_base_url_not_read_from_host_block(self, tmp_path):
-        """baseUrl is a root-level connection setting, not overridable per-host (consistent with apiKey)."""
+    def test_base_url_host_block_overrides_root_and_env(self, tmp_path):
+        """Host-specific baseUrl should win for self-hosted Honcho deployments."""
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "baseUrl": "http://root:9000",
             "hosts": {"hermes": {"baseUrl": "http://host-block:9001"}},
         }))
 
-        config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.base_url == "http://root:9000"
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://env:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://host-block:9001"
 
     def test_timeout_from_config_root(self, tmp_path):
         config_file = tmp_path / "config.json"

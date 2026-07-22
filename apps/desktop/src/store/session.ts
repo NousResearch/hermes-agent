@@ -165,6 +165,37 @@ export function resolveComposerSessionKey(
   return row ? sessionPinId(row) : selectedSessionId
 }
 
+/**
+ * Resolve the focused session — and whether it is pinned — for the sidebar's
+ * dedicated "Current" section.
+ *
+ * Selection is compression-aware ({@link sessionMatchesStoredId} matches the
+ * live id OR the lineage root) so a focused conversation stays surfaced across
+ * auto-compression tip rotation, and it is independent of the session's
+ * position in the (possibly long, virtualized) list. Pinned-ness keys off the
+ * durable pin id ({@link sessionPinId}), so it holds for a pinned lineage the
+ * same way the Pinned section does. Returns null when nothing is focused or the
+ * focused session is not in `sessions` (e.g. it belongs to another profile
+ * scope). Purely derived — never mutates persisted order.
+ */
+export function resolveCurrentSession(
+  sessions: readonly SessionInfo[],
+  activeSessionId: null | string,
+  pinnedSessionIds: readonly string[]
+): { pinned: boolean; session: SessionInfo } | null {
+  if (!activeSessionId) {
+    return null
+  }
+
+  const session = sessions.find(entry => sessionMatchesStoredId(entry, activeSessionId))
+
+  if (!session) {
+    return null
+  }
+
+  return { pinned: pinnedSessionIds.includes(sessionPinId(session)), session }
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.

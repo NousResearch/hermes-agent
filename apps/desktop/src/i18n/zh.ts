@@ -1832,6 +1832,7 @@ export const zh: Translations = {
     clearSearch: '清除搜索',
     noMatch: query => `没有会话匹配"${query}"。`,
     results: '结果',
+    current: '当前',
     pinned: '已置顶',
     sessions: '会话',
     cronJobs: '定时任务',

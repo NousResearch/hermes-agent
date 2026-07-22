@@ -1529,6 +1529,7 @@ export const zhHant = defineLocale({
     clearSearch: '清除搜尋',
     noMatch: query => `沒有工作階段符合「${query}」。`,
     results: '結果',
+    current: '目前',
     pinned: '已釘選',
     sessions: '工作階段',
     cronJobs: '排程任務',

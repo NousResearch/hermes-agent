@@ -13,6 +13,7 @@ import {
   applyConfiguredDefaultProjectDir,
   mergeSessionPage,
   resolveComposerSessionKey,
+  resolveCurrentSession,
   sessionPinId,
   setCurrentCwd,
   setSelectedStoredSessionId,
@@ -98,6 +99,46 @@ describe('resolveComposerSessionKey', () => {
 
   it('falls back to the live id when the tip row is not loaded yet', () => {
     expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
+  })
+})
+
+describe('resolveCurrentSession', () => {
+  it('surfaces an ordinary focused session regardless of its list position', () => {
+    // The focused row sits below newer sessions in a recency-sorted list; the
+    // Current section must still find it without touching that order.
+    const sessions = [session({ id: 'newest' }), session({ id: 'focused' }), session({ id: 'oldest' })]
+
+    const result = resolveCurrentSession(sessions, 'focused', [])
+
+    expect(result?.session).toBe(sessions[1])
+    expect(result?.pinned).toBe(false)
+  })
+
+  it('marks a pinned/project session as pinned via its durable pin id', () => {
+    // A pinned lineage pins on the root, so pinned-ness must resolve off the pin
+    // id — not the live id — exactly like the Pinned section.
+    const sessions = [session({ id: 'tip', _lineage_root_id: 'root' })]
+
+    const result = resolveCurrentSession(sessions, 'tip', ['root'])
+
+    expect(result?.session).toBe(sessions[0])
+    expect(result?.pinned).toBe(true)
+  })
+
+  it('follows a compressed lineage: focus keyed on the root finds the tip row', () => {
+    const sessions = [session({ id: 'other' }), session({ id: 'tip', _lineage_root_id: 'root' })]
+
+    const result = resolveCurrentSession(sessions, 'root', [])
+
+    expect(result?.session).toBe(sessions[1])
+    expect(result?.pinned).toBe(false)
+  })
+
+  it('returns null when nothing is focused or the focus is out of scope', () => {
+    const sessions = [session({ id: 'a' })]
+
+    expect(resolveCurrentSession(sessions, null, [])).toBeNull()
+    expect(resolveCurrentSession(sessions, 'not-loaded', [])).toBeNull()
   })
 })
 

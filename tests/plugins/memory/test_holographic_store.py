@@ -300,6 +300,7 @@ class TestHrrDimPersistence:
             store2.close()
 
     def test_rebuild_all_vectors_updates_persisted_dim(self, db_path):
+        pytest.importorskip("numpy")  # add_fact/rebuild build vectors via numpy
         store = MemoryStore(db_path, hrr_dim=256)
         try:
             store.add_fact("a fact to migrate")
@@ -321,7 +322,7 @@ class TestHrrDimPersistence:
         """A legacy mixed-dim DB must not crash add_fact/_rebuild_bank — a
         stray vector at the wrong dimension must be skipped, counted, and
         excluded from the bank's fact_count, not fed into hrr.bundle()."""
-        import numpy as np
+        np = pytest.importorskip("numpy")
 
         store = MemoryStore(db_path, hrr_dim=1024)
         try:

@@ -2782,6 +2782,11 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
         from agent.bedrock_adapter import is_streaming_access_denied_error
 
         return is_streaming_access_denied_error(exc)
+    # MiniMax and other Anthropic-compatible providers may return usage: null
+    # in SSE message_start, causing the SDK's get_final_message() to crash with
+    # AttributeError on output_tokens. Fall back to non-streaming create().
+    if isinstance(exc, AttributeError) and "output_tokens" in str(exc):
+        return True
     return False
 
 

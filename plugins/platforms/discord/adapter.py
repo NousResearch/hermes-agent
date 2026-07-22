@@ -8467,6 +8467,8 @@ def _define_discord_view_classes() -> None:
             )
 
         async def on_timeout(self):
+            if self.resolved:
+                return
             self.resolved = True
             self.clear_items()
             # Visually update the Discord message so it appears expired.

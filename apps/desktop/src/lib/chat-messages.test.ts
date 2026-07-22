@@ -6,11 +6,13 @@ import {
   appendReasoningPart,
   chatMessageText,
   collectUnspokenTurnSpeech,
+  getChatMessageListUpdate,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
   renderMediaTags,
   toChatMessages,
+  updateChatMessageAt,
   upsertToolPart
 } from './chat-messages'
 
@@ -226,6 +228,50 @@ describe('interleaved reasoning/text coalescing', () => {
 })
 
 describe('preserveLocalAssistantErrors', () => {
+  it('preserves single-tail provenance through same-session publication', () => {
+    const currentMessages: ChatMessage[] = [
+      { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      { id: 'assistant-1', parts: [{ text: 'A', type: 'text' }], role: 'assistant', pending: true }
+    ]
+
+    const nextMessages = updateChatMessageAt(currentMessages, 1, message => ({
+      ...message,
+      parts: [{ text: 'AB', type: 'text' }]
+    }))
+
+    const published = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(published).toBe(nextMessages)
+    expect(getChatMessageListUpdate(currentMessages, published)).toMatchObject({ index: 1, message: nextMessages[1] })
+  })
+
+  it('reuses a coalesced source snapshot so the following delta regains provenance', () => {
+    const initial: ChatMessage[] = [
+      { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      { id: 'assistant-1', parts: [{ text: 'A', type: 'text' }], role: 'assistant', pending: true }
+    ]
+
+    const intermediate = updateChatMessageAt(initial, 1, message => ({
+      ...message,
+      parts: [{ text: 'AB', type: 'text' }]
+    }))
+
+    const coalesced = updateChatMessageAt(intermediate, 1, message => ({
+      ...message,
+      parts: [{ text: 'ABC', type: 'text' }]
+    }))
+
+    const published = preserveLocalAssistantErrors(coalesced, initial)
+    expect(published).toBe(coalesced)
+
+    const following = updateChatMessageAt(coalesced, 1, message => ({
+      ...message,
+      parts: [{ text: 'ABCD', type: 'text' }]
+    }))
+
+    expect(getChatMessageListUpdate(published, following)).toMatchObject({ index: 1, message: following[1] })
+  })
+
   it('preserves a local user+error pair when hydration omits the failed turn', () => {
     const nextMessages: ChatMessage[] = [
       {

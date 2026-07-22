@@ -26,6 +26,77 @@ export type ChatMessage = {
   attachmentRefs?: string[]
 }
 
+export type ChatMessageListUpdate = {
+  index: number
+  message: ChatMessage
+  previousMessage: ChatMessage
+}
+
+type StoredChatMessageListUpdate = ChatMessageListUpdate & { previousToken: object }
+
+const chatMessageListUpdates = new WeakMap<ChatMessage[], StoredChatMessageListUpdate>()
+const chatMessageListTokens = new WeakMap<ChatMessage[], object>()
+
+function chatMessageListToken(messages: ChatMessage[]): object {
+  const existing = chatMessageListTokens.get(messages)
+
+  if (existing) {
+    return existing
+  }
+
+  const token = {}
+  chatMessageListTokens.set(messages, token)
+
+  return token
+}
+
+/**
+ * Replace one message while recording the exact predecessor list. Consumers
+ * that maintain their own normalized repository can use this provenance for an
+ * O(1) update instead of rediscovering the changed item by scanning history.
+ */
+export function updateChatMessageAt(
+  messages: ChatMessage[],
+  index: number,
+  update: (message: ChatMessage) => ChatMessage
+): ChatMessage[] {
+  const previousMessage = messages[index]
+
+  if (!previousMessage) {
+    return messages
+  }
+
+  const message = update(previousMessage)
+
+  if (message === previousMessage) {
+    return messages
+  }
+
+  const next = messages.slice()
+  next[index] = message
+  chatMessageListUpdates.set(next, {
+    index,
+    message,
+    previousMessage,
+    previousToken: chatMessageListToken(messages)
+  })
+
+  return next
+}
+
+export function getChatMessageListUpdate(
+  previous: ChatMessage[],
+  current: ChatMessage[]
+): ChatMessageListUpdate | null {
+  const update = chatMessageListUpdates.get(current)
+
+  if (update?.previousToken !== chatMessageListToken(previous)) {
+    return null
+  }
+
+  return update
+}
+
 export type GatewayEventPayload = {
   text?: string
   rendered?: string
@@ -974,7 +1045,35 @@ export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
 ): ChatMessage[] {
+  const update = getChatMessageListUpdate(currentMessages, nextMessages)
+
+  // Same-session streaming changes exactly one message. All untouched local
+  // errors are already present by identity, so preserve the tagged array and
+  // avoid the authoritative hydration scans on the per-delta path.
+  if (update) {
+    const next = update.message
+    const local = update.previousMessage
+
+    if (
+      next.role === 'assistant' &&
+      !next.error &&
+      !next.hidden &&
+      local.role === 'assistant' &&
+      local.error &&
+      !local.hidden
+    ) {
+      return updateChatMessageAt(nextMessages, update.index, message => ({
+        ...message,
+        error: local.error,
+        pending: false
+      }))
+    }
+
+    return nextMessages
+  }
+
   const localById = new Map(currentMessages.map(message => [message.id, message]))
+  let mergedChanged = false
 
   const mergedNextMessages = nextMessages.map(message => {
     if (message.role !== 'assistant' || message.error || message.hidden) {
@@ -986,6 +1085,8 @@ export function preserveLocalAssistantErrors(
     if (!local || local.role !== 'assistant' || !local.error || local.hidden) {
       return message
     }
+
+    mergedChanged = true
 
     return {
       ...message,
@@ -1031,7 +1132,7 @@ export function preserveLocalAssistantErrors(
   }
 
   if (preserveIds.size === 0) {
-    return mergedNextMessages
+    return mergedChanged ? mergedNextMessages : nextMessages
   }
 
   const preserved = currentMessages

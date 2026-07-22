@@ -7,6 +7,7 @@ import {
 } from '@assistant-ui/core/internal'
 import {
   type AssistantRuntime,
+  type ExportedMessageRepository,
   type ExternalStoreAdapter,
   fromThreadMessageLike,
   generateId,
@@ -15,7 +16,39 @@ import {
 } from '@assistant-ui/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import {
+  type RuntimeMessageRepository,
+  runtimeMessageRepositoryDelta
+} from '@/app/chat/runtime-repository'
+
 const EMPTY_ARRAY = Object.freeze([])
+
+export type ThreadMessageListUpdate = {
+  index: number
+  message: ThreadMessage
+  previousToken: object
+  previousMessage: ThreadMessage
+}
+
+const threadMessageListUpdates = new WeakMap<readonly ThreadMessage[], ThreadMessageListUpdate>()
+const threadMessageListTokens = new WeakMap<readonly ThreadMessage[], object>()
+
+export function getThreadMessageListToken(messages: readonly ThreadMessage[]): object {
+  const existing = threadMessageListTokens.get(messages)
+
+  if (existing) {
+    return existing
+  }
+
+  const token = {}
+  threadMessageListTokens.set(messages, token)
+
+  return token
+}
+
+export function getThreadMessageListUpdate(messages: readonly ThreadMessage[]): ThreadMessageListUpdate | null {
+  return threadMessageListUpdates.get(messages) ?? null
+}
 
 const shallowEqual = (a: object, b: object): boolean => {
   const aKeys = Object.keys(a)
@@ -35,13 +68,67 @@ const shallowEqual = (a: object, b: object): boolean => {
 
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
-function syncRepositoryIncrementally(
-  runtime: ExternalStoreThreadRuntimeCore,
-  messageRepository: NonNullable<ExternalStoreAdapter['messageRepository']>
+export function syncRepositoryIncrementally(
+  repository: ExternalStoreThreadRuntimeCore['repository'],
+  messageRepository: NonNullable<ExternalStoreAdapter['messageRepository']> | RuntimeMessageRepository,
+  visibleMessages?: readonly ThreadMessage[],
+  allowDelta = true
 ): readonly ThreadMessage[] {
-  const repository = (runtime as unknown as { repository: ExternalStoreThreadRuntimeCore['repository'] }).repository
+  const delta = (messageRepository as RuntimeMessageRepository)[runtimeMessageRepositoryDelta]
+
+  if (delta && allowDelta) {
+    let existing: ReturnType<typeof repository.getMessage> | null = null
+
+    try {
+      existing = repository.getMessage(delta.message.id)
+    } catch {
+      // A concurrent render may prepare a delta against a snapshot that never
+      // commits. Fall through to authoritative reconcile rather than throwing.
+    }
+
+    if (existing) {
+      const headId = messageRepository.headId ?? delta.message.id
+      const messages = visibleMessages ?? repository.getMessages()
+
+      const canReplaceVisibleMessage =
+        existing.parentId === delta.parentId &&
+        repository.headId === headId &&
+        messages[existing.index]?.id === delta.message.id
+
+      if (existing.message === delta.message) {
+        return messages
+      }
+
+      repository.addOrUpdateMessage(delta.parentId, delta.message)
+
+      if (canReplaceVisibleMessage) {
+        const nextMessages = messages.with(existing.index, delta.message)
+        threadMessageListUpdates.set(nextMessages, {
+          index: existing.index,
+          message: delta.message,
+          previousMessage: existing.message,
+          previousToken: getThreadMessageListToken(messages)
+        })
+
+        return nextMessages
+      }
+
+      if (repository.headId !== headId) {
+        repository.resetHead(headId)
+      }
+
+      return repository.getMessages()
+    }
+  }
+
   const incomingIds = new Set(messageRepository.messages.map(({ message }) => message.id))
+
+  if (delta) {
+    incomingIds.add(delta.message.id)
+  }
+
   const existing = repository.export().messages
+  const existingById = new Map(existing.map(item => [item.message.id, item]))
 
   // A thread switch swaps in a fully-DISJOINT transcript (no id carries over).
   // Reconciling two unrelated trees in place — grafting the new chain onto the
@@ -51,26 +138,40 @@ function syncRepositoryIncrementally(
     for (const { message } of [...existing].reverse()) {
       repository.deleteMessage(message.id)
     }
+
+    existingById.clear()
   }
 
   for (const { message, parentId } of messageRepository.messages) {
-    repository.addOrUpdateMessage(parentId, message)
+    const previous = existingById.get(message.id)
+
+    if (!previous || previous.message !== message || previous.parentId !== parentId) {
+      repository.addOrUpdateMessage(parentId, message)
+    }
   }
 
-  for (const { message } of repository.export().messages) {
+  if (delta) {
+    repository.addOrUpdateMessage(delta.parentId, delta.message)
+  }
+
+  for (const { message } of existingById.values()) {
     if (!incomingIds.has(message.id)) {
       repository.deleteMessage(message.id)
     }
   }
 
-  const headId = messageRepository.headId ?? messageRepository.messages.at(-1)?.message.id ?? null
+  const headId = messageRepository.headId ?? delta?.message.id ?? messageRepository.messages.at(-1)?.message.id ?? null
 
-  repository.resetHead(headId)
+  if (repository.headId !== headId) {
+    repository.resetHead(headId)
+  }
 
   return repository.getMessages()
 }
 
 class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRuntimeCore {
+  private appliedRepositoryMessages: ExportedMessageRepository['messages'] | undefined
+
   override __internal_setAdapter(store: ExternalStoreAdapter): void {
     if (!store.messageRepository) {
       super.__internal_setAdapter(store)
@@ -137,7 +238,16 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       self._assistantOptimisticId = null
     }
 
-    const messages = syncRepositoryIncrementally(this, store.messageRepository)
+    const allowDelta = store.messageRepository.messages === this.appliedRepositoryMessages
+
+    const messages = syncRepositoryIncrementally(
+      this.repository,
+      store.messageRepository,
+      self._messages,
+      allowDelta
+    )
+
+    this.appliedRepositoryMessages = store.messageRepository.messages
 
     if (messages.length > 0) {
       this.ensureInitialized()
@@ -146,6 +256,8 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
     if ((oldStore?.isRunning ?? false) !== (store.isRunning ?? false)) {
       self._notifyEventSubscribers(store.isRunning ? 'runStart' : 'runEnd', {})
     }
+
+    let repositoryChangedAfterSync = false
 
     // metadata.isOptimistic keeps this placeholder ephemeral: core evicts
     // off-branch optimistic messages on head moves and omits them from export().
@@ -158,10 +270,17 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
         })
       )
       self._assistantOptimisticId = optimisticId
+      repositoryChangedAfterSync = true
     }
 
-    this.repository.resetHead(self._assistantOptimisticId ?? messages.at(-1)?.id ?? null)
-    self._messages = this.repository.getMessages()
+    const headId = self._assistantOptimisticId ?? store.messageRepository.headId ?? messages.at(-1)?.id ?? null
+
+    if (this.repository.headId !== headId) {
+      this.repository.resetHead(headId)
+      repositoryChangedAfterSync = true
+    }
+
+    self._messages = repositoryChangedAfterSync ? this.repository.getMessages() : messages
     self._notifySubscribers()
   }
 }

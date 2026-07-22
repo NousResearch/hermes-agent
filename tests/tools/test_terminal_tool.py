@@ -323,3 +323,98 @@ def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypat
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+# ── SSH remote sudo detection ──
+
+
+def test_ssh_remote_sudo_skips_local_prompt(monkeypatch):
+    """ssh host sudo cmd — sudo runs remotely, no local prompt."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "ssh host sudo whoami"
+    )
+
+    assert transformed == "ssh host sudo whoami"
+    assert sudo_stdin is None
+
+
+def test_ssh_remote_sudo_with_options_skips_local_prompt(monkeypatch):
+    """ssh -p 22 user@host sudo ls — flags and user@host handled."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "ssh -p 22 user@host sudo ls"
+    )
+
+    assert transformed == "ssh -p 22 user@host sudo ls"
+    assert sudo_stdin is None
+
+
+def test_ssh_remote_quoted_sudo_skips_local_prompt(monkeypatch):
+    """ssh host 'sudo a && sudo b' — && inside quotes is remote."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "ssh host 'sudo a && sudo b'"
+    )
+
+    assert transformed == "ssh host 'sudo a && sudo b'"
+    assert sudo_stdin is None
+
+
+def test_ssh_remote_then_semicolon_local_sudo_is_NOT_skipped(monkeypatch):
+    """ssh host remote ; sudo local — the local sudo MUST still trigger."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "ssh host remote ; sudo local"
+    )
+
+    # Local sudo after ; should be rewritten
+    assert "sudo -S -p ''" in transformed
+    assert sudo_stdin == "testpass\n"
+
+
+def test_ssh_remote_then_and_local_sudo_is_NOT_skipped(monkeypatch):
+    """ssh host cmd && sudo local — local sudo after && is NOT skipped."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "ssh host cmd && sudo local"
+    )
+
+    assert "sudo -S -p ''" in transformed
+    assert sudo_stdin == "testpass\n"
+
+
+def test_usr_bin_ssh_with_chained_local_sudo_is_NOT_skipped(monkeypatch):
+    """/usr/bin/ssh host remote && sudo local — local sudo after /usr/bin/ssh."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "/usr/bin/ssh host remote && sudo local"
+    )
+
+    assert "sudo -S -p ''" in transformed
+    assert sudo_stdin == "testpass\n"
+
+
+def test_normal_local_sudo_still_works(monkeypatch):
+    """sudo apt-get update — normal local sudo, no SSH involved."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+        "sudo apt-get update"
+    )
+
+    assert transformed == "sudo -S -p '' apt-get update"
+    assert sudo_stdin == "testpass\n"

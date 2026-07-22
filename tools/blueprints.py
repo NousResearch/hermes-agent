@@ -301,6 +301,13 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
 
 def _schedule_to_string(schedule: Any) -> str:
     """Best-effort render of a parsed schedule dict back to a string."""
+    def _positive_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if parsed > 0 else None
+
     if isinstance(schedule, str):
         return schedule
     if isinstance(schedule, dict):
@@ -310,13 +317,13 @@ def _schedule_to_string(schedule: Any) -> str:
         if kind == "interval":
             # parse_schedule stores interval periods as "minutes"; tolerate a
             # legacy/foreign "seconds" form too.
-            if schedule.get("minutes"):
-                mins = int(schedule["minutes"])
+            mins = _positive_int(schedule.get("minutes"))
+            if mins is not None:
                 if mins % 60 == 0:
                     return f"every {mins // 60}h"
                 return f"every {mins}m"
-            if schedule.get("seconds"):
-                secs = int(schedule["seconds"])
+            secs = _positive_int(schedule.get("seconds"))
+            if secs is not None:
                 if secs % 3600 == 0:
                     return f"every {secs // 3600}h"
                 if secs % 60 == 0:

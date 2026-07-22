@@ -30,8 +30,13 @@ from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 try:
     from tools.lazy_deps import ensure as _lazy_ensure
     _lazy_ensure("provider.vertex", prompt=False)
-except Exception:
-    pass  # lazy_deps unavailable or install failed — fall through to the real ImportError below
+    _LAZY_INSTALL_ERROR = None
+except Exception as _lazy_exc:  # noqa: F841
+    # lazy_deps unavailable or install failed — fall through to the real
+    # ImportError below. Don't swallow silently: a failed on-demand install of
+    # google-auth (e.g. a VM with no PyPI egress) is a top cause of "Vertex
+    # credentials could not be resolved". Stash it for scripts/diagnose_vertex.py.
+    _LAZY_INSTALL_ERROR = repr(_lazy_exc)
 
 try:
     import google.auth
@@ -108,6 +113,29 @@ def _refresh_credentials(creds) -> None:
     creds.refresh(auth_req)
 
 
+def _project_from_metadata() -> Optional[str]:
+    """Best-effort project-id lookup from the GCE metadata server.
+
+    On a Compute Engine VM with an attached service account,
+    ``google.auth.default()`` mints a valid token but can return
+    ``project_id=None`` (e.g. when neither GOOGLE_CLOUD_PROJECT nor a quota
+    project is configured). Without a project we cannot build the Vertex base
+    URL, so an otherwise-valid token would be discarded. The metadata server
+    always knows the host project on a GCE VM, so ask it directly. Returns None
+    off GCE or on any error (no exception escapes).
+    """
+    try:
+        from google.auth.compute_engine import _metadata
+
+        request = google.auth.transport.requests.Request()
+        if not _metadata.ping(request):
+            return None
+        return _metadata.get_project_id(request) or None
+    except Exception as exc:  # pragma: no cover - network/env dependent
+        logger.debug("Metadata project lookup failed: %s", exc)
+        return None
+
+
 def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Return a (fresh access_token, project_id) pair or (None, None) on failure.
 
@@ -152,6 +180,12 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
                 creds, project_id = google.auth.default(
                     scopes=["https://www.googleapis.com/auth/cloud-platform"]
                 )
+                # A GCE VM with an attached service account mints a usable token
+                # but sometimes returns project_id=None; recover it from the
+                # metadata server so the token isn't discarded downstream. An
+                # explicit VERTEX_PROJECT_ID / config override still wins below.
+                if not project_id:
+                    project_id = _project_from_metadata()
             _creds_cache[cache_key] = (creds, project_id)
         else:
             creds, project_id = cached

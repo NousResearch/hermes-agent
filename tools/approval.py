@@ -2769,6 +2769,7 @@ def _run_approval_gate(
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
                 "allow_permanent": True,
+                "allow_session": True,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
@@ -3464,6 +3465,11 @@ def check_all_command_guards(command: str, env_type: str,
                 # whenever any dangerous-pattern warning can actually be
                 # persisted (pure-tirith prompts stay session-max).
                 "allow_permanent": has_permanent_capable and not smart_denied_for_owner,
+                # Session approval is safe for every non-Smart-DENY prompt —
+                # including pure-tirith ones, where the persistence layer
+                # already caps scope at session. Adapters use this to render
+                # a session tier independently of the permanent tier.
+                "allow_session": not smart_denied_for_owner,
             }
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
@@ -3795,6 +3801,7 @@ def check_execute_code_guard(code: str, env_type: str,
         "pattern_keys": [pattern_key],
         "description": display_description,
         "allow_permanent": not smart_denied_for_owner,
+        "allow_session": not smart_denied_for_owner,
     }
     if smart_denied_for_owner:
         approval_data["smart_denied"] = True

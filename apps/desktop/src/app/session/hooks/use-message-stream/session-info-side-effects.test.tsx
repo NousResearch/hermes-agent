@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -16,6 +17,7 @@ import { useMessageStream } from './index'
 // actually changed. message.complete must coalesce sidebar refreshes.
 
 const ACTIVE_SID = 'session-active'
+const ACTIVE_PROFILE = 'compass'
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let refreshHermesConfig: ReturnType<typeof vi.fn<() => Promise<void>>>
 let refreshSessions: ReturnType<typeof vi.fn<() => Promise<void>>>
@@ -26,6 +28,7 @@ function Harness() {
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
 
   const stream = useMessageStream({
+    activeGatewayProfile: ACTIVE_PROFILE,
     activeSessionIdRef,
     hydrateFromStoredSession: vi.fn(async () => undefined),
     queryClient,
@@ -132,7 +135,7 @@ describe('session.info model-options invalidation gating', () => {
 
     sessionInfo(ACTIVE_SID, { model: 'm2', provider: 'p1', running: true })
 
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['model-options', ACTIVE_SID] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: modelOptionsQueryKey(ACTIVE_PROFILE, ACTIVE_SID) })
   })
 })
 

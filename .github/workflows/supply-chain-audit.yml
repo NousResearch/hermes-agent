@@ -16,11 +16,12 @@ name: Supply Chain Audit
 # ``review-labels.yml`` so it can be rerun independently.
 #
 # Outputs:
-#   review_status  — JSON array of status objects consumed by the review
-#                    comment assembler (scripts/ci/assemble_review_comment.py).
-#                    Each job (``scan``, ``dep-bounds``) emits its own
-#                    array; an ``aggregate`` job merges them into the
-#                    workflow-level output.
+#   review_status      — JSON array of status objects consumed by the review
+#                         comment assembler (scripts/ci/assemble_review_comment.py).
+#   critical_findings  — "true" when the narrow critical-pattern scan found
+#                         something. The review-label gate consumes this and
+#                         owns the action-required result, so adding
+#                         ``ci-reviewed`` can heal the run on rerun.
 
 on:
   workflow_call:
@@ -41,6 +42,9 @@ on:
       review_status:
         description: JSON array of review status objects for the review comment assembler.
         value: ${{ jobs.aggregate.outputs.review_status }}
+      critical_findings:
+        description: Whether the critical-pattern scan found a risk requiring maintainer review.
+        value: ${{ jobs.aggregate.outputs.critical_findings }}
 
 permissions:
   pull-requests: write
@@ -54,6 +58,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.emit-status.outputs.review_status }}
+      critical_findings: ${{ steps.scan.outputs.found }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -165,33 +170,15 @@ jobs:
           python3 - <<'PYEOF'
           import json, os
 
-          found = os.environ.get("FOUND", "") == "true"
-
-          if found:
-              with open("/tmp/findings.md", encoding="utf-8") as f:
-                  detail = f.read()
-              status = [{
-                  "source": "supply chain",
-                  "results": [{
-                      "kind": "error",
-                      "title": "Critical supply chain risk",
-                      "summary": "Critical supply chain risk patterns detected in this PR.",
-                      "detail": detail,
-                      "how_to_fix": "Review the flagged code carefully. If intentional, add the `ci-reviewed` label."
-                  }]
-              }]
-          else:
-              status = []
+          # The review-label gate renders and blocks critical findings. Keep
+          # this scan a fact-finder so adding ci-reviewed can rerun the gate
+          # without requiring the scanner itself to fail again.
+          status = []
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"review_status={json.dumps(status)}\n")
           PYEOF
 
-      - name: Fail on critical findings
-        if: steps.scan.outputs.found == 'true'
-        run: |
-          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
-          exit 1
 
   dep-bounds:
     name: Check PyPI dependency upper bounds
@@ -279,12 +266,14 @@ jobs:
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.merge.outputs.review_status }}
+      critical_findings: ${{ steps.merge.outputs.critical_findings }}
     steps:
       - name: Merge review statuses
         id: merge
         env:
           SCAN_STATUS: ${{ needs.scan.outputs.review_status }}
           DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
+          CRITICAL_FINDINGS: ${{ needs.scan.outputs.critical_findings }}
         run: |
           python3 - <<'PYEOF'
           import json, os
@@ -303,4 +292,5 @@ jobs:
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"review_status={json.dumps(merged)}\n")
+              f.write("critical_findings=" + os.environ.get("CRITICAL_FINDINGS", "false") + "\n")
           PYEOF

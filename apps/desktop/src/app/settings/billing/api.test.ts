@@ -133,6 +133,48 @@ describe('createBillingApi', () => {
     })
   })
 
+  it('previews a subscription change with the chosen tier id', async () => {
+    requestGatewayMock.mockResolvedValueOnce({ effect: 'scheduled', ok: true, target_tier_name: 'Plus' })
+
+    const api = createBillingApi(requestGatewayMock)
+    const response = await api.previewSubscriptionChange('tier_plus')
+
+    expect(response).toEqual({ data: { effect: 'scheduled', ok: true, target_tier_name: 'Plus' }, ok: true })
+    expect(requestGatewayMock).toHaveBeenCalledWith('subscription.preview', { subscription_type_id: 'tier_plus' })
+  })
+
+  it('schedules a subscription change with the chosen tier id', async () => {
+    requestGatewayMock.mockResolvedValueOnce({ message: 'Downgrade scheduled.', ok: true })
+
+    const api = createBillingApi(requestGatewayMock)
+    const response = await api.scheduleSubscriptionChange('tier_plus')
+
+    expect(response).toEqual({ data: { message: 'Downgrade scheduled.', ok: true }, ok: true })
+    expect(requestGatewayMock).toHaveBeenCalledWith('subscription.change', { subscription_type_id: 'tier_plus' })
+  })
+
+  it('resumes (undoes) a scheduled change with no params', async () => {
+    requestGatewayMock.mockResolvedValueOnce({ message: 'Change cancelled.', ok: true })
+
+    const api = createBillingApi(requestGatewayMock)
+    const response = await api.resumeSubscription()
+
+    expect(response).toEqual({ data: { message: 'Change cancelled.', ok: true }, ok: true })
+    expect(requestGatewayMock).toHaveBeenCalledWith('subscription.resume', {})
+  })
+
+  it('surfaces an insufficient_scope refusal from a subscription preview', async () => {
+    requestGatewayMock.mockResolvedValueOnce({
+      error: { kind: 'insufficient_scope', message: 'billing:manage required' },
+      ok: false
+    })
+
+    const api = createBillingApi(requestGatewayMock)
+    const response = await api.scheduleSubscriptionChange('tier_plus')
+
+    expect(response).toMatchObject({ ok: false, refusal: { kind: 'insufficient_scope' } })
+  })
+
   it('sends a step-up session id when provided', async () => {
     requestGatewayMock.mockResolvedValueOnce({ granted: true, ok: true })
 

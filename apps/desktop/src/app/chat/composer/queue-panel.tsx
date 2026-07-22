@@ -24,7 +24,16 @@ interface QueuePanelProps {
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
-export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onResume, onSendNow, parked }: QueuePanelProps) {
+export function QueuePanel({
+  busy,
+  editingId,
+  entries,
+  onDelete,
+  onEdit,
+  onResume,
+  onSendNow,
+  parked
+}: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
 
@@ -54,13 +63,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onResum
         ) : undefined
       }
       defaultCollapsed={!parked}
-      icon={
-        <Codicon
-          className="text-muted-foreground/70"
-          name={parked ? 'debug-pause' : 'layers'}
-          size="0.8rem"
-        />
-      }
+      icon={<Codicon className="text-muted-foreground/70" name={parked ? 'debug-pause' : 'layers'} size="0.8rem" />}
       key={parked ? 'parked' : 'flowing'}
       label={parked ? c.queuedPaused(entries.length) : c.queued(entries.length)}
     >

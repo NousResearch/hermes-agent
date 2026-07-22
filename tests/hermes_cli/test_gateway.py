@@ -17,6 +17,12 @@ import hermes_cli.gateway as gateway
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway
+
+    def _exit_after_graceful_shutdown(code):
+        if code:
+            raise SystemExit(code)
+
+    setattr(module, "_exit_after_graceful_shutdown", _exit_after_graceful_shutdown)
     monkeypatch.setitem(sys.modules, "gateway.run", module)
     # ``run_gateway()`` calls ``refresh_systemd_unit_if_needed()`` on every
     # invocation so that restart settings stay current after exit-code-75
@@ -57,6 +63,10 @@ def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
 
+    # KeyboardInterrupt now uses the same hard-exit backstop as all other
+    # exit paths (instead of a bare ``return``).  The test stub's
+    # _exit_after_graceful_shutdown is a no-op for code 0, so run_gateway()
+    # returns normally — but the real implementation would call os._exit(0).
     gateway.run_gateway()
 
     out = capsys.readouterr().out
@@ -119,6 +129,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
 
         fake_run = types.ModuleType("gateway.run")
         fake_run.start_gateway = start_gateway
+        setattr(fake_run, "_exit_after_graceful_shutdown", sys.exit)
         sys.modules["gateway.run"] = fake_run
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None

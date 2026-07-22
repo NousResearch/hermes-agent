@@ -55,6 +55,16 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Prefixes that identify generated context-compaction handoff summaries.
+# These are inserted by agent/context_compressor.py as normal user/assistant
+# messages but contain machine-generated summary metadata — not user content.
+# They must be excluded from discovery bookends to avoid re-introducing huge
+# compaction payloads into fresh sessions via session_search.  (#43175)
+_COMPACTION_PREFIXES = (
+    "[CONTEXT COMPACTION",
+    "[CONTEXT SUMMARY]:",
+)
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -81,6 +91,15 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
+def _is_compaction_summary(content: str) -> bool:
+    """Return True if *content* looks like a generated compaction handoff."""
+    if not content:
+        return False
+    stripped = content.lstrip()
+    return any(stripped.startswith(p) for p in _COMPACTION_PREFIXES)
+
+
+
 def _resolve_to_parent(db, session_id: str) -> str:
     """Walk parent_session_id chain to the lineage root. Falls back to input on errors."""
     if not session_id:
@@ -103,6 +122,28 @@ def _resolve_to_parent(db, session_id: str) -> str:
     return cur
 
 
+def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
+    """Add a rebuild-progress note when the deferred FTS backfill (schema
+    v23) is still running, so the agent can tell the user why older results
+    may be incomplete/slower instead of treating a thin result set as
+    ground truth. No-op (and never raises) when no rebuild is pending."""
+    try:
+        status = db.fts_rebuild_status()
+    except Exception:
+        return
+    if status is None:
+        return
+    payload["index_rebuild"] = {
+        "percent": status["percent"],
+        "note": (
+            f"The search index is rebuilding in the background "
+            f"({status['percent']}% done, {status['indexed']:,} of "
+            f"{status['total']:,} messages). Results from older messages "
+            f"may be incomplete until it finishes."
+        ),
+    }
+
+
 def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Stable-sort FTS rows so interactive sessions rank above automation.
 
@@ -120,12 +161,30 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
-    """Slim a message row for the tool response. Keeps content even if empty."""
+def _shape_message(
+    m: Dict[str, Any],
+    anchor_id: Optional[int] = None,
+    max_content_len: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Slim a message row for the tool response. Keeps content even if empty.
+
+    When *max_content_len* is set, ``content`` is truncated to that many
+    characters and ``content_truncated`` / ``original_content_chars`` metadata
+    is added so callers know the payload was bounded.
+    """
+    raw_content = m.get("content")
+    if max_content_len and raw_content and len(raw_content) > max_content_len:
+        content = raw_content[:max_content_len] + "…"
+        truncated = True
+        original_chars = len(raw_content)
+    else:
+        content = raw_content
+        truncated = False
+        original_chars = None
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
@@ -136,6 +195,9 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
+    if truncated:
+        entry["content_truncated"] = True
+        entry["original_content_chars"] = original_chars
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
@@ -531,14 +593,16 @@ def _discover(
     raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
-        return json.dumps({
+        _empty_payload = {
             "success": True,
             "mode": "discover",
             "query": query,
             "results": [],
             "count": 0,
             "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+        }
+        _annotate_rebuild_status(db, _empty_payload)
+        return json.dumps(_empty_payload, ensure_ascii=False)
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -596,9 +660,17 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_start") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ],
+            "messages": [_shape_message(m, anchor_id=msg_id, max_content_len=4000) for m in (view.get("window") or [])],
+            "bookend_end": [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_end") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }
@@ -606,14 +678,16 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    _final_payload = {
         "success": True,
         "mode": "discover",
         "query": query,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+    }
+    _annotate_rebuild_status(db, _final_payload)
+    return json.dumps(_final_payload, ensure_ascii=False)
 
 
 def session_search(

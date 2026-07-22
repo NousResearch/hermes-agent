@@ -567,6 +567,28 @@ class ComputeHost:
                 }
             )
         except Exception as exc:
+            if route_name in {"session.compress", "slash.compress"}:
+                # The compress mirror defers the context-engine boundary
+                # notification until the host commits. If anything raises
+                # between queueing and finalize (e.g. building the ack's
+                # session_info), discard the pending notification so it can't
+                # leak onto the agent and fire against a rejected boundary on
+                # a later compress. finalize is exactly-once, so this is a
+                # no-op when the mirror already emitted or discarded it.
+                try:
+                    from tui_gateway import server as _server
+                    from agent.conversation_compression import (
+                        finalize_context_engine_compression_notification,
+                    )
+
+                    _agent = (_server._sessions.get(sid) or {}).get("agent")
+                    if _agent is not None:
+                        finalize_context_engine_compression_notification(
+                            _agent,
+                            committed=False,
+                        )
+                except Exception:
+                    pass
             self.emit({"type": "control.error", "sid": sid, "request_id": request_id, "message": str(exc)})
 
     def _bump_progress(self) -> None:

@@ -2,7 +2,7 @@
 
 Subcommands:
     setup    — interactive wizard: install bws, prompt for token + project, test fetch
-    status   — show current config + binary version + last fetch outcome
+    status   — show current config + binary version + token validation status
     sync     — run a fetch right now and show what would be applied (dry-run friendly)
     disable  — flip ``secrets.bitwarden.enabled`` to False
     install  — just download the bws binary (no token / project required)
@@ -11,6 +11,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import subprocess
@@ -68,7 +69,10 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     setup.set_defaults(func=cmd_setup)
 
-    status = sub.add_parser("status", help="Show config + binary + last fetch")
+    status = sub.add_parser(
+        "status",
+        help="Show config + binary + token validation status",
+    )
     status.set_defaults(func=cmd_status)
 
     token = sub.add_parser(
@@ -312,7 +316,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
     project_id = bw_cfg.get("project_id", "")
     server_url = str(bw_cfg.get("server_url", "") or "").strip()
-    token_set = bool(os.environ.get(token_env))
+    token = os.environ.get(token_env, "").strip()
+    token_set = bool(token)
+    binary = bw.find_bws(install_if_missing=False)
+    token_validation, validation_messages = _token_validation_status(
+        enabled=enabled,
+        binary=binary,
+        token=token,
+        server_url=server_url,
+    )
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("", style="bold")
@@ -320,6 +332,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     table.add_row("Enabled",         _yn(enabled))
     table.add_row("Token env var",   token_env)
     table.add_row("Token in env",    _yn(token_set))
+    table.add_row("Token validation", token_validation)
     table.add_row("Project ID",      project_id or "[dim](unset)[/dim]")
     table.add_row(
         "Server URL",
@@ -329,13 +342,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     table.add_row("Cache TTL (s)",   str(bw_cfg.get("cache_ttl_seconds", 300)))
     table.add_row("Auto-install",    _yn(bool(bw_cfg.get("auto_install", True))))
 
-    binary = bw.find_bws(install_if_missing=False)
     if binary:
         table.add_row("bws binary",  f"{binary} ({_bws_version(binary)})")
     else:
         table.add_row("bws binary",  "[yellow]not installed[/yellow]")
 
     console.print(Panel(table, title="Bitwarden Secrets Manager", border_style="cyan"))
+    for message in validation_messages:
+        console.print(message)
 
     if not enabled:
         console.print("\n  Run [cyan]hermes secrets bitwarden setup[/cyan] to enable.")
@@ -556,6 +570,38 @@ def _bws_version(binary: Path) -> str:
     except (OSError, subprocess.TimeoutExpired):
         pass
     return "version unknown"
+
+
+def _token_validation_status(
+    *,
+    enabled: bool,
+    binary: Optional[Path],
+    token: str,
+    server_url: str = "",
+) -> tuple[str, list[str]]:
+    if not enabled:
+        return "[dim]not checked[/dim] (integration disabled)", []
+    if not token:
+        return "[dim]not checked[/dim] (token missing)", []
+    if binary is None:
+        return "[dim]not checked[/dim] (bws not installed)", []
+
+    messages: list[str] = []
+    if not token.startswith("0."):
+        messages.append(
+            "  [yellow]Warning: token doesn't start with '0.' — usually that means "
+            "you pasted something other than a BSM access token.  Continuing anyway.[/yellow]"
+        )
+
+    capture = io.StringIO()
+    probe_console = Console(file=capture, record=True, width=200)
+    projects = _list_projects(binary, token, probe_console, server_url=server_url)
+    if projects is None:
+        details = probe_console.export_text(styles=False).strip()
+        if details:
+            messages.extend(line.rstrip() for line in details.splitlines())
+        return "[red]failed[/red]", messages
+    return "[green]passed[/green]", messages
 
 
 def _list_projects(

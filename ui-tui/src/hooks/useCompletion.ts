@@ -5,6 +5,24 @@ import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { listWidgetApps } from '../sdk/registry.js'
+
+/** Client-side widget apps live in the TUI's registry, not the gateway — so
+ *  `/` completions merge their title/metadata here. Registry-driven: a new
+ *  app surfaces automatically, no hardcoded lists on either side. */
+export function mergeWidgetAppItems(input: string, items: CompletionItem[]): CompletionItem[] {
+  // Only complete the command NAME position (no args typed yet).
+  if (input.includes(' ')) {
+    return items
+  }
+
+  const local = listWidgetApps()
+    .filter(app => `/${app.id}`.startsWith(input.toLowerCase()))
+    .filter(app => !items.some(item => item.text === `/${app.id}`))
+    .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
+
+  return [...items, ...local]
+}
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
@@ -85,7 +103,10 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
           const r = asRpcResult<CompletionResponse>(raw)
 
-          setCompletions(r?.items ?? [])
+          const items =
+            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? []) : (r?.items ?? [])
+
+          setCompletions(items)
           setCompIdx(0)
           setCompReplace(request.method === 'complete.slash' ? (r?.replace_from ?? 1) : request.replaceFrom)
         })

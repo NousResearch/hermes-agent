@@ -267,3 +267,63 @@ class TestRuntimeStaleGuard:
         db.reopen_session.assert_not_called()
         # A brand-new session row was created.
         db.create_session.assert_called_once()
+
+
+class TestAdvanceCompressionSession:
+    def test_cas_advances_route_without_reopening_rows(self, tmp_path):
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        source = _source()
+        key = store._generate_session_key(source)
+        original = _make_entry(key, "sid_parent")
+        store._entries[key] = original
+
+        result = store.advance_compression_session(
+            key,
+            "sid_parent",
+            "sid_tip",
+        )
+
+        assert result is not None
+        assert result is original
+        assert result.session_id == "sid_tip"
+        assert store.peek_session_id(key) == "sid_tip"
+        db.end_session.assert_not_called()
+        db.reopen_session.assert_not_called()
+
+    def test_cas_is_idempotent_when_another_caller_already_advanced(self, tmp_path):
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        source = _source()
+        key = store._generate_session_key(source)
+        current = _make_entry(key, "sid_tip")
+        store._entries[key] = current
+
+        result = store.advance_compression_session(
+            key,
+            "sid_parent",
+            "sid_tip",
+        )
+
+        assert result is current
+        assert store.peek_session_id(key) == "sid_tip"
+        db.end_session.assert_not_called()
+        db.reopen_session.assert_not_called()
+
+    def test_cas_refuses_to_overwrite_route_changed_by_new(self, tmp_path):
+        db = _db_returning({})
+        store = _make_store_with_db(tmp_path, db)
+        source = _source()
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(key, "sid_after_new")
+
+        result = store.advance_compression_session(
+            key,
+            "sid_parent",
+            "sid_tip",
+        )
+
+        assert result is None
+        assert store.peek_session_id(key) == "sid_after_new"
+        db.end_session.assert_not_called()
+        db.reopen_session.assert_not_called()

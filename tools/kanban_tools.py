@@ -1167,6 +1167,54 @@ def _handle_create(args: dict, **kw) -> str:
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
+
+            # --- Also subscribe the assignee's Slack home channel ---------
+            # Local crew routing: deliver terminal events to the assignee's
+            # own Slack channel (SLACK_HOME_CHANNEL in
+            # ~/.hermes/profiles/<assignee>/.env), not just the originating
+            # session that _maybe_auto_subscribe already registered.
+            try:
+                from pathlib import Path as _Path
+
+                _assignee = str(assignee).strip() if assignee else ""
+                _sub_chat_id = ""
+                if _assignee:
+                    env_path = _Path.home() / ".hermes" / "profiles" / _assignee / ".env"
+                    if env_path.is_file():
+                        for line in env_path.read_text().splitlines():
+                            line = line.strip()
+                            if line.startswith("SLACK_HOME_CHANNEL=") and "THREAD" not in line:
+                                val = line.split("=", 1)[1].strip().strip("'\"")
+                                if val:
+                                    _sub_chat_id = val
+                                    break
+                if _sub_chat_id:
+                    _np = None
+                    _hh = os.environ.get("HERMES_HOME", "")
+                    if "/profiles/" in _hh:
+                        _np = _hh.rstrip("/").rsplit("/", 1)[-1] or None
+                    if not _np:
+                        try:
+                            from hermes_cli.profiles import get_active_profile_name
+                            _np = get_active_profile_name()
+                        except Exception:
+                            pass
+                    kb.add_notify_sub(
+                        conn, task_id=new_tid,
+                        platform="slack", chat_id=_sub_chat_id,
+                        thread_id=None, user_id=None,
+                        notifier_profile=_np or "default",
+                    )
+                    logger.info(
+                        "kanban_create auto-subscribed slack:%s to %s (assignee=%s)",
+                        _sub_chat_id, new_tid, _assignee,
+                    )
+            except Exception as sub_exc:
+                # Non-fatal — task was created, subscription is best-effort.
+                logger.warning(
+                    "kanban_create assignee auto-subscribe failed for %s: %s",
+                    new_tid, sub_exc,
+                )
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,

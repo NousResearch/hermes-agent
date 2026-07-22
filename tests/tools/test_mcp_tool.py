@@ -2266,6 +2266,73 @@ class TestReconnection:
 # Configurable timeouts
 # ---------------------------------------------------------------------------
 
+class TestResolveConnectTimeout:
+    """_resolve_connect_timeout: the OAuth-aware connect_timeout floor (Fix A).
+
+    Mirrors hermes_cli/mcp_config.py's _reauth_oauth_server floor so the
+    generic MCPServerTask/_discover_and_register_server/probe_mcp_server_tools
+    connect paths don't time out mid-authorization and retry into the still-
+    open callback listener from the first attempt (tools/mcp_oauth.py).
+    """
+
+    def _write_cached_token(self, tmp_path, monkeypatch, server_name):
+        import json
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{server_name}.json").write_text(json.dumps({
+            "access_token": "cached", "token_type": "Bearer",
+        }))
+
+    def test_non_oauth_server_never_gets_the_floor(self):
+        from tools.mcp_tool import _resolve_connect_timeout
+        assert _resolve_connect_timeout({"auth": "header"}, "srv") == 60
+        assert _resolve_connect_timeout({}, "srv") == 60
+        assert _resolve_connect_timeout({"auth": "header", "connect_timeout": 5}, "srv") == 5
+
+    def test_oauth_without_cached_token_gets_315_floor(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool import _resolve_connect_timeout
+        assert _resolve_connect_timeout({"auth": "oauth"}, "srv") == 315.0
+
+    def test_oauth_configured_timeout_greater_than_floor_is_respected(self, tmp_path, monkeypatch):
+        """A user-configured longer timeout must never be reduced."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool import _resolve_connect_timeout
+        assert _resolve_connect_timeout(
+            {"auth": "oauth", "connect_timeout": 500}, "srv"
+        ) == 500
+
+    def test_oauth_configured_timeout_below_floor_is_raised(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool import _resolve_connect_timeout
+        assert _resolve_connect_timeout(
+            {"auth": "oauth", "connect_timeout": 10}, "srv"
+        ) == 315.0
+
+    def test_oauth_with_valid_cached_token_is_not_floored(self, tmp_path, monkeypatch):
+        """A server that can reconnect without a browser round-trip doesn't
+        need the login-sized timeout — inflating it would only slow down
+        detecting a genuinely dead connection."""
+        self._write_cached_token(tmp_path, monkeypatch, "srv")
+        from tools.mcp_tool import _resolve_connect_timeout
+        assert _resolve_connect_timeout({"auth": "oauth"}, "srv") == 60
+        assert _resolve_connect_timeout(
+            {"auth": "oauth", "connect_timeout": 10}, "srv"
+        ) == 10
+
+    def test_malformed_connect_timeout_falls_back_to_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool import _resolve_connect_timeout
+        assert _resolve_connect_timeout(
+            {"auth": "header", "connect_timeout": "not-a-number"}, "srv"
+        ) == 60
+        # Still floored for OAuth once the bad value falls back to the default.
+        assert _resolve_connect_timeout(
+            {"auth": "oauth", "connect_timeout": "not-a-number"}, "srv"
+        ) == 315.0
+
+
 class TestConfigurableTimeouts:
     """Tests for configurable per-server timeouts."""
 

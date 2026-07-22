@@ -329,6 +329,12 @@ _MCP_LOG_LEVEL_MAP = {
 
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+# OAuth callback window (300s, see tools/mcp_oauth.py) plus headroom. Matches
+# the floor already applied to `hermes mcp login`/`reauth`
+# (hermes_cli/mcp_config.py's _reauth_oauth_server) and the GUI re-auth path
+# (web_server.py) so every entry point that might have to wait out a human's
+# browser authorization behaves the same way.
+_OAUTH_LOGIN_TIMEOUT_FLOOR = 315.0
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
@@ -348,6 +354,51 @@ def _jittered(seconds: float) -> float:
     """Return ``seconds`` with +/-20% uniform jitter, floored at 0."""
     return max(0.0, seconds * random.uniform(1.0 - _BACKOFF_JITTER,
                                              1.0 + _BACKOFF_JITTER))
+
+
+def _resolve_connect_timeout(config: dict, server_name: str) -> float:
+    """Resolve the initial-connection timeout for one MCP server.
+
+    An OAuth server with no valid cached token needs enough time for a human
+    to complete the browser authorization round-trip before the connection
+    attempt gives up — the plain connect_timeout default (60s,
+    _DEFAULT_CONNECT_TIMEOUT) is tuned for ordinary network handshakes, not a
+    login. Without this floor, the outer asyncio.wait_for(session.initialize(),
+    ...) times out mid-authorization, and MCPServerTask's initial-connect
+    ladder retries against the SAME cached OAuthClientProvider/callback port
+    (MCPOAuthManager.get_or_build_provider), racing the still-open callback
+    listener from the first attempt.
+
+    Mirrors the floor already applied to `hermes mcp login`/`reauth`
+    (hermes_cli/mcp_config.py's _reauth_oauth_server) and the GUI re-auth path
+    (web_server.py) — same _OAUTH_LOGIN_TIMEOUT_FLOOR, same "raise, never
+    lower, a user-configured longer timeout" behavior.
+
+    A server with a valid cached token is left at the configured/default
+    value: it doesn't need a browser round-trip on an ordinary reconnect, so
+    inflating its timeout would only slow down detecting a genuinely dead
+    connection.
+    """
+    configured = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    try:
+        configured = float(configured)
+    except (TypeError, ValueError):
+        configured = float(_DEFAULT_CONNECT_TIMEOUT)
+
+    auth_type = (config.get("auth") or "").lower().strip()
+    if auth_type != "oauth":
+        return configured
+
+    try:
+        from tools.mcp_oauth import HermesTokenStorage
+        has_valid_token = HermesTokenStorage(server_name).has_cached_tokens()
+    except Exception:
+        has_valid_token = False
+
+    if has_valid_token:
+        return configured
+
+    return max(configured, _OAUTH_LOGIN_TIMEOUT_FLOOR)
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -2728,7 +2779,7 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
-        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        connect_timeout = _resolve_connect_timeout(config, self.name)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
 
@@ -5566,7 +5617,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 
     Returns list of registered tool names.
     """
-    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    connect_timeout = _resolve_connect_timeout(config, name)
     server = await asyncio.wait_for(
         _connect_server(name, config),
         timeout=connect_timeout,
@@ -5907,7 +5958,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         names = list(enabled.keys())
         coros = []
         for name, cfg in enabled.items():
-            ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+            ct = _resolve_connect_timeout(cfg, name)
             coros.append(asyncio.wait_for(_connect_server(name, cfg), timeout=ct))
 
         outcomes = await asyncio.gather(*coros, return_exceptions=True)

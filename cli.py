@@ -7255,7 +7255,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self.agent:
                 try:
                     self.agent._flush_messages_to_session_db(
-                        self.conversation_history
+                        self.conversation_history,
+                        conversation_history=self.conversation_history,
                     )
                 except Exception:
                     pass  # best-effort
@@ -8170,6 +8171,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         scroll_offset = max(0, min(scroll_offset, n - visible))
         return scroll_offset, visible
 
+    def _clear_persisted_context_for_model_switch(self, result) -> None:
+        """Drop a global context pin when its configured owner changes."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.route_identity import should_clear_context_pin
+
+            config = load_config_readonly()
+            model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+            if not isinstance(model_cfg, dict) or "context_length" not in model_cfg:
+                return
+            if should_clear_context_pin(
+                model_cfg.get("default") or model_cfg.get("model"),
+                result.new_model,
+                model_cfg.get("base_url"),
+                result.base_url,
+                model_cfg.get("provider"),
+                result.target_provider,
+            ):
+                save_config_value("model.context_length", None)
+        except Exception:
+            save_config_value("model.context_length", None)
+
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
@@ -8288,6 +8311,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
+            HermesCLI._clear_persisted_context_for_model_switch(self, result)
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
@@ -8634,6 +8658,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Persistence
         if persist_global:
+            HermesCLI._clear_persisted_context_for_model_switch(self, result)
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)

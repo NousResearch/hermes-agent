@@ -18,8 +18,9 @@ import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
+import { setTerminalBackground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
-import { writeBootTheme } from '../lib/themeBoot.js'
+import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, detectLightMode, fromSkin, type Theme } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
@@ -47,10 +48,16 @@ const themeForSkin = (s: GatewaySkin) => {
   // still works — it just overrides every key it lists.
   const paired = detectLightMode() ? s.light_colors : s.dark_colors
 
-  const colors =
-    paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
+  const colors = paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
 
-  return fromSkin(colors, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '', s.tool_prefix ?? '', s.help_header ?? '')
+  return fromSkin(
+    colors,
+    s.branding ?? {},
+    s.banner_logo ?? '',
+    s.banner_hero ?? '',
+    s.tool_prefix ?? '',
+    s.help_header ?? ''
+  )
 }
 
 // Patch the live theme AND persist it for the next launch's first frame
@@ -77,7 +84,14 @@ const commitTheme = (theme: Theme) => {
 
   lastCommittedTheme = theme
   patchUiState({ theme })
-  writeBootTheme(theme, process.env.HERMES_TUI_BACKGROUND)
+  // Persist the config pin alongside the resolved theme + physical
+  // background: a pinned session's resolved polarity intentionally
+  // disagrees with the background, and caching one without the other
+  // recreates the multi-stage flash on the next launch (light first frame →
+  // dark skin resolve against the cached background → light config pin).
+  const pin = configPinnedTheme ? process.env.HERMES_TUI_THEME : undefined
+
+  writeBootTheme(theme, process.env.HERMES_TUI_BACKGROUND, pin === 'light' || pin === 'dark' ? pin : undefined)
 
   if (changed) {
     setTimeout(() => forceRedraw(process.stdout), 40).unref?.()
@@ -95,12 +109,21 @@ const themesEqual = (a: Theme, b: Theme) => {
     }
   }
 
-  return a.brand.name === b.brand.name && a.brand.prompt === b.brand.prompt && a.bannerLogo === b.bannerLogo && a.bannerHero === b.bannerHero
+  return (
+    a.brand.name === b.brand.name &&
+    a.brand.prompt === b.brand.prompt &&
+    a.bannerLogo === b.bannerLogo &&
+    a.bannerHero === b.bannerHero
+  )
 }
 
 const applySkin = (s: GatewaySkin) => {
   lastSkin = s
   commitTheme(themeForSkin(s))
+  // Paint the whole terminal from the skin's `background` (empty ⇒ restore the
+  // terminal default), so Hermes owns its background instead of inheriting it.
+  // Opt-in: a skin with no `background` leaves the terminal untouched.
+  setTerminalBackground(s.colors?.background ?? '')
 }
 
 /** Re-derive the theme from current detection signals (env overrides, cached
@@ -119,8 +142,11 @@ export function reapplyTheme(): void {
  * terminal background unset.
  */
 // True once CONFIG (via light/dark) owns the HERMES_TUI_THEME env pin, so an
-// 'auto' hydrate knows not to clobber a user's shell-exported pin.
-let configPinnedTheme = false
+// 'auto' hydrate knows not to clobber a user's shell-exported pin. A pin the
+// boot cache replayed counts as config-owned — it originated from
+// display.tui_theme last session, and treating it as a shell export would
+// make a stale cached pin unclearable by 'auto'.
+let configPinnedTheme = bootSeededPin
 
 export function applyConfiguredTuiTheme(raw: unknown): void {
   const mode = String(raw ?? '')
@@ -213,6 +239,21 @@ export function syncThemeToTerminalBackground(): void {
     // foreground below resolves the pole for transparent hosts, and a truly
     // pure-black terminal lands on dark either way.
     if (hex === '#000000') {
+      // The CURRENT terminal answered with an untrusted value — a background
+      // the boot cache seeded is from another era and must not keep
+      // outranking the live fallback chain (previous light session + new
+      // pure-black terminal stayed light forever: OSC-10 pure-white is also
+      // rejected, and the macOS fallback refuses to run while the slot is
+      // occupied). Clear the stale hint, give OSC-10 (same startup batch)
+      // first claim, then settle via env heuristics if nothing answered.
+      if (invalidateBootBackground()) {
+        setTimeout(() => {
+          if (!resolved) {
+            reapplyTheme()
+          }
+        }, 250).unref?.()
+      }
+
       return
     }
 

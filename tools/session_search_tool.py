@@ -103,6 +103,28 @@ def _resolve_to_parent(db, session_id: str) -> str:
     return cur
 
 
+def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
+    """Add a rebuild-progress note when the deferred FTS backfill (schema
+    v23) is still running, so the agent can tell the user why older results
+    may be incomplete/slower instead of treating a thin result set as
+    ground truth. No-op (and never raises) when no rebuild is pending."""
+    try:
+        status = db.fts_rebuild_status()
+    except Exception:
+        return
+    if status is None:
+        return
+    payload["index_rebuild"] = {
+        "percent": status["percent"],
+        "note": (
+            f"The search index is rebuilding in the background "
+            f"({status['percent']}% done, {status['indexed']:,} of "
+            f"{status['total']:,} messages). Results from older messages "
+            f"may be incomplete until it finishes."
+        ),
+    }
+
+
 def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Stable-sort FTS rows so interactive sessions rank above automation.
 
@@ -531,14 +553,16 @@ def _discover(
     raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
-        return json.dumps({
+        _empty_payload = {
             "success": True,
             "mode": "discover",
             "query": query,
             "results": [],
             "count": 0,
             "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+        }
+        _annotate_rebuild_status(db, _empty_payload)
+        return json.dumps(_empty_payload, ensure_ascii=False)
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -606,14 +630,16 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    _final_payload = {
         "success": True,
         "mode": "discover",
         "query": query,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+    }
+    _annotate_rebuild_status(db, _final_payload)
+    return json.dumps(_final_payload, ensure_ascii=False)
 
 
 def session_search(

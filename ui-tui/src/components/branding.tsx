@@ -8,6 +8,7 @@ import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
+import { Accordion } from './accordion.js'
 import { ShimmerRows } from './loaders.js'
 import { WidgetGrid } from './widgetGrid.js'
 
@@ -203,35 +204,6 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
   [10, 13]
 ]
 
-// ── Collapsible helpers ──────────────────────────────────────────────
-
-function CollapseToggle({
-  count,
-  open,
-  suffix,
-  t,
-  title,
-  onToggle
-}: {
-  count?: number
-  open: boolean
-  suffix?: string
-  t: Theme
-  title: string
-  onToggle: () => void
-}) {
-  return (
-    <Box onClick={onToggle}>
-      <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-      <Text bold color={t.color.accent}>
-        {title}
-      </Text>
-      {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : null}
-      {suffix ? <Text color={t.color.muted}> {suffix}</Text> : null}
-    </Box>
-  )
-}
-
 // ── SessionPanel ─────────────────────────────────────────────────────
 
 const SKILLS_MAX = 8
@@ -401,117 +373,119 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const infoColumn = (
     <Box flexDirection="column" width="100%">
-        {wide ? (
-          <Box justifyContent="center" marginBottom={1}>
-            <Text bold color={t.color.primary}>
-              {t.brand.name}
-              {info.version ? ` v${info.version}` : ''}
-              {info.release_date ? ` (${info.release_date})` : ''}
-            </Text>
-          </Box>
-        ) : (
-          // Narrow layout hides the hero column; surface model/cwd/session
-          // here so they aren't lost.
-          <Box flexDirection="column" marginBottom={1}>
-            <Text color={t.color.accent} wrap="truncate-end">
-              {info.model.split('/').pop()}
-              <Text color={t.color.muted}> · Nous Research</Text>
-            </Text>
-            <Text color={t.color.muted} wrap="truncate-end">
-              {info.cwd || process.cwd()}
-            </Text>
-            {sid && (
-              <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
-                <Text color={t.color.sessionBorder}>{sid}</Text>
-              </Text>
-            )}
-          </Box>
-        )}
-
-        {/* ── Tools (expanded by default) ── */}
-        <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
-          {toolsOpen && toolsBody()}
+      {wide ? (
+        <Box justifyContent="center" marginBottom={1}>
+          <Text bold color={t.color.primary}>
+            {t.brand.name}
+            {info.version ? ` v${info.version}` : ''}
+            {info.release_date ? ` (${info.release_date})` : ''}
+          </Text>
         </Box>
+      ) : (
+        // Narrow layout hides the hero column; surface model/cwd/session
+        // here so they aren't lost.
+        <Box flexDirection="column" marginBottom={1}>
+          <Text color={t.color.accent} wrap="truncate-end">
+            {info.model.split('/').pop()}
+            <Text color={t.color.muted}> · Nous Research</Text>
+          </Text>
+          <Text color={t.color.muted} wrap="truncate-end">
+            {info.cwd || process.cwd()}
+          </Text>
+          {sid && (
+            <Text wrap="truncate-end">
+              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionBorder}>{sid}</Text>
+            </Text>
+          )}
+        </Box>
+      )}
 
-        {/* ── Skills (collapsed by default) ── */}
+      {/* ── Tools (expanded by default) ── */}
+      <Box flexDirection="column" marginTop={1}>
+        <Accordion onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools">
+          {toolsBody()}
+        </Accordion>
+      </Box>
+
+      {/* ── Skills (collapsed by default) ── */}
+      <Box flexDirection="column" marginTop={1}>
+        <Accordion
+          count={skillsTotal}
+          onToggle={() => setSkillsOpen(v => !v)}
+          open={skillsOpen}
+          suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+          t={t}
+          title="Available Skills"
+        >
+          {skillsBody()}
+        </Accordion>
+      </Box>
+
+      {/* ── System Prompt (collapsed by default) ── */}
+      {sysPromptLen > 0 && (
         <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle
-            count={skillsTotal}
-            onToggle={() => setSkillsOpen(v => !v)}
-            open={skillsOpen}
-            suffix={
-              skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined
-            }
+          <Accordion
+            onToggle={() => setSystemOpen(v => !v)}
+            open={systemOpen}
+            suffix={`— ${sysPromptLen.toLocaleString()} chars`}
             t={t}
-            title="Available Skills"
-          />
-          {skillsOpen && skillsBody()}
+            title="System Prompt"
+          >
+            {systemBody()}
+          </Accordion>
         </Box>
+      )}
 
-        {/* ── System Prompt (collapsed by default) ── */}
-        {sysPromptLen > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <CollapseToggle
-              onToggle={() => setSystemOpen(v => !v)}
-              open={systemOpen}
-              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
-              t={t}
-              title="System Prompt"
-            />
-            {systemOpen && systemBody()}
-          </Box>
-        )}
+      {/* ── MCP Servers (collapsed by default) ── */}
+      {mcpServers.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Accordion
+            count={mcpConnected}
+            onToggle={() => setMcpOpen(v => !v)}
+            open={mcpOpen}
+            suffix="connected"
+            t={t}
+            title="MCP Servers"
+          >
+            {mcpBody()}
+          </Accordion>
+        </Box>
+      )}
 
-        {/* ── MCP Servers (collapsed by default) ── */}
-        {mcpServers.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <CollapseToggle
-              count={mcpConnected}
-              onToggle={() => setMcpOpen(v => !v)}
-              open={mcpOpen}
-              suffix="connected"
-              t={t}
-              title="MCP Servers"
-            />
-            {mcpOpen && mcpBody()}
-          </Box>
-        )}
+      <Text />
 
-        <Text />
+      <Text color={t.color.text}>
+        {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
+        {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
+        {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
+        {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
+        {' · '}
+        <Text color={t.color.muted}>/help for commands</Text>
+      </Text>
 
-        <Text color={t.color.text}>
-          {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
-          {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
-          {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
-          {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
-          {' · '}
-          <Text color={t.color.muted}>/help for commands</Text>
-        </Text>
-
-        {typeof info.update_behind === 'number' && info.update_behind > 0 && (
+      {typeof info.update_behind === 'number' && info.update_behind > 0 && (
+        <Text bold color={t.color.warn}>
+          ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+          <Text bold={false} color={t.color.warn} dimColor>
+            {' '}
+            - run{' '}
+          </Text>
           <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              - run{' '}
-            </Text>
-            <Text bold color={t.color.warn}>
-              {info.update_command || 'hermes update'}
-            </Text>
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              to update
-            </Text>
+            {info.update_command || 'hermes update'}
           </Text>
-        )}
+          <Text bold={false} color={t.color.warn} dimColor>
+            {' '}
+            to update
+          </Text>
+        </Text>
+      )}
 
-        {info.install_warning && (
-          <Text bold color={t.color.warn} wrap="wrap">
-            ! {info.install_warning}
-          </Text>
-        )}
+      {info.install_warning && (
+        <Text bold color={t.color.warn} wrap="wrap">
+          ! {info.install_warning}
+        </Text>
+      )}
     </Box>
   )
 

@@ -197,9 +197,14 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
-        return checked
+        if checked is not None:
+            if checked == UPDATE_AVAILABLE_NO_COUNT:
+                return 1
+            return checked
+        # HTTPS ls-remote failed (network restrictions, rate-limiting, etc.).
+        # Fall through to the local git-based count below — we already have
+        # origin/main from the last fetch, so we don't need the network
+        # round-trip to answer "are we behind?".
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would

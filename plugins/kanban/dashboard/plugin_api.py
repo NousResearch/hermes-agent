@@ -608,6 +608,9 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    resource_keys: list[str] = Field(
+        default_factory=list, max_length=kanban_db.MAX_RESOURCE_KEYS
+    )
 
 
 @router.post("/tasks")
@@ -632,6 +635,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            resource_keys=payload.resource_keys,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -815,6 +819,9 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    resource_keys: Optional[list[str]] = Field(
+        default=None, max_length=kanban_db.MAX_RESOURCE_KEYS
+    )
 
 
 @router.patch("/tasks/{task_id}")
@@ -836,6 +843,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 raise HTTPException(status_code=409, detail=str(e))
             if not ok:
                 raise HTTPException(status_code=404, detail="task not found")
+
+        if payload.resource_keys is not None:
+            try:
+                kanban_db.set_resource_keys(conn, task_id, payload.resource_keys)
+            except RuntimeError as e:
+                raise HTTPException(status_code=409, detail=str(e))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
 
         # --- status -------------------------------------------------------
         if payload.status is not None:
@@ -989,6 +1004,7 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
+    lease_owner = kanban_db.get_task(conn, task_id)
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
@@ -1072,6 +1088,8 @@ def _set_status_direct(
                             int(time.time()),
                         ),
                     )
+    if was_running and new_status != "running" and lease_owner is not None:
+        kanban_db.release_task_resource_leases(lease_owner, conn)
     # If we re-opened something, children may have gone stale.
     if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)

@@ -372,7 +372,24 @@ _MAX_PROMPT_METADATA_CHARS = 240
 
 def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
     """Render untrusted gateway metadata as an inert quoted string."""
-    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    # Fold the Unicode line breaks into "\n" as well, not just \r\n / \r. The
+    # LINE SEPARATOR (U+2028), PARAGRAPH SEPARATOR (U+2029) and NEL (U+0085) are
+    # all >= U+0020, so the control-char pass below keeps them, and
+    # json.dumps(ensure_ascii=False) then emits them verbatim rather than as a
+    # \n escape. That lets an untrusted display name / channel topic / room name
+    # break onto a fresh line in the model's view and masquerade as a new
+    # markdown section — the exact vector the JSON-escaped \n already blocks.
+    # The sibling neutralize_untrusted_inline_text() already collapses these via
+    # str.split(); keep the two helpers in parity.
+    text = (
+        str(value)
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\u2028", "\n")
+        .replace("\u2029", "\n")
+        .replace("\x85", "\n")
+        .strip()
+    )
     text = "".join(ch if ch >= " " or ch in "\n\t" else " " for ch in text)
     if max_chars and len(text) > max_chars:
         text = text[: max_chars - 3] + "..."

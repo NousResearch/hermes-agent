@@ -1014,6 +1014,33 @@ def _contains_only_cancellation(exc: BaseException) -> bool:
     return isinstance(exc, asyncio.CancelledError)
 
 
+async def _safe_cancel_await(task: "asyncio.Future") -> None:
+    """Cancel a wait-helper Future without exploding if the loop is closing.
+
+    During ``/reload-mcp`` / ``shutdown_mcp_servers`` the MCP event loop can
+    be stopped while a parked ``MCPServerTask.run`` is still inside
+    ``_wait_for_reconnect_or_shutdown`` (or the lifecycle / lazy-reconnect
+    wait helpers). Their ``finally`` blocks call ``task.cancel()``; if the
+    loop is already closed that raises ``RuntimeError: Event loop is closed``,
+    which then surfaces as the noisy::
+
+        Exception ignored in: <coroutine object MCPServerTask.run ...>
+        RuntimeError: Event loop is closed
+
+    Swallow the race — the connection is being torn down either way.
+    """
+    if task.done():
+        return
+    try:
+        task.cancel()
+    except RuntimeError:
+        return
+    try:
+        await task
+    except (asyncio.CancelledError, RuntimeError, Exception):
+        pass
+
+
 def _classify_mcp_failure(exc: BaseException) -> str:
     """Classify an MCP connection failure as ``'permanent'`` or ``'transient'``.
 
@@ -2293,12 +2320,7 @@ class MCPServerTask:
                     self._mark_session_proven()
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                await _safe_cancel_await(t)
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -2337,12 +2359,7 @@ class MCPServerTask:
             )
         finally:
             for t in (shutdown_task, reconnect_task):
-                if not t.done():
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                await _safe_cancel_await(t)
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()
@@ -3480,12 +3497,7 @@ class MCPServerTask:
             )
         finally:
             for task in (shutdown_task, reconnect_task):
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                await _safe_cancel_await(task)
 
 
 # ---------------------------------------------------------------------------
@@ -3493,6 +3505,13 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+# Servers whose run() task is still alive after start() failed (parked for
+# revival after a permanent/initial connect error). Not counted as connected
+# and not tool-registered, but MUST be shut down on reload — otherwise
+# shutdown_mcp_servers closes the loop while the parked wait helpers still
+# try to cancel child tasks and Python prints "Exception ignored ... Event
+# loop is closed".
+_parked_failed_servers: Dict[str, MCPServerTask] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 
@@ -4473,7 +4492,19 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
         Exception: on connection or initialization failure.
     """
     server = MCPServerTask(name)
-    await server.start(config)
+    try:
+        await server.start(config)
+    except BaseException:
+        # start() raises when run() set _error (e.g. permanent initial
+        # failure) but run() may still be *parked* waiting for a reconnect
+        # signal. Track it so shutdown_mcp_servers /reload-mcp can reap the
+        # task instead of closing the loop under its feet.
+        if server._task is not None and not server._task.done():
+            with _lock:
+                _parked_failed_servers[name] = server
+        raise
+    with _lock:
+        _parked_failed_servers.pop(name, None)
     return server
 
 
@@ -6166,7 +6197,12 @@ def shutdown_mcp_servers():
     All servers are shut down in parallel via ``asyncio.gather``.
     """
     with _lock:
-        servers_snapshot = list(_servers.values())
+        # Include parked-but-failed starts so reload does not close the loop
+        # under orphaned MCPServerTask.run coroutines.
+        servers_snapshot = list(_servers.values()) + list(
+            _parked_failed_servers.values()
+        )
+        _parked_failed_servers.clear()
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still
     # be populated here — a server that failed to connect is never recorded
@@ -6193,6 +6229,7 @@ def shutdown_mcp_servers():
                 )
         with _lock:
             _servers.clear()
+            _parked_failed_servers.clear()
             # Drop connect-retry cooldowns too: a full shutdown/restart
             # should re-attempt every server immediately, not honour a
             # stale per-server backoff from before the restart (#50394).
@@ -6221,6 +6258,7 @@ def shutdown_mcp_servers():
     with _lock:
         _server_connect_retry_after.clear()
         _server_connect_failures.clear()
+        _parked_failed_servers.clear()
 
     _stop_mcp_loop()
 
@@ -6369,7 +6407,7 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
     with _lock:
-        if only_if_idle and (_servers or _server_connecting):
+        if only_if_idle and (_servers or _server_connecting or _parked_failed_servers):
             logger.debug("Leaving MCP event loop running; active servers are registered or connecting")
             return False
         loop = _mcp_loop
@@ -6377,7 +6415,24 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         _mcp_loop = None
         _mcp_thread = None
     if loop is not None:
-        loop.call_soon_threadsafe(loop.stop)
+        def _halt_loop() -> None:
+            # Cancel any leftover tasks (orphaned parked run() coroutines
+            # that never made it into _servers) *before* stopping the loop
+            # so their finally blocks still see a live loop.
+            try:
+                current = asyncio.current_task(loop)
+                for task in list(asyncio.all_tasks(loop)):
+                    if task is not current:
+                        task.cancel()
+            except Exception:
+                pass
+            loop.stop()
+
+        try:
+            loop.call_soon_threadsafe(_halt_loop)
+        except RuntimeError:
+            # Loop already closed — nothing left to stop.
+            pass
         if thread is not None:
             thread.join(timeout=5)
         try:

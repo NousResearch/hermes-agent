@@ -314,8 +314,15 @@ export function appendLiveSessionProjection(
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+  // A turn normally persists its user row before inference begins. session.resume
+  // then returns that stored row *and* the still-live inflight projection; adding
+  // both makes a backgrounded prompt appear twice when its session is reopened.
+  // Only suppress the projection when the latest authoritative user row is the
+  // same turn — older identical prompts must not hide a newly accepted repeat.
+  const latestUser = [...messages].reverse().find(message => message.role === 'user')
+  const inflightUserAlreadyPersisted = latestUser && chatMessageText(latestUser).trim() === inflightUser
 
-  if (inflightUser) {
+  if (inflightUser && !inflightUserAlreadyPersisted) {
     projected.push({
       id: `user-inflight-${sessionId}`,
       role: 'user',

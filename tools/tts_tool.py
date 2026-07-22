@@ -116,6 +116,11 @@ def _import_elevenlabs():
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
+def _import_elevenlabs_environment():
+    """Lazy import ElevenLabs environment class."""
+    from elevenlabs.environment import ElevenLabsEnvironment
+    return ElevenLabsEnvironment
+
 def _import_openai_client():
     """Lazy import OpenAI client. Returns the class or raises ImportError."""
     from openai import OpenAI as OpenAIClient
@@ -993,6 +998,8 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     el_config = tts_config.get("elevenlabs") or {}
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
+    base_url = el_config.get("base_url")
+    wss_url = el_config.get("wss_url")
 
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
@@ -1001,7 +1008,11 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
         output_format = "mp3_44100_128"
 
     ElevenLabs = _import_elevenlabs()
-    client = ElevenLabs(api_key=api_key)
+    if base_url and wss_url:
+        ElevenLabsEnvironment = _import_elevenlabs_environment()
+        client = ElevenLabs(api_key=api_key, environment=ElevenLabsEnvironment(base=base_url, wss=wss_url))
+    else:
+        client = ElevenLabs(api_key=api_key)
     audio_generator = client.text_to_speech.convert(
         text=text,
         voice_id=voice_id,
@@ -2780,6 +2791,8 @@ def stream_tts_to_speaker(
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
+        base_url = el_config.get("base_url")
+        wss_url = el_config.get("wss_url")
         # Per-sentence cap for the streaming path. Look up the cap against
         # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
         # not the sync model_id. A user override
@@ -2795,7 +2808,11 @@ def stream_tts_to_speaker(
         else:
             try:
                 ElevenLabs = _import_elevenlabs()
-                client = ElevenLabs(api_key=api_key)
+                if base_url and wss_url:
+                    ElevenLabsEnvironment = _import_elevenlabs_environment()
+                    client = ElevenLabs(api_key=api_key, environment=ElevenLabsEnvironment(base=base_url, wss=wss_url))
+                else:
+                    client = ElevenLabs(api_key=api_key)
             except ImportError:
                 logger.warning("elevenlabs package not installed; streaming TTS disabled")
 

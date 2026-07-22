@@ -77,6 +77,14 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # Mutating tools get higher thresholds than idempotent reads: an identical
+    # successful call CAN be intentional (append, poll-with-side-effect), but a
+    # byte-identical args+result pair repeated many times in one turn is a
+    # degenerate generation loop (seen live: glm-4.5-flash repeating the same
+    # terminal call 30x to the iteration cap because success made it invisible
+    # to the failure-based counters).
+    mutating_no_progress_warn_after: int = 3
+    mutating_no_progress_block_after: int = 8
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -120,6 +128,14 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            mutating_no_progress_warn_after=_positive_int(
+                warn_after.get("mutating_no_progress", data.get("mutating_no_progress_warn_after")),
+                defaults.mutating_no_progress_warn_after,
+            ),
+            mutating_no_progress_block_after=_positive_int(
+                hard_stop_after.get("mutating_no_progress", data.get("mutating_no_progress_block_after")),
+                defaults.mutating_no_progress_block_after,
             ),
         )
 
@@ -260,11 +276,12 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
+        progress_class = self._progress_class(tool_name)
+        if progress_class is not None:
             record = self._no_progress.get(signature)
             if record is not None:
                 _result_hash, repeat_count = record
-                if repeat_count >= self.config.no_progress_block_after:
+                if progress_class == "idempotent" and repeat_count >= self.config.no_progress_block_after:
                     decision = ToolGuardrailDecision(
                         action="block",
                         code="idempotent_no_progress_block",
@@ -272,6 +289,22 @@ class ToolCallGuardrailController:
                             f"Blocked {tool_name}: this read-only call returned the same "
                             f"result {repeat_count} times. Stop repeating it unchanged; "
                             "use the result already provided or try a different query."
+                        ),
+                        tool_name=tool_name,
+                        count=repeat_count,
+                        signature=signature,
+                    )
+                    self._halt_decision = decision
+                    return decision
+                if progress_class == "mutating" and repeat_count >= self.config.mutating_no_progress_block_after:
+                    decision = ToolGuardrailDecision(
+                        action="block",
+                        code="mutating_no_progress_block",
+                        message=(
+                            f"Blocked {tool_name}: the same call with identical arguments "
+                            f"succeeded with identical output {repeat_count} times. This is "
+                            "a degenerate loop; act on the output you already have or change "
+                            "the command."
                         ),
                         tool_name=tool_name,
                         count=repeat_count,
@@ -347,7 +380,8 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
+        progress_class = self._progress_class(tool_name)
+        if progress_class is None:
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -358,26 +392,47 @@ class ToolCallGuardrailController:
             repeat_count = previous[1] + 1
         self._no_progress[signature] = (result_hash, repeat_count)
 
-        if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
-            return ToolGuardrailDecision(
-                action="warn",
-                code="idempotent_no_progress_warning",
-                message=(
-                    f"{tool_name} returned the same result {repeat_count} times. "
-                    "Use the result already provided or change the query instead of "
-                    "repeating it unchanged."
-                ),
-                tool_name=tool_name,
-                count=repeat_count,
-                signature=signature,
-            )
+        if progress_class == "idempotent":
+            if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="idempotent_no_progress_warning",
+                    message=(
+                        f"{tool_name} returned the same result {repeat_count} times. "
+                        "Use the result already provided or change the query instead of "
+                        "repeating it unchanged."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
+        else:
+            if self.config.warnings_enabled and repeat_count >= self.config.mutating_no_progress_warn_after:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="mutating_no_progress_warning",
+                    message=(
+                        f"{tool_name} succeeded with identical arguments and identical "
+                        f"output {repeat_count} times. This looks like a generation loop; "
+                        "act on the output already provided, change the command, or move on."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
+        return self._progress_class(tool_name) == "idempotent"
+
+    def _progress_class(self, tool_name: str) -> str | None:
+        """'idempotent' | 'mutating' | None (unknown tools are not tracked)."""
         if tool_name in self.config.mutating_tools:
-            return False
-        return tool_name in self.config.idempotent_tools
+            return "mutating"
+        if tool_name in self.config.idempotent_tools:
+            return "idempotent"
+        return None
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

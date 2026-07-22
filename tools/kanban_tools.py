@@ -693,6 +693,27 @@ def _handle_block(args: dict, **kw) -> str:
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
     board = args.get("board")
+    # Optional typed protected-merge-verifier evidence (block-side twin of
+    # kanban_unblock's `intent`). Validated through the ONE shared
+    # kanban_db parser -- never free-text parsed -- BEFORE connecting, so a
+    # malformed or mis-kinded payload fails fast without any mutation.
+    # Only kind='needs_input' blocks are what the verifier bypass later
+    # validates against, so evidence with any other kind is rejected here.
+    raw_evidence = args.get("block_evidence")
+    evidence = None
+    if raw_evidence is not None:
+        if kind != "needs_input":
+            return tool_error(
+                "kanban_block: block_evidence is only accepted with "
+                f"kind='needs_input' (got {kind!r})"
+            )
+        from hermes_cli import kanban_db as _kb
+        try:
+            evidence = _kb.parse_protected_merge_verifier_evidence(
+                raw_evidence
+            ).to_block_evidence()
+        except ValueError as e:
+            return tool_error(f"kanban_block: block_evidence: {e}")
     try:
         kb, conn = _connect(board=board)
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
@@ -730,6 +751,7 @@ def _handle_block(args: dict, **kw) -> str:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id(tid),
+                evidence=evidence,
             )
             if not ok:
                 return tool_error(
@@ -1292,10 +1314,24 @@ def _handle_unblock(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     board = args.get("board")
+    # Optional typed request for a one-shot protected-merge-verifier
+    # respawn-guard bypass. Must be a structured object matching
+    # kanban_db.ProtectedMergeVerifierIntent's shape -- validated (never
+    # free-text parsed) BEFORE connecting, so a malformed request fails
+    # fast without touching the DB. Omitted entirely (the default)
+    # preserves the plain-unblock behavior this tool always had.
+    raw_intent = args.get("intent")
+    intent = None
+    if raw_intent is not None:
+        from hermes_cli import kanban_db as _kb
+        try:
+            intent = _kb.parse_protected_merge_verifier_intent(raw_intent)
+        except ValueError as e:
+            return tool_error(f"kanban_unblock: intent: {e}")
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok = kb.unblock_task(conn, str(tid), intent=intent)
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             task = kb.get_task(conn, str(tid))
@@ -1558,6 +1594,31 @@ KANBAN_BLOCK_SCHEMA = {
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
                 ),
+            },
+            "block_evidence": {
+                "type": "object",
+                "description": (
+                    "Optional typed protected-merge-verifier evidence "
+                    "recording WHICH PR/head/base this block is about, so a "
+                    "later kanban_unblock intent can be validated against "
+                    "it. Must be a structured object: "
+                    "{\"kind\": \"protected_merge_verifier\", \"pr_url\": "
+                    "..., \"head\": ..., \"base\": ...}. Free-text claims "
+                    "are never parsed or accepted — pass the structured "
+                    "object or omit this field entirely. Only accepted with "
+                    "kind='needs_input'; supplying it with any other kind "
+                    "is an error."
+                ),
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["protected_merge_verifier"],
+                    },
+                    "pr_url": {"type": "string"},
+                    "head": {"type": "string"},
+                    "base": {"type": "string"},
+                },
+                "required": ["pr_url", "head", "base"],
             },
             "board": _board_schema_prop(),
         },
@@ -1891,6 +1952,33 @@ KANBAN_UNBLOCK_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": "Blocked task id to move to ready or parent-gated todo.",
+            },
+            "intent": {
+                "type": "object",
+                "description": (
+                    "Optional typed request for a one-shot "
+                    "protected-merge-verifier respawn-guard bypass. Must be "
+                    "a structured object: "
+                    "{\"kind\": \"protected_merge_verifier\", \"pr_url\": "
+                    "..., \"approved_head\": ..., \"approved_base\": ..., "
+                    "\"readiness_evidence\": {\"ready\": true}}. Free-text "
+                    "claims (e.g. \"PR was merged\") are never parsed or "
+                    "accepted — pass the structured object or omit this "
+                    "field entirely. Only takes effect when it matches the "
+                    "evidence recorded when the task was blocked with "
+                    "kind='needs_input'; otherwise the unblock still "
+                    "proceeds normally with no bypass granted."
+                ),
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["protected_merge_verifier"],
+                    },
+                    "pr_url": {"type": "string"},
+                    "approved_head": {"type": "string"},
+                    "approved_base": {"type": "string"},
+                    "readiness_evidence": {"type": "object"},
+                },
             },
             "board": _board_schema_prop(),
         },

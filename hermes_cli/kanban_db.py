@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import hashlib
 import json
 import os
@@ -78,6 +79,7 @@ import re
 import random
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -915,6 +917,13 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Verified-recovery contract for a verification-only dispatch. Set IN
+    # MEMORY by the dispatcher, atomically from the guard decision that
+    # consumed a protected-merge-verifier bypass token — never persisted to
+    # the tasks table and never inferred from comments after the fact.
+    # ``None`` (always, for ordinary tasks) = unrestricted normal worker;
+    # a dict = ``_default_spawn`` takes the verification-only path.
+    verification_contract: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1176,7 +1185,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- JSON evidence recorded by ``block_task`` for a ``needs_input`` block
+    -- (e.g. {"pr_url":..., "head":..., "base":...}). Consulted by
+    -- ``unblock_task``'s ``protected_merge_verifier`` intent validation so a
+    -- respawn-guard bypass can only be granted against the SAME PR/head/base
+    -- that actually triggered the block. NULL when no evidence was supplied.
+    block_evidence       TEXT,
+    -- One-shot respawn-guard bypass token (JSON: {"guard":..., "contract":...}),
+    -- granted by ``unblock_task`` and consumed by the very next matching
+    -- ``check_respawn_guard`` call. NULL when no bypass is pending.
+    guard_bypass         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1264,6 +1283,33 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable, fail-closed authorization channel for a future verifier result.
+-- Stage 1 only persists and transitions these records; it does not spawn a
+-- verifier or attach an OS transport. Older binaries ignore this additive
+-- table, so reverting this feature leaves pending rows inert and ordinary
+-- worker dispatch unchanged.
+CREATE TABLE IF NOT EXISTS verifier_result_authorizations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL,
+    run_id      INTEGER NOT NULL,
+    claim_lock  TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    contract_hash TEXT NOT NULL,
+    pr_url      TEXT NOT NULL,
+    approved_head TEXT NOT NULL,
+    approved_base TEXT NOT NULL,
+    nonce_digest TEXT NOT NULL,
+    supervisor_owner TEXT,
+    verifier_root TEXT,
+    cleanup_error TEXT,
+    state       TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    CHECK (state IN ('authorized', 'reserved', 'started', 'consumed',
+                    'applied', 'failed', 'reconciled'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1274,6 +1320,11 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_verifier_authorizations_run
+    ON verifier_result_authorizations(run_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_verifier_authorizations_one_active_contract
+    ON verifier_result_authorizations(task_id, contract_id)
+    WHERE state IN ('authorized', 'reserved', 'started', 'consumed');
 """
 
 
@@ -2321,6 +2372,19 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "block_evidence" not in cols:
+        # JSON evidence recorded by block_task for a needs_input block.
+        # NULL on legacy rows — no bypass can ever validate against them,
+        # which is the correct fail-closed default (see the column comment
+        # in SCHEMA_SQL).
+        _add_column_if_missing(conn, "tasks", "block_evidence", "block_evidence TEXT")
+
+    if "guard_bypass" not in cols:
+        # One-shot respawn-guard bypass token. NULL on legacy rows means no
+        # bypass is pending — the guard behaves exactly as it did before
+        # this column existed.
+        _add_column_if_missing(conn, "tasks", "guard_bypass", "guard_bypass TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2360,6 +2424,57 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+
+    auth_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='verifier_result_authorizations'"
+    ).fetchone() is not None
+    if auth_table_exists:
+        auth_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(verifier_result_authorizations)")
+        }
+        if "supervisor_owner" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "supervisor_owner",
+                "supervisor_owner TEXT",
+            )
+        if "verifier_root" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "verifier_root",
+                "verifier_root TEXT",
+            )
+        if "cleanup_error" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "cleanup_error",
+                "cleanup_error TEXT",
+            )
+        if "contract_hash" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "contract_hash",
+                "contract_hash TEXT",
+            )
+        if "approved_head" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "approved_head",
+                "approved_head TEXT",
+            )
+        if "approved_base" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "approved_base",
+                "approved_base TEXT",
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -2676,6 +2791,981 @@ def write_txn(conn: sqlite3.Connection):
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
+
+
+# ---------------------------------------------------------------------------
+# Durable verifier-result authorization channel
+# ---------------------------------------------------------------------------
+
+_VERIFIER_ACTIVE_STATES = frozenset({"authorized", "reserved", "started", "consumed"})
+_VERIFIER_TRANSITIONS = {
+    "reserve": ("authorized", "reserved"),
+    "start": ("reserved", "started"),
+    "consume": ("started", "consumed"),
+    "apply": ("consumed", "applied"),
+    "fail": ("authorized", "failed"),
+    "reconcile": ("reserved", "reconciled"),
+}
+_VERIFIER_TERMINAL_STATES = frozenset({"applied", "failed", "reconciled"})
+
+
+@dataclass(frozen=True)
+class VerifierAuthorization:
+    """A verifier channel transition result with a non-secret reason code."""
+
+    id: int
+    state: str
+    reason: str
+
+
+VERIFIER_RESULT_CONTRACT_ID = "protected-merge:v1"
+VERIFIER_RESULT_MAX_BYTES = 16 * 1024
+VERIFIER_RESULT_DEADLINE_SECONDS = 20 * 60
+# Bounded grace read used when the verifier process has already exited: the
+# frame (if any) is already in the pipe buffer, so only a short EOF-observing
+# drain is justified — never the full result deadline.
+_VERIFIER_RESULT_EOF_GRACE_SECONDS = 5
+_VERIFIER_RESULT_ALLOWED_FIELDS = frozenset({
+    "version",
+    "task_id",
+    "run_id",
+    "claim_lock",
+    "contract_id",
+    "contract_hash",
+    "pr_url",
+    "approved_head",
+    "approved_base",
+    "nonce",
+    "action",
+    "summary",
+    "reason",
+})
+_VERIFIER_RESULT_REQUIRED_FIELDS = frozenset({
+    "version",
+    "task_id",
+    "run_id",
+    "claim_lock",
+    "contract_id",
+    "contract_hash",
+    "pr_url",
+    "approved_head",
+    "approved_base",
+    "nonce",
+    "action",
+})
+_VERIFIER_RESULT_STRING_FIELDS = frozenset({
+    "task_id",
+    "claim_lock",
+    "contract_id",
+    "contract_hash",
+    "pr_url",
+    "approved_head",
+    "approved_base",
+    "nonce",
+    "action",
+})
+_VERIFIER_RESULT_ACTIONS = frozenset({"complete", "re-block"})
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class VerifierResultFrame:
+    valid: bool
+    reason: str
+    payload: Optional[dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class VerifierSupervisorResult:
+    ok: bool
+    action: Optional[str]
+    reason: str
+
+
+def _canonical_verifier_contract_payload(contract: dict) -> dict[str, Any]:
+    if not isinstance(contract, dict):
+        raise ValueError("verifier contract must be a JSON object")
+    pr_url = contract.get("pr_url")
+    approved_head = contract.get("approved_head")
+    approved_base = contract.get("approved_base")
+    readiness_evidence = contract.get("readiness_evidence")
+    if not isinstance(pr_url, str) or not pr_url.strip():
+        raise ValueError("verifier contract requires pr_url")
+    if not isinstance(approved_head, str) or not approved_head.strip():
+        raise ValueError("verifier contract requires approved_head")
+    if not isinstance(approved_base, str) or not approved_base.strip():
+        raise ValueError("verifier contract requires approved_base")
+    if not isinstance(readiness_evidence, dict):
+        raise ValueError("verifier contract requires readiness_evidence object")
+    if readiness_evidence.get("ready") is not True:
+        raise ValueError("verifier contract readiness_evidence.ready must be true")
+    encoded_evidence = json.dumps(
+        readiness_evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded_evidence) > _CTX_MAX_FIELD_BYTES:
+        raise ValueError("verifier contract readiness_evidence is too large")
+    # Readiness evidence is supplied by an untrusted external surface.  It is
+    # useful to bind it to the verification decision, but it must never become
+    # durable task/audit state or child-process input: those surfaces outlive
+    # the operator's intent and are broadly readable.  Persist only the ready
+    # bit plus a deterministic digest of the validated value.  An
+    # already-canonical value (exactly ready + digest) keeps its digest, so
+    # re-canonicalizing a stored contract never changes its hash.
+    if (
+        set(readiness_evidence) == {"ready", "digest"}
+        and isinstance(readiness_evidence.get("digest"), str)
+        and _SHA256_HEX_RE.fullmatch(readiness_evidence["digest"])
+    ):
+        readiness_digest = readiness_evidence["digest"]
+    else:
+        readiness_digest = hashlib.sha256(encoded_evidence).hexdigest()
+    return {
+        "contract_id": VERIFIER_RESULT_CONTRACT_ID,
+        "pr_url": pr_url.strip(),
+        "approved_head": approved_head.strip(),
+        "approved_base": approved_base.strip(),
+        "readiness_evidence": {"ready": True, "digest": readiness_digest},
+    }
+
+
+def canonical_verifier_contract_hash(contract: dict) -> str:
+    payload = _canonical_verifier_contract_payload(contract)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def make_verifier_result_binding(
+    task: Task,
+    contract: dict,
+    *,
+    nonce: str,
+) -> dict[str, Any]:
+    if task.current_run_id is None:
+        raise ValueError("verifier result binding requires a current run id")
+    if not task.claim_lock:
+        raise ValueError("verifier result binding requires a claim lock")
+    canonical_contract = _canonical_verifier_contract_payload(contract)
+    return {
+        "task_id": task.id,
+        "run_id": int(task.current_run_id),
+        "claim_lock": task.claim_lock,
+        "contract_id": canonical_contract["contract_id"],
+        "contract_hash": canonical_verifier_contract_hash(contract),
+        "pr_url": canonical_contract["pr_url"],
+        "approved_head": canonical_contract["approved_head"],
+        "approved_base": canonical_contract["approved_base"],
+        "nonce": nonce,
+    }
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: set[str] = set()
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate_key:{key}")
+        seen.add(key)
+        out[key] = value
+    return out
+
+
+def parse_verifier_result_frame(
+    raw_frame: bytes,
+    *,
+    max_bytes: int = VERIFIER_RESULT_MAX_BYTES,
+) -> VerifierResultFrame:
+    if len(raw_frame) > int(max_bytes):
+        return VerifierResultFrame(False, "oversized")
+    if not raw_frame:
+        return VerifierResultFrame(False, "no_frame")
+    if b"\n" in raw_frame and not raw_frame.endswith(b"\n"):
+        return VerifierResultFrame(False, "trailing_bytes")
+    if not raw_frame.endswith(b"\n"):
+        return VerifierResultFrame(False, "partial_frame")
+    if raw_frame.count(b"\n") != 1:
+        return VerifierResultFrame(False, "multiple_frames")
+    try:
+        text = raw_frame.decode("utf-8")
+    except UnicodeDecodeError:
+        return VerifierResultFrame(False, "invalid_utf8")
+    try:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("duplicate_key:"):
+            return VerifierResultFrame(False, msg)
+        return VerifierResultFrame(False, "invalid_json")
+    if not isinstance(payload, dict):
+        return VerifierResultFrame(False, "not_object")
+    for field in payload:
+        if field not in _VERIFIER_RESULT_ALLOWED_FIELDS:
+            return VerifierResultFrame(False, f"unknown_field:{field}")
+    for field in _VERIFIER_RESULT_REQUIRED_FIELDS:
+        if field not in payload:
+            return VerifierResultFrame(False, f"missing_field:{field}")
+    if payload["version"] != 1:
+        return VerifierResultFrame(False, "invalid_version")
+    if not isinstance(payload["run_id"], int):
+        return VerifierResultFrame(False, "invalid_type:run_id")
+    if payload["run_id"] <= 0:
+        return VerifierResultFrame(False, "invalid_value:run_id")
+    for field in _VERIFIER_RESULT_STRING_FIELDS:
+        if not isinstance(payload[field], str) or not payload[field]:
+            return VerifierResultFrame(False, f"invalid_type:{field}")
+    if not _SHA256_HEX_RE.fullmatch(payload["contract_hash"]):
+        return VerifierResultFrame(False, "invalid_value:contract_hash")
+    if payload["action"] not in _VERIFIER_RESULT_ACTIONS:
+        return VerifierResultFrame(False, "invalid_action")
+    for field in ("summary", "reason"):
+        if field in payload and not isinstance(payload[field], str):
+            return VerifierResultFrame(False, f"invalid_type:{field}")
+        if field in payload and len(payload[field].encode("utf-8")) > _CTX_MAX_FIELD_BYTES:
+            return VerifierResultFrame(False, f"field_too_large:{field}")
+    return VerifierResultFrame(True, "ok", payload)
+
+
+def apply_verifier_supervisor_result(
+    conn: sqlite3.Connection,
+    *,
+    authorization_id: int,
+    binding: dict[str, Any],
+    raw_frame: bytes,
+) -> VerifierSupervisorResult:
+    parsed = parse_verifier_result_frame(raw_frame)
+    if not parsed.valid or parsed.payload is None:
+        return VerifierSupervisorResult(False, None, parsed.reason)
+    payload = parsed.payload
+    for field in (
+        "task_id",
+        "run_id",
+        "claim_lock",
+        "contract_id",
+        "contract_hash",
+        "pr_url",
+        "approved_head",
+        "approved_base",
+        "nonce",
+    ):
+        if payload.get(field) != binding.get(field):
+            return VerifierSupervisorResult(False, None, f"binding_mismatch:{field}")
+    action = payload["action"]
+    summary = payload.get("summary") or ""
+    applied = _apply_verifier_supervisor_result_atomic(
+        conn,
+        authorization_id=authorization_id,
+        binding=binding,
+        action=action,
+        summary=summary,
+        reason=payload.get("reason") or "",
+    )
+    if applied.state != "applied":
+        return VerifierSupervisorResult(False, action, applied.reason)
+    if action == "complete":
+        _clear_failure_counter(conn, str(binding["task_id"]))
+        recompute_ready(conn)
+    return VerifierSupervisorResult(True, action, "applied")
+
+
+def _apply_verifier_supervisor_result_atomic(
+    conn: sqlite3.Connection,
+    *,
+    authorization_id: int,
+    binding: dict[str, Any],
+    action: str,
+    summary: str,
+    reason: str,
+) -> VerifierAuthorization:
+    """Apply a verifier terminal action and authorization CAS in one txn."""
+    task_id = str(binding["task_id"])
+    run_id = int(binding["run_id"])
+    claim_lock = str(binding["claim_lock"])
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+            (authorization_id,),
+        ).fetchone()
+        if row is None:
+            return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
+        if row["state"] in _VERIFIER_TERMINAL_STATES:
+            return _authorization_result(row, f"already_{row['state']}")
+        mismatch = _authorization_binding_reason(
+            conn,
+            row,
+            task_id=task_id,
+            run_id=run_id,
+            claim_lock=claim_lock,
+            contract_id=str(binding["contract_id"]),
+            contract_hash=str(binding["contract_hash"]),
+            pr_url=str(binding["pr_url"]),
+            approved_head=str(binding["approved_head"]),
+            approved_base=str(binding["approved_base"]),
+            nonce=str(binding["nonce"]),
+        )
+        if mismatch is not None:
+            return _authorization_result(row, mismatch)
+        if row["state"] != "started":
+            return _authorization_result(row, f"invalid_transition:{row['state']}->applied")
+
+        if action == "complete":
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'done',
+                       result = ?,
+                       completed_at = ?,
+                       current_run_id = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                   AND claim_lock = ?
+                """,
+                (summary or None, now, task_id, run_id, claim_lock),
+            )
+            if cur.rowcount != 1:
+                return _authorization_result(row, "apply_failed")
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'done',
+                       outcome = 'completed',
+                       summary = ?,
+                       ended_at = ?,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND task_id = ?
+                   AND status = 'running'
+                   AND claim_lock = ?
+                """,
+                (summary or None, now, run_id, task_id, claim_lock),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "completed",
+                {
+                    "result_len": len(summary) if summary else 0,
+                    "summary": (summary.strip().splitlines()[0][:400] if summary else None),
+                },
+                run_id=run_id,
+            )
+        elif action == "re-block":
+            block_reason = reason or summary or "verifier requested re-block"
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'blocked',
+                       current_run_id = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = 'needs_input',
+                       block_recurrences = CASE
+                           WHEN block_kind = 'needs_input' THEN block_recurrences + 1
+                           ELSE 1
+                       END,
+                       block_evidence = NULL,
+                       guard_bypass = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                   AND claim_lock = ?
+                """,
+                (task_id, run_id, claim_lock),
+            )
+            if cur.rowcount != 1:
+                return _authorization_result(row, "apply_failed")
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'blocked',
+                       outcome = 'blocked',
+                       summary = ?,
+                       ended_at = ?,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND task_id = ?
+                   AND status = 'running'
+                   AND claim_lock = ?
+                """,
+                (block_reason, now, run_id, task_id, claim_lock),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {"reason": block_reason, "kind": "needs_input", "recurrences": 1},
+                run_id=run_id,
+            )
+        else:
+            return VerifierAuthorization(authorization_id, row["state"], "invalid_action")
+
+        cur = conn.execute(
+            "UPDATE verifier_result_authorizations "
+            "SET state = 'applied', reason_code = 'apply', updated_at = ? "
+            "WHERE id = ? AND state = 'started'",
+            (now, authorization_id),
+        )
+        if cur.rowcount != 1:
+            return _authorization_result(row, "compare_and_swap_failed")
+        _append_event(
+            conn,
+            task_id,
+            "verifier_authorization",
+            {"authorization_id": authorization_id, "state": "applied"},
+            run_id=run_id,
+        )
+        return VerifierAuthorization(authorization_id, "applied", "apply")
+
+
+def _nonce_digest(nonce: str) -> str:
+    return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+
+def _authorization_binding_reason(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    task_id: str,
+    run_id: int,
+    claim_lock: str,
+    contract_id: str,
+    contract_hash: str,
+    pr_url: str,
+    approved_head: str,
+    approved_base: str,
+    nonce: str,
+) -> Optional[str]:
+    """Return a stable mismatch/staleness code without exposing the nonce."""
+    expected = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": claim_lock,
+        "contract_id": contract_id,
+        "contract_hash": contract_hash,
+        "pr_url": pr_url,
+        "approved_head": approved_head,
+        "approved_base": approved_base,
+    }
+    for field, value in expected.items():
+        if row[field] != value:
+            return f"binding_mismatch:{field}"
+    if not hmac.compare_digest(str(row["nonce_digest"]), _nonce_digest(nonce)):
+        return "binding_mismatch:nonce"
+    run = conn.execute(
+        "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+        (run_id, task_id),
+    ).fetchone()
+    if run is None or run["status"] != "running" or run["claim_lock"] != claim_lock:
+        return "stale_run"
+    task = conn.execute(
+        "SELECT current_run_id, claim_lock FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if task is None or task["current_run_id"] != run_id or task["claim_lock"] != claim_lock:
+        return "stale_claim"
+    return None
+
+
+def _authorization_static_binding_reason(
+    row: sqlite3.Row,
+    *,
+    task_id: str,
+    run_id: int,
+    claim_lock: str,
+    contract_id: str,
+    contract_hash: str,
+    pr_url: str,
+    approved_head: str,
+    approved_base: str,
+    nonce: str,
+) -> Optional[str]:
+    expected = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": claim_lock,
+        "contract_id": contract_id,
+        "contract_hash": contract_hash,
+        "pr_url": pr_url,
+        "approved_head": approved_head,
+        "approved_base": approved_base,
+    }
+    for field, value in expected.items():
+        if row[field] != value:
+            return f"binding_mismatch:{field}"
+    if not hmac.compare_digest(str(row["nonce_digest"]), _nonce_digest(nonce)):
+        return "binding_mismatch:nonce"
+    return None
+
+
+def _authorization_result(row: sqlite3.Row, reason: str) -> VerifierAuthorization:
+    return VerifierAuthorization(id=int(row["id"]), state=row["state"], reason=reason)
+
+
+def authorize_verifier_result(
+    conn: sqlite3.Connection, *, task_id: str, run_id: int, claim_lock: str,
+    contract_id: str, contract_hash: str, pr_url: str, approved_head: str,
+    approved_base: str, nonce: str,
+) -> VerifierAuthorization:
+    """Create one active authorization or return its idempotent outcome.
+
+    This is deliberately independent from process/transport code. The live
+    task/run claim is checked under the same write transaction as the insert;
+    a stale worker cannot mint an authorization after it loses its claim.
+    """
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            task_id,
+            claim_lock,
+            contract_id,
+            contract_hash,
+            pr_url,
+            approved_head,
+            approved_base,
+            nonce,
+        )
+    ):
+        raise ValueError("verifier authorization binding fields must be non-empty strings")
+    now = int(time.time())
+    with write_txn(conn):
+        _reconcile_legacy_active_verifier_authorizations(conn, task_id=task_id)
+        task_row = conn.execute(
+            "SELECT current_run_id, claim_lock FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        run_row = conn.execute(
+            "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if (
+            task_row is None or run_row is None or task_row["current_run_id"] != run_id
+            or task_row["claim_lock"] != claim_lock or run_row["status"] != "running"
+            or run_row["claim_lock"] != claim_lock
+        ):
+            return VerifierAuthorization(0, "denied", "stale_claim")
+        existing = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE task_id = ? AND contract_id = ? "
+            "AND state IN ('authorized', 'reserved', 'started', 'consumed')",
+            (task_id, contract_id),
+        ).fetchone()
+        if existing is not None:
+            exact = _authorization_binding_reason(
+                conn, existing, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+                contract_id=contract_id, contract_hash=contract_hash, pr_url=pr_url,
+                approved_head=approved_head, approved_base=approved_base, nonce=nonce,
+            )
+            return _authorization_result(
+                existing, "idempotent_retry" if exact is None else "active_authorization_exists",
+            )
+        cursor = conn.execute(
+            "INSERT INTO verifier_result_authorizations "
+            "(task_id, run_id, claim_lock, contract_id, contract_hash, pr_url, "
+            "approved_head, approved_base, nonce_digest, state, reason_code, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'authorized', 'authorized', ?, ?)",
+            (
+                task_id,
+                run_id,
+                claim_lock,
+                contract_id,
+                contract_hash,
+                pr_url,
+                approved_head,
+                approved_base,
+                _nonce_digest(nonce),
+                now,
+                now,
+            ),
+        )
+        authorization_id = cursor.lastrowid
+        assert authorization_id is not None
+        _append_event(conn, task_id, "verifier_authorization", {"authorization_id": authorization_id, "state": "authorized"}, run_id=run_id)
+        return VerifierAuthorization(int(authorization_id), "authorized", "authorized")
+
+
+def _reconcile_legacy_active_verifier_authorizations(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str] = None,
+) -> list[int]:
+    """Fail closed legacy active rows that lack the modern binding columns.
+
+    Additive SQLite migrations leave NULLs on old rows.  Such an authorization
+    cannot prove a contract binding and must not keep the active-row unique
+    index occupied forever.  This helper is called while a write transaction
+    is already held, both before authorization and during dispatcher recovery.
+    """
+    where = "state IN ('authorized', 'reserved', 'started', 'consumed') AND (contract_hash IS NULL OR contract_hash = '' OR approved_head IS NULL OR approved_head = '' OR approved_base IS NULL OR approved_base = '')"
+    params: tuple[Any, ...] = ()
+    if task_id is not None:
+        where += " AND task_id = ?"
+        params = (task_id,)
+    rows = conn.execute(
+        "SELECT id, task_id, run_id, claim_lock, state FROM verifier_result_authorizations WHERE " + where,
+        params,
+    ).fetchall()
+    reconciled: list[int] = []
+    now = int(time.time())
+    for row in rows:
+        cur = conn.execute(
+            "UPDATE verifier_result_authorizations SET state = 'reconciled', reason_code = 'legacy_incomplete_binding', updated_at = ? WHERE id = ? AND state IN ('authorized', 'reserved', 'started', 'consumed')",
+            (now, row["id"]),
+        )
+        if cur.rowcount != 1:
+            continue
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', current_run_id = NULL, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, block_kind = 'needs_input', block_evidence = NULL, guard_bypass = NULL WHERE id = ? AND status = 'running' AND current_run_id = ? AND claim_lock IS ?",
+            (row["task_id"], row["run_id"], row["claim_lock"]),
+        )
+        conn.execute(
+            "UPDATE task_runs SET status = 'blocked', outcome = 'blocked', summary = 'verifier result channel failed: legacy_incomplete_binding', ended_at = ?, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL WHERE id = ? AND task_id = ? AND status = 'running'",
+            (now, row["run_id"], row["task_id"]),
+        )
+        _append_event(
+            conn,
+            row["task_id"],
+            "verifier_authorization_reconciled",
+            {"authorization_id": int(row["id"]), "from_state": row["state"], "to_state": "reconciled", "reason": "legacy_incomplete_binding"},
+            run_id=int(row["run_id"]),
+        )
+        reconciled.append(int(row["id"]))
+    return reconciled
+
+
+def _transition_verifier_result(
+    conn: sqlite3.Connection, *, authorization_id: int, action: str, task_id: str,
+    run_id: int, claim_lock: str, contract_id: str, contract_hash: str,
+    pr_url: str, approved_head: str, approved_base: str, nonce: str,
+) -> VerifierAuthorization:
+    expected_state, next_state = _VERIFIER_TRANSITIONS[action]
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE id = ?", (authorization_id,)
+        ).fetchone()
+        if row is None:
+            return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
+        if row["state"] in {"applied", "failed", "reconciled"}:
+            return _authorization_result(row, f"already_{row['state']}")
+        if action == "apply":
+            mismatch = _authorization_static_binding_reason(
+                row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+                contract_id=contract_id, contract_hash=contract_hash, pr_url=pr_url,
+                approved_head=approved_head, approved_base=approved_base, nonce=nonce,
+            )
+        else:
+            mismatch = _authorization_binding_reason(
+                conn, row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+                contract_id=contract_id, contract_hash=contract_hash, pr_url=pr_url,
+                approved_head=approved_head, approved_base=approved_base, nonce=nonce,
+            )
+        if mismatch is not None:
+            return _authorization_result(row, mismatch)
+        if row["state"] == next_state:
+            return _authorization_result(row, "idempotent_retry")
+        if row["state"] != expected_state:
+            return _authorization_result(row, f"invalid_transition:{row['state']}->{next_state}")
+        cursor = conn.execute(
+            "UPDATE verifier_result_authorizations SET state = ?, reason_code = ?, updated_at = ? "
+            "WHERE id = ? AND state = ?",
+            (next_state, action, int(time.time()), authorization_id, expected_state),
+        )
+        if cursor.rowcount != 1:
+            return _authorization_result(row, "compare_and_swap_failed")
+        _append_event(conn, task_id, "verifier_authorization", {"authorization_id": authorization_id, "state": next_state}, run_id=run_id)
+        return VerifierAuthorization(authorization_id, next_state, action)
+
+
+def reserve_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="reserve", **binding)
+
+
+def start_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="start", **binding)
+
+
+def start_verifier_result_with_owner(
+    conn: sqlite3.Connection,
+    *,
+    authorization_id: int,
+    supervisor_owner: str,
+    verifier_root: Optional[Path] = None,
+    **binding: Any,
+) -> VerifierAuthorization:
+    if not isinstance(supervisor_owner, str) or not supervisor_owner:
+        raise ValueError("supervisor_owner must be a non-empty string")
+    expected_state, next_state = _VERIFIER_TRANSITIONS["start"]
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+            (authorization_id,),
+        ).fetchone()
+        if row is None:
+            return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
+        if row["state"] in {"applied", "failed", "reconciled"}:
+            return _authorization_result(row, f"already_{row['state']}")
+        mismatch = _authorization_binding_reason(
+            conn,
+            row,
+            task_id=str(binding["task_id"]),
+            run_id=int(binding["run_id"]),
+            claim_lock=str(binding["claim_lock"]),
+            contract_id=str(binding["contract_id"]),
+            contract_hash=str(binding["contract_hash"]),
+            pr_url=str(binding["pr_url"]),
+            approved_head=str(binding["approved_head"]),
+            approved_base=str(binding["approved_base"]),
+            nonce=str(binding["nonce"]),
+        )
+        if mismatch is not None:
+            return _authorization_result(row, mismatch)
+        if row["state"] == next_state:
+            return _authorization_result(row, "idempotent_retry")
+        if row["state"] != expected_state:
+            return _authorization_result(row, f"invalid_transition:{row['state']}->{next_state}")
+        cur = conn.execute(
+            "UPDATE verifier_result_authorizations "
+            "SET state = 'started', reason_code = 'start', supervisor_owner = ?, "
+            "verifier_root = COALESCE(?, verifier_root), updated_at = ? "
+            "WHERE id = ? AND state = 'reserved'",
+            (
+                supervisor_owner,
+                str(verifier_root) if verifier_root is not None else None,
+                int(time.time()),
+                authorization_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            return _authorization_result(row, "compare_and_swap_failed")
+        _append_event(
+            conn,
+            str(binding["task_id"]),
+            "verifier_authorization",
+            {"authorization_id": authorization_id, "state": "started"},
+            run_id=int(binding["run_id"]),
+        )
+        return VerifierAuthorization(authorization_id, "started", "start")
+
+
+def consume_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="consume", **binding)
+
+
+def apply_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="apply", **binding)
+
+
+def fail_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="fail", **binding)
+
+
+def reconcile_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="reconcile", **binding)
+
+
+def reconcile_verifier_authorizations(
+    conn: sqlite3.Connection,
+    *,
+    owner_id: str,
+    live_owner_ids: Optional[set[str]] = None,
+) -> list[int]:
+    """Reconcile durable verifier authorizations after supervisor restart.
+
+    A reserved authorization is pre-start state. If its supervisor owner is
+    missing or dead and the task/run/claim binding still matches, restore it to
+    ``authorized`` so spawn can retry from a clean point. Live owners keep
+    their reservation. Post-start rows whose owner is missing or dead are
+    fail-closed once.
+    """
+    _ = owner_id  # Retained for callers from the owner-scoped implementation.
+    live_owner_ids = set(live_owner_ids or set())
+    restored: list[int] = []
+    now = int(time.time())
+    with write_txn(conn):
+        restored.extend(_reconcile_legacy_active_verifier_authorizations(conn))
+        rows = conn.execute(
+            "SELECT id, task_id, run_id, state, supervisor_owner "
+            "FROM verifier_result_authorizations "
+            "WHERE state = 'reserved'",
+        ).fetchall()
+        for row in rows:
+            supervisor_owner = row["supervisor_owner"]
+            if supervisor_owner and supervisor_owner in live_owner_ids:
+                continue
+            full_row = conn.execute(
+                "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            if full_row is None:
+                continue
+            run = conn.execute(
+                "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+                (int(full_row["run_id"]), full_row["task_id"]),
+            ).fetchone()
+            task = conn.execute(
+                "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+                (full_row["task_id"],),
+            ).fetchone()
+            if (
+                run is None
+                or run["status"] != "running"
+                or run["claim_lock"] != full_row["claim_lock"]
+                or task is None
+                or task["status"] != "running"
+                or task["current_run_id"] != int(full_row["run_id"])
+                or task["claim_lock"] != full_row["claim_lock"]
+            ):
+                continue
+            cur = conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET state = 'authorized', reason_code = 'pre_start_restore', "
+                "supervisor_owner = NULL, verifier_root = NULL, updated_at = ? "
+                "WHERE id = ? AND state = 'reserved' "
+                "AND supervisor_owner IS ?",
+                (now, row["id"], supervisor_owner),
+            )
+            if cur.rowcount != 1:
+                continue
+            restored.append(int(row["id"]))
+            _append_event(
+                conn,
+                row["task_id"],
+                "verifier_authorization_reconciled",
+                {
+                    "authorization_id": int(row["id"]),
+                    "from_state": "reserved",
+                    "to_state": "authorized",
+                    "reason": "pre_start_restore",
+                },
+                run_id=int(row["run_id"]),
+            )
+        rows = conn.execute(
+            "SELECT id, task_id, run_id, state, supervisor_owner "
+            "FROM verifier_result_authorizations "
+            "WHERE state = 'started'",
+        ).fetchall()
+        for row in rows:
+            supervisor_owner = row["supervisor_owner"]
+            if supervisor_owner and supervisor_owner in live_owner_ids:
+                continue
+            reason = "post_start_owner_missing"
+            summary = f"verifier result channel failed: {reason}"
+            cur = conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET state = 'reconciled', reason_code = ?, updated_at = ? "
+                "WHERE id = ? AND state = 'started'",
+                (reason, now, row["id"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            task_cur = conn.execute(
+                """
+                UPDATE tasks
+                       SET status = 'blocked',
+                       current_run_id = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = 'needs_input',
+                       block_recurrences = CASE
+                           WHEN block_kind = 'needs_input' THEN block_recurrences + 1
+                           ELSE 1
+                       END,
+                       block_evidence = NULL,
+                       guard_bypass = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                """,
+                (row["task_id"], row["run_id"]),
+            )
+            if task_cur.rowcount == 1:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'blocked',
+                           ended_at = ?,
+                           outcome = 'blocked',
+                           summary = ?
+                     WHERE id = ?
+                       AND task_id = ?
+                       AND status = 'running'
+                    """,
+                    (now, summary, row["run_id"], row["task_id"]),
+                )
+                _append_event(
+                    conn,
+                    row["task_id"],
+                    "blocked",
+                    {"reason": summary, "kind": "needs_input", "recurrences": 1},
+                    run_id=int(row["run_id"]),
+                )
+            restored.append(int(row["id"]))
+            _append_event(
+                conn,
+                row["task_id"],
+                "verifier_authorization_reconciled",
+                {
+                    "authorization_id": int(row["id"]),
+                    "from_state": "started",
+                    "to_state": "reconciled",
+                    "reason": reason,
+                },
+                run_id=int(row["run_id"]),
+            )
+    return restored
+
+
+def _live_verifier_supervisor_owner_ids(conn: sqlite3.Connection) -> set[str]:
+    owners: set[str] = set()
+    host = socket.gethostname()
+    rows = conn.execute(
+        "SELECT DISTINCT supervisor_owner FROM verifier_result_authorizations "
+        "WHERE supervisor_owner IS NOT NULL "
+        "AND state IN ('reserved', 'started')"
+    ).fetchall()
+    for row in rows:
+        owner = str(row["supervisor_owner"] or "")
+        owner_host, sep, raw_pid = owner.rpartition(":")
+        if not sep or owner_host != host:
+            continue
+        try:
+            pid = int(raw_pid)
+        except ValueError:
+            continue
+        if _pid_alive(pid):
+            owners.add(owner)
+    return owners
+
+
+def reconcile_verifier_dispatch_state(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Run verifier cleanup/restart reconciliation for a dispatch tick."""
+    live_owner_ids = _live_verifier_supervisor_owner_ids(conn)
+    reconcile_verifier_authorizations(
+        conn,
+        owner_id=_claimer_id(),
+        live_owner_ids=live_owner_ids,
+    )
+    reconcile_verifier_roots(conn, board=board)
+    reconcile_orphan_verifier_roots(board=board)
 
 
 # ---------------------------------------------------------------------------
@@ -5214,8 +6304,34 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    evidence: Optional[dict] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+
+    ``evidence`` is an optional JSON-serializable dict recorded verbatim
+    (e.g. ``{"pr_url": ..., "head": ..., "base": ...}``) when the task lands
+    in the plain ``blocked`` bucket. It has no effect on routing; it exists
+    so a later :func:`unblock_task` call carrying a
+    :class:`ProtectedMergeVerifierIntent` can validate that the caller is
+    unblocking against the SAME PR/head/base that actually triggered the
+    block, rather than trusting an unrelated approval. It is therefore only
+    accepted with ``kind="needs_input"`` (the one kind the verifier bypass
+    validates against) — a non-dict / non-serializable ``evidence``, or one
+    supplied with any other kind, raises ``ValueError`` BEFORE any mutation.
+
+    Every block transition (including the ``dependency`` and
+    loop-detected/``triage`` routes) clears any previously stored
+    ``block_evidence``: evidence describes exactly one block, and letting it
+    survive an unrelated re-block would let a later verifier intent validate
+    against a block that was never about that PR.
+
+    Every routing branch below also clears any pending ``guard_bypass``
+    token. A bypass granted by a prior ``unblock_task(intent=...)`` call
+    that was never consumed (e.g. the task got re-blocked for an unrelated
+    reason before the dispatcher's next tick reached the ``active_pr``
+    check) must not silently carry over and get spent against a LATER,
+    unrelated ``active_pr`` hit -- re-blocking always invalidates a stale,
+    not-yet-consumed grant.
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -5246,6 +6362,25 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # Validate evidence BEFORE opening the txn: a wrong-kind or malformed
+    # payload must never partially mutate the row it failed to qualify for.
+    evidence_json: Optional[str] = None
+    if evidence:
+        if kind != "needs_input":
+            raise ValueError(
+                "block evidence is protected-merge verifier material and is "
+                f"only supported with kind='needs_input'; got kind={kind!r}"
+            )
+        if not isinstance(evidence, dict):
+            raise ValueError(
+                f"block evidence must be a dict, got {type(evidence).__name__}"
+            )
+        try:
+            evidence_json = json.dumps(evidence, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"block evidence must be JSON-serializable: {exc}"
+            ) from exc
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -5275,7 +6410,9 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       block_evidence = NULL,
+                       guard_bypass  = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5329,7 +6466,9 @@ def block_task(
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
-                       block_recurrences = ?
+                       block_recurrences = ?,
+                       block_evidence = NULL,
+                       guard_bypass  = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5359,6 +6498,9 @@ def block_task(
             )
             routed_to = "triage"
         else:
+            # block_evidence is REPLACED (new evidence or NULL) on every
+            # transition into the blocked bucket — stale evidence from an
+            # earlier block must never describe this one.
             if expected_run_id is None:
                 cur = conn.execute(
                     """
@@ -5368,11 +6510,13 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           block_evidence = ?,
+                           guard_bypass  = NULL
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                     """,
-                    (kind, recurrences, task_id),
+                    (kind, recurrences, evidence_json, task_id),
                 )
             else:
                 cur = conn.execute(
@@ -5383,12 +6527,14 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           block_evidence = ?,
+                           guard_bypass  = NULL
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
                     """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
+                    (kind, recurrences, evidence_json, task_id, int(expected_run_id)),
                 )
             if cur.rowcount != 1:
                 return False
@@ -5407,7 +6553,10 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
+                {
+                    "reason": reason, "kind": kind, "recurrences": recurrences,
+                    **({"evidence": evidence} if evidence else {}),
+                },
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
@@ -5493,7 +6642,477 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+# ---------------------------------------------------------------------------
+# Protected-merge-verifier respawn-guard bypass
+#
+# ``check_respawn_guard``'s ``active_pr`` reason is intentionally sticky: a
+# GitHub PR URL in a recent comment defers every respawn attempt for
+# ``_RESPAWN_GUARD_PR_WINDOW`` seconds, no matter how many dispatcher ticks
+# pass, because re-spawning would risk a duplicate PR on the same task.
+# ``active_pr`` remains that way by default — there is no ambient way to
+# lift it.
+#
+# The ONE exception: a human who actually verified the PR was reviewed and
+# is ready to merge/land can grant a single-use bypass via
+# ``unblock_task(..., intent=ProtectedMergeVerifierIntent(...))``. The
+# bypass only validates when ALL of the following hold — anything else
+# leaves ``active_pr`` exactly as protective as before:
+#
+#   * the intent is a well-formed ``ProtectedMergeVerifierIntent`` (typed
+#     contract) with a truthy ``pr_url`` / ``approved_head`` /
+#     ``approved_base`` and ``readiness_evidence`` that actually says
+#     ``ready`` (a wrong/missing contract is rejected silently);
+#   * the task's current ``block_kind`` is ``"needs_input"`` (a
+#     ``capability``/``dependency``/``transient``/legacy block is rejected —
+#     "wrong block kind");
+#   * a terminal ``blocked`` task_runs row exists for the task (a task
+#     flipped to ``blocked`` by direct writes rather than ``block_task``
+#     has no attempt history to audit against — "missing blocked run");
+#   * the intent's ``pr_url`` / ``approved_head`` / ``approved_base`` match
+#     the evidence ``block_task`` recorded at block time exactly — a
+#     mismatched head (e.g. the PR was force-pushed after approval) is
+#     rejected ("head mismatch").
+#
+# A granted bypass is consumed by the very next ``check_respawn_guard`` call
+# that would otherwise return ``active_pr`` — one bypass, one respawn. A
+# later ``active_pr`` hit (e.g. after the resulting claim/run posts a fresh
+# PR comment) finds nothing pending and reverts to the default, protective
+# behavior.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProtectedMergeVerifierIntent:
+    """Typed ``unblock_task`` intent requesting a one-shot guard bypass.
+
+    Carries the evidence a human (or an automated verifier acting on a
+    human's behalf) collected before confirming a PR is ready: which PR,
+    which head commit and base branch were reviewed, and machine-checkable
+    readiness evidence (CI status, review state, etc). All four identity
+    fields plus a truthy ``readiness_evidence["ready"]`` are required for
+    the bypass to validate — see the module comment above for the full
+    rejection matrix.
+    """
+
+    pr_url: str
+    approved_head: str
+    approved_base: str
+    readiness_evidence: dict = field(default_factory=dict)
+    kind: str = "protected_merge_verifier"
+
+
+_INTENT_REQUIRED_FIELDS = ("pr_url", "approved_head", "approved_base")
+
+
+def parse_protected_merge_verifier_intent(
+    data: Any,
+) -> "ProtectedMergeVerifierIntent":
+    """Parse and validate an untrusted dict into a typed intent.
+
+    This is the ONLY supported way external surfaces (the CLI's
+    ``unblock --intent``, the ``kanban_unblock`` tool, the dashboard's
+    unblock endpoint) may construct a :class:`ProtectedMergeVerifierIntent`
+    -- always from a structured JSON object carrying an explicit
+    discriminator (``"kind": "protected_merge_verifier"``, or omitted,
+    which defaults to it), never by parsing free text. Raises
+    ``ValueError`` with an actionable message on anything malformed;
+    callers translate that into their own surface-appropriate error
+    response (CLI stderr + exit code, tool_error JSON, HTTP 400).
+
+    Like the evidence parser below, unknown fields are rejected rather
+    than ignored — default deny. Silently dropping fields the contract
+    doesn't define would let a request LOOK like it carried verifier
+    material the bypass validation never saw; and because every surface
+    shares this one parser, the field vocabulary cannot drift per surface.
+
+    Note this only validates STRUCTURE (the typed contract's shape). The
+    deeper semantic checks -- does ``readiness_evidence`` actually say
+    ready, does the task's recorded block evidence match -- happen later,
+    inside ``unblock_task`` via :func:`_validate_merge_verifier_bypass`. A
+    structurally valid intent that fails those checks still parses fine
+    here; it simply won't grant a bypass (see the module comment above
+    ``ProtectedMergeVerifierIntent``).
+    """
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"intent must be a JSON object, got {type(data).__name__}"
+        )
+    kind = data.get("kind", "protected_merge_verifier")
+    if kind != "protected_merge_verifier":
+        raise ValueError(
+            f"unknown intent kind {kind!r}; only 'protected_merge_verifier' "
+            "is supported"
+        )
+    unknown = sorted(set(data) - {"kind", *_INTENT_REQUIRED_FIELDS, "readiness_evidence"})
+    if unknown:
+        raise ValueError(
+            f"intent has unsupported field(s): {', '.join(unknown)}; "
+            "supported fields are pr_url, approved_head, approved_base, "
+            "readiness_evidence (and the optional 'kind' discriminator)"
+        )
+    missing = [
+        f for f in _INTENT_REQUIRED_FIELDS
+        if not (isinstance(data.get(f), str) and data.get(f).strip())
+    ]
+    if missing:
+        raise ValueError(
+            f"intent missing required field(s): {', '.join(missing)}"
+        )
+    readiness_evidence = data.get("readiness_evidence")
+    if not isinstance(readiness_evidence, dict):
+        raise ValueError(
+            f"intent.readiness_evidence must be a JSON object, got "
+            f"{type(readiness_evidence).__name__}"
+        )
+    if readiness_evidence.get("ready") is not True:
+        raise ValueError("intent.readiness_evidence.ready must be true")
+    encoded_evidence = json.dumps(
+        readiness_evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded_evidence) > _CTX_MAX_FIELD_BYTES:
+        raise ValueError("intent.readiness_evidence is too large")
+    return ProtectedMergeVerifierIntent(
+        pr_url=data["pr_url"].strip(),
+        approved_head=data["approved_head"].strip(),
+        approved_base=data["approved_base"].strip(),
+        readiness_evidence=readiness_evidence,
+    )
+
+
+@dataclass(frozen=True)
+class ProtectedMergeVerifierEvidence:
+    """Typed block-time evidence for a protected-merge verification block.
+
+    The block-side twin of :class:`ProtectedMergeVerifierIntent`: where the
+    intent carries what a human APPROVED at unblock time, this carries what
+    the worker OBSERVED at block time — which PR, which head commit and base
+    branch the block is actually about. ``to_block_evidence`` emits the
+    exact ``{"pr_url", "head", "base"}`` dict :func:`block_task` stores and
+    :func:`_validate_merge_verifier_bypass` later matches an intent against.
+    """
+
+    pr_url: str
+    head: str
+    base: str
+    kind: str = "protected_merge_verifier"
+
+    def to_block_evidence(self) -> dict:
+        return {"pr_url": self.pr_url, "head": self.head, "base": self.base}
+
+
+_EVIDENCE_REQUIRED_FIELDS = ("pr_url", "head", "base")
+
+
+def parse_protected_merge_verifier_evidence(
+    data: Any,
+) -> "ProtectedMergeVerifierEvidence":
+    """Parse and validate an untrusted value into typed block evidence.
+
+    This is the ONLY supported way external surfaces (the CLI's
+    ``block --evidence``, the ``kanban_block`` tool's ``evidence`` input,
+    the dashboard's ``block_evidence`` PATCH field) may construct the
+    ``evidence`` payload forwarded to :func:`block_task` — always from a
+    structured JSON object carrying an explicit discriminator
+    (``"kind": "protected_merge_verifier"``, or omitted, which defaults to
+    it), never by parsing free text. Raises ``ValueError`` with an
+    actionable message on anything malformed; callers translate that into
+    their own surface-appropriate error response (CLI stderr + exit code,
+    tool_error JSON, HTTP 400) BEFORE any mutation.
+
+    Like the intent parser, unknown fields are rejected rather than
+    ignored: evidence is recorded verbatim on the task row and audited
+    later, so silently dropping (or silently storing) fields the contract
+    doesn't define would corrupt what the bypass validation is trusted to
+    compare — default deny.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"block evidence must be a JSON object, got {type(data).__name__}"
+        )
+    kind = data.get("kind", "protected_merge_verifier")
+    if kind != "protected_merge_verifier":
+        raise ValueError(
+            f"unknown block evidence kind {kind!r}; only "
+            "'protected_merge_verifier' is supported"
+        )
+    unknown = sorted(set(data) - {"kind", *_EVIDENCE_REQUIRED_FIELDS})
+    if unknown:
+        raise ValueError(
+            f"block evidence has unsupported field(s): {', '.join(unknown)}; "
+            "supported fields are pr_url, head, base (and the optional "
+            "'kind' discriminator)"
+        )
+    missing = [
+        f for f in _EVIDENCE_REQUIRED_FIELDS
+        if not (isinstance(data.get(f), str) and data.get(f).strip())
+    ]
+    if missing:
+        raise ValueError(
+            f"block evidence missing required field(s): {', '.join(missing)}"
+        )
+    return ProtectedMergeVerifierEvidence(
+        pr_url=data["pr_url"].strip(),
+        head=data["head"].strip(),
+        base=data["base"].strip(),
+    )
+
+
+def _validate_merge_verifier_bypass(
+    conn: sqlite3.Connection,
+    task_id: str,
+    intent: Optional["ProtectedMergeVerifierIntent"],
+) -> Optional[dict]:
+    """Return the contract dict to grant, or ``None`` to reject silently.
+
+    Rejection never raises and never blocks the ordinary unblock — it just
+    withholds the bypass side effect, leaving ``active_pr`` as sticky as it
+    was before this feature existed.
+    """
+    if intent is None or not isinstance(intent, ProtectedMergeVerifierIntent):
+        return None
+    if intent.kind != "protected_merge_verifier":
+        return None
+    if not (intent.pr_url and intent.approved_head and intent.approved_base):
+        return None
+    if (
+        not isinstance(intent.readiness_evidence, dict)
+        or intent.readiness_evidence.get("ready") is not True
+    ):
+        return None
+
+    row = conn.execute(
+        "SELECT block_kind, block_evidence FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["block_kind"] != "needs_input":
+        return None
+
+    terminal_blocked_run = conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id = ? "
+        "AND status = 'blocked' AND outcome = 'blocked' "
+        "AND ended_at IS NOT NULL LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if terminal_blocked_run is None:
+        return None
+
+    raw_evidence = row["block_evidence"]
+    if not raw_evidence:
+        return None
+    try:
+        evidence = json.loads(raw_evidence)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(evidence, dict):
+        return None
+    if (
+        evidence.get("pr_url") != intent.pr_url
+        or evidence.get("head") != intent.approved_head
+        or evidence.get("base") != intent.approved_base
+    ):
+        return None
+
+    # Canonicalize HERE, at the authorization boundary: everything past this
+    # return becomes durable task/audit state (guard_bypass column, grant/
+    # consume/restore events) and eventually child-process input. The raw,
+    # untrusted readiness evidence must never cross that line — only the
+    # ready bit, its digest, and the immutable PR/head/base binding do.
+    try:
+        return _canonical_verifier_contract_payload(
+            {
+                "pr_url": intent.pr_url,
+                "approved_head": intent.approved_head,
+                "approved_base": intent.approved_base,
+                "readiness_evidence": intent.readiness_evidence,
+            }
+        )
+    except ValueError:
+        return None
+
+
+def _canonical_pr_url(url: Any) -> Optional[str]:
+    """Canonical form for PR-URL equality checks, or ``None`` when ``url``
+    isn't a usable string.
+
+    GitHub hosts / owners / repos are case-insensitive and a trailing slash
+    is cosmetic, so lowercase + strip whitespace and trailing slashes. No
+    other normalization — anything beyond that is a DIFFERENT URL and must
+    compare unequal (default deny).
+    """
+    if not isinstance(url, str):
+        return None
+    canonical = url.strip().rstrip("/").lower()
+    return canonical or None
+
+
+def _bypass_payload_matches(
+    payload: Any, *, guard: str, pr_url: Optional[str]
+) -> bool:
+    """Shared predicate for :func:`_has_pending_guard_bypass` /
+    :func:`_consume_guard_bypass`: the stored token must name the same
+    ``guard`` AND, when ``pr_url`` is given, carry a verified contract whose
+    ``pr_url`` canonically equals it. A token whose contract targets a
+    different PR does NOT match — it stays pending for the PR it was
+    actually verified against.
+    """
+    if not isinstance(payload, dict) or payload.get("guard") != guard:
+        return False
+    if pr_url is None:
+        return True
+    contract = payload.get("contract")
+    if not isinstance(contract, dict):
+        return False
+    want = _canonical_pr_url(pr_url)
+    return want is not None and want == _canonical_pr_url(contract.get("pr_url"))
+
+
+def _grant_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, *, guard: str, contract: dict
+) -> None:
+    """Persist a one-shot bypass token for ``guard``, called within an
+    already-open txn (mirrors ``_append_event``'s calling convention).
+
+    Coalesces: granting the SAME (guard, contract) pair while an identical
+    bypass is already pending updates the token in place without appending
+    a second ``guard_bypass_granted`` event — an operator double-submitting
+    the same verified intent should not spam the audit log.
+    """
+    payload = {"guard": guard, "contract": contract}
+    row = conn.execute(
+        "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    already_pending = False
+    if row and row["guard_bypass"]:
+        try:
+            prev = json.loads(row["guard_bypass"])
+        except (TypeError, ValueError):
+            prev = None
+        already_pending = prev == payload
+    conn.execute(
+        "UPDATE tasks SET guard_bypass = ? WHERE id = ?",
+        (json.dumps(payload, sort_keys=True), task_id),
+    )
+    if not already_pending:
+        _append_event(conn, task_id, "guard_bypass_granted", payload)
+
+
+def _has_pending_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, *, guard: str,
+    pr_url: Optional[str] = None,
+) -> bool:
+    """Read-only check: is a pending, guard-matching bypass token present?
+
+    ``pr_url`` (when given) additionally requires the token's verified
+    contract to target that exact PR URL (canonical comparison) — a bypass
+    verified against one PR must not read as pending for a different one.
+
+    Never mutates state -- safe to call from a dry-run preview. Used both
+    as the cheap pre-check inside :func:`_consume_guard_bypass` (skip
+    opening a write lock for the overwhelmingly common "nothing pending"
+    case) and directly by :func:`check_respawn_guard`'s ``dry_run`` path.
+    """
+    row = conn.execute(
+        "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or not row["guard_bypass"]:
+        return False
+    try:
+        payload = json.loads(row["guard_bypass"])
+    except (TypeError, ValueError):
+        return False
+    return _bypass_payload_matches(payload, guard=guard, pr_url=pr_url)
+
+
+def _consume_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, *, guard: str,
+    pr_url: Optional[str] = None,
+) -> Optional[dict]:
+    """Consume a pending bypass for ``guard`` if one is pending; return
+    the exact consumed payload, or ``None`` when nothing was consumed.
+
+    Returning the payload (not a bool) lets the consuming guard decision
+    carry the verified contract atomically into the dispatch that acts on
+    it — and lets a failed dispatch restore the token verbatim via
+    :func:`_restore_guard_bypass`.
+
+    ``pr_url`` (when given) is the URL extracted from the exact comment that
+    tripped the guard: the token is only consumed when its verified contract
+    ``pr_url`` canonically equals it. A mismatch consumes NOTHING — the
+    token stays pending for the PR it was actually verified against and the
+    caller falls back to the default, protective guard reason.
+
+    Opens its own txn: unlike ``_grant_guard_bypass`` (called from within
+    ``unblock_task``'s existing txn), this is called from
+    ``check_respawn_guard``, which runs standalone -- and can run
+    concurrently across multiple dispatcher/gateway processes hitting the
+    same shared board. Single-use is a hard guarantee, not best-effort, so
+    the read-check-clear sequence must be atomic: the initial pre-check
+    below is read-only (skip opening a write lock for the overwhelmingly
+    common "nothing pending" case); the AUTHORITATIVE read happens again
+    inside ``write_txn``, after ``BEGIN IMMEDIATE`` has already serialized
+    against any concurrent consumer. Without that inner re-check, two
+    racing callers could both observe the token as pending before either
+    cleared it and both return ``True`` -- a double-spend of a supposedly
+    one-shot bypass.
+
+    Callers that must not mutate state (dry-run previews) should call
+    :func:`_has_pending_guard_bypass` instead -- never this function.
+    """
+    if not _has_pending_guard_bypass(conn, task_id, guard=guard, pr_url=pr_url):
+        return None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None or not row["guard_bypass"]:
+            return None
+        try:
+            payload = json.loads(row["guard_bypass"])
+        except (TypeError, ValueError):
+            payload = None
+        if not _bypass_payload_matches(payload, guard=guard, pr_url=pr_url):
+            return None
+        conn.execute(
+            "UPDATE tasks SET guard_bypass = NULL WHERE id = ?", (task_id,),
+        )
+        _append_event(conn, task_id, "guard_bypass_consumed", payload)
+    return payload
+
+
+def _restore_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, payload: dict,
+) -> None:
+    """Re-arm a bypass token consumed by a guard decision whose dispatch
+    never actually started a worker (claim race, workspace or spawn
+    failure).
+
+    Writes back the EXACT consumed payload and appends a
+    ``guard_bypass_restored`` audit event — the verified recovery is not
+    lost to a transient failure, and the re-armed token remains one-shot.
+    Restores only into an empty slot: a newer grant made in the window is
+    never clobbered (in that case the restore is a silent no-op).
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET guard_bypass = ? "
+            "WHERE id = ? AND guard_bypass IS NULL",
+            (json.dumps(payload, sort_keys=True), task_id),
+        )
+        if cur.rowcount == 1:
+            _append_event(conn, task_id, "guard_bypass_restored", payload)
+
+
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    intent: Optional["ProtectedMergeVerifierIntent"] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5502,6 +7121,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    ``intent``: an optional typed :class:`ProtectedMergeVerifierIntent`
+    requesting a single-use bypass of the ``active_pr`` respawn guard. It
+    only takes effect when it validates against this task's recorded
+    ``needs_input`` block evidence (see the module comment above
+    :class:`ProtectedMergeVerifierIntent`); a missing, malformed, or
+    mismatched intent changes nothing — the ordinary unblock below still
+    proceeds and ``active_pr`` remains the default.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -5556,6 +7183,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
+        contract = _validate_merge_verifier_bypass(conn, task_id, intent)
+        if contract is not None:
+            _grant_guard_bypass(conn, task_id, guard="active_pr", contract=contract)
         return True
 
 
@@ -7578,12 +9208,23 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+def check_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False,
+) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready task in ``dispatch_once`` before any claim attempt.
     Returning a reason defers the spawn this tick; the task stays in
     ``ready`` and gets another chance on the next dispatcher tick.
+
+    ``dry_run=True`` makes this call read-only: a preview dispatch pass
+    must be able to report whether a task WOULD be spawned without any
+    side effect. Without this, a pending one-shot
+    ``protected_merge_verifier`` bypass (see the module comment above
+    :class:`ProtectedMergeVerifierIntent`) would be silently consumed by
+    the mere act of previewing -- burning the single grant on a dry run
+    that never actually spawns anything, so the following REAL dispatch
+    tick would see ``active_pr`` again with nothing left to lift it.
 
     Checks in priority order:
 
@@ -7620,18 +9261,43 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``active_pr`` is the default here with ONE exception: a pending,
+        validated respawn-guard bypass (granted by ``unblock_task`` via a
+        :class:`ProtectedMergeVerifierIntent` — see the module comment
+        above that class) whose verified contract ``pr_url`` canonically
+        equals the URL in the matched comment is consumed right here and
+        lifts the guard for this single call only. A bypass verified for a
+        DIFFERENT PR than the one the comment references neither lifts the
+        guard nor is consumed. Every other call, including the very next
+        one after a subsequent claim/run, sees the unmodified ``active_pr``
+        guard again.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
     reset the task to ``ready`` only after verifying the lock is
     genuinely dead (no live PID on this host).
     """
+    reason, _consumed = _check_respawn_guard(conn, task_id, dry_run=dry_run)
+    return reason
+
+
+def _check_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False,
+) -> tuple[Optional[str], Optional[dict]]:
+    """Body of :func:`check_respawn_guard`, returning ``(reason, consumed)``.
+
+    ``consumed`` is the exact guard-bypass payload this decision consumed
+    (``None`` in every other case, including dry runs). The dispatcher
+    needs it so the verified contract flows atomically from the consuming
+    guard decision into the claimed task, and so a claim/spawn failure can
+    restore the token verbatim via :func:`_restore_guard_bypass`.
+    """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
-        return None
+        return None, None
 
     now = int(time.time())
 
@@ -7660,21 +9326,21 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             # Cooldown disabled — respawn immediately, and skip the
             # blocker_auth regex so the stamped rate-limit text doesn't
             # re-trap the task.
-            return None
+            return None, None
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
-            return "rate_limit_cooldown"
+            return "rate_limit_cooldown", None
         # Cooldown elapsed — allow the respawn. Return early so the
         # blocker_auth check below doesn't catch the rate-limit text we
         # stamped on the task; this path intentionally retries forever
         # (cheaply, spaced by the cooldown) until quota returns or a real
         # crash/completion supersedes it.
-        return None
+        return None, None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+        return "blocker_auth", None
 
     # 3. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator
@@ -7699,18 +9365,43 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             (task_id, completed_at),
         ).fetchone()
         if not requeued_after:
-            return "recent_success"
+            return "recent_success", None
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    matched_pr_urls = [
+        match.group(0)
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall()
+        if c["body"]
+        for match in [_RESPAWN_GUARD_PR_URL_RE.search(c["body"])]
+        if match is not None
+    ]
+    for matched_pr_url in matched_pr_urls:
+        # A validated protected-merge-verifier bypass gets exactly one
+        # free pass here, then is gone — see the module comment above
+        # ProtectedMergeVerifierIntent. The bypass only applies to the PR
+        # the human actually verified: its contract pr_url must canonically
+        # equal the URL in THIS matched comment. Any other PR is a mismatch
+        # — default deny, token left unconsumed for the PR it does cover.
+        # dry_run previews whether the bypass WOULD lift the guard without
+        # spending it.
+        if dry_run:
+            if _has_pending_guard_bypass(
+                conn, task_id, guard="active_pr", pr_url=matched_pr_url,
+            ):
+                return None, None
+            continue
+        consumed = _consume_guard_bypass(
+            conn, task_id, guard="active_pr", pr_url=matched_pr_url,
+        )
+        if consumed is not None:
+            return None, consumed
+        continue
 
-    return None
+    return ("active_pr", None) if matched_pr_urls else (None, None)
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -7887,6 +9578,8 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    if not dry_run:
+        reconcile_verifier_dispatch_state(conn, board=board)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -8073,18 +9766,41 @@ def _dispatch_once_locked(
         # still trips the auto-block circuit breaker after failure_limit
         # consecutive failures, so a persistent auth error eventually
         # blocks via the normal path rather than on first occurrence.
-        guard_reason = check_respawn_guard(conn, row["id"])
+        guard_reason, consumed_bypass = _check_respawn_guard(
+            conn, row["id"], dry_run=dry_run,
+        )
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
             # Emit an event so operators can see why the task was
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
+            # Coalesced: a guard reason that's unchanged since the last
+            # recorded ``respawn_guarded`` event is NOT re-appended, so a
+            # task parked under the same guard for hours of dispatcher
+            # ticks gets one event, not one per tick. A reason CHANGE
+            # (e.g. active_pr -> blocker_auth) still records a fresh event
+            # — only exact repeats coalesce. This changes audit-log volume
+            # only; the guard_reason computed above (and therefore which
+            # tasks get skipped) is unaffected.
             if not dry_run:
                 with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
+                    last_evt = conn.execute(
+                        "SELECT kind, payload FROM task_events "
+                        "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                        (row["id"],),
+                    ).fetchone()
+                    already_recorded = False
+                    if last_evt is not None and last_evt["kind"] == "respawn_guarded":
+                        try:
+                            prev_payload = json.loads(last_evt["payload"] or "{}")
+                        except (TypeError, ValueError):
+                            prev_payload = {}
+                        already_recorded = prev_payload.get("reason") == guard_reason
+                    if not already_recorded:
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
@@ -8099,7 +9815,18 @@ def _dispatch_once_locked(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            # The guard decision above consumed the one-shot bypass, but no
+            # worker will start this tick — restore the exact token so the
+            # verified recovery isn't lost to a transient claim race.
+            if consumed_bypass is not None:
+                _restore_guard_bypass(conn, row["id"], consumed_bypass)
             continue
+        # Carry the verified contract atomically from the consuming guard
+        # decision into the claimed task: the spawn boundary branches on
+        # this typed signal (verification-only worker), never on a
+        # re-reading of comments after the fact.
+        if consumed_bypass is not None:
+            claimed.verification_contract = consumed_bypass.get("contract")
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -8107,6 +9834,8 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            if consumed_bypass is not None:
+                _restore_guard_bypass(conn, claimed.id, consumed_bypass)
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
@@ -8152,6 +9881,11 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            # The worker never started — restore the exact consumed
+            # one-shot bypass token so the verified recovery isn't lost
+            # to a spawn failure.
+            if consumed_bypass is not None:
+                _restore_guard_bypass(conn, claimed.id, consumed_bypass)
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -8504,6 +10238,1100 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+class _WindowsPipeChannelError:
+    """Sentinel for a PeekNamedPipe error that does not establish EOF."""
+
+
+_WINDOWS_PIPE_CHANNEL_ERROR = _WindowsPipeChannelError()
+_WINDOWS_BROKEN_PIPE_ERRORS = {109, 233}
+
+
+def _windows_peek_pipe(fd: int) -> int | None | _WindowsPipeChannelError:
+    """Bytes available on an anonymous pipe without blocking.
+
+    Returns ``None`` once the pipe is broken (all writers closed and the
+    buffer drained) — the Windows equivalent of observing EOF. Returns
+    ``_WINDOWS_PIPE_CHANNEL_ERROR`` for every other failure, which is not
+    evidence of EOF and must fail closed without parsing buffered bytes.
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    try:
+        handle = msvcrt.get_osfhandle(fd)
+    except OSError:
+        return _WINDOWS_PIPE_CHANNEL_ERROR
+    available = wintypes.DWORD(0)
+    kernel32 = getattr(ctypes, "windll").kernel32
+    ok = kernel32.PeekNamedPipe(
+        wintypes.HANDLE(handle), None, 0, None, ctypes.byref(available), None
+    )
+    if not ok:
+        error = kernel32.GetLastError()
+        if error in _WINDOWS_BROKEN_PIPE_ERRORS:
+            return None
+        return _WINDOWS_PIPE_CHANNEL_ERROR
+    return int(available.value)
+
+
+def _verifier_proc_has_exited(proc: Any) -> bool:
+    poll = getattr(proc, "poll", None)
+    if poll is None:
+        return False
+    try:
+        return poll() is not None
+    except Exception:
+        return False
+
+
+def _read_verifier_result_pipe(
+    read_fd: int,
+    *,
+    deadline_seconds: Optional[int] = None,
+    max_bytes: int = VERIFIER_RESULT_MAX_BYTES,
+    proc: Any = None,
+) -> Optional[bytes]:
+    """Read the one-shot result channel, requiring EOF before the deadline.
+
+    Returns the raw frame bytes only once end-of-file is actually observed
+    within ``deadline_seconds``. Returns ``None`` — never a partial buffer —
+    when the deadline expires with the writer still open, so the caller fails
+    closed instead of treating an unfinished channel as a complete result.
+    Never issues a blocking ``os.read``: POSIX gates reads on ``select``,
+    Windows on a non-blocking pipe peek.
+
+    When ``proc`` is given (Windows), the drain loop also polls child
+    liveness: a Windows child blocks in ``os.write`` once its frame exceeds
+    the anonymous-pipe buffer and cannot exit until the supervisor drains,
+    so draining must never be gated on exit. Once the child has exited, any
+    frame is either fully buffered or will never arrive, so the deadline
+    shrinks to a short EOF grace instead of the full result deadline.
+    """
+    if deadline_seconds is None:
+        deadline_seconds = VERIFIER_RESULT_DEADLINE_SECONDS
+    deadline = time.monotonic() + max(1, int(deadline_seconds))
+    chunks: list[bytes] = []
+    total = 0
+    eof_observed = False
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if _IS_WINDOWS:
+                available = _windows_peek_pipe(read_fd)
+                if isinstance(available, _WindowsPipeChannelError):
+                    _log.warning("kanban verifier result pipe peek failed without EOF")
+                    return None
+                if available is None:
+                    eof_observed = True
+                    break
+                if available <= 0:
+                    if proc is not None and _verifier_proc_has_exited(proc):
+                        deadline = min(
+                            deadline,
+                            time.monotonic() + _VERIFIER_RESULT_EOF_GRACE_SECONDS,
+                        )
+                        proc = None
+                    time.sleep(min(0.05, remaining))
+                    continue
+                read_len = min(available, 4096, max(1, int(max_bytes) + 1 - total))
+            else:
+                import select
+                readable, _, _ = select.select([read_fd], [], [], min(0.1, remaining))
+                if not readable:
+                    continue
+                read_len = min(4096, max(1, int(max_bytes) + 1 - total))
+            chunk = os.read(read_fd, read_len)
+            if not chunk:
+                eof_observed = True
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                return b"x" * (int(max_bytes) + 1)
+        if not eof_observed:
+            return None
+        return b"".join(chunks)
+    finally:
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+
+
+def _verifier_failure_reblock(
+    *,
+    db_path: Path,
+    task_id: str,
+    run_id: int,
+    reason: str,
+) -> None:
+    try:
+        with connect(db_path=db_path) as conn:
+            block_task(
+                conn,
+                task_id,
+                reason=f"verifier result channel failed: {reason}",
+                kind="needs_input",
+                expected_run_id=run_id,
+            )
+    except Exception:
+        _log.warning(
+            "kanban verifier supervisor failed to re-block task %s after %s",
+            task_id,
+            reason,
+            exc_info=True,
+        )
+
+
+def _reconcile_verifier_authorization_failure(
+    *,
+    db_path: Path,
+    authorization_id: int,
+    binding: dict[str, Any],
+    reason: str,
+) -> None:
+    try:
+        with connect(db_path=db_path) as conn:
+            with write_txn(conn):
+                row = conn.execute(
+                    "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+                    (authorization_id,),
+                ).fetchone()
+                if row is None or row["state"] in _VERIFIER_TERMINAL_STATES:
+                    return
+                mismatch = _authorization_static_binding_reason(
+                    row,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    claim_lock=str(binding["claim_lock"]),
+                    contract_id=str(binding["contract_id"]),
+                    contract_hash=str(binding["contract_hash"]),
+                    pr_url=str(binding["pr_url"]),
+                    approved_head=str(binding["approved_head"]),
+                    approved_base=str(binding["approved_base"]),
+                    nonce=str(binding["nonce"]),
+                )
+                if mismatch is not None:
+                    return
+                cur = conn.execute(
+                    "UPDATE verifier_result_authorizations "
+                    "SET state = 'reconciled', reason_code = ?, updated_at = ? "
+                    "WHERE id = ? AND state IN ('authorized', 'reserved', 'started', 'consumed')",
+                    (reason, int(time.time()), authorization_id),
+                )
+                if cur.rowcount == 1:
+                    task_cur = conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status = 'blocked',
+                               current_run_id = NULL,
+                               claim_lock = NULL,
+                               claim_expires = NULL,
+                               worker_pid = NULL,
+                               block_kind = 'needs_input',
+                               block_recurrences = CASE
+                                   WHEN block_kind = 'needs_input' THEN block_recurrences + 1
+                                   ELSE 1
+                               END,
+                               block_evidence = NULL,
+                               guard_bypass = NULL
+                         WHERE id = ?
+                           AND status = 'running'
+                           AND current_run_id = ?
+                           AND claim_lock = ?
+                        """,
+                        (
+                            str(binding["task_id"]),
+                            int(binding["run_id"]),
+                            str(binding["claim_lock"]),
+                        ),
+                    )
+                    if task_cur.rowcount == 1:
+                        summary = f"verifier result channel failed: {reason}"
+                        conn.execute(
+                            """
+                            UPDATE task_runs
+                               SET status = 'blocked',
+                                   outcome = 'blocked',
+                                   summary = ?,
+                                   ended_at = ?,
+                                   claim_lock = NULL,
+                                   claim_expires = NULL,
+                                   worker_pid = NULL
+                             WHERE id = ?
+                               AND task_id = ?
+                               AND status = 'running'
+                               AND claim_lock = ?
+                            """,
+                            (
+                                summary,
+                                int(time.time()),
+                                int(binding["run_id"]),
+                                str(binding["task_id"]),
+                                str(binding["claim_lock"]),
+                            ),
+                        )
+                        _append_event(
+                            conn,
+                            str(binding["task_id"]),
+                            "blocked",
+                            {"reason": summary, "kind": "needs_input", "recurrences": 1},
+                            run_id=int(binding["run_id"]),
+                        )
+                    _append_event(
+                        conn,
+                        str(binding["task_id"]),
+                        "verifier_authorization_reconciled",
+                        {
+                            "authorization_id": authorization_id,
+                            "from_state": row["state"],
+                            "to_state": "reconciled",
+                            "reason": reason,
+                        },
+                        run_id=int(binding["run_id"]),
+                    )
+    except Exception:
+        _log.warning(
+            "kanban verifier supervisor failed to mark authorization %s reconciled",
+            authorization_id,
+            exc_info=True,
+        )
+
+
+def _cleanup_verifier_root(
+    *,
+    db_path: Path,
+    authorization_id: int,
+    task_id: str,
+    run_id: int,
+    verifier_root: Optional[Path],
+) -> None:
+    if verifier_root is None:
+        return
+    root = Path(verifier_root)
+    try:
+        _remove_verifier_root_if_safe(root, db_path=db_path)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        try:
+            with connect(db_path=db_path) as conn:
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE verifier_result_authorizations "
+                        "SET cleanup_error = ?, verifier_root = COALESCE(verifier_root, ?), "
+                        "updated_at = ? WHERE id = ?",
+                        (
+                            reason[:_CTX_MAX_FIELD_BYTES],
+                            str(root),
+                            int(time.time()),
+                            authorization_id,
+                        ),
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "verifier_root_cleanup_failed",
+                        {
+                            "authorization_id": authorization_id,
+                            "reason": reason[:512],
+                        },
+                        run_id=run_id,
+                    )
+        except Exception:
+            _log.warning(
+                "kanban verifier cleanup failed for %s and audit failed",
+                root,
+                exc_info=True,
+            )
+
+
+def _reconcile_prestart_verifier_authorization(
+    *,
+    db_path: Path,
+    authorization_id: int,
+    binding: dict[str, Any],
+    reason: str,
+) -> None:
+    with connect(db_path=db_path) as conn:
+        with write_txn(conn):
+            row = conn.execute(
+                "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+                (authorization_id,),
+            ).fetchone()
+            if row is None or row["state"] not in {"authorized", "reserved"}:
+                return
+            mismatch = _authorization_static_binding_reason(
+                row,
+                task_id=str(binding["task_id"]),
+                run_id=int(binding["run_id"]),
+                claim_lock=str(binding["claim_lock"]),
+                contract_id=str(binding["contract_id"]),
+                contract_hash=str(binding["contract_hash"]),
+                pr_url=str(binding["pr_url"]),
+                approved_head=str(binding["approved_head"]),
+                approved_base=str(binding["approved_base"]),
+                nonce=str(binding["nonce"]),
+            )
+            if mismatch is not None:
+                return
+            conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET state = 'reconciled', reason_code = ?, "
+                "supervisor_owner = NULL, verifier_root = NULL, updated_at = ? "
+                "WHERE id = ? AND state IN ('authorized', 'reserved')",
+                (reason, int(time.time()), authorization_id),
+            )
+            _append_event(
+                conn,
+                str(binding["task_id"]),
+                "verifier_authorization_reconciled",
+                {
+                    "authorization_id": authorization_id,
+                    "from_state": row["state"],
+                    "to_state": "reconciled",
+                    "reason": reason,
+                },
+                run_id=int(binding["run_id"]),
+            )
+
+
+def reconcile_verifier_roots(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[int]:
+    """Retry verifier root cleanup for durable cleanup failures."""
+    cleaned: list[int] = []
+    rows = conn.execute(
+        "SELECT id, task_id, run_id, verifier_root FROM verifier_result_authorizations "
+        "WHERE cleanup_error IS NOT NULL AND verifier_root IS NOT NULL "
+        "AND state IN ('applied', 'failed', 'reconciled')"
+    ).fetchall()
+    for row in rows:
+        root = Path(row["verifier_root"])
+        try:
+            if root.exists():
+                _remove_verifier_root_if_safe(root, db_path=kanban_db_path(board=board))
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE verifier_result_authorizations "
+                    "SET cleanup_error = NULL, updated_at = ? WHERE id = ?",
+                    (int(time.time()), row["id"]),
+                )
+                _append_event(
+                    conn,
+                    row["task_id"],
+                    "verifier_root_cleanup_retried",
+                    {"authorization_id": int(row["id"]), "result": "cleaned"},
+                    run_id=int(row["run_id"]),
+                )
+            cleaned.append(int(row["id"]))
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE verifier_result_authorizations "
+                    "SET cleanup_error = ?, updated_at = ? WHERE id = ?",
+                    (reason[:_CTX_MAX_FIELD_BYTES], int(time.time()), row["id"]),
+                )
+                _append_event(
+                    conn,
+                    row["task_id"],
+                    "verifier_root_cleanup_failed",
+                    {"authorization_id": int(row["id"]), "reason": reason[:512]},
+                    run_id=int(row["run_id"]),
+                )
+    return cleaned
+
+
+def _expected_verifier_roots_parent_for_db_path(db_path: Path) -> Path:
+    db_parent = Path(db_path).expanduser().resolve(strict=False).parent
+    if db_parent == kanban_home().resolve(strict=False):
+        return (board_dir(DEFAULT_BOARD) / "verifier-roots").resolve(strict=False)
+    return (db_parent / "verifier-roots").resolve(strict=False)
+
+
+def _remove_verifier_root_if_safe(root: Path, *, db_path: Path) -> None:
+    expected_parent = _expected_verifier_roots_parent_for_db_path(db_path)
+    root_path = Path(root).expanduser()
+    if not root_path.name.startswith("run-"):
+        raise RuntimeError(f"refusing to clean non-verifier root {root_path}")
+    try:
+        actual_parent = root_path.parent.resolve(strict=True)
+    except FileNotFoundError:
+        actual_parent = root_path.parent.resolve(strict=False)
+    if actual_parent != expected_parent:
+        raise RuntimeError(f"refusing to clean verifier root outside {expected_parent}: {root_path}")
+    if root_path.is_symlink():
+        root_path.unlink()
+    else:
+        shutil.rmtree(root_path)
+
+
+def reconcile_orphan_verifier_roots(*, board: Optional[str] = None) -> list[str]:
+    parent = _verifier_roots_parent(board=board)
+    if not parent.exists() or parent.is_symlink():
+        return []
+    with connect(db_path=kanban_db_path(board=board)) as conn:
+        referenced = {
+            str(Path(row["verifier_root"]))
+            for row in conn.execute(
+                "SELECT verifier_root FROM verifier_result_authorizations "
+                "WHERE verifier_root IS NOT NULL "
+                "AND (state IN ('authorized', 'reserved', 'started', 'consumed') "
+                "     OR cleanup_error IS NOT NULL)"
+            ).fetchall()
+        }
+    removed: list[str] = []
+    for child in parent.iterdir():
+        if not child.name.startswith("run-"):
+            continue
+        if str(child) in referenced:
+            continue
+        if child.is_symlink():
+            child.unlink()
+        elif child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+        removed.append(child.name)
+    return removed
+
+
+def _close_fd_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _verifier_roots_parent(*, board: Optional[str]) -> Path:
+    if _normalize_board_slug(board) == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "verifier-roots"
+    return board_dir(_normalize_board_slug(board) or get_current_board()) / "verifier-roots"
+
+
+def _create_verifier_root(*, board: Optional[str]) -> Path:
+    parent = _verifier_roots_parent(board=board)
+    if parent.exists() and parent.is_symlink():
+        raise RuntimeError(f"verifier root parent is a symlink: {parent}")
+    parent.mkdir(parents=True, exist_ok=True)
+    if parent.is_symlink():
+        raise RuntimeError(f"verifier root parent is a symlink: {parent}")
+    parent_resolved = parent.resolve(strict=True)
+    for _attempt in range(10):
+        root = parent / f"run-{secrets.token_hex(12)}"
+        try:
+            os.mkdir(root, 0o700)
+        except FileExistsError:
+            continue
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+        resolved = root.resolve(strict=True)
+        if resolved.parent != parent_resolved or root.is_symlink():
+            shutil.rmtree(root, ignore_errors=True)
+            raise RuntimeError(f"verifier root escaped parent: {root}")
+        tmp = root / "tmp"
+        tmp.mkdir(mode=0o700)
+        try:
+            os.chmod(tmp, 0o700)
+        except OSError:
+            pass
+        return root
+    raise RuntimeError(f"could not allocate verifier root under {parent}")
+
+
+def _start_verifier_supervisor_waiter(
+    *,
+    read_fd: int,
+    proc: Any,
+    db_path: Path,
+    authorization_id: int,
+    binding: dict[str, Any],
+    verifier_root: Optional[Path] = None,
+) -> None:
+    def _waiter() -> None:
+        try:
+            # Drain the result channel before observing exit status on every
+            # platform. A Windows child blocks in os.write once its frame
+            # exceeds the anonymous-pipe buffer and stays alive until the
+            # supervisor drains, so waiting for exit first deadlocks; the
+            # reader instead polls child liveness itself under one strict
+            # total deadline and shrinks to a short EOF grace once the child
+            # is gone. The exit wait below shares that same total deadline:
+            # it gets only the budget the drain left over (capped at a short
+            # grace), never a fresh allowance past the deadline.
+            deadline = time.monotonic() + max(
+                1, int(VERIFIER_RESULT_DEADLINE_SECONDS)
+            )
+            raw = _read_verifier_result_pipe(
+                read_fd,
+                deadline_seconds=VERIFIER_RESULT_DEADLINE_SECONDS,
+                proc=proc if _IS_WINDOWS else None,
+            )
+            wait_budget = min(5.0, max(0.0, deadline - time.monotonic()))
+            try:
+                rc = proc.wait(timeout=wait_budget)
+            except AttributeError:
+                rc = None
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                rc = "timeout"
+            if rc not in (None, 0):
+                failure_reason = "timeout" if rc == "timeout" else f"exit:{rc}"
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason=failure_reason,
+                )
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason=failure_reason,
+                )
+                return
+            if raw is None:
+                # The reader never observed EOF: the writer end is still open
+                # (or unreadable), so whatever bytes arrived cannot be trusted
+                # as a complete frame. Fail closed instead of parsing.
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason="result_no_eof",
+                )
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason="result_no_eof",
+                )
+                return
+            try:
+                with connect(db_path=db_path) as conn:
+                    applied = apply_verifier_supervisor_result(
+                        conn,
+                        authorization_id=authorization_id,
+                        binding=binding,
+                        raw_frame=raw,
+                    )
+            except Exception as exc:
+                _log.warning(
+                    "kanban verifier supervisor crashed applying result for %s: %s",
+                    binding.get("task_id"),
+                    exc,
+                    exc_info=True,
+                )
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason="apply_exception",
+                )
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason="apply_exception",
+                )
+                return
+            if not applied.ok:
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason=applied.reason,
+                )
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason=applied.reason,
+                )
+        finally:
+            _cleanup_verifier_root(
+                db_path=db_path,
+                authorization_id=authorization_id,
+                task_id=str(binding["task_id"]),
+                run_id=int(binding["run_id"]),
+                verifier_root=verifier_root,
+            )
+
+    thread = threading.Thread(
+        target=_waiter,
+        name=f"kanban-verifier-supervisor-{binding.get('task_id')}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _read_yaml_file(path: Path) -> dict[str, Any]:
+    try:
+        import yaml
+    except Exception:
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _profile_config_for_verifier(profile_arg: str) -> tuple[dict[str, Any], Path]:
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import resolve_profile_env
+
+    try:
+        profile_home = Path(resolve_profile_env(profile_arg))
+    except Exception:
+        profile_home = Path(get_hermes_home())
+    return _read_yaml_file(profile_home / "config.yaml"), profile_home
+
+
+def _dotenv_values(path: Path) -> dict[str, str]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            values[key] = value
+    return values
+
+
+def _verifier_provider_from_config(config: dict[str, Any]) -> str:
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+        if provider:
+            return provider
+    return ""
+
+
+def _write_verifier_config(
+    *,
+    verifier_root: Path,
+    profile_config: dict[str, Any],
+    task: Task,
+) -> None:
+    try:
+        import yaml
+    except Exception as exc:
+        raise RuntimeError("PyYAML is required to write verifier config") from exc
+    model_cfg = profile_config.get("model")
+    if not isinstance(model_cfg, (dict, str)):
+        model_cfg = {}
+    provider = _verifier_provider_from_config(profile_config)
+    config: dict[str, Any] = {
+        "model": model_cfg,
+        "toolsets": ["kanban_verifier"],
+        "agent": {"disabled_toolsets": [], "max_turns": 6},
+        "display": {"interface": "cli", "tool_progress": "off"},
+    }
+    providers = profile_config.get("providers")
+    if isinstance(providers, dict) and provider in providers:
+        config["providers"] = {provider: providers[provider]}
+    custom_providers = profile_config.get("custom_providers")
+    if isinstance(custom_providers, list) and provider.startswith("custom:"):
+        wanted = provider.split(":", 1)[1].strip().lower()
+        selected = [
+            item for item in custom_providers
+            if isinstance(item, dict) and str(item.get("name") or "").strip().lower() == wanted
+        ]
+        if selected:
+            config["custom_providers"] = selected
+    (verifier_root / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def _copy_required_provider_credential(
+    *,
+    env: dict[str, str],
+    base_env: dict[str, str],
+    profile_home: Path,
+    provider: str,
+) -> None:
+    """Preserve only the credential env var needed by the configured provider."""
+    if not provider:
+        return
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        return
+    provider_cfg = PROVIDER_REGISTRY.get(provider)
+    if provider_cfg is None:
+        return
+    dotenv = _dotenv_values(profile_home / ".env")
+    for name in tuple(provider_cfg.api_key_env_vars or ()):
+        value = base_env.get(name) or dotenv.get(name)
+        if value:
+            env[name] = value
+            break
+    base_url_name = getattr(provider_cfg, "base_url_env_var", "") or ""
+    if base_url_name:
+        value = base_env.get(base_url_name) or dotenv.get(base_url_name)
+        if value:
+            env[base_url_name] = value
+
+
+def _copy_provider_auth_store(
+    *,
+    verifier_root: Path,
+    profile_home: Path,
+    provider: str,
+) -> None:
+    """Copy only one provider's auth-store state into the isolated home."""
+    if not provider:
+        return
+    try:
+        raw = json.loads((profile_home / "auth.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(raw, dict):
+        return
+    result: dict[str, Any] = {"version": raw.get("version", 1)}
+    providers = raw.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get(provider), dict):
+        result["providers"] = {provider: providers[provider]}
+    pool = raw.get("credential_pool")
+    if isinstance(pool, dict) and isinstance(pool.get(provider), (dict, list)):
+        result["credential_pool"] = {provider: pool[provider]}
+    if len(result) == 1:
+        return
+    path = verifier_root / "auth.json"
+    path.write_text(json.dumps(result, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _verifier_prompt(contract: dict[str, Any]) -> str:
+    contract_text = json.dumps(
+        {
+            "pr_url": contract.get("pr_url"),
+            "approved_head": contract.get("approved_head"),
+            "approved_base": contract.get("approved_base"),
+            "readiness_evidence": contract.get("readiness_evidence"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        "You are the isolated protected-merge verifier. Review only this bound "
+        "contract and emit exactly one result by calling kanban_verifier_result. "
+        "Use verdict='approved' only if the contract is ready to complete. Use "
+        "verdict='changes_requested', verdict='comment_only', or verdict='superseded' "
+        "with a concrete reason if it must be re-blocked. Do not answer in prose "
+        f"before calling the tool.\n\nContract: {contract_text}"
+    )
+
+
+def _build_verifier_child_env(
+    *,
+    base_env: dict[str, str],
+    workspace: str,
+    contract: dict,
+    binding: dict[str, Any],
+    writer_fd: int,
+    verifier_root: Path,
+    result_endpoint: Optional[int] = None,
+    profile_arg: str = "",
+    task: Optional[Task] = None,
+) -> dict[str, str]:
+    del workspace
+    keep_names = {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+    }
+    env = {
+        key: value
+        for key, value in base_env.items()
+        if key in keep_names
+    }
+    repo_root = Path(__file__).resolve().parent.parent
+    existing_pythonpath = base_env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(repo_root)
+        if not existing_pythonpath
+        else os.pathsep.join([str(repo_root), existing_pythonpath])
+    )
+    env["HERMES_HOME"] = str(verifier_root)
+    env["HOME"] = str(verifier_root)
+    env["TMPDIR"] = str(verifier_root / "tmp")
+    env["TMP"] = str(verifier_root / "tmp")
+    env["TEMP"] = str(verifier_root / "tmp")
+    env["HERMES_KANBAN_VERIFY_ONLY"] = "1"
+    env["HERMES_KANBAN_VERIFY_CONTRACT_HASH"] = str(binding["contract_hash"])
+    env["HERMES_KANBAN_VERIFY_CONTRACT"] = json.dumps(
+        {
+            "contract_id": binding["contract_id"],
+            "contract_hash": binding["contract_hash"],
+            "task_id": binding["task_id"],
+            "run_id": binding["run_id"],
+            "claim_lock": binding["claim_lock"],
+            "pr_url": binding["pr_url"],
+            "approved_head": binding["approved_head"],
+            "approved_base": binding["approved_base"],
+            "nonce": binding["nonce"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if _IS_WINDOWS:
+        env["HERMES_KANBAN_VERIFY_RESULT_HANDLE"] = str(
+            writer_fd if result_endpoint is None else int(result_endpoint)
+        )
+    else:
+        env["HERMES_KANBAN_VERIFY_RESULT_FD"] = str(writer_fd)
+    profile_config, profile_home = _profile_config_for_verifier(profile_arg)
+    if task is not None:
+        _write_verifier_config(
+            verifier_root=verifier_root,
+            profile_config=profile_config,
+            task=task,
+        )
+    _copy_required_provider_credential(
+        env=env,
+        base_env=base_env,
+        profile_home=profile_home,
+        provider=_verifier_provider_from_config(profile_config),
+    )
+    _copy_provider_auth_store(
+        verifier_root=verifier_root,
+        profile_home=profile_home,
+        provider=_verifier_provider_from_config(profile_config),
+    )
+    return env
+
+
+def _windows_os_handle(fd: int) -> int:
+    import msvcrt
+
+    handle = int(msvcrt.get_osfhandle(fd))
+    set_handle_inheritable = getattr(os, "set_handle_inheritable", None)
+    if set_handle_inheritable is not None:
+        set_handle_inheritable(handle, True)
+    return handle
+
+
+def _spawn_verifier_supervisor(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str],
+    base_cmd: list[str],
+) -> Optional[int]:
+    import subprocess
+
+    if not isinstance(task.verification_contract, dict):
+        raise ValueError("verification supervisor requires a contract")
+    # Canonicalize before the contract touches any process surface (prompt,
+    # child env, authorization row): only the ready bit and evidence digest
+    # may cross into the child. Canonicalization is idempotent, so a contract
+    # already canonicalized at the grant boundary keeps its hash.
+    contract = _canonical_verifier_contract_payload(task.verification_contract)
+    nonce = secrets.token_urlsafe(24)
+    binding = make_verifier_result_binding(
+        task,
+        contract,
+        nonce=nonce,
+    )
+    db_path = kanban_db_path(board=board)
+    owner_id = f"prestart:{secrets.token_hex(8)}"
+    with connect(db_path=db_path) as conn:
+        auth = authorize_verifier_result(conn, **binding)
+        if auth.state not in {"authorized", "reserved", "started"} or auth.id <= 0:
+            raise RuntimeError(f"verifier authorization denied: {auth.reason}")
+        if auth.state == "authorized":
+            reserved = reserve_verifier_result(conn, authorization_id=auth.id, **binding)
+            if reserved.state != "reserved":
+                raise RuntimeError(f"verifier authorization reserve failed: {reserved.reason}")
+        verifier_root = _create_verifier_root(board=board)
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET supervisor_owner = ?, verifier_root = ?, updated_at = ? "
+                "WHERE id = ? AND state = 'reserved'",
+                (owner_id, str(verifier_root), int(time.time()), auth.id),
+            )
+        authorization_id = auth.id
+
+    read_fd, writer_fd = os.pipe()
+    os.set_inheritable(read_fd, False)
+    os.set_inheritable(writer_fd, True)
+    result_endpoint = _windows_os_handle(writer_fd) if _IS_WINDOWS else writer_fd
+    env = _build_verifier_child_env(
+        base_env=dict(os.environ),
+        workspace=workspace,
+        contract=contract,
+        binding=binding,
+        writer_fd=writer_fd,
+        verifier_root=verifier_root,
+        result_endpoint=result_endpoint,
+        profile_arg=task.assignee or "",
+        task=task,
+    )
+    cmd = [
+        *base_cmd,
+        "--toolsets",
+        "kanban_verifier",
+        "chat",
+        "-q",
+        _verifier_prompt(contract),
+        "-Q",
+    ]
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    log_f = open(log_path, "ab")
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(verifier_root),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_f,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+        "start_new_session": not _IS_WINDOWS,
+        "creationflags": subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+        "close_fds": True,
+    }
+    if _IS_WINDOWS:
+        startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+        if startupinfo_factory is not None:
+            startupinfo = startupinfo_factory()
+            if not hasattr(startupinfo, "lpAttributeList") or startupinfo.lpAttributeList is None:
+                startupinfo.lpAttributeList = {}
+            startupinfo.lpAttributeList["handle_list"] = [int(result_endpoint)]
+            popen_kwargs["startupinfo"] = startupinfo
+    else:
+        popen_kwargs["pass_fds"] = (writer_fd,)
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603
+    except FileNotFoundError:
+        log_f.close()
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+        try:
+            os.close(writer_fd)
+        except OSError:
+            pass
+        _cleanup_verifier_root(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            task_id=task.id,
+            run_id=int(binding["run_id"]),
+            verifier_root=verifier_root,
+        )
+        _reconcile_prestart_verifier_authorization(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            binding=binding,
+            reason="pre_start_restore",
+        )
+        raise RuntimeError(
+            "Hermes executable not found for verifier subprocess. "
+            "Activate the Hermes Agent environment before running the kanban dispatcher."
+        )
+    except Exception:
+        log_f.close()
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+        try:
+            os.close(writer_fd)
+        except OSError:
+            pass
+        _cleanup_verifier_root(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            task_id=task.id,
+            run_id=int(binding["run_id"]),
+            verifier_root=verifier_root,
+        )
+        _reconcile_prestart_verifier_authorization(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            binding=binding,
+            reason="pre_start_restore",
+        )
+        raise
+    else:
+        log_f.close()
+    try:
+        with connect(db_path=db_path) as conn:
+            supervisor_owner = f"{socket.gethostname()}:{int(proc.pid)}"
+            started = start_verifier_result_with_owner(
+                conn,
+                authorization_id=authorization_id,
+                supervisor_owner=supervisor_owner,
+                verifier_root=verifier_root,
+                **binding,
+            )
+            if started.state != "started":
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                _cleanup_verifier_root(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    task_id=task.id,
+                    run_id=int(binding["run_id"]),
+                    verifier_root=verifier_root,
+                )
+                _reconcile_prestart_verifier_authorization(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason=f"pre_start_failed:{started.reason}",
+                )
+                raise RuntimeError(f"verifier authorization start failed: {started.reason}")
+    finally:
+        try:
+            os.close(writer_fd)
+        except OSError:
+            pass
+    _start_verifier_supervisor_waiter(
+        read_fd=read_fd,
+        proc=proc,
+        db_path=db_path,
+        authorization_id=authorization_id,
+        binding=binding,
+        verifier_root=verifier_root,
+    )
+    return proc.pid
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8612,6 +11440,20 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    if task.verification_contract is not None:
+        base_cmd = [
+            *_resolve_hermes_argv(),
+            "--cli",
+        ]
+        if task.model_override:
+            base_cmd.extend(["-m", task.model_override])
+        return _spawn_verifier_supervisor(
+            task,
+            workspace,
+            board=board,
+            base_cmd=base_cmd,
+        )
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

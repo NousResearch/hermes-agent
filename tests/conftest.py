@@ -166,6 +166,30 @@ def _looks_like_credential(name: str) -> bool:
     return any(name.endswith(suf) for suf in _CREDENTIAL_SUFFIXES)
 
 
+def scrub_subprocess_env(env: dict | None = None) -> dict:
+    """Return a copy of ``env`` (default ``os.environ``) safe to hand to a
+    real subprocess spawned from within a test.
+
+    ``monkeypatch.setenv``/``delenv`` (and the autouse
+    ``_hermetic_environment`` fixture below) only edit *this* process's
+    ``os.environ`` — they cannot reach across an actual OS subprocess
+    boundary. A test that spawns a real child (not a mocked ``Popen``) and
+    naively forwards ``dict(os.environ)`` would hand that child whatever
+    credential- or Kanban-shaped env a hostile/leaky prior step re-populated,
+    even though the parent process itself looks hermetic. Strip the same
+    credential-shaped and behavioral HERMES_* vars the autouse fixture
+    blanks, so a hostile inherited value (e.g. a live-shaped
+    ``HERMES_KANBAN_DB``) can never reach a subprocess a test spawns.
+    """
+    base = dict(os.environ if env is None else env)
+    for name in list(base.keys()):
+        if _looks_like_credential(name):
+            del base[name]
+    for name in _HERMES_BEHAVIORAL_VARS:
+        base.pop(name, None)
+    return base
+
+
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({

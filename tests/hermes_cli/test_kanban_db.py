@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -3599,6 +3600,40 @@ def test_resolve_hermes_argv_module_actually_runs():
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
+def test_scrub_subprocess_env_strips_hostile_inherited_kanban_env(
+    kanban_home, monkeypatch, tmp_path,
+):
+    """A real child subprocess spawned from a test must never see a hostile
+    inherited Kanban env var.
+
+    ``monkeypatch.setenv``/``delenv`` only edit *this* process's
+    ``os.environ`` — the autouse hermetic-environment fixture in
+    ``tests/conftest.py`` cannot reach across an actual OS subprocess
+    boundary. If a test (or leaky fixture) re-populates a hostile,
+    live-shaped ``HERMES_KANBAN_DB`` right before spawning a real
+    subprocess, naively forwarding ``dict(os.environ)`` would hand that
+    value straight to the child. ``tests.conftest.scrub_subprocess_env``
+    must strip it so the child process never observes it.
+    """
+    from tests.conftest import scrub_subprocess_env
+
+    hostile_db = tmp_path / "real-live-kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(hostile_db))
+
+    dump_script = (
+        "import os, sys; "
+        "sys.stdout.write(os.environ.get('HERMES_KANBAN_DB', '<unset>'))"
+    )
+    env = scrub_subprocess_env()
+    result = subprocess.run(
+        [sys.executable, "-c", dump_script],
+        env=env, capture_output=True, text=True, timeout=10,
+    )
+    assert result.stdout == "<unset>", (
+        f"hostile HERMES_KANBAN_DB leaked into subprocess env: {result.stdout!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #
@@ -4959,3 +4994,1491 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Protected-merge-verifier respawn-guard bypass
+#
+# Every test below opens its OWN explicit, freshly created tmp DB (never the
+# shared HERMES_HOME-resolved ``kanban_home`` fixture) and asserts canonical
+# containment against that DB's fresh tmp_path root BEFORE calling
+# kb.connect() — belt-and-suspenders so a path-resolution bug can never
+# redirect one of these mutation-capable tests at a real board.
+# ---------------------------------------------------------------------------
+
+PR_URL = "https://github.com/acme/repo/pull/42"
+HEAD_SHA = "abc123def456abc123def456abc123def456abc"
+BASE_BRANCH = "main"
+
+
+def _explicit_tmp_db(tmp_path: Path, name: str = "kanban.db") -> Path:
+    """Resolve an explicit DB path under ``tmp_path`` and assert containment
+    BEFORE any ``kb.connect()`` call.
+
+    ``Path.resolve()`` collapses ``..``/symlink tricks before the
+    containment check runs, so a pathological ``name`` can't escape the
+    sandbox either. Every mutation-capable test in this section calls this
+    instead of relying solely on the HERMES_HOME-based ``kanban_home``
+    fixture.
+    """
+    root = tmp_path.resolve()
+    candidate = (tmp_path / name).resolve()
+    assert candidate == root or root in candidate.parents, (
+        f"refusing to touch a DB path outside the tmp sandbox: "
+        f"{candidate} not under {root}"
+    )
+    kb._INITIALIZED_PATHS.discard(str(candidate))
+    return candidate
+
+
+def _matching_evidence(**overrides) -> dict:
+    evidence = {"pr_url": PR_URL, "head": HEAD_SHA, "base": BASE_BRANCH}
+    evidence.update(overrides)
+    return evidence
+
+
+def _valid_intent(**overrides) -> "kb.ProtectedMergeVerifierIntent":
+    fields = dict(
+        pr_url=PR_URL,
+        approved_head=HEAD_SHA,
+        approved_base=BASE_BRANCH,
+        readiness_evidence={"ready": True},
+    )
+    fields.update(overrides)
+    return kb.ProtectedMergeVerifierIntent(**fields)
+
+
+def _seed_needs_input_blocked_task(
+    conn, *, evidence: dict, assignee: str = "alice",
+) -> str:
+    """Create, claim, and block a task with kind='needs_input' + evidence,
+    so a genuine terminal ``blocked`` task_runs row exists (unlike a raw
+    SQL status flip)."""
+    tid = kb.create_task(conn, title="merge task", assignee=assignee)
+    kb.claim_task(conn, tid)
+    assert kb.block_task(
+        conn, tid, reason="awaiting human merge verification",
+        kind="needs_input", evidence=evidence,
+    )
+    return tid
+
+
+def _seed_active_pr_comment(conn, tid: str, pr_url: str = PR_URL) -> None:
+    kb.add_comment(conn, tid, "worker", f"Opened {pr_url} — ready for review")
+
+
+def test_merge_verifier_bypass_granted_and_consumed_lifts_active_pr_once(tmp_path):
+    """Positive path: a validated intent grants exactly one bypass, with
+    auditable grant + consume events."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        # active_pr is the default before any bypass is granted.
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+
+        events = kb.list_events(conn, tid)
+        granted = [e for e in events if e.kind == "guard_bypass_granted"]
+        assert len(granted) == 1
+        assert granted[0].payload["guard"] == "active_pr"
+        assert granted[0].payload["contract"]["pr_url"] == PR_URL
+        assert granted[0].payload["contract"]["approved_head"] == HEAD_SHA
+
+        # The bypass lifts the guard for exactly one check.
+        assert kb.check_respawn_guard(conn, tid) is None
+
+        consumed = [
+            e for e in kb.list_events(conn, tid) if e.kind == "guard_bypass_consumed"
+        ]
+        assert len(consumed) == 1
+        assert consumed[0].payload["guard"] == "active_pr"
+
+
+def test_merge_verifier_bypass_is_single_use_across_claim_and_run(tmp_path):
+    """Repeated attempt after claim/run must remain active_pr — the bypass
+    is spent by the first consuming check and never reused."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        assert kb.check_respawn_guard(conn, tid) is None  # consumed here
+
+        # Claim + run again; a fresh PR comment re-arms the active_pr
+        # condition, but the bypass has already been spent.
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(conn, tid, "worker", f"still open: {PR_URL}")
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        # And stays that way on a subsequent check too.
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_merge_verifier_bypass_invalidated_by_intervening_reblock(tmp_path):
+    """A granted-but-not-yet-consumed bypass must not survive a re-block for
+    an unrelated reason.
+
+    Without this, a bypass verified against ONE PR could sit pending across
+    a crash/re-block/re-unblock cycle and later get silently spent against a
+    completely different, never-verified active_pr hit -- re-blocking for
+    any reason must invalidate a stale grant.
+    """
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        # Grant the bypass but do NOT consume it yet (no intervening
+        # check_respawn_guard call).
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        granted = [
+            e for e in kb.list_events(conn, tid) if e.kind == "guard_bypass_granted"
+        ]
+        assert len(granted) == 1
+
+        # Re-blocked for a totally unrelated reason before the dispatcher
+        # ever reached the active_pr check (e.g. an unrelated crash).
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="crashed", kind="capability")
+
+        # Unblocked again with the default (no new verification happened).
+        assert kb.unblock_task(conn, tid) is True
+
+        # The original PR comment is still within the window, so active_pr
+        # would fire -- the STALE bypass must NOT be silently spent here.
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_merge_verifier_bypass_concurrent_consumption_only_one_wins(tmp_path):
+    """N threads racing check_respawn_guard on the same granted bypass must
+    consume it exactly once.
+
+    ``_consume_guard_bypass`` reads ``guard_bypass`` once as a cheap
+    pre-check, then re-reads it AGAIN inside its own ``write_txn`` (after
+    ``BEGIN IMMEDIATE`` has serialized against every other consumer)
+    before clearing it. Without that inner re-check, several racing
+    callers could each observe the token as pending before any of them
+    cleared it and each record their own consumption -- a double-spend of
+    a supposedly one-shot bypass, letting more than one respawn happen off
+    a single human verification.
+    """
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+
+    def attempt(_i):
+        with kb.connect(db_path=db_path) as c:
+            return kb.check_respawn_guard(c, tid)
+
+    n_workers = 8
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
+        results = list(ex.map(attempt, range(n_workers)))
+
+    bypassed = [r for r in results if r is None]
+    guarded = [r for r in results if r == "active_pr"]
+    assert len(bypassed) == 1, (
+        f"exactly one racing check_respawn_guard call should observe the "
+        f"bypass; got {len(bypassed)} of {n_workers} results={results!r}"
+    )
+    assert len(guarded) == n_workers - 1
+
+    with kb.connect(db_path=db_path) as conn:
+        consumed = [
+            e for e in kb.list_events(conn, tid) if e.kind == "guard_bypass_consumed"
+        ]
+        assert len(consumed) == 1, (
+            f"bypass must be consumed exactly once; got {len(consumed)} "
+            f"guard_bypass_consumed events"
+        )
+
+
+def test_dispatch_dry_run_does_not_consume_pending_merge_verifier_bypass(
+    tmp_path, all_assignees_spawnable,
+):
+    """dry_run dispatch must be read-only: it must not consume a pending
+    one-shot bypass or write a guard_bypass_consumed event, even though it
+    correctly PREVIEWS the task as spawnable. A real dispatch afterward
+    must still be able to consume the untouched bypass.
+    """
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+
+        # Dry-run preview: the task should show as spawnable (guard would
+        # be lifted) WITHOUT actually consuming the bypass.
+        result = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None, dry_run=True)
+        assert not any(t == tid for (t, _) in result.respawn_guarded)
+        assert not any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+
+        # A second dry-run must show the identical (idempotent) preview --
+        # proof the first dry-run left the bypass untouched.
+        result2 = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None, dry_run=True)
+        assert not any(t == tid for (t, _) in result2.respawn_guarded)
+
+        # The REAL dispatch must still be able to consume the
+        # never-actually-touched bypass and spawn the task.
+        real_result = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        assert not any(t == tid for (t, _) in real_result.respawn_guarded)
+        assert any(t == tid for (t, _, _) in real_result.spawned)
+        assert any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_intent_kwargs",
+    [
+        pytest.param({"readiness_evidence": {"ready": False}}, id="not-ready"),
+        pytest.param({"readiness_evidence": {}}, id="empty-evidence"),
+        pytest.param({"pr_url": ""}, id="missing-pr-url"),
+        pytest.param({"approved_head": ""}, id="missing-head"),
+        pytest.param({"approved_base": ""}, id="missing-base"),
+        pytest.param({"kind": "something_else"}, id="wrong-kind"),
+    ],
+)
+def test_merge_verifier_bypass_rejects_malformed_contract(tmp_path, bad_intent_kwargs):
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        bad_intent = _valid_intent(**bad_intent_kwargs)
+        assert kb.unblock_task(conn, tid, intent=bad_intent) is True
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_merge_verifier_bypass_rejects_non_typed_intent_object(tmp_path):
+    """A plain dict shaped like the contract is NOT a typed intent."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        fake_intent = {
+            "pr_url": PR_URL,
+            "approved_head": HEAD_SHA,
+            "approved_base": BASE_BRANCH,
+            "readiness_evidence": {"ready": True},
+            "kind": "protected_merge_verifier",
+        }
+        assert kb.unblock_task(conn, tid, intent=fake_intent) is True
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_merge_verifier_bypass_rejects_wrong_block_kind(tmp_path):
+    # NOTE: no evidence here — block_task rejects evidence outright for any
+    # kind other than needs_input (see
+    # test_block_task_rejects_evidence_for_non_needs_input_kind); this test
+    # covers the later _validate_merge_verifier_bypass block_kind check.
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="capability block", assignee="alice")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn, tid, reason="needs prod access", kind="capability",
+        )
+        _seed_active_pr_comment(conn, tid)
+
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_merge_verifier_bypass_rejects_missing_blocked_run(tmp_path):
+    """A task flipped to blocked via direct SQL (no block_task run history)
+    has nothing to audit the bypass against."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="manually blocked", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', block_kind='needs_input', "
+            "block_evidence=? WHERE id=?",
+            (json.dumps(_matching_evidence()), tid),
+        )
+        conn.commit()
+        _seed_active_pr_comment(conn, tid)
+
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_merge_verifier_bypass_default_intent_remains_active_pr(tmp_path):
+    """Calling unblock_task with the default (no intent) changes nothing —
+    the ordinary unblock proceeds and active_pr remains the guard."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_merge_verifier_bypass_rejects_head_mismatch(tmp_path):
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+
+        mismatched = _valid_intent(approved_head="0000000000deadbeef0000000000deadbeef00")
+        assert kb.unblock_task(conn, tid, intent=mismatched) is True
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_merge_verifier_bypass_grant_coalesces_duplicate_events(tmp_path):
+    """Re-granting the SAME validated intent while a bypass is already
+    pending must not append a second identical guard_bypass_granted event.
+
+    Exercises ``_grant_guard_bypass``'s coalescing directly (rather than by
+    re-running the full block_task/unblock_task cycle a second time): a
+    second real re-block for the SAME ``needs_input`` kind on this task
+    would legitimately trip the unrelated block-recurrence loop breaker
+    (``BLOCK_RECURRENCE_LIMIT``) and route to ``triage`` instead of
+    ``blocked`` -- correct existing behavior, but orthogonal to what this
+    test targets, so it's isolated out here.
+    """
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+        intent = _valid_intent()
+
+        assert kb.unblock_task(conn, tid, intent=intent) is True
+        granted_once = [
+            e for e in kb.list_events(conn, tid) if e.kind == "guard_bypass_granted"
+        ]
+        assert len(granted_once) == 1
+
+        # Re-issue the identical, still-valid grant before it's consumed
+        # (e.g. an operator double-submitting the same verified intent).
+        contract = kb._validate_merge_verifier_bypass(conn, tid, intent)
+        assert contract is not None
+        with kb.write_txn(conn):
+            kb._grant_guard_bypass(conn, tid, guard="active_pr", contract=contract)
+
+        granted = [
+            e for e in kb.list_events(conn, tid) if e.kind == "guard_bypass_granted"
+        ]
+        assert len(granted) == 1, (
+            f"duplicate identical grant must coalesce into one event; "
+            f"got {len(granted)}"
+        )
+        # The (single, coalesced) bypass is still live and still consumable.
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+PR_URL_OTHER = "https://github.com/acme/repo/pull/99"
+
+
+def _stored_block_evidence(conn, tid: str):
+    return conn.execute(
+        "SELECT block_evidence FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()["block_evidence"]
+
+
+def _stored_guard_bypass(conn, tid: str):
+    return conn.execute(
+        "SELECT guard_bypass FROM tasks WHERE id = ?", (tid,),
+    ).fetchone()["guard_bypass"]
+
+
+def test_block_task_clears_stale_evidence_on_unrelated_reblock(tmp_path):
+    """Evidence recorded for one needs_input block must not survive later,
+    unrelated block transitions.
+
+    Without clearing, evidence verified against PR A sits on the row across
+    a capability re-block and a later, evidence-free needs_input re-block —
+    and a ProtectedMergeVerifierIntent for PR A then validates against a
+    block that was never about PR A.
+    """
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        assert kb.unblock_task(conn, tid) is True
+
+        # Unrelated capability re-block (no evidence), then unblocked again.
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="needs prod creds", kind="capability")
+        assert _stored_block_evidence(conn, tid) is None
+        assert kb.unblock_task(conn, tid) is True
+
+        # A fresh needs_input block about a DIFFERENT question, with no PR
+        # evidence at all. (Different prev_kind, so this lands in blocked,
+        # not the recurrence-triage route.)
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn, tid, reason="which flag should default on?", kind="needs_input",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert _stored_block_evidence(conn, tid) is None
+
+        # The stale PR-A evidence must NOT validate an intent for PR A now.
+        _seed_active_pr_comment(conn, tid)
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_block_task_clears_evidence_on_triage_route(tmp_path):
+    """The loop-breaker triage route is a block transition too — recorded
+    evidence from the previous needs_input block must not ride along into
+    (and beyond) triage."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        assert kb.unblock_task(conn, tid) is True
+
+        # Same-kind re-block trips BLOCK_RECURRENCE_LIMIT and routes to triage.
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="still waiting", kind="needs_input")
+        assert kb.get_task(conn, tid).status == "triage"
+        assert _stored_block_evidence(conn, tid) is None
+
+
+def test_block_task_clears_evidence_on_dependency_route(tmp_path):
+    """The dependency route (blocked → todo) must clear prior evidence just
+    like every other block transition."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        assert kb.unblock_task(conn, tid) is True
+
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="waiting on parent", kind="dependency")
+        assert kb.get_task(conn, tid).status == "todo"
+        assert _stored_block_evidence(conn, tid) is None
+
+
+@pytest.mark.parametrize("kind", ["capability", "transient", "dependency", None])
+def test_block_task_rejects_evidence_for_non_needs_input_kind(tmp_path, kind):
+    """Evidence is protected-merge verifier material for needs_input blocks
+    ONLY — supplying it with any other kind must raise BEFORE any mutation."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="wrong-kind evidence", assignee="alice")
+        kb.claim_task(conn, tid)
+        status_before = kb.get_task(conn, tid).status
+        events_before = len(kb.list_events(conn, tid))
+
+        with pytest.raises(ValueError):
+            kb.block_task(
+                conn, tid, reason="whatever", kind=kind,
+                evidence=_matching_evidence(),
+            )
+
+        # Rejected before mutation: status, evidence, and audit log untouched.
+        assert kb.get_task(conn, tid).status == status_before
+        assert _stored_block_evidence(conn, tid) is None
+        assert len(kb.list_events(conn, tid)) == events_before
+
+
+@pytest.mark.parametrize(
+    "bad_evidence",
+    [
+        pytest.param(["pr_url", PR_URL], id="list"),
+        pytest.param("https://github.com/acme/repo/pull/42", id="string"),
+        pytest.param(42, id="int"),
+        pytest.param({"pr_url": object()}, id="unserializable-value"),
+    ],
+)
+def test_block_task_rejects_invalid_evidence_before_mutation(tmp_path, bad_evidence):
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="invalid evidence", assignee="alice")
+        kb.claim_task(conn, tid)
+        status_before = kb.get_task(conn, tid).status
+        events_before = len(kb.list_events(conn, tid))
+
+        with pytest.raises(ValueError):
+            kb.block_task(
+                conn, tid, reason="whatever", kind="needs_input",
+                evidence=bad_evidence,
+            )
+
+        assert kb.get_task(conn, tid).status == status_before
+        assert _stored_block_evidence(conn, tid) is None
+        assert len(kb.list_events(conn, tid)) == events_before
+
+
+def test_active_pr_bypass_not_consumed_for_different_pr_url(tmp_path):
+    """A bypass verified for PR 42 must not lift an active_pr hit whose
+    matched comment references PR 99 — default deny, token left pending."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        # The only recent PR comment references a DIFFERENT PR than the one
+        # the verifier approved.
+        _seed_active_pr_comment(conn, tid, pr_url=PR_URL_OTHER)
+
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        assert any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        # And again — the mismatch must not have consumed the token either.
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+        assert not any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+        assert _stored_guard_bypass(conn, tid) is not None
+
+
+def test_active_pr_bypass_matches_verified_url_after_unrelated_comment(tmp_path):
+    """An unrelated older PR comment cannot shadow a later comment for the
+    exact PR the verifier approved; every recent matched URL is considered."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid, pr_url=PR_URL_OTHER)
+        _seed_active_pr_comment(conn, tid, pr_url=PR_URL)
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+
+        assert kb.check_respawn_guard(conn, tid, dry_run=True) is None
+        assert _stored_guard_bypass(conn, tid) is not None
+        assert kb.check_respawn_guard(conn, tid) is None
+        assert _stored_guard_bypass(conn, tid) is None
+
+
+def test_active_pr_bypass_consumes_only_canonically_equal_url_once(tmp_path):
+    """Positive path with canonicalization: a comment URL differing only in
+    case (GitHub hosts/owners/repos are case-insensitive) still matches the
+    verified contract, consumes the token exactly once, and a consumed
+    intent never lifts a later active_pr hit again."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(
+            conn, tid, pr_url="HTTPS://GitHub.com/Acme/Repo/pull/42",
+        )
+
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+        assert kb.check_respawn_guard(conn, tid) is None  # consumed here
+        consumed = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "guard_bypass_consumed"
+        ]
+        assert len(consumed) == 1
+        assert _stored_guard_bypass(conn, tid) is None
+
+        # Consumed intent: a fresh matching-URL comment re-arms active_pr
+        # and nothing pending is left to lift it.
+        kb.add_comment(conn, tid, "worker", f"still open: {PR_URL}")
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_bypass_dry_run_is_idempotent_and_url_aware(tmp_path):
+    """dry_run previews the URL-matched outcome without consuming: repeated
+    previews return identical results and leave the token intact; a real
+    check afterwards still consumes it."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid)
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+
+        assert kb.check_respawn_guard(conn, tid, dry_run=True) is None
+        assert kb.check_respawn_guard(conn, tid, dry_run=True) is None
+        assert _stored_guard_bypass(conn, tid) is not None
+        assert not any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+
+        # The untouched token is still consumable by a real check.
+        assert kb.check_respawn_guard(conn, tid) is None
+        assert _stored_guard_bypass(conn, tid) is None
+
+
+def test_active_pr_bypass_dry_run_mismatch_previews_deny_without_consuming(tmp_path):
+    """dry_run must preview the SAME default-deny outcome a real check
+    would produce for a URL mismatch — and must not consume the token."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+        _seed_active_pr_comment(conn, tid, pr_url=PR_URL_OTHER)
+        assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+
+        assert kb.check_respawn_guard(conn, tid, dry_run=True) == "active_pr"
+        assert kb.check_respawn_guard(conn, tid, dry_run=True) == "active_pr"
+        assert _stored_guard_bypass(conn, tid) is not None
+        assert not any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verified-recovery dispatch: the consumed one-shot token must flow as a
+# TYPED signal from the guard decision into a verification-only spawn.
+# Without it, the dispatcher observes only "guard lifted" and starts an
+# ordinary unrestricted worker — indistinguishable from normal ready work.
+# ---------------------------------------------------------------------------
+
+
+def _seed_verified_recovery(conn, pr_comment_url: str = PR_URL) -> str:
+    """Blocked-with-evidence task + recent PR comment + validated intent:
+    a pending one-shot bypass on a ready task, one dispatch tick away."""
+    tid = _seed_needs_input_blocked_task(conn, evidence=_matching_evidence())
+    _seed_active_pr_comment(conn, tid, pr_url=pr_comment_url)
+    assert kb.unblock_task(conn, tid, intent=_valid_intent()) is True
+    assert _stored_guard_bypass(conn, tid) is not None
+    return tid
+
+
+def test_dispatch_verified_bypass_takes_verification_only_path(
+    kanban_home, tmp_path, all_assignees_spawnable,
+):
+    """A consumed bypass must dispatch the VERIFICATION-ONLY path: the
+    spawned task carries the verified contract as a typed signal, set
+    atomically from the consuming guard decision — never inferred from the
+    comment after the fact."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_verified_recovery(conn)
+
+        spawned = []
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, ws: spawned.append(task),
+        )
+
+        assert [t.id for t in spawned] == [tid]
+        assert [s[0] for s in res.spawned] == [tid]
+        contract = spawned[0].verification_contract
+        assert contract is not None, (
+            "verified recovery must NOT start an ordinary worker — the "
+            "spawned task must carry the verification contract"
+        )
+        assert contract["pr_url"] == PR_URL
+        assert contract["approved_head"] == HEAD_SHA
+        assert contract["approved_base"] == BASE_BRANCH
+        # One-shot: the token was consumed by this dispatch and is gone.
+        assert _stored_guard_bypass(conn, tid) is None
+        consumed = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "guard_bypass_consumed"
+        ]
+        assert len(consumed) == 1
+
+
+def test_dispatch_bypass_pr_mismatch_spawns_nothing_and_preserves_token(
+    kanban_home, tmp_path, all_assignees_spawnable,
+):
+    """A token verified for PR 42 while the comment references PR 99 must
+    invoke NO spawn of any kind and leave the token pending."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_verified_recovery(conn, pr_comment_url=PR_URL_OTHER)
+
+        spawned = []
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, ws: spawned.append(task),
+        )
+
+        assert spawned == []
+        assert res.spawned == []
+        assert (tid, "active_pr") in res.respawn_guarded
+        assert _stored_guard_bypass(conn, tid) is not None
+        assert not any(
+            e.kind == "guard_bypass_consumed" for e in kb.list_events(conn, tid)
+        )
+
+
+def test_dispatch_verified_bypass_claim_failure_rearms_token(
+    kanban_home, tmp_path, all_assignees_spawnable, monkeypatch,
+):
+    """If the claim cannot begin after the token was consumed, the token
+    must be rolled back — the verified recovery is not lost to a transient
+    claim race — and the re-armed token still drives exactly one later
+    verification dispatch."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_verified_recovery(conn)
+
+        real_claim = kb.claim_task
+        state = {"fail": True}
+
+        def flaky_claim(conn_, task_id_, **kw):
+            if state["fail"]:
+                return None
+            return real_claim(conn_, task_id_, **kw)
+
+        monkeypatch.setattr(kb, "claim_task", flaky_claim)
+
+        spawned = []
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, ws: spawned.append(task),
+        )
+        assert spawned == []
+        assert res.spawned == []
+        assert _stored_guard_bypass(conn, tid) is not None, (
+            "claim failure after consumption must re-arm the token"
+        )
+        events = kb.list_events(conn, tid)
+        assert sum(1 for e in events if e.kind == "guard_bypass_consumed") == 1
+        assert sum(1 for e in events if e.kind == "guard_bypass_restored") == 1
+
+        # The re-armed token is still one-shot usable.
+        state["fail"] = False
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: spawned.append(task))
+        assert [t.id for t in spawned] == [tid]
+        assert spawned[0].verification_contract is not None
+        assert _stored_guard_bypass(conn, tid) is None
+
+
+def test_dispatch_verified_bypass_spawn_failure_rearms_token(
+    kanban_home, tmp_path, all_assignees_spawnable,
+):
+    """A worker that never starts (spawn_fn raises) must roll the token
+    back; once a verification worker DOES start, the token stays spent."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = _seed_verified_recovery(conn)
+
+        def bad_spawn(task, ws):
+            raise RuntimeError("worker start failed")
+
+        res = kb.dispatch_once(conn, spawn_fn=bad_spawn)
+        assert res.spawned == []
+        assert _stored_guard_bypass(conn, tid) is not None, (
+            "spawn failure before the worker started must re-arm the token"
+        )
+        events = kb.list_events(conn, tid)
+        assert sum(1 for e in events if e.kind == "guard_bypass_consumed") == 1
+        assert sum(1 for e in events if e.kind == "guard_bypass_restored") == 1
+
+        # Recovery still works, exactly once, on the next tick.
+        spawned = []
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: spawned.append(task))
+        assert [t.id for t in spawned] == [tid]
+        assert spawned[0].verification_contract is not None
+        assert _stored_guard_bypass(conn, tid) is None
+        events = kb.list_events(conn, tid)
+        assert sum(1 for e in events if e.kind == "guard_bypass_consumed") == 2
+        assert sum(1 for e in events if e.kind == "guard_bypass_restored") == 1
+
+
+def test_dispatch_verifier_popen_failure_restores_bypass_and_reconciles_channel(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A pre-start verifier subprocess failure must not strand any authority.
+
+    The dispatcher consumed the exact bypass and claimed the task before
+    `_default_spawn` reached `Popen`; failure there must requeue the exact
+    claim/bypass while terminally reconciling the stale verifier channel so a
+    later run can mint a fresh binding for a fresh run id.
+    """
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+
+    def missing_verifier(*args, **kwargs):
+        raise FileNotFoundError("missing hermes")
+
+    monkeypatch.setattr(subprocess, "Popen", missing_verifier)
+    with kb.connect() as conn:
+        tid = _seed_verified_recovery(conn)
+
+        result = kb.dispatch_once(conn)
+        task = kb.get_task(conn, tid)
+        row = conn.execute(
+            "SELECT state, reason_code, supervisor_owner, verifier_root "
+            "FROM verifier_result_authorizations WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        restored_bypass = _stored_guard_bypass(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert result.spawned == []
+    assert task.status == "ready"
+    assert task.current_run_id is None
+    assert task.claim_lock is None
+    assert restored_bypass is not None
+    assert row["state"] == "reconciled"
+    assert row["reason_code"] == "pre_start_restore"
+    assert row["supervisor_owner"] is None
+    assert row["verifier_root"] is None
+    assert sum(1 for e in events if e.kind == "guard_bypass_consumed") == 1
+    assert sum(1 for e in events if e.kind == "guard_bypass_restored") == 1
+
+
+def test_dispatch_ordinary_ready_task_takes_normal_path_only(
+    kanban_home, tmp_path, all_assignees_spawnable,
+):
+    """No proof, no token — an ordinary ready task must dispatch through
+    the normal path with NO verification signal attached."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="ordinary work", assignee="alice")
+
+        spawned = []
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: spawned.append(task))
+
+        assert [t.id for t in spawned] == [tid]
+        assert spawned[0].verification_contract is None
+        assert not any(
+            e.kind in ("guard_bypass_consumed", "guard_bypass_restored")
+            for e in kb.list_events(conn, tid)
+        )
+
+
+# ---------------------------------------------------------------------------
+# _default_spawn — the supported direct/ad-hoc subprocess boundary. A
+# verification-only worker is no longer a direct worker with a temporary
+# kanban DB. Stage 2 routes it through a dispatcher-owned supervisor and an
+# inherited one-shot pipe, so an ad-hoc/unclaimed verifier task must fail
+# before any child process starts.
+# ---------------------------------------------------------------------------
+
+
+def _verification_task(**overrides) -> "kb.Task":
+    fields = dict(
+        id="t_verify",
+        title="verify merge",
+        body=None,
+        assignee="alice",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        verification_contract={
+            "pr_url": PR_URL,
+            "approved_head": HEAD_SHA,
+            "approved_base": BASE_BRANCH,
+            "readiness_evidence": {"ready": True},
+        },
+    )
+    fields.update(overrides)
+    return kb.Task(**fields)
+
+
+def test_default_spawn_verification_requires_live_bound_claim(
+    kanban_home, monkeypatch,
+):
+    """Verifier-only dispatch is only valid for a dispatcher-claimed run.
+
+    A hand-built task carrying a verification_contract but no live run/claim
+    cannot mint the Stage 1 authorization and must never reach Popen.
+    """
+    popen_calls = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        popen_calls.append(cmd)
+        raise AssertionError("must not spawn without a live verifier binding")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(ValueError, match="current run id"):
+        kb._default_spawn(_verification_task(), str(kanban_home / "ws"))
+    assert popen_calls == []
+
+
+def test_default_spawn_normal_task_keeps_board_env_and_work_prompt(
+    kanban_home, monkeypatch,
+):
+    """The normal path is untouched: no verify env vars, real board DB pin,
+    unrestricted work prompt."""
+    captured = {}
+
+    class FakeProc:
+        pid = 7
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    task = _verification_task(id="t_norm", verification_contract=None)
+
+    kb._default_spawn(task, str(kanban_home / "ws"))
+
+    env = captured["env"]
+    assert "HERMES_KANBAN_VERIFY_ONLY" not in env
+    assert env["HERMES_KANBAN_DB"] == str(kb.kanban_db_path())
+    prompt = captured["cmd"][captured["cmd"].index("-q") + 1]
+    assert prompt == "work kanban task t_norm"
+
+
+def test_dispatch_respawn_guard_event_coalesces_repeated_identical_reason(
+    tmp_path, all_assignees_spawnable,
+):
+    """A guard reason that repeats across dispatcher ticks gets ONE
+    ``respawn_guarded`` event, not one per tick."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="sticky-pr", assignee="alice")
+        _seed_active_pr_comment(conn, tid)
+
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+        assert len(events) == 1, (
+            f"3 identical active_pr guard hits must coalesce into one "
+            f"event; got {len(events)}"
+        )
+        assert events[0].payload["reason"] == "active_pr"
+
+
+def test_dispatch_respawn_guard_event_records_on_reason_change(
+    tmp_path, all_assignees_spawnable,
+):
+    """Coalescing must not swallow a genuine reason change — only exact
+    repeats collapse."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="reason-change", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("401 unauthorized", tid),
+        )
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = NULL WHERE id = ?", (tid,),
+        )
+        _seed_active_pr_comment(conn, tid)
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+        reasons = [e.payload["reason"] for e in events]
+        assert reasons == ["blocker_auth", "active_pr"], reasons
+
+
+def test_legacy_db_migrates_block_evidence_and_guard_bypass_columns(tmp_path):
+    """An old DB missing block_evidence/guard_bypass migrates additively —
+    existing rows get NULL, which is the correct fail-closed default (no
+    bypass can ever validate against a NULL block_evidence)."""
+    db_path = _explicit_tmp_db(tmp_path, "legacy.db")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            block_kind TEXT,
+            block_recurrences INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy1', 'old blocked task', 'blocked', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path=db_path) as migrated:
+        cols = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        assert "block_evidence" in cols
+        assert "guard_bypass" in cols
+        row = migrated.execute(
+            "SELECT block_evidence, guard_bypass FROM tasks WHERE id = 'legacy1'"
+        ).fetchone()
+        assert row["block_evidence"] is None
+        assert row["guard_bypass"] is None
+
+        # And the migrated DB is fully usable for the new feature going
+        # forward — not just schema-compatible. Uses a FRESH task (created
+        # via the public API, so it starts 'ready') rather than reusing
+        # 'legacy1' (already 'blocked', so claim_task/block_task couldn't
+        # transition it — that row's job above was only to prove the
+        # additive-column defaults on a pre-existing legacy row).
+        tid = kb.create_task(migrated, title="post-migration task", assignee="alice")
+        kb.claim_task(migrated, tid)
+        assert kb.block_task(
+            migrated, tid, reason="verify merge", kind="needs_input",
+            evidence=_matching_evidence(),
+        )
+        _seed_active_pr_comment(migrated, tid)
+        assert kb.unblock_task(
+            migrated, tid, intent=_valid_intent(),
+        ) is True
+        assert kb.check_respawn_guard(migrated, tid) is None
+
+
+# ---------------------------------------------------------------------------
+# Durable verifier-result authorization channel (Stage 1 only)
+# ---------------------------------------------------------------------------
+
+
+def _stage1_authorization_binding(task_id: str, run_id: int, claim_lock: str) -> dict:
+    contract = {
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    return {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": claim_lock,
+        "contract_id": "protected-merge:v1",
+        "contract_hash": kb.canonical_verifier_contract_hash(contract),
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "nonce": "nonce-stage1",
+    }
+
+
+def test_verifier_authorization_valid_sequence_is_single_use_and_auditable(tmp_path):
+    """A bound verifier result moves through the durable state machine once."""
+    db_path = _explicit_tmp_db(tmp_path, "stage1.db")
+    with kb.connect(db_path=db_path) as conn:
+        task_id = kb.create_task(conn, title="authorization task", assignee="alice")
+        claim = kb.claim_task(conn, task_id)
+        assert claim is not None
+        binding = _stage1_authorization_binding(task_id, claim.current_run_id, claim.claim_lock)
+
+        authorized = kb.authorize_verifier_result(conn, **binding)
+        assert authorized.state == "authorized"
+        assert authorized.reason == "authorized"
+        assert kb.reserve_verifier_result(conn, authorization_id=authorized.id, **binding).state == "reserved"
+        assert kb.start_verifier_result(conn, authorization_id=authorized.id, **binding).state == "started"
+        assert kb.consume_verifier_result(conn, authorization_id=authorized.id, **binding).state == "consumed"
+        assert kb.apply_verifier_result(conn, authorization_id=authorized.id, **binding).state == "applied"
+        assert kb.consume_verifier_result(conn, authorization_id=authorized.id, **binding).reason == "already_applied"
+
+
+def test_verifier_authorization_rejects_substitution_and_stale_claim(tmp_path):
+    """Every task/run/claim/contract/PR/nonce binding is checked atomically."""
+    db_path = _explicit_tmp_db(tmp_path, "stage1-bindings.db")
+    with kb.connect(db_path=db_path) as conn:
+        task_id = kb.create_task(conn, title="bound authorization", assignee="alice")
+        claim = kb.claim_task(conn, task_id)
+        assert claim is not None
+        binding = _stage1_authorization_binding(task_id, claim.current_run_id, claim.claim_lock)
+        authorized = kb.authorize_verifier_result(conn, **binding)
+
+        for field, value in {
+            "task_id": "t_other",
+            "run_id": claim.current_run_id + 1,
+            "claim_lock": "other-claim",
+            "contract_id": "other-contract",
+            "contract_hash": "0" * 64,
+            "pr_url": PR_URL_OTHER,
+            "approved_head": "other-head",
+            "approved_base": "other-base",
+            "nonce": "other-nonce",
+        }.items():
+            attempted = dict(binding)
+            attempted[field] = value
+            result = kb.reserve_verifier_result(conn, authorization_id=authorized.id, **attempted)
+            assert result.state == "authorized"
+            assert result.reason == f"binding_mismatch:{field}"
+
+        conn.execute("UPDATE task_runs SET status='reclaimed' WHERE id=?", (claim.current_run_id,))
+        stale = kb.reserve_verifier_result(conn, authorization_id=authorized.id, **binding)
+        assert stale.state == "authorized"
+        assert stale.reason == "stale_run"
+
+
+def test_verifier_authorization_duplicate_and_retry_are_atomic(tmp_path):
+    """One contract can have one active authorization; exact retries are idempotent."""
+    db_path = _explicit_tmp_db(tmp_path, "stage1-duplicate.db")
+    with kb.connect(db_path=db_path) as conn:
+        task_id = kb.create_task(conn, title="duplicate authorization", assignee="alice")
+        claim = kb.claim_task(conn, task_id)
+        assert claim is not None
+        binding = _stage1_authorization_binding(task_id, claim.current_run_id, claim.claim_lock)
+        first = kb.authorize_verifier_result(conn, **binding)
+        retry = kb.authorize_verifier_result(conn, **binding)
+        assert retry.id == first.id
+        assert retry.reason == "idempotent_retry"
+        duplicate = kb.authorize_verifier_result(conn, **{**binding, "nonce": "second-nonce"})
+        assert duplicate.id == first.id
+        assert duplicate.reason == "active_authorization_exists"
+
+
+def test_hostile_env_subprocess_preflight_demonstrates_scrub_precedence(
+    tmp_path, monkeypatch,
+):
+    """Import-only path preflight, crossing a real OS subprocess boundary,
+    run twice:
+
+    1. With ALL the dispatcher's worker-env pins (HERMES_HOME,
+       HERMES_KANBAN_DB, HERMES_KANBAN_WORKSPACES_ROOT, HERMES_KANBAN_BOARD
+       — mirroring exactly what ``_default_spawn`` injects) pointed at a
+       hostile/live-shaped path, forwarded naively via ``dict(os.environ)``.
+       This demonstrates HERMES_KANBAN_DB's documented highest-precedence
+       resolution winning with the hostile path — WITHOUT ever opening it:
+       the child only imports ``hermes_cli.kanban_db`` and reads back
+       ``kanban_db_path()``, it never calls ``connect()``.
+    2. With ``tests.conftest.scrub_subprocess_env`` applied and BOTH a
+       temporary HERMES_HOME and HERMES_KANBAN_DB then set explicitly, the
+       same import-only preflight must resolve to the safe tmp path
+       instead.
+
+    Neither run creates or touches the hostile file on disk — this is a
+    path-resolution preflight check, not a DB open.
+    """
+    from tests.conftest import scrub_subprocess_env
+
+    # 1. Simulate the dispatcher's FULL worker-env pin set (mirrors
+    #    _default_spawn) pointed at a hostile/live-shaped location.
+    hostile_home = tmp_path / "hostile-real-home"
+    hostile_home.mkdir()
+    hostile_db = hostile_home / "kanban.db"
+    monkeypatch.setenv("HERMES_HOME", str(hostile_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(hostile_db))
+    monkeypatch.setenv(
+        "HERMES_KANBAN_WORKSPACES_ROOT", str(hostile_home / "kanban" / "workspaces"),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+
+    preflight_script = (
+        "import hermes_cli.kanban_db as kb, sys; "
+        "sys.stdout.write(str(kb.kanban_db_path()))"
+    )
+
+    naive_env = dict(os.environ)
+    naive_result = subprocess.run(
+        [sys.executable, "-c", preflight_script],
+        env=naive_env, capture_output=True, text=True, timeout=10,
+    )
+    assert naive_result.returncode == 0, naive_result.stderr[:300]
+    assert naive_result.stdout == str(hostile_db), (
+        "sanity check failed: un-scrubbed forwarding should show the "
+        f"hostile HERMES_KANBAN_DB winning; got {naive_result.stdout!r}"
+    )
+    assert not hostile_db.exists(), (
+        "preflight must never create/open the hostile DB file"
+    )
+
+    # 2. Scrub, then explicitly set BOTH a fresh temporary home and DB path.
+    safe_home = tmp_path / "safe-home"
+    safe_home.mkdir()
+    safe_db = safe_home / "kanban.db"
+    env = scrub_subprocess_env()
+    env["HERMES_HOME"] = str(safe_home)
+    env["HERMES_KANBAN_DB"] = str(safe_db)
+
+    safe_result = subprocess.run(
+        [sys.executable, "-c", preflight_script],
+        env=env, capture_output=True, text=True, timeout=10,
+    )
+    assert safe_result.returncode == 0, safe_result.stderr[:300]
+    assert safe_result.stdout == str(safe_db), (
+        f"scrubbed + explicitly-pinned env should resolve to the safe "
+        f"path; got {safe_result.stdout!r}"
+    )
+    assert not hostile_db.exists(), "hostile DB must still never be touched"
+    assert not safe_db.exists(), (
+        "the preflight is import-only — it must never create the safe DB either"
+    )
+
+
+# ---------------------------------------------------------------------------
+# parse_protected_merge_verifier_intent — the ONLY supported way external
+# surfaces (CLI --intent, kanban_unblock tool, dashboard PATCH) may build a
+# ProtectedMergeVerifierIntent: always from a structured dict with an
+# explicit discriminator, never by parsing free text.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_protected_merge_verifier_intent_accepts_valid_dict():
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    intent = kb.parse_protected_merge_verifier_intent(data)
+    assert isinstance(intent, kb.ProtectedMergeVerifierIntent)
+    assert intent.pr_url == PR_URL
+    assert intent.approved_head == HEAD_SHA
+    assert intent.approved_base == BASE_BRANCH
+    assert intent.readiness_evidence == {"ready": True}
+    assert intent.kind == "protected_merge_verifier"
+
+
+def test_parse_protected_merge_verifier_intent_defaults_kind():
+    """``kind`` may be omitted from the incoming JSON (the discriminator is
+    implied by which endpoint/tool you called) but NOT set to anything
+    other than the one supported value."""
+    data = {
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    intent = kb.parse_protected_merge_verifier_intent(data)
+    assert intent.kind == "protected_merge_verifier"
+
+
+def test_parse_protected_merge_verifier_intent_rejects_unknown_kind():
+    """Invalid enum value for the ``kind`` discriminator is rejected."""
+    data = {
+        "kind": "some_other_kind",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    with pytest.raises(ValueError, match="unknown intent kind"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_unknown_fields():
+    """Default deny, matching the evidence parser: fields outside the typed
+    contract are rejected, never silently dropped. Every surface (CLI
+    ``unblock --intent``, the ``kanban_unblock`` tool, the dashboard PATCH)
+    shares this parser, so the field vocabulary cannot drift per surface."""
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+        "operator_note": "looks fine to me",
+        "attachments": [],
+    }
+    with pytest.raises(ValueError, match="unsupported field") as exc:
+        kb.parse_protected_merge_verifier_intent(data)
+    # Actionable: names every offending field and the supported vocabulary.
+    message = str(exc.value)
+    assert "operator_note" in message
+    assert "attachments" in message
+    assert "readiness_evidence" in message  # supported-fields hint
+
+    # The same payload without the extras parses fine — the rejection is
+    # about the unknown keys, not the known ones.
+    del data["operator_note"], data["attachments"]
+    intent = kb.parse_protected_merge_verifier_intent(data)
+    assert isinstance(intent, kb.ProtectedMergeVerifierIntent)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_missing_fields():
+    data = {"kind": "protected_merge_verifier", "readiness_evidence": {"ready": True}}
+    with pytest.raises(ValueError, match="missing required field"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_free_text():
+    """A free-text claim must NEVER be parsed/accepted — only a structured
+    dict with the exact typed contract shape."""
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        kb.parse_protected_merge_verifier_intent(
+            "PR https://github.com/acme/repo/pull/42 was merged, go ahead"
+        )
+
+
+def test_parse_protected_merge_verifier_intent_rejects_non_dict_readiness_evidence():
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": "looks good to me",
+    }
+    with pytest.raises(ValueError, match="readiness_evidence"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_not_ready_evidence():
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": False},
+    }
+    with pytest.raises(ValueError, match="ready"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_oversized_readiness_evidence():
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True, "detail": "x" * (kb._CTX_MAX_FIELD_BYTES + 1)},
+    }
+    with pytest.raises(ValueError, match="too large"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+# ---------------------------------------------------------------------------
+# parse_protected_merge_verifier_evidence — typed block-evidence contract
+# (the block-time twin of parse_protected_merge_verifier_intent; the ONLY
+# supported way surfaces construct `block_task(evidence=...)` payloads)
+# ---------------------------------------------------------------------------
+
+def _valid_evidence_payload(**overrides) -> dict:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "head": HEAD_SHA,
+        "base": BASE_BRANCH,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_parse_evidence_valid_payload_yields_canonical_block_evidence():
+    ev = kb.parse_protected_merge_verifier_evidence(_valid_evidence_payload())
+    assert isinstance(ev, kb.ProtectedMergeVerifierEvidence)
+    assert ev.to_block_evidence() == _matching_evidence()
+
+
+def test_parse_evidence_kind_discriminator_defaults():
+    payload = _valid_evidence_payload()
+    del payload["kind"]
+    ev = kb.parse_protected_merge_verifier_evidence(payload)
+    assert ev.kind == "protected_merge_verifier"
+
+
+def test_parse_evidence_strips_whitespace():
+    ev = kb.parse_protected_merge_verifier_evidence(
+        _valid_evidence_payload(pr_url=f"  {PR_URL}  ", head=f"{HEAD_SHA} ")
+    )
+    assert ev.to_block_evidence() == _matching_evidence()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param("PR is ready, trust me", id="free-text"),
+        pytest.param(["pr_url", PR_URL], id="list"),
+        pytest.param(None, id="none"),
+        pytest.param(42, id="int"),
+    ],
+)
+def test_parse_evidence_rejects_non_object(bad):
+    with pytest.raises(ValueError, match="JSON object"):
+        kb.parse_protected_merge_verifier_evidence(bad)
+
+
+def test_parse_evidence_rejects_unknown_kind():
+    with pytest.raises(ValueError, match="kind"):
+        kb.parse_protected_merge_verifier_evidence(
+            _valid_evidence_payload(kind="not_a_real_kind")
+        )
+
+
+@pytest.mark.parametrize("field", ["pr_url", "head", "base"])
+def test_parse_evidence_rejects_missing_or_blank_field(field):
+    missing = _valid_evidence_payload()
+    del missing[field]
+    with pytest.raises(ValueError, match=field):
+        kb.parse_protected_merge_verifier_evidence(missing)
+    with pytest.raises(ValueError, match=field):
+        kb.parse_protected_merge_verifier_evidence(
+            _valid_evidence_payload(**{field: "   "})
+        )
+
+
+def test_parse_evidence_rejects_unsupported_fields():
+    """Evidence is stored verbatim and audited later — default-deny any
+    field the contract doesn't define rather than silently dropping it."""
+    with pytest.raises(ValueError, match="ci_run"):
+        kb.parse_protected_merge_verifier_evidence(
+            _valid_evidence_payload(ci_run="https://ci.example/123")
+        )
+
+
+def test_parse_evidence_round_trips_through_bypass_validation(tmp_path):
+    """to_block_evidence() must emit EXACTLY the stored shape
+    _validate_merge_verifier_bypass later matches an intent against —
+    a drift here would break every surface's recovery path at once."""
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        parsed = kb.parse_protected_merge_verifier_evidence(
+            _valid_evidence_payload()
+        )
+        tid = _seed_needs_input_blocked_task(
+            conn, evidence=parsed.to_block_evidence()
+        )
+        assert kb.unblock_task(conn, tid, intent=_valid_intent())
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "guard_bypass_granted" in kinds
+
+
+def test_legacy_incomplete_active_authorization_is_reconciled_before_replacement(tmp_path):
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        task_id = kb.create_task(conn, title="legacy verifier", assignee="alice")
+        claim = kb.claim_task(conn, task_id)
+        assert claim is not None
+        binding = _stage1_authorization_binding(
+            claim.id, int(claim.current_run_id), str(claim.claim_lock)
+        )
+        now = 1
+        conn.execute(
+            "INSERT INTO verifier_result_authorizations (task_id, run_id, claim_lock, contract_id, contract_hash, pr_url, approved_head, approved_base, nonce_digest, state, reason_code, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, '', '', ?, 'authorized', 'authorized', ?, ?)",
+            (claim.id, binding["run_id"], binding["claim_lock"], binding["contract_id"], PR_URL, "0" * 64, now, now),
+        )
+
+        denied = kb.authorize_verifier_result(conn, **binding)
+        row = conn.execute(
+            "SELECT state, reason_code FROM verifier_result_authorizations WHERE task_id = ? ORDER BY id LIMIT 1",
+            (claim.id,),
+        ).fetchone()
+        assert denied.reason == "stale_claim"
+        assert (row["state"], row["reason_code"]) == ("reconciled", "legacy_incomplete_binding")
+
+        assert kb.unblock_task(conn, claim.id)
+        replacement = kb.claim_task(conn, claim.id)
+        assert replacement is not None
+        replacement_binding = _stage1_authorization_binding(
+            replacement.id, int(replacement.current_run_id), str(replacement.claim_lock)
+        )
+        authorized = kb.authorize_verifier_result(conn, **replacement_binding)
+        assert authorized.state == "authorized"

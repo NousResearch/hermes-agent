@@ -587,6 +587,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    p_block.add_argument(
+        "--evidence",
+        default=None,
+        help=(
+            "JSON object recording which PR/head/base a protected-merge "
+            "verification block is about, e.g. "
+            '\'{"kind":"protected_merge_verifier","pr_url":"...",'
+            '"head":"...","base":"..."}\'. Only valid with --kind '
+            "needs_input and a single task_id; a later `unblock --intent` "
+            "bypass is validated against exactly this evidence. Malformed "
+            "or wrong-kind evidence is rejected before any mutation."
+        ),
+    )
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -602,6 +615,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--reason",
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
+    )
+    p_unblock.add_argument(
+        "--intent",
+        default=None,
+        help=(
+            "JSON object requesting a one-shot protected-merge-verifier "
+            "respawn-guard bypass, e.g. "
+            '\'{"kind":"protected_merge_verifier","pr_url":"...",'
+            '"approved_head":"...","approved_base":"...",'
+            '"readiness_evidence":{"ready":true}}\'. Only takes effect when '
+            "it matches the evidence recorded when the task was blocked "
+            "with --kind needs_input; otherwise the unblock still proceeds "
+            "normally with no bypass granted. Malformed or unrecognized "
+            "intents are rejected outright — never parsed as free text. "
+            "Applies to a single task_id only (per-task evidence)."
+        ),
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
@@ -2112,6 +2141,42 @@ def _cmd_block(args: argparse.Namespace) -> int:
     kind = getattr(args, "kind", None)
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    raw_evidence = getattr(args, "evidence", None)
+    # Per-task evidence (one PR's head/base) — bulk-blocking with the SAME
+    # evidence stamped onto every id would let a later verifier intent
+    # validate against a block that was never about that PR. Mirrors the
+    # `unblock --intent` bulk guard.
+    if len(ids) > 1 and raw_evidence:
+        print(
+            "kanban: --evidence is per-task and can't be used with multiple "
+            "ids (it records one task's PR block). Block tasks one at a "
+            "time, or drop the flag for the bulk block.",
+            file=sys.stderr,
+        )
+        return 2
+    evidence = None
+    if raw_evidence:
+        # Reject wrong-kind/malformed evidence BEFORE any mutation (including
+        # the BLOCKED: comment below) — same contract as kb.block_task.
+        if kind != "needs_input":
+            print(
+                "kanban: --evidence is protected-merge verifier material and "
+                f"requires --kind needs_input; got kind={kind!r}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            data = json.loads(raw_evidence)
+        except json.JSONDecodeError as exc:
+            print(f"kanban: --evidence: invalid JSON: {exc}", file=sys.stderr)
+            return 2
+        try:
+            evidence = kb.parse_protected_merge_verifier_evidence(
+                data
+            ).to_block_evidence()
+        except ValueError as exc:
+            print(f"kanban: --evidence: {exc}", file=sys.stderr)
+            return 2
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -2123,6 +2188,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
+                evidence=evidence,
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -2174,13 +2240,40 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None
+    raw_intent = getattr(args, "intent", None)
+    # Per-task evidence (one PR's head/base) — bulk-unblocking with the SAME
+    # intent applied to every id would be a footgun, so refuse it outright
+    # rather than silently granting (or silently failing to grant) bypasses
+    # for tasks the intent was never actually verified against. Mirrors the
+    # existing --summary/--metadata bulk guard on `complete`.
+    if len(ids) > 1 and raw_intent:
+        print(
+            "kanban: --intent is per-task and can't be used with multiple "
+            "ids (a merge-verifier bypass is scoped to one task's PR). "
+            "Unblock tasks one at a time, or drop the flag for the bulk "
+            "unblock.",
+            file=sys.stderr,
+        )
+        return 2
+    intent = None
+    if raw_intent:
+        try:
+            data = json.loads(raw_intent)
+        except json.JSONDecodeError as exc:
+            print(f"kanban: --intent: invalid JSON: {exc}", file=sys.stderr)
+            return 2
+        try:
+            intent = kb.parse_protected_merge_verifier_intent(data)
+        except ValueError as exc:
+            print(f"kanban: --intent: {exc}", file=sys.stderr)
+            return 2
     author = _profile_author() if reason else None
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            if not kb.unblock_task(conn, tid, intent=intent):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:

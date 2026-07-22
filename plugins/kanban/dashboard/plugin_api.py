@@ -46,7 +46,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
@@ -803,6 +803,13 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 # ---------------------------------------------------------------------------
 
 class UpdateTaskBody(BaseModel):
+    # Unknown top-level keys are collected here (extra="allow") and rejected
+    # with an actionable 400 in update_task — the same default-deny the CLI's
+    # argparse flags and the kanban_* tool schemas give the other surfaces.
+    # A typo'd or unsupported key is a caller bug that must fail the WHOLE
+    # request with no mutation, never be silently dropped.
+    model_config = ConfigDict(extra="allow")
+
     status: Optional[str] = None
     assignee: Optional[str] = None
     priority: Optional[int] = None
@@ -810,15 +817,93 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    # Typed block reason (one of kanban_db.VALID_BLOCK_KINDS) forwarded to
+    # block_task when status transitions to 'blocked'.
+    block_kind: Optional[str] = None
+    # Optional typed protected-merge-verifier evidence recorded at block
+    # time — the block-side twin of ``intent`` below. Must be a structured
+    # object (pydantic rejects non-object JSON with a 422); free-text
+    # claims are never parsed. Only accepted with status='blocked' and
+    # block_kind='needs_input', and validated exclusively through
+    # kanban_db.parse_protected_merge_verifier_evidence.
+    block_evidence: Optional[dict] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    # Optional typed request for a one-shot protected-merge-verifier
+    # respawn-guard bypass, forwarded to unblock_task() when status
+    # transitions to 'ready' from 'blocked'/'scheduled'. Must be a
+    # structured object matching
+    # kanban_db.ProtectedMergeVerifierIntent's shape (pydantic itself
+    # rejects a non-object JSON value here with a 422); free-text claims
+    # are never parsed. See kanban_db.parse_protected_merge_verifier_intent.
+    intent: Optional[dict] = None
+
+
+# Statuses PATCH may write. 'running' is deliberately absent — the only
+# legitimate path into 'running' is the dispatcher's ``claim_task``, which
+# atomically creates the run row, claim lock, and worker metadata (#19535).
+_PATCH_STATUSES = frozenset(kanban_db.VALID_STATUSES) - {"running"}
+
+class _SavepointConn:
+    """sqlite3.Connection facade that maps transaction-boundary statements
+    onto SAVEPOINTs so kanban_db verbs compose inside ONE enclosing
+    transaction.
+
+    PATCH /tasks/:id accepts several mutations in a single request
+    (assignee + status + priority + title/body). Each kanban_db verb is
+    individually atomic — it opens its own ``write_txn`` BEGIN IMMEDIATE —
+    but a request that fails halfway (e.g. the status transition 409s
+    after the assignee write already committed) must not leave a partial
+    patch or stray audit rows behind. ``update_task`` opens one real
+    ``write_txn`` on the underlying connection and hands the verbs this
+    facade: their BEGIN/COMMIT/ROLLBACK become SAVEPOINT/RELEASE/
+    ROLLBACK-TO, so an HTTPException raised anywhere rolls back the WHOLE
+    request via the outer transaction. Everything else (row_factory,
+    cursors, PRAGMA reads) forwards to the real connection untouched.
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+        self._sp_stack: list[str] = []
+        self._sp_seq = 0
+
+    def execute(self, sql, *args):
+        if isinstance(sql, str) and sql.strip():
+            head = sql.split(None, 1)[0].upper()
+            if head == "BEGIN":
+                self._sp_seq += 1
+                name = f"sp_dashboard_patch_{self._sp_seq}"
+                self._sp_stack.append(name)
+                return self._conn.execute(f"SAVEPOINT {name}")
+            if head == "COMMIT" and self._sp_stack:
+                return self._conn.execute(
+                    f"RELEASE SAVEPOINT {self._sp_stack.pop()}"
+                )
+            if head == "ROLLBACK" and self._sp_stack:
+                name = self._sp_stack.pop()
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+                return self._conn.execute(f"RELEASE SAVEPOINT {name}")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+    # --- strict top-level contract: reject unknown fields outright --------
+    unknown_fields = sorted(payload.model_extra or ())
+    if unknown_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown field(s): {', '.join(unknown_fields)}; supported "
+                f"fields are {', '.join(sorted(UpdateTaskBody.model_fields))}"
+            ),
+        )
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -826,114 +911,220 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
-        # --- assignee ----------------------------------------------------
-        if payload.assignee is not None:
-            try:
-                ok = kanban_db.assign_task(
-                    conn, task_id, payload.assignee or None,
-                )
-            except RuntimeError as e:
-                raise HTTPException(status_code=409, detail=str(e))
-            if not ok:
-                raise HTTPException(status_code=404, detail="task not found")
-
-        # --- status -------------------------------------------------------
-        if payload.status is not None:
-            s = payload.status
-            ok = True
-            if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
-            elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
-            elif s == "scheduled":
-                ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
-            elif s == "ready":
-                # Re-open a blocked/scheduled task, or just an explicit status set.
-                current = kanban_db.get_task(conn, task_id)
-                if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
-                else:
-                    # Direct status write for drag-drop (todo -> ready etc).
-                    ok = _set_status_direct(conn, task_id, "ready")
-            elif s == "archived":
-                ok = kanban_db.archive_task(conn, task_id)
-            elif s == "running":
+        # --- static validation: ALL of it BEFORE any write ----------------
+        # A malformed field must reject the WHOLE request (including an
+        # assignee change riding along) with no mutation — never silently
+        # dropped, never applied halfway.
+        if payload.status is not None and payload.status not in _PATCH_STATUSES:
+            if payload.status == "running":
                 raise HTTPException(
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in ("todo", "triage", "scheduled"):
-                ok = _set_status_direct(conn, task_id, s)
-            else:
-                raise HTTPException(status_code=400, detail=f"unknown status: {s}")
-            if not ok:
-                # For ``ready``, name the blocking parent(s) so the dashboard
-                # can render an actionable toast instead of a silent no-op.
-                # See #26744.
-                if s == "ready":
-                    blockers = _parents_blocking_ready(conn, task_id)
-                    if blockers:
-                        names = ", ".join(
-                            f"{p['title']!r} ({p['id']}, status={p['status']})"
-                            for p in blockers
-                        )
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                f"Cannot move to 'ready': blocked by parent(s) "
-                                f"not done — {names}"
-                            ),
-                        )
+            raise HTTPException(
+                status_code=400, detail=f"unknown status: {payload.status}",
+            )
+        if payload.title is not None and not payload.title.strip():
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        if (
+            payload.block_kind is not None
+            and payload.block_kind not in kanban_db.VALID_BLOCK_KINDS
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown block_kind {payload.block_kind!r}; must be one "
+                    f"of {sorted(kanban_db.VALID_BLOCK_KINDS)}"
+                ),
+            )
+        parsed_evidence = None
+        if payload.block_evidence is not None:
+            if payload.status != "blocked":
                 raise HTTPException(
-                    status_code=409,
-                    detail=f"status transition to {s!r} not valid from current state",
+                    status_code=400,
+                    detail="block_evidence is only accepted with status='blocked'",
                 )
+            if payload.block_kind != "needs_input":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "block_evidence is protected-merge verifier material "
+                        "and requires block_kind='needs_input'"
+                    ),
+                )
+            try:
+                parsed_evidence = kanban_db.parse_protected_merge_verifier_evidence(
+                    payload.block_evidence
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"block_evidence: {e}")
+        parsed_intent = None
+        if payload.intent is not None:
+            # A bypass request only makes sense riding an unblock; on any
+            # other transition it could never take effect — reject rather
+            # than silently drop verifier material (block_evidence's twin).
+            if payload.status != "ready":
+                raise HTTPException(
+                    status_code=400,
+                    detail="intent is only accepted with status='ready'",
+                )
+            # Validate the typed shape (never free-text parsed, unknown
+            # fields rejected — default deny) through the ONE shared
+            # kanban_db parser, same as the CLI and tool surfaces.
+            try:
+                parsed_intent = kanban_db.parse_protected_merge_verifier_intent(
+                    payload.intent
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"intent: {e}")
 
-        # --- priority -----------------------------------------------------
-        if payload.priority is not None:
+        # --- apply: ONE transaction covers the WHOLE request ---------------
+        # Semantic failures (invalid transition, parent gating, reassign of
+        # a claimed running task) surface as HTTPExceptions from inside the
+        # transaction, so write_txn rolls back everything — a rejected
+        # 400/409 leaves no partial assignee/status/parent/audit mutation.
+        if any(
+            f is not None
+            for f in (payload.assignee, payload.status, payload.priority,
+                      payload.title, payload.body)
+        ):
             with kanban_db.write_txn(conn):
-                conn.execute(
-                    "UPDATE tasks SET priority = ? WHERE id = ?",
-                    (int(payload.priority), task_id),
-                )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'reprioritized', ?, ?)",
-                    (task_id, json.dumps({"priority": int(payload.priority)}),
-                     int(time.time())),
-                )
-
-        # --- title / body -------------------------------------------------
-        if payload.title is not None or payload.body is not None:
-            with kanban_db.write_txn(conn):
-                sets, vals = [], []
-                if payload.title is not None:
-                    if not payload.title.strip():
-                        raise HTTPException(status_code=400, detail="title cannot be empty")
-                    sets.append("title = ?")
-                    vals.append(payload.title.strip())
-                if payload.body is not None:
-                    sets.append("body = ?")
-                    vals.append(payload.body)
-                vals.append(task_id)
-                conn.execute(
-                    f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
-                )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
+                _apply_task_patch(
+                    _SavepointConn(conn), task_id, payload,
+                    parsed_evidence, parsed_intent,
                 )
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
     finally:
         conn.close()
+
+
+def _apply_task_patch(conn, task_id: str, payload: UpdateTaskBody,
+                      parsed_evidence, parsed_intent) -> None:
+    """Apply every mutation in ``payload`` to ``task_id``.
+
+    Called by :func:`update_task` with a :class:`_SavepointConn` facade
+    inside its single enclosing ``write_txn``; raising anything (an
+    HTTPException for a 400/409, or an unexpected error) rolls back the
+    whole request. Static payload validation has already run — only
+    semantic failures (invalid transition, parent gating, reassigning a
+    claimed running task) reject from here.
+    """
+    # --- assignee ----------------------------------------------------
+    if payload.assignee is not None:
+        try:
+            ok = kanban_db.assign_task(
+                conn, task_id, payload.assignee or None,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        if not ok:
+            raise HTTPException(status_code=404, detail="task not found")
+
+    # --- status -------------------------------------------------------
+    if payload.status is not None:
+        s = payload.status
+        ok = True
+        if s == "done":
+            ok = kanban_db.complete_task(
+                conn, task_id,
+                result=payload.result,
+                summary=payload.summary,
+                metadata=payload.metadata,
+            )
+        elif s == "blocked":
+            ok = kanban_db.block_task(
+                conn, task_id,
+                reason=payload.block_reason,
+                kind=payload.block_kind,
+                evidence=(
+                    parsed_evidence.to_block_evidence()
+                    if parsed_evidence is not None else None
+                ),
+            )
+        elif s == "scheduled":
+            ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
+        elif s == "ready":
+            # Re-open a blocked/scheduled task, or just an explicit status set.
+            current = kanban_db.get_task(conn, task_id)
+            if current and current.status in ("blocked", "scheduled"):
+                ok = kanban_db.unblock_task(conn, task_id, intent=parsed_intent)
+            else:
+                if parsed_intent is not None:
+                    # Verifier material aimed at a task that isn't blocked/
+                    # scheduled can never grant a bypass — caller bug.
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "intent is only accepted when re-opening a "
+                            "blocked or scheduled task"
+                        ),
+                    )
+                # Direct status write for drag-drop (todo -> ready etc).
+                ok = _set_status_direct(conn, task_id, "ready")
+        elif s == "archived":
+            ok = kanban_db.archive_task(conn, task_id)
+        elif s in ("todo", "triage"):
+            ok = _set_status_direct(conn, task_id, s)
+        else:  # unreachable — status vetted against _PATCH_STATUSES upstream
+            raise HTTPException(status_code=400, detail=f"unknown status: {s}")
+        if not ok:
+            # For ``ready``, name the blocking parent(s) so the dashboard
+            # can render an actionable toast instead of a silent no-op.
+            # See #26744.
+            if s == "ready":
+                blockers = _parents_blocking_ready(conn, task_id)
+                if blockers:
+                    names = ", ".join(
+                        f"{p['title']!r} ({p['id']}, status={p['status']})"
+                        for p in blockers
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Cannot move to 'ready': blocked by parent(s) "
+                            f"not done — {names}"
+                        ),
+                    )
+            raise HTTPException(
+                status_code=409,
+                detail=f"status transition to {s!r} not valid from current state",
+            )
+
+    # --- priority -----------------------------------------------------
+    if payload.priority is not None:
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET priority = ? WHERE id = ?",
+                (int(payload.priority), task_id),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'reprioritized', ?, ?)",
+                (task_id, json.dumps({"priority": int(payload.priority)}),
+                 int(time.time())),
+            )
+
+    # --- title / body -------------------------------------------------
+    if payload.title is not None or payload.body is not None:
+        with kanban_db.write_txn(conn):
+            sets, vals = [], []
+            if payload.title is not None:
+                sets.append("title = ?")
+                vals.append(payload.title.strip())
+            if payload.body is not None:
+                sets.append("body = ?")
+                vals.append(payload.body)
+            vals.append(task_id)
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'edited', NULL, ?)",
+                (task_id, int(time.time())),
+            )
 
 
 # ---------------------------------------------------------------------------

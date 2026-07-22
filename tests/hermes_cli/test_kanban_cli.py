@@ -565,3 +565,272 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# unblock --intent — protected-merge-verifier bypass plumbing
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/acme/repo/pull/42"
+_HEAD_SHA = "abc123def456abc123def456abc123def456abc"
+_BASE_BRANCH = "main"
+
+
+def _seed_merge_verifier_blocked_task(conn, tid: str) -> None:
+    kb.claim_task(conn, tid)
+    assert kb.block_task(
+        conn, tid, reason="verify merge", kind="needs_input",
+        evidence={"pr_url": _PR_URL, "head": _HEAD_SHA, "base": _BASE_BRANCH},
+    )
+    kb.add_comment(conn, tid, "worker", f"Opened {_PR_URL}")
+
+
+def _intent_json(**overrides) -> str:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": _PR_URL,
+        "approved_head": _HEAD_SHA,
+        "approved_base": _BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def test_run_slash_unblock_no_intent_preserves_default_behavior(kanban_home):
+    """Default compatibility: omitting --intent is unchanged from before
+    this feature existed."""
+    out = kc.run_slash("create 'x' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need decision'")
+    assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_run_slash_unblock_with_valid_intent_grants_bypass(kanban_home):
+    import re
+    import shlex
+
+    out = kc.run_slash("create 'merge task' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        _seed_merge_verifier_blocked_task(conn, tid)
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+    out = kc.run_slash(f"unblock {tid} --intent {shlex.quote(_intent_json())}")
+    assert "Unblocked" in out
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None  # bypass consumed
+
+
+def test_run_slash_unblock_rejects_unknown_intent_kind(kanban_home):
+    import re
+    import shlex
+
+    out = kc.run_slash("create 'merge task 2' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        _seed_merge_verifier_blocked_task(conn, tid)
+
+    bad_json = shlex.quote(_intent_json(kind="not_a_real_kind"))
+    result = kc.run_slash(f"unblock {tid} --intent {bad_json}")
+    assert "intent" in result.lower()
+
+    # Rejected intent must not have unblocked the task or granted a bypass.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_run_slash_unblock_rejects_free_text_intent(kanban_home):
+    import re
+    import shlex
+
+    out = kc.run_slash("create 'merge task 3' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        _seed_merge_verifier_blocked_task(conn, tid)
+
+    result = kc.run_slash(
+        f"unblock {tid} --intent {shlex.quote('PR was merged, go ahead')}"
+    )
+    assert "intent" in result.lower()
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_run_slash_unblock_intent_rejected_with_multiple_ids(kanban_home):
+    """--intent is scoped to one task's PR evidence; bulk unblock + intent
+    is refused rather than silently applying the same intent to every id
+    (mirrors the existing --summary/--metadata bulk guard on complete)."""
+    import re
+    import shlex
+
+    out_a = kc.run_slash("create 'a' --assignee alice")
+    out_b = kc.run_slash("create 'b' --assignee alice")
+    tid_a = re.search(r"(t_[a-f0-9]+)", out_a).group(1)
+    tid_b = re.search(r"(t_[a-f0-9]+)", out_b).group(1)
+    with kb.connect() as conn:
+        kb.claim_task(conn, tid_a)
+        kb.block_task(conn, tid_a, reason="x")
+        kb.claim_task(conn, tid_b)
+        kb.block_task(conn, tid_b, reason="x")
+
+    result = kc.run_slash(
+        f"unblock {tid_a} {tid_b} --intent {shlex.quote(_intent_json())}"
+    )
+    assert "intent" in result.lower()
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid_a).status == "blocked"
+        assert kb.get_task(conn, tid_b).status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# block --evidence — typed protected-merge verifier evidence at block time
+# ---------------------------------------------------------------------------
+
+def _evidence_json(**overrides) -> str:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": _PR_URL,
+        "head": _HEAD_SHA,
+        "base": _BASE_BRANCH,
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def _create_running_task(title: str) -> str:
+    import re
+    import shlex
+
+    out = kc.run_slash(f"create {shlex.quote(title)} --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        kb.claim_task(conn, tid)
+    return tid
+
+
+def _stored_block_evidence(tid: str):
+    with kb.connect() as conn:
+        return conn.execute(
+            "SELECT block_evidence FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()["block_evidence"]
+
+
+def _comment_count(tid: str) -> int:
+    with kb.connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS c FROM task_comments WHERE task_id = ?", (tid,),
+        ).fetchone()["c"]
+
+
+def test_run_slash_block_with_valid_evidence_records_it(kanban_home):
+    import shlex
+
+    tid = _create_running_task("merge verify block")
+    out = kc.run_slash(
+        f"block {tid} 'verify merge' --kind needs_input "
+        f"--evidence {shlex.quote(_evidence_json())}"
+    )
+    assert "Blocked" in out
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+    assert json.loads(_stored_block_evidence(tid)) == {
+        "pr_url": _PR_URL, "head": _HEAD_SHA, "base": _BASE_BRANCH,
+    }
+
+
+def test_run_slash_block_evidence_reaches_bypass_dispatch(kanban_home):
+    """Surface-to-dispatch: evidence recorded via `block --evidence` must be
+    exactly what a later `unblock --intent` validates a bypass against."""
+    import shlex
+
+    tid = _create_running_task("merge verify roundtrip")
+    kc.run_slash(
+        f"block {tid} 'verify merge' --kind needs_input "
+        f"--evidence {shlex.quote(_evidence_json())}"
+    )
+    with kb.connect() as conn:
+        kb.add_comment(conn, tid, "worker", f"Opened {_PR_URL}")
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+    out = kc.run_slash(f"unblock {tid} --intent {shlex.quote(_intent_json())}")
+    assert "Unblocked" in out
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None  # bypass consumed
+
+
+@pytest.mark.parametrize("kind_args", ["--kind capability", ""],
+                         ids=["capability", "untyped"])
+def test_run_slash_block_evidence_requires_needs_input_kind(kanban_home, kind_args):
+    import shlex
+
+    tid = _create_running_task("wrong kind")
+    result = kc.run_slash(
+        f"block {tid} 'x' {kind_args} --evidence {shlex.quote(_evidence_json())}"
+    )
+    assert "evidence" in result.lower()
+    assert "usage error" not in result  # our validation, not argparse
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"  # unmutated
+    assert _stored_block_evidence(tid) is None
+    assert _comment_count(tid) == 0  # rejected BEFORE the BLOCKED: comment
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("PR was approved, trust me", id="free-text"),
+        pytest.param('{"kind": "not_a_real_kind", "pr_url": "x", "head": "y", "base": "z"}',
+                     id="unknown-kind"),
+        pytest.param('{"pr_url": "https://github.com/acme/repo/pull/42", "head": "abc"}',
+                     id="missing-base"),
+        pytest.param('["pr_url", "head", "base"]', id="json-array"),
+    ],
+)
+def test_run_slash_block_rejects_malformed_evidence(kanban_home, raw):
+    import shlex
+
+    tid = _create_running_task("malformed evidence")
+    result = kc.run_slash(
+        f"block {tid} 'x' --kind needs_input --evidence {shlex.quote(raw)}"
+    )
+    assert "evidence" in result.lower()
+    assert "usage error" not in result
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+    assert _stored_block_evidence(tid) is None
+    assert _comment_count(tid) == 0
+
+
+def test_run_slash_block_evidence_rejected_with_multiple_ids(kanban_home):
+    """--evidence describes ONE task's PR block; bulk block + evidence is
+    refused rather than stamping the same PR evidence onto every id
+    (mirrors the unblock --intent bulk guard)."""
+    import shlex
+
+    tid_a = _create_running_task("bulk a")
+    tid_b = _create_running_task("bulk b")
+    result = kc.run_slash(
+        f"block {tid_a} 'x' --ids {tid_b} --kind needs_input "
+        f"--evidence {shlex.quote(_evidence_json())}"
+    )
+    assert "evidence" in result.lower()
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid_a).status == "running"
+        assert kb.get_task(conn, tid_b).status == "running"
+
+
+def test_run_slash_block_without_evidence_preserves_default_behavior(kanban_home):
+    """Default compatibility: omitting --evidence is unchanged from before
+    this feature existed."""
+    tid = _create_running_task("plain block")
+    out = kc.run_slash(f"block {tid} 'need input' --kind needs_input")
+    assert "Blocked" in out
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+    assert _stored_block_evidence(tid) is None

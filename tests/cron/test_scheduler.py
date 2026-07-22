@@ -1284,6 +1284,31 @@ class TestRunJobSessionPersistence:
             "cronjob", "messaging", "clarify", "terminal", "file",
         }
 
+    def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
+        """memory toolset must be disabled in cron sessions — issue #38129.
+
+        When skip_memory=True, the memory backend is not initialised, so the
+        memory tool would fail at runtime with "Memory is not available."
+        Hiding the tool from the schema prevents the model from calling it.
+        """
+        job = {
+            "id": "memory-hide-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert "memory" in (kwargs["disabled_toolsets"] or []), (
+            "memory toolset should be disabled in cron to match skip_memory=True"
+        )
+
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now
         resolves them from ``hermes tools`` platform config for ``cron``

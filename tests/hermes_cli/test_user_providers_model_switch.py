@@ -1262,3 +1262,64 @@ def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     for row in providers:
         if row["slug"] != "openrouter" and not row.get("is_current"):
             assert custom not in row.get("models", []), f"leaked into {row['slug']}"
+
+
+# =============================================================================
+# #66329: a named providers: entry whose runtime provider resolves to "custom"
+# must group the active model under the named provider, not a duplicate bare
+# "Custom endpoint" fallback row.
+# =============================================================================
+
+def test_named_provider_current_via_custom_alias_no_duplicate_row(monkeypatch):
+    """Runtime clobbers a named ``providers:`` entry to provider='custom', but
+    the picker must mark ONLY the named provider row current — not also emit a
+    bare 'Custom endpoint' fallback for the same endpoint (#66329)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "ocg": {
+            "name": "OpenCode Go",
+            "api": "http://localhost:20128/v1",
+            "models": {"ocg/mimo-v2.5": {}},
+        }
+    }
+    providers = list_authenticated_providers(
+        current_provider="custom",  # runtime resolves named provider -> "custom"
+        current_base_url="http://localhost:20128/v1",
+        current_model="ocg/mimo-v2.5",
+        user_providers=user_providers,
+        custom_providers=[],
+        probe_custom_providers=False,
+        max_models=50,
+    )
+
+    current_rows = [p for p in providers if p.get("is_current")]
+    assert [p["slug"] for p in current_rows] == ["ocg"], (
+        f"expected only the named provider current, got "
+        f"{[(p['slug'], p['name']) for p in current_rows]}"
+    )
+    # The spurious bare fallback row must not be emitted at all.
+    assert not any(p["slug"] == "custom" for p in providers)
+
+
+def test_bare_custom_endpoint_still_surfaced_when_no_named_provider(monkeypatch):
+    """Guard against over-suppression: a genuine ``model.provider: custom`` +
+    ``base_url`` with no matching ``providers:`` entry must still surface the
+    'Custom endpoint' row so /model doesn't look like it ignored config."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="http://localhost:9999/v1",
+        current_model="local/foo",
+        user_providers=None,
+        custom_providers=[],
+        probe_custom_providers=False,
+        max_models=50,
+    )
+
+    assert any(
+        p["slug"] == "custom" and p.get("is_current") for p in providers
+    ), f"bare custom endpoint row missing: {[(p['slug'], p.get('is_current')) for p in providers]}"

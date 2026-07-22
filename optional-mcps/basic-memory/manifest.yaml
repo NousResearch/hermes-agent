@@ -1,0 +1,64 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: basic-memory
+description: Local-first knowledge graph and memory MCP for notes, context, and project recall.
+source: https://github.com/basicmachines-co/basic-memory
+homepage: https://basicmemory.com
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - --from
+    - basic-memory
+    - bm
+    - mcp
+    - --transport
+    - stdio
+
+auth:
+  type: none
+
+# Useful default surface, while avoiding destructive and admin-only tools.
+# Users can enable additional tools with:
+#   hermes mcp configure basic-memory
+tools:
+  default_enabled:
+    - search_notes
+    - read_note
+    - write_note
+    - edit_note
+    - move_note
+    - build_context
+    - recent_activity
+    - list_directory
+    - list_memory_projects
+    - list_workspaces
+    - create_memory_project
+    - cloud_info
+    - schema_validate
+    - schema_infer
+    - schema_diff
+
+post_install: |
+  Basic Memory runs locally over stdio — no server process to start.
+
+  For local-first use, configure a project with:
+    bm project add <name> <path>
+    bm project default <name>
+
+  For Basic Memory Cloud, authenticate first:
+    bm cloud login
+    # or:
+    bm cloud api-key save bmc_...
+
+  Then link a project to a cloud workspace:
+    bm project set-cloud <project> --workspace <workspace>
+
+  Restart Hermes or run /reload-mcp so the Basic Memory tools are loaded.
+
+  Note: this catalog entry exposes Basic Memory as ordinary MCP tools.
+  For Hermes-native memory capture, session transcripts, and bm_* tool
+  aliases, use the hermes-basic-memory memory-provider plugin instead.

@@ -2161,8 +2161,13 @@ class TestWebServerEndpoints:
         assert [m["content"] for m in payload["messages"]] == ["after compression"]
 
     def test_get_session_messages_pages_compacted_history_from_end(self):
-        """History clients can start at the newest page, then page backward
-        through pre-compaction turns without exposing rewound rows."""
+        """The tail selector returns an absolute cursor for older pages.
+
+        ``from_end`` deliberately overrides any legacy absolute offset on the
+        initial request.  Clients then omit it and page backward from the
+        returned offset, including through compacted rows while excluding
+        rewound rows.
+        """
         from hermes_state import SessionDB
 
         db = SessionDB()
@@ -2187,7 +2192,7 @@ class TestWebServerEndpoints:
 
         latest = self.client.get(
             "/api/sessions/long-chat/messages"
-            "?include_compacted=true&from_end=true&limit=2",
+            "?include_compacted=true&from_end=true&limit=2&offset=99",
         )
         assert latest.status_code == 200
         latest_payload = latest.json()
@@ -2202,9 +2207,10 @@ class TestWebServerEndpoints:
             "total": 5,
         }
 
+        previous_offset = max(latest_payload["pagination"]["offset"] - 3, 0)
         oldest = self.client.get(
             "/api/sessions/long-chat/messages"
-            "?include_compacted=true&limit=3&offset=0",
+            f"?include_compacted=true&limit=3&offset={previous_offset}",
         )
         assert oldest.status_code == 200
         assert [m["content"] for m in oldest.json()["messages"]] == [

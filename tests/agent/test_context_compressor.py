@@ -3741,3 +3741,93 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestCompactionRetainsMemorySystemPrompt:
+    """Compaction must preserve the memory-bearing system prompt and inject the
+    authoritative-memory reminder during real compaction.
+
+    Regression guard for #17251: earlier versions labeled compacted content as
+    'background reference, NOT active instructions' which caused the agent to
+    ignore MEMORY.md/USER.md after compaction.  The production fix is at
+    agent/context_compressor.py:2072-2079 — the compress() method appends a
+    compression note to the system message that explicitly states persistent
+    memory remains authoritative.
+    """
+
+    def test_compress_retains_system_prompt_with_memory_reminder(self):
+        """Compressed transcript must retain the memory-bearing system prompt
+        and inject the authoritative-memory reminder."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        system_content = (
+            "You are a helpful assistant. Your memory is stored in MEMORY.md "
+            "and USER.md. Always consult these files for context."
+        )
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "and another thing"},
+            {"role": "assistant", "content": "sure"},
+            {"role": "user", "content": "one more"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Summary of earlier conversation turns."
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(messages)
+
+        # 1) System message must be retained (first message).
+        assert result[0]["role"] == "system"
+
+        # 2) System message content must contain the authoritative-memory
+        #    reminder injected by compress() (lines 2072-2079).
+        sys_content = result[0].get("content", "")
+        assert "MEMORY.md" in sys_content
+        assert "USER.md" in sys_content
+        assert "authoritative" in sys_content.lower()
+
+        # 3) The summary message must use the current SUMMARY_PREFIX.
+        summary_msgs = [m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)]
+        assert len(summary_msgs) >= 1, "expected at least one SUMMARY_PREFIX message"
+        assert summary_msgs[0]["content"].startswith(SUMMARY_PREFIX)
+
+        # 4) The original system prompt text must survive (not be replaced).
+        assert "Always consult these files for context" in sys_content
+
+    def test_compress_summary_prefix_uses_current_prefix_not_legacy(self):
+        """SUMMARY_PREFIX must be the current version, not a legacy prefix."""
+        from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Summary of earlier turns."
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(messages)
+
+        # Summary may be standalone or merged into the tail — check both.
+        # Also check the legacy prefix is never used.
+        all_content = " ".join(m.get("content", "") for m in result)
+        assert SUMMARY_PREFIX in all_content
+        assert LEGACY_SUMMARY_PREFIX not in all_content

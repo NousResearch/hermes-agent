@@ -2591,11 +2591,14 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     this path: ``MEDIA:`` tags, bare local files, and internal directives. Keep
     ordinary image URLs in the visible text until the queued path grows native
     image-URL delivery too.
+
+    Do not apply a broad ``MEDIA:`` regex after ``extract_media()`` — the
+    extractor deliberately preserves protected code/inline spans and
+    unsupported or unvalidated tags in the cleaned text.
     """
     _, cleaned = adapter.extract_media(response)
     cleaned = cleaned.replace("[[audio_as_voice]]", "").strip()
     cleaned = cleaned.replace("[[as_document]]", "").strip()
-    cleaned = re.sub(r"MEDIA:\s*\S+", "", cleaned).strip()
     _, cleaned = adapter.extract_local_files(cleaned)
     return cleaned.strip()
 

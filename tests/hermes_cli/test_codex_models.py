@@ -57,6 +57,16 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert "gpt-5.3-codex-spark" in models
 
 
+def test_curated_fallback_excludes_unverified_pro_variants(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    models = get_codex_model_ids()
+
+    assert not any(model.endswith("-pro") for model in models)
+
+
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
@@ -75,6 +85,29 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
         "gpt-5.4",
         "gpt-5.3-codex-spark",
     ]
+
+
+def test_live_catalog_only_surfaces_pro_variants_when_advertised(monkeypatch):
+    advertised = [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: list(advertised),
+    )
+
+    models = get_codex_model_ids(access_token="codex-access-token")
+
+    assert not any(model.endswith("-pro") for model in models)
+
+    advertised.append("gpt-5.6-sol-pro")
+    models = get_codex_model_ids(access_token="codex-access-token")
+
+    assert "gpt-5.6-sol-pro" in models
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):

@@ -571,6 +571,24 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.retryable is False
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "The 'gpt-5.6-sol-pro' model is not supported when using Codex "
+            "with a ChatGPT account.",
+            "ERROR: MODEL IS NOT SUPPORTED WHEN USING CODEX with a ChatGPT "
+            "account; choose another model.",
+        ],
+    )
+    def test_400_codex_chatgpt_unsupported_model_falls_back(self, message):
+        e = MockAPIError(message, status_code=400)
+
+        result = classify_api_error(e, provider="openai-codex")
+
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+        assert result.retryable is False
+
     def test_404_generic(self):
         # Generic 404 with no "model not found" signal — common for local
         # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat

@@ -1199,6 +1199,19 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # ChatGPT OAuth rejects account-ineligible Codex models with HTTP 400
+    # rather than 404. This is a model-route failure, not a malformed request:
+    # retrying the same slug cannot help, while a configured fallback can.
+    if (
+        provider == "openai-codex"
+        and "model is not supported when using codex" in error_msg
+    ):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # Multimodal tool content rejected from 400.  Must be checked BEFORE
     # image_too_large because the recovery is different (strip image parts
     # from tool messages, mark the model as no-list-tool-content for the

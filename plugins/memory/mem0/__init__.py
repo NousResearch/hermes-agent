@@ -363,6 +363,12 @@ class Mem0MemoryProvider(MemoryProvider):
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
         self._channel = kwargs.get("platform") or "cli"
+        # Reuse existing backend when already initialized — a single
+        # provider instance must share one Qdrant connection across
+        # sessions. User-level isolation is handled by mem0's own
+        # user_id filters on search/add, not by per-session backends.
+        if self._backend is not None:
+            return
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)

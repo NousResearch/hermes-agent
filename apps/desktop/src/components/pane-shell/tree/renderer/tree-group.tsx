@@ -201,7 +201,13 @@ export function TreeGroup({
   // empty column, so the minimized form is a narrow vertical rail instead
   // (tabs reading top-to-bottom). In a column (stacked zones) the horizontal
   // header IS the collapsed form, exactly as before.
-  const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty
+  //
+  // EXCEPTION: when the zone has ≥2 shown panes, keep the horizontal tab bar
+  // even when minimized — the user can still switch between terminal/logs
+  // without expanding the zone first. The vertical rail is only for a lone
+  // pane where the strip adds no value.
+  const verticalCollapse =
+    Boolean(node.minimized) && parentAxis === 'row' && !isEmpty && shown.length <= 1
   const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || !headerHidden)
 
   // Drag handles preventDefault pointerdown (no native dblclick), so the

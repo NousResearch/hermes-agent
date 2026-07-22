@@ -197,6 +197,7 @@ function setDismissed(paneId: string, dismissed: boolean) {
 
 const paneClosers: Record<string, () => void> = {}
 const paneOpeners: Record<string, () => void> = {}
+const paneOpenGetters: Record<string, () => boolean> = {}
 
 /** Route a pane's Close through the app store that owns its visibility. */
 export function registerPaneCloser(paneId: string, close: () => void) {
@@ -212,6 +213,13 @@ export function registerPaneCloser(paneId: string, close: () => void) {
  */
 export function registerPaneOpener(paneId: string, open: () => void) {
   paneOpeners[paneId] = open
+}
+
+/** Register a getter that reads a tool pane's open/closed state from its
+ *  owning store — so `setPaneCollapsed` can check if a sibling in the same
+ *  zone is still open before folding the whole zone. */
+export function registerPaneOpenGetter(paneId: string, getOpen: () => boolean) {
+  paneOpenGetters[paneId] = getOpen
 }
 
 // TOOL PANELS (terminal, logs, …): their toggle COLLAPSES the zone to a rail
@@ -1108,7 +1116,18 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
 
         activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
       } else {
-        toggleTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
+        // Pure tool zone: if another tool pane in this zone is still open,
+        // switch to it instead of folding the whole zone — so the tab bar
+        // stays visible and the user can switch between terminal/logs freely.
+        const openSibling = group.panes.find(
+          id => id !== paneId && isCollapsePane(id) && paneOpenGetters[id]?.()
+        )
+
+        if (openSibling) {
+          activateTreePane(group.id, openSibling)
+        } else {
+          toggleTreeGroupMinimized(group.id, true) // no open sibling — fold as a unit
+        }
       }
     } else if (!collapsed) {
       revealTreePane(paneId)

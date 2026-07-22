@@ -84,9 +84,10 @@ def test_get_proxy_for_base_url_respects_no_proxy(monkeypatch):
                 "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
-    monkeypatch.setenv("NO_PROXY", "internal.example.com")
+    monkeypatch.setenv("NO_PROXY", "internal.example.com,192.168.0.0/16")
 
     assert _get_proxy_for_base_url("https://litellm.internal.example.com/v1") is None
+    assert _get_proxy_for_base_url("http://192.168.12.34:11434/v1") is None
     assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://127.0.0.1:7897"
 
 

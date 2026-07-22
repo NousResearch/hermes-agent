@@ -185,6 +185,11 @@ jobs:
           rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
           rg --version
 
+      - name: Set up Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
@@ -215,7 +220,7 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
-      - name: Packaged-wheel i18n smoke test
+      - name: Packaged-wheel runtime smoke test
         run: |
           source .venv/bin/activate
           python -m pytest -m integration tests/test_wheel_locales_e2e.py -v

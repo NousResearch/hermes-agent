@@ -22,19 +22,27 @@ from __future__ import annotations
 
 import glob
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import venv
+import zipfile
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PHOTON_SIDECAR_RUNTIME = {
+    "index.mjs",
+    "package-lock.json",
+    "package.json",
+    "patch-spectrum-mixed-attachments.mjs",
+}
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)  # overrides the global --timeout=30; cold-CI wheel build + venv + pip can exceed it
+@pytest.mark.timeout(600)  # cold-CI wheel build + npm binary download + venv/pip can exceed five minutes
 def test_installed_wheel_renders_i18n_strings(tmp_path):
     # 1. Build the wheel from the current tree.
     wheel_dir = tmp_path / "wheel"
@@ -49,6 +57,64 @@ def test_installed_wheel_renders_i18n_strings(tmp_path):
     wheels = glob.glob(str(wheel_dir / "*.whl"))
     assert wheels, "no wheel produced"
     wheel = wheels[0]
+
+    wheel_extract = tmp_path / "wheel-extract"
+    with zipfile.ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+        for member in names:
+            if member.startswith("plugins/platforms/photon/sidecar/"):
+                archive.extract(member, wheel_extract)
+    expected_sidecar = {
+        f"plugins/platforms/photon/sidecar/{name}"
+        for name in PHOTON_SIDECAR_RUNTIME
+    }
+    assert expected_sidecar <= names, (
+        f"wheel missing Photon sidecar runtime files: {sorted(expected_sidecar - names)}"
+    )
+
+    # Exercise the exact packaged sidecar, not the source checkout. The static
+    # binary is optional on unsupported hosts, but must install and transcode on
+    # this supported Linux CI runner without falling back to a system ffmpeg.
+    sidecar = wheel_extract / "plugins/platforms/photon/sidecar"
+    npm = shutil.which("npm")
+    node = shutil.which("node")
+    assert npm and node, "packaged Photon smoke requires Node.js and npm"
+    install = subprocess.run(
+        [npm, "ci"],
+        cwd=sidecar,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert install.returncode == 0, f"packaged Photon npm ci failed:\n{install.stderr}"
+
+    probe = r"""
+import { execFileSync } from "node:child_process";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import ffmpegPath from "ffmpeg-static";
+import { ensureM4a } from "@spectrum-ts/core/authoring";
+const input = join(tmpdir(), `hermes-wheel-photon-${process.pid}.mp3`);
+execFileSync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.08", "-codec:a", "libmp3lame", "-y", input]);
+const { buffer } = await ensureM4a(readFileSync(input), "audio/mpeg");
+rmSync(input, { force: true });
+if (buffer.subarray(4, 8).toString("ascii") !== "ftyp") process.exit(2);
+"""
+    no_system_bin = tmp_path / "no-system-bin"
+    no_system_bin.mkdir()
+    transcode = subprocess.run(
+        [node, "--input-type=module", "-e", probe],
+        cwd=sidecar,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(no_system_bin)},
+        timeout=120,
+    )
+    assert transcode.returncode == 0, (
+        "packaged Photon static-ffmpeg transcode failed without system ffmpeg:\n"
+        f"stdout: {transcode.stdout}\nstderr: {transcode.stderr}"
+    )
 
     # 2. Fresh venv, install the wheel WITHOUT deps (we only exercise i18n,
     #    which needs pyyaml). --force-reinstall guards against pip's
@@ -124,9 +190,19 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     assert tarballs, "no sdist produced"
 
     with tarfile.open(tarballs[0]) as tf:
+        names = tf.getnames()
         # Members are prefixed with the sdist root dir, e.g.
         # hermes_agent-0.15.1/locales/en.yaml — match on the suffix.
-        catalogs = [m for m in tf.getnames() if "/locales/" in m and m.endswith(".yaml")]
+        catalogs = [m for m in names if "/locales/" in m and m.endswith(".yaml")]
+
+    missing_sidecar = {
+        name
+        for name in PHOTON_SIDECAR_RUNTIME
+        if not any(m.endswith(f"/plugins/platforms/photon/sidecar/{name}") for m in names)
+    }
+    assert not missing_sidecar, (
+        f"sdist missing Photon sidecar runtime files: {sorted(missing_sidecar)}"
+    )
 
     # Compare against the canonical language list rather than a hardcoded floor
     # so adding/removing a catalog updates the guard automatically and a dropped

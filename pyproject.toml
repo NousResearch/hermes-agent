@@ -355,6 +355,10 @@ plugins = [
   "**/plugin.yaml",
   "**/plugin.yml",
   "**/README.md",
+  # Photon starts a Node sidecar from the installed plugins package. Keep its
+  # runtime and deterministic lockfile in wheels; README-only is not runnable.
+  "platforms/photon/sidecar/*.mjs",
+  "platforms/photon/sidecar/*.json",
 ]
 
 [tool.setuptools.packages.find]

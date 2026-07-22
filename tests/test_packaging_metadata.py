@@ -1,4 +1,5 @@
 import ast
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -154,6 +155,30 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     assert "recursive-include plugins" in manifest and "plugin.yaml" in manifest, (
         "MANIFEST.in must recursive-include plugins plugin.yaml/plugin.yml (sdist)"
     )
+
+
+def test_photon_sidecar_runtime_ships_and_ffmpeg_is_optional():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    plugin_data = data["tool"]["setuptools"]["package-data"]["plugins"]
+    assert "platforms/photon/sidecar/*.mjs" in plugin_data
+    assert "platforms/photon/sidecar/*.json" in plugin_data
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "include plugins/platforms/photon/sidecar/*.mjs" in manifest
+    assert "include plugins/platforms/photon/sidecar/*.json" in manifest
+
+    package = json.loads(
+        (REPO_ROOT / "plugins/platforms/photon/sidecar/package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert package["optionalDependencies"]["ffmpeg-static"] == "5.2.0"
+    assert "ffmpeg-static" not in package["dependencies"]
+
+    osv_workflow = (REPO_ROOT / ".github/workflows/osv-scanner.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "--lockfile=plugins/platforms/photon/sidecar/package-lock.json" in osv_workflow
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in

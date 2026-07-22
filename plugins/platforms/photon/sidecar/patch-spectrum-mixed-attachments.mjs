@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKER = "Hermes patch: Preserve mixed text + attachment iMessage payloads";
+const VOICE_MARKER = "Hermes patch: Upload transcoded voice with an M4A filename";
 
 function scriptDir() {
   return path.dirname(fileURLToPath(import.meta.url));
@@ -115,6 +116,15 @@ function patchChildIndices(source) {
   );
 }
 
+function patchVoiceUploadName(source) {
+  return replaceOnce(
+    source,
+    `\tconst name = content.name ?? "voice.m4a";`,
+    `\t// Spectrum transcodes the bytes; keep the iMessage filename aligned.\n\tconst name = (content.name?.replace(/\\.[^./]+$/, "") || "voice") + ".m4a";`,
+    "voice upload filename"
+  );
+}
+
 export function patchSpectrumTs(root = scriptDir()) {
   const dist = path.join(
     root,
@@ -132,7 +142,7 @@ export function patchSpectrumTs(root = scriptDir()) {
 
   for (const file of files) {
     const raw = fs.readFileSync(file, "utf8");
-    if (raw.includes(MARKER)) {
+    if (raw.includes(MARKER) && raw.includes(VOICE_MARKER)) {
       return { patched: false, file, reason: "already patched" };
     }
     // Normalize to LF for matching so the patch works regardless of the
@@ -149,10 +159,16 @@ export function patchSpectrumTs(root = scriptDir()) {
       continue;
     }
     let patched = original;
-    patched = patchRebuild(patched);
-    patched = patchInbound(patched);
-    patched = patchChildIndices(patched);
-    patched = `// ${MARKER}\n${patched}`;
+    if (!patched.includes(MARKER)) {
+      patched = patchRebuild(patched);
+      patched = patchInbound(patched);
+      patched = patchChildIndices(patched);
+      patched = `// ${MARKER}\n${patched}`;
+    }
+    if (!patched.includes(VOICE_MARKER)) {
+      patched = patchVoiceUploadName(patched);
+      patched = `// ${VOICE_MARKER}\n${patched}`;
+    }
     if (usedCRLF) {
       patched = patched.split("\n").join(CRLF);
     }

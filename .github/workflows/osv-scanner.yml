@@ -43,11 +43,12 @@ jobs:
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
-      # the three sources of truth and skip vendored / test / worktree dirs.
+      # the four sources of truth and skip vendored / test / worktree dirs.
       scan-args: |-
         --lockfile=uv.lock
         --lockfile=package-lock.json
         --lockfile=website/package-lock.json
+        --lockfile=plugins/platforms/photon/sidecar/package-lock.json
       fail-on-vuln: false
 
   emit-status:

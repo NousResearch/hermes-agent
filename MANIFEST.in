@@ -8,6 +8,10 @@ graft locales
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# Photon launches this Node sidecar at runtime. Ship its source and npm lock in
+# sdists without recursively including a developer's node_modules directory.
+include plugins/platforms/photon/sidecar/*.mjs
+include plugins/platforms/photon/sidecar/*.json
 # Gateway assets include images plus YAML catalogs such as status_phrases.yaml.
 recursive-include gateway/assets *
 global-exclude __pycache__

@@ -4939,7 +4939,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not (
             isinstance(result, dict)
             and result.get("type") == "queue_management"
-            and result.get("action") in {"list", "remove", "clear"}
+            and result.get("action") in {"list", "remove", "clear", "steer"}
             and result.get("ok") is True
         ):
             raise RuntimeError("Invalid queue manager snapshot response")
@@ -8066,6 +8066,7 @@ def _define_discord_view_classes() -> None:
             self.selected_queue_id: Optional[str] = None
             self.confirming_clear = False
             self._clear_queue_ids: Optional[List[str]] = None
+            self._steer_queue_id: Optional[str] = None
             self.expired = False
             self._message = None
             self._items: List[Dict[str, Any]] = []
@@ -8113,6 +8114,8 @@ def _define_discord_view_classes() -> None:
             self.page = min(max(0, self.page), max_page)
             if self.selected_queue_id not in seen_ids:
                 self.selected_queue_id = None
+            if self._steer_queue_id not in seen_ids:
+                self._steer_queue_id = None
             self._build_components()
 
         @property
@@ -8142,6 +8145,16 @@ def _define_discord_view_classes() -> None:
                     f"**Clear all {len(self._items)} queued prompt(s)?**\n"
                     "This clears the displayed user turns from this session and "
                     "cannot be undone. New arrivals are preserved."
+                )
+            if self._steer_queue_id:
+                item = self._item_for_id(self._steer_queue_id)
+                preview = item["preview"] if item is not None else "this prompt"
+                return (
+                    "**Steer selected queued prompt?**\n"
+                    f"{preview}\n\n"
+                    "It will be injected after the next tool call and removed from "
+                    "the queue. This is available while the current run owns the "
+                    "turn; new arrivals are preserved."
                 )
             if not self._items:
                 return (
@@ -8182,6 +8195,22 @@ def _define_discord_view_classes() -> None:
                     custom_id="queue_manager_clear_cancel",
                 )
                 cancel.callback = self._on_clear_cancel
+                self.add_item(cancel)
+                return
+            if self._steer_queue_id:
+                confirm = discord.ui.Button(
+                    label="Confirm steer",
+                    style=discord.ButtonStyle.primary,
+                    custom_id="queue_manager_steer_confirm",
+                )
+                confirm.callback = self._on_steer_confirm
+                self.add_item(confirm)
+                cancel = discord.ui.Button(
+                    label="Cancel",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id="queue_manager_steer_cancel",
+                )
+                cancel.callback = self._on_steer_cancel
                 self.add_item(cancel)
                 return
 
@@ -8246,6 +8275,15 @@ def _define_discord_view_classes() -> None:
             )
             delete.callback = self._on_delete
             self.add_item(delete)
+
+            steer = discord.ui.Button(
+                label="Steer selected",
+                style=discord.ButtonStyle.primary,
+                custom_id="queue_manager_steer",
+                disabled=self._item_for_id(self.selected_queue_id) is None,
+            )
+            steer.callback = self._on_steer
+            self.add_item(steer)
 
             clear = discord.ui.Button(
                 label="Clear all",
@@ -8454,6 +8492,90 @@ def _define_discord_view_classes() -> None:
                 notice = (
                     "That queued prompt already started or is no longer queued. "
                     "No other queued turn was removed."
+                )
+            await self._edit(interaction, notice=notice)
+
+        async def _on_steer(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            queue_id = self.selected_queue_id
+            if not queue_id or self._item_for_id(queue_id) is None:
+                await self._send_neutral(
+                    interaction,
+                    "Select an available queued prompt before steering.",
+                )
+                return
+            if not await self._refresh_items(interaction):
+                return
+            if self._item_for_id(queue_id) is None:
+                await self._send_neutral(
+                    interaction,
+                    "That queued prompt is no longer available. Refresh the manager.",
+                )
+                return
+            self._steer_queue_id = queue_id
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_steer_cancel(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            if not self._steer_queue_id:
+                await self._send_neutral(interaction, "That confirmation is no longer active.")
+                return
+            if not await self._refresh_items(interaction):
+                return
+            self._steer_queue_id = None
+            self._build_components()
+            await self._edit(interaction)
+
+        async def _on_steer_confirm(self, interaction: discord.Interaction) -> None:
+            if not await self._authorized(interaction):
+                return
+            queue_id = self._steer_queue_id
+            if not queue_id:
+                await self._send_neutral(interaction, "That confirmation is no longer active.")
+                return
+            try:
+                result = await self._dispatch_action(interaction, "steer", queue_id)
+            except Exception:
+                logger.exception("[Discord] Queue manager steer failed")
+                await self._send_neutral(
+                    interaction, "The selected prompt could not be steered."
+                )
+                return
+            if isinstance(result, str):
+                await self._send_neutral(
+                    interaction, "Queue management is not permitted for this user."
+                )
+                return
+            steered = result.get("steered") if isinstance(result, dict) else None
+            if not (
+                isinstance(result, dict)
+                and result.get("type") == "queue_management"
+                and result.get("action") == "steer"
+                and result.get("ok") is True
+                and steered is True
+            ):
+                await self._send_neutral(
+                    interaction,
+                    "That queued prompt cannot be steered right now. No queued turn was removed.",
+                )
+                return
+            self._steer_queue_id = None
+            self.selected_queue_id = None
+            if not await self._apply_snapshot_result(result):
+                await self._send_neutral(
+                    interaction,
+                    "The queue changed before the updated view could be loaded. Open a fresh manager.",
+                )
+                return
+            notice = "Steered the selected prompt into the current run."
+            if result.get("removed") is False:
+                notice = (
+                    "The prompt was steered, but it remains queued because durable "
+                    "removal did not complete. Open a fresh manager before making "
+                    "another change."
                 )
             await self._edit(interaction, notice=notice)
 

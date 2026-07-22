@@ -5679,9 +5679,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         events = self._snapshot_fifo_events(session_key, adapter)
         if not any(
-            (marker := self._manageable_queue_metadata(event)) is not None
-            and marker["id"] == wanted_id
-            for event in events
+            marker is not None and marker["id"] == wanted_id
+            for marker in (self._manageable_queue_metadata(event) for event in events)
         ):
             return False
         if not await self._cancel_durable_queue_item(session_key, wanted_id):
@@ -5706,6 +5705,102 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not local_removed:
             return True
         return self._replace_fifo_events(session_key, adapter, kept)
+
+    async def _steer_manageable_queue_item(
+        self,
+        session_key: str,
+        queue_id: Any,
+        *,
+        adapter: Any,
+    ) -> tuple[bool, bool]:
+        """Inject one frozen queued turn into the active agent and consume it.
+
+        Returns ``(steered, removed)``. A failed steer leaves the FIFO and its
+        durable row untouched so a snapshot action can never silently discard a
+        user turn. Durable inbox-backed items remain owned by the inbox
+        dispatcher, so this UI action fails closed rather than risking replay.
+        """
+        wanted_id = str(queue_id).strip() if queue_id is not None else ""
+        if not wanted_id:
+            return False, False
+        events = self._snapshot_fifo_events(session_key, adapter)
+        target_event = None
+        for event in events:
+            marker = self._manageable_queue_metadata(event)
+            if marker is not None and marker["id"] == wanted_id:
+                target_event = event
+                break
+        if target_event is None:
+            return False, False
+        if getattr(target_event, "media_urls", None):
+            # /steer is text-only: injecting attachment paths as a tool-result
+            # marker would skip the normal media preprocessing pipeline.
+            return False, False
+        steer_text = str(getattr(target_event, "text", "") or "").strip()
+        running_agent = getattr(self, "_running_agents", {}).get(session_key)
+        if (
+            not steer_text
+            or running_agent is None
+            or running_agent is _AGENT_PENDING_SENTINEL
+            or not hasattr(running_agent, "steer")
+        ):
+            return False, False
+        try:
+            if not running_agent.steer(steer_text):
+                return False, False
+        except Exception:
+            logger.warning(
+                "Queue-manager steer failed for session %s", session_key, exc_info=True
+            )
+            return False, False
+        durable = getattr(self, "_inbox_store", None)
+        if durable is not None:
+            # A successful steer is outside the normal turn-completion path, so
+            # retire its durable row now. The helper passes only the stable ID
+            # and session scope to the inbox store; a concurrently claimed row
+            # fails closed rather than allowing a replay after restart.
+            try:
+                cancel = getattr(durable, "cancel")
+                removed = bool(
+                    await asyncio.to_thread(
+                        cancel,
+                        wanted_id,
+                        session_key=session_key,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Queue-manager durable steer cancellation failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
+                removed = False
+            if removed:
+                self._signal_inbox_dispatcher()
+            else:
+                # The steer has already been accepted. Keep the local item
+                # visible rather than falsely claiming it was consumed; the
+                # durable retry path remains authoritative.
+                return True, False
+        elif not await self._cancel_durable_queue_item(session_key, wanted_id):
+            return True, False
+
+        current_events = self._snapshot_fifo_events(session_key, adapter)
+        kept: List[MessageEvent] = []
+        local_removed = False
+        for event in current_events:
+            marker = self._manageable_queue_metadata(event)
+            if (
+                not local_removed
+                and marker is not None
+                and marker["id"] == wanted_id
+            ):
+                local_removed = True
+                continue
+            kept.append(event)
+        if not local_removed:
+            return True, True
+        return True, self._replace_fifo_events(session_key, adapter, kept)
 
     async def _clear_manageable_queue_items(
         self,
@@ -5834,7 +5929,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         action = str(request.get("action") or "list").strip().lower()
         operator = self._queue_owner_for_source(event.source) or session_key
         base = {"type": "queue_management", "action": action}
-        if action not in {"list", "remove", "clear"}:
+        # Enabling a native card action requires a frozen ID from the current
+        # snapshot, the same route/session proof as deletion, and re-entry
+        # through the authorized Gateway handler. This keeps steering from
+        # becoming an unscoped shortcut into an active agent.
+        if action not in {"list", "remove", "clear", "steer"}:
             return PrivateInteractionResult(
                 {**base, "ok": False, "error": "invalid_action"}
             )
@@ -5849,7 +5948,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return PrivateInteractionResult(
                 {**base, "ok": False, "error": "unavailable"}
             )
-        if action in {"remove", "clear"} and not isinstance(
+        if action in {"remove", "clear", "steer"} and not isinstance(
             expected_session_key, str
         ):
             return PrivateInteractionResult(
@@ -5909,7 +6008,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return PrivateInteractionResult(
                 {**base, "ok": False, "error": "snapshot_stale"}
             )
-        if action == "remove":
+        if action in {"remove", "steer"}:
             requested_ids: List[Any] = [
                 request.get("queue_id") or request.get("id")
             ]
@@ -5945,6 +6044,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             return _refreshed_snapshot_result(
                 {"removed": True, "queue_id": queue_id}
+            )
+        if action == "steer":
+            queue_id = selection.queue_ids[0]
+            steered, removed = await self._steer_manageable_queue_item(
+                session_key, queue_id, adapter=adapter
+            )
+            if not steered:
+                return _refreshed_snapshot_result(
+                    {
+                        "steered": False,
+                        "queue_id": queue_id,
+                        "error": "unavailable",
+                    }
+                )
+            if not removed:
+                # The active run accepted the steer but the durable cancellation
+                # did not commit. Keep a fresh snapshot visible so the user can
+                # see that the item remains queued rather than assuming removal.
+                return _refreshed_snapshot_result(
+                    {
+                        "steered": True,
+                        "removed": False,
+                        "queue_id": queue_id,
+                        "error": "not_consumed",
+                    }
+                )
+            return _refreshed_snapshot_result(
+                {"steered": True, "removed": True, "queue_id": queue_id}
             )
         removed_count = await self._clear_manageable_queue_items(
             session_key,

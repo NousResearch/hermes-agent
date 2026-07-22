@@ -111,6 +111,21 @@ class StubQueueRunner:
                 queue_id=queue_id,
                 error="not_found",
             )
+        if action == "steer":
+            queue_id = request.get("queue_id")
+            for index, item in enumerate(self.items):
+                if (item.get("queue_id") or item.get("id")) == queue_id:
+                    self.items.pop(index)
+                    return self._fresh_snapshot(
+                        "steer", steered=True, removed=True, queue_id=queue_id
+                    )
+            return self._fresh_snapshot(
+                "steer",
+                steered=False,
+                removed=False,
+                queue_id=queue_id,
+                error="not_found",
+            )
         if action == "clear":
             selected_ids = {str(queue_id) for queue_id in request.get("queue_ids") or []}
             before = len(self.items)
@@ -374,6 +389,39 @@ async def test_queue_manager_delete_clear_and_refresh_dispatch_through_gateway(a
 
 
 @pytest.mark.asyncio
+async def test_queue_manager_steer_dispatches_selected_item_through_gateway(adapter):
+    runner = _install_runner(adapter, StubQueueRunner([_queue_item(1), _queue_item(2)]))
+    opening = _interaction()
+    await adapter._open_queue_manager_slash(opening, "/queue")
+    view = _edited_view(opening)
+
+    selecting = _interaction(data={"values": ["opaque-1"]})
+    await _component(view, "queue_manager_select").callback(selecting)
+    steering = _interaction()
+    await _component(view, "queue_manager_steer").callback(steering)
+    assert view._steer_queue_id == "opaque-1"
+    assert [item["queue_id"] for item in runner.items] == ["opaque-1", "opaque-2"]
+
+    confirming = _interaction()
+    await _component(view, "queue_manager_steer_confirm").callback(confirming)
+
+    assert [item["queue_id"] for item in runner.items] == ["opaque-2"]
+    assert view.selected_queue_id is None
+    assert view._steer_queue_id is None
+    _assert_management_event(
+        runner.handler_calls[-1],
+        confirming,
+        "/queue",
+        "steer",
+        "opaque-1",
+        session_key="session:456",
+        snapshot_id="snapshot-3",
+    )
+    assert "steered" in confirming.response.edit_message.await_args.kwargs["content"].lower()
+    _assert_no_generic_delivery(adapter, runner)
+
+
+@pytest.mark.asyncio
 async def test_component_gateway_denial_is_neutral_and_has_zero_ui_mutation(adapter):
     runner = _install_runner(adapter, StubQueueRunner([_queue_item(1)]))
     opening = _interaction()
@@ -430,6 +478,9 @@ async def test_queue_manager_rechecks_live_authorization_on_every_component(adap
         ("queue_manager_previous", {"page": 1}),
         ("queue_manager_next", {}),
         ("queue_manager_delete", {"selected_queue_id": "opaque-1"}),
+        ("queue_manager_steer", {"selected_queue_id": "opaque-1"}),
+        ("queue_manager_steer_confirm", {"_steer_queue_id": "opaque-1"}),
+        ("queue_manager_steer_cancel", {"_steer_queue_id": "opaque-1"}),
         ("queue_manager_clear", {}),
         ("queue_manager_clear_confirm", {"confirming_clear": True}),
         ("queue_manager_clear_cancel", {"confirming_clear": True}),
@@ -450,6 +501,7 @@ async def test_queue_manager_rechecks_live_authorization_on_every_component(adap
         view.selected_queue_id = setup.get(
             "selected_queue_id", view.selected_queue_id
         )
+        view._steer_queue_id = setup.get("_steer_queue_id", view._steer_queue_id)
         view.confirming_clear = setup.get(
             "confirming_clear", view.confirming_clear
         )

@@ -286,6 +286,19 @@ def test_bind_claim_complete_and_cancel_are_state_guarded(tmp_path):
     assert store.get(second.queue_id).state == "cancelled"
 
 
+def test_claimed_row_cannot_be_cancelled_without_its_claim_token(tmp_path):
+    store = _store(tmp_path)
+    row = store.enqueue(_event("claimed"), session_key="claimed-session").row
+    claimed = store.claim(row.queue_id)
+
+    assert claimed is not None
+    queue_id = claimed.queue_id
+    assert store.cancel(queue_id, session_key="claimed-session") is False
+    restored = store.get(queue_id)
+    assert restored is not None
+    assert restored.state == "claimed"
+
+
 def test_claim_next_is_fifo_within_session_and_round_robin_across_sessions(tmp_path):
     store = _store(tmp_path)
     a1 = store.enqueue(_event("a1"), session_key="a").row

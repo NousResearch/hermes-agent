@@ -1053,6 +1053,212 @@ async def test_native_discord_remove_and_clear_are_session_scoped_and_structured
     running_agent.interrupt.assert_not_called()
 
 
+def _discord_queue_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.DISCORD,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+
+def _discord_queue_runner():
+    source = _discord_queue_source()
+    session_key = build_session_key(source)
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-discord",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner, adapter = _make_runner(session_entry)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.adapters = {Platform.DISCORD: adapter}
+    return runner, adapter, source, session_key
+
+
+def _explicit_discord_queue_event(source, text: str, queue_id: str) -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        source=source,
+        metadata={
+            "_hermes_explicit_queue": {
+                "id": queue_id,
+                "owner_user_id": "u1",
+                "created_at": "2026-07-22T00:00:00+00:00",
+                "origin": "explicit",
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_discord_steer_claims_selected_turn_and_preserves_later_fifo_items():
+    """A snapshot-bound steer consumes only the chosen queued turn.
+
+    The claimed item must not be replayed later as a normal turn; later FIFO
+    items stay queued and resume once the active run finishes.
+    """
+    runner, adapter, source, session_key = _discord_queue_runner()
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[session_key] = running_agent
+
+    def queued(text, queue_id):
+        return _explicit_discord_queue_event(source, text, queue_id)
+
+    selected = queued("focus on the retry path", "q-steer")
+    later = queued("write the regression test", "q-later")
+    for item in (selected, later):
+        await runner._enqueue_fifo(session_key, item, adapter)
+
+    opened = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={"_hermes_native_discord_queue_management": {"action": "list"}},
+        )
+    )
+    result = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={
+                "_hermes_native_discord_queue_management": {
+                    "action": "steer",
+                    "queue_id": "q-steer",
+                    "session_key": session_key,
+                    "snapshot_id": opened["snapshot_id"],
+                }
+            },
+        )
+    )
+
+    assert result["type"] == "queue_management"
+    assert result["action"] == "steer"
+    assert result["ok"] is True
+    assert result["steered"] is True
+    assert result["queue_id"] == "q-steer"
+    assert [item["id"] for item in result["items"]] == ["q-later"]
+    running_agent.steer.assert_called_once_with("focus on the retry path")
+    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+        "write the regression test"
+    ]
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_native_discord_steer_rejection_preserves_selected_fifo_item():
+    runner, adapter, source, session_key = _discord_queue_runner()
+    running_agent = MagicMock()
+    running_agent.steer.return_value = False
+    runner._running_agents[session_key] = running_agent
+
+    def queued(text, queue_id):
+        return _explicit_discord_queue_event(source, text, queue_id)
+
+    selected = queued("focus on the retry path", "q-steer")
+    later = queued("write the regression test", "q-later")
+    for item in (selected, later):
+        await runner._enqueue_fifo(session_key, item, adapter)
+    opened = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={"_hermes_native_discord_queue_management": {"action": "list"}},
+        )
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={
+                "_hermes_native_discord_queue_management": {
+                    "action": "steer",
+                    "queue_id": "q-steer",
+                    "session_key": session_key,
+                    "snapshot_id": opened["snapshot_id"],
+                }
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["steered"] is False
+    assert result["error"] == "unavailable"
+    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+        "focus on the retry path",
+        "write the regression test",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_discord_durable_steer_cancels_row_before_rewriting_fifo():
+    runner, adapter, source, session_key = _discord_queue_runner()
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[session_key] = running_agent
+    runner._inbox_store = MagicMock()
+
+    def cancel(queue_id, *, session_key):
+        assert queue_id == "q-steer"
+        assert session_key == build_session_key(source)
+        assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+            "focus on the retry path",
+            "write the regression test",
+        ]
+        return True
+
+    runner._inbox_store.cancel.side_effect = cancel
+    selected = _explicit_discord_queue_event(
+        source, "focus on the retry path", "q-steer"
+    )
+    later = _explicit_discord_queue_event(
+        source, "write the regression test", "q-later"
+    )
+    for item in (selected, later):
+        await runner._enqueue_fifo(session_key, item, adapter)
+    opened = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={"_hermes_native_discord_queue_management": {"action": "list"}},
+        )
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="/queue",
+            source=source,
+            metadata={
+                "_hermes_native_discord_queue_management": {
+                    "action": "steer",
+                    "queue_id": "q-steer",
+                    "session_key": session_key,
+                    "snapshot_id": opened["snapshot_id"],
+                }
+            },
+        )
+    )
+
+    assert result["steered"] is True
+    assert result["removed"] is True
+    running_agent.steer.assert_called_once_with("focus on the retry path")
+    runner._inbox_store.cancel.assert_called_once_with(
+        "q-steer", session_key=session_key
+    )
+    assert [event.text for event in runner._snapshot_fifo_events(session_key, adapter)] == [
+        "write the regression test"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_native_discord_clear_requires_queue_id_snapshot():
     source = SessionSource(

@@ -3,6 +3,7 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import logging
 import re
 import sqlite3
 import threading
@@ -75,6 +76,15 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 );
 """
 
+logger = logging.getLogger(__name__)
+
+_CORRUPT_DB_MARKERS = (
+    "file is not a database",
+    "database disk image is malformed",
+    "file is encrypted or is not a database",
+    "unsupported file format",
+)
+
 # Trust adjustment constants
 _HELPFUL_DELTA   =  0.05
 _UNHELPFUL_DELTA = -0.10
@@ -127,6 +137,7 @@ class MemoryStore:
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
         self._hrr_available = hrr._HAS_NUMPY
+        self._entry = None
 
         # Acquire (or open) the process-wide shared connection for this DB.
         # resolve() (not just expanduser) so symlinked/relative paths to the
@@ -136,32 +147,90 @@ class MemoryStore:
             self._key = str(self.db_path.resolve())
         except OSError:
             self._key = str(self.db_path)
+
+        self._acquire_shared_connection()
+        try:
+            self._ensure_ready()
+        except sqlite3.DatabaseError as exc:
+            if not self._is_corrupt_database_error(exc):
+                self.close()
+                raise
+            self._recover_corrupt_database(exc)
+            self._acquire_shared_connection()
+            self._ensure_ready()
+
+    def _open_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(
+            self._key,
+            check_same_thread=False,
+            timeout=10.0,
+            # Autocommit: every statement is its own transaction, so a
+            # write that raises mid-method can never leave a dangling
+            # transaction (and its write lock) open. The explicit
+            # commit() calls below become harmless no-ops.
+            isolation_level=None,
+        )
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _acquire_shared_connection(self) -> None:
         with MemoryStore._shared_guard:
             entry = MemoryStore._shared.get(self._key)
             if entry is None:
-                conn = sqlite3.connect(
-                    self._key,
-                    check_same_thread=False,
-                    timeout=10.0,
-                    # Autocommit: every statement is its own transaction, so a
-                    # write that raises mid-method can never leave a dangling
-                    # transaction (and its write lock) open. The explicit
-                    # commit() calls below become harmless no-ops.
-                    isolation_level=None,
-                )
-                conn.row_factory = sqlite3.Row
-                entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                entry = {
+                    "conn": self._open_connection(),
+                    "lock": threading.RLock(),
+                    "refs": 0,
+                    "ready": False,
+                }
                 MemoryStore._shared[self._key] = entry
             entry["refs"] += 1
             self._entry = entry
             self._conn = entry["conn"]
             self._lock = entry["lock"]
 
+    def _ensure_ready(self) -> None:
         # Initialise the schema once per shared connection.
         with self._lock:
             if not self._entry["ready"]:
                 self._init_db()
                 self._entry["ready"] = True
+
+    @staticmethod
+    def _is_corrupt_database_error(exc: sqlite3.DatabaseError) -> bool:
+        error = str(exc).lower()
+        return any(marker in error for marker in _CORRUPT_DB_MARKERS)
+
+    def _recover_corrupt_database(self, exc: sqlite3.DatabaseError) -> None:
+        """Quarantine a corrupt SQLite store and rebuild the shared registry entry."""
+        old_entry = self._entry
+        with MemoryStore._shared_guard:
+            if old_entry is not None:
+                try:
+                    old_entry["conn"].close()
+                finally:
+                    if MemoryStore._shared.get(self._key) is old_entry:
+                        MemoryStore._shared.pop(self._key, None)
+            self._entry = None
+
+        backup_path = self.db_path.with_name(f"{self.db_path.name}.corrupt")
+        counter = 1
+        while backup_path.exists():
+            backup_path = self.db_path.with_name(f"{self.db_path.name}.corrupt.{counter}")
+            counter += 1
+
+        logger.warning(
+            "Holographic memory database at %s is unreadable (%s); moving it to %s and creating a fresh store",
+            self.db_path,
+            exc,
+            backup_path,
+        )
+        if self.db_path.exists():
+            self.db_path.replace(backup_path)
+        for sidecar_suffix in ("-wal", "-shm"):
+            sidecar = self.db_path.with_name(f"{self.db_path.name}{sidecar_suffix}")
+            if sidecar.exists():
+                sidecar.unlink()
 
     # ------------------------------------------------------------------
     # Initialisation

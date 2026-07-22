@@ -975,6 +975,15 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _escape_shell_raw(self, arg: str) -> str:
+        """Escape a string for safe use in shell commands without translating paths.
+
+        Useful for search patterns, python code snippets, and other non-path arguments
+        where we want to preserve backslashes exactly as they are.
+        """
+        # Use single quotes and escape any single quotes in the string
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -1320,12 +1329,12 @@ class ShellFileOperations(FileOperations):
             "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
         )
 
-        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+        result = self._exec(f"python3 -c {self._escape_shell_raw(snippet)}")
 
         # Fall back to ``python`` (Windows / older systems where there's no
         # ``python3`` symlink but a ``python`` binary is on PATH).
         if result.exit_code != 0 and "python3" in (result.stdout or ""):
-            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+            result = self._exec(f"python -c {self._escape_shell_raw(snippet)}")
 
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
@@ -2284,7 +2293,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")  # Count per file
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_shell_raw(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
@@ -2414,7 +2423,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_shell_raw(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
         # Fetch generously so we can compute total before slicing

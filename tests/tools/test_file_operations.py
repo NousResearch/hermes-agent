@@ -461,6 +461,12 @@ class TestShellFileOpsHelpers:
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
+    def test_escape_shell_raw_preserves_backslashes(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_shell_raw(r"\d+") == r"'\d+'"
+        assert file_ops._escape_shell_raw(r"C:\Users\alice\notes.txt") == r"'C:\Users\alice\notes.txt'"
+
     def test_escape_shell_arg_with_quotes(self, file_ops):
         result = file_ops._escape_shell_arg("it's")
         assert "'" in result
@@ -695,6 +701,24 @@ class TestSearchPathValidation:
         result = ops.search("pattern", path="/some/path")
         assert result.error is not None
         assert "search failed" in result.error.lower() or "Search error" in result.error
+
+    def test_search_rg_pattern_preserves_backslashes(self, mock_env):
+        """search() should preserve backslashes in pattern for ripgrep command."""
+        executed_command = []
+        def side_effect(command, **kwargs):
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            executed_command.append(command)
+            return {"output": "", "returncode": 1}
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.search(r"\d+", path="/some/path")
+        assert result.error is None
+        assert len(executed_command) == 1
+        # It should contain the raw escaped pattern '\d+' with backslash intact
+        assert r"'\d+'" in executed_command[0]
 
 
 class TestSearchFilesFallbackHiddenPaths:

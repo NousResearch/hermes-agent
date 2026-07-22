@@ -885,7 +885,9 @@ def _fts_query(query: str) -> str:
             flat.append(t)
     has_ascii = any(t.isascii() for t in flat)
     if has_ascii:
-        return " AND ".join(t for t in flat if len(t) > 1)
+        # Quote each term so FTS5 treats hyphens and other special chars
+        # as literal text, not column-filter operators.
+        return " AND ".join(f'"{t}"' for t in flat if len(t) > 1)
     return " OR ".join(t for t in flat if len(t) > 1) if flat else ""
 
 

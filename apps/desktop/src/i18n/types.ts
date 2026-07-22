@@ -799,6 +799,23 @@ export interface Translations {
         needsSetupHint: string
       }
     }
+    uninstall: {
+      heading: string
+      title: string
+      description: string
+      checking: string
+      confirmTitle: string
+      confirmDescription: (consequence: string) => string
+      confirmApp: string
+      yesUninstall: string
+      uninstalling: string
+      errorFallback: string
+      modes: {
+        gui: { title: string; description: string; consequence: string }
+        lite: { title: string; description: string; consequence: string }
+        full: { title: string; description: string; consequence: string }
+      }
+    }
   }
 
   skills: {

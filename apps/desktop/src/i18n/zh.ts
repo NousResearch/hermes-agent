@@ -1114,6 +1114,37 @@ export const zh: Translations = {
         needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。'
       }
     }
+
+    uninstall: {
+      heading: '危险区域',
+      title: '卸载 Hermes',
+      description:
+        '选择要移除的内容。应用将关闭以完成卸载；随时可重新运行安装程序恢复。',
+      checking: '正在检查已安装内容…',
+      confirmTitle: '确认卸载',
+      confirmDescription: consequence => `这将移除 ${consequence}。此操作无法撤销。`,
+      confirmApp: '应用',
+      yesUninstall: '确认卸载',
+      uninstalling: '正在卸载…',
+      errorFallback: '卸载无法启动。',
+      modes: {
+        gui: {
+          title: '仅卸载聊天界面',
+          description: '仅移除此桌面应用。Hermes 代理、配置和对话记录均保留。',
+          consequence: '桌面聊天界面（此应用及其数据）'
+        },
+        lite: {
+          title: '卸载界面与代理，保留数据',
+          description: '移除应用和 Hermes 代理，但保留配置、对话和密钥以便将来重新安装。',
+          consequence: '聊天界面和 Hermes 代理（配置、对话和密钥均保留）'
+        },
+        full: {
+          title: '全部卸载',
+          description: '移除应用、代理和所有用户数据——配置、对话、定时任务、密钥、日志。',
+          consequence: '所有内容——聊天界面、Hermes 代理、所有配置、对话、密钥和日志'
+        }
+      }
+    }
   },
 
   skills: {

@@ -3,9 +3,10 @@
 Verifies that the gateway detects pathologically large transcripts and
 triggers auto-compression before running the agent.  (#628)
 
-The hygiene system uses the SAME compression config as the agent:
-  compression.threshold × model context length
-so CLI and messaging platforms behave identically.
+The hygiene system uses its own pre-agent guard:
+  compression.hygiene_threshold × model context length
+(default 0.85), intentionally separate from the agent's in-loop
+``compression.threshold`` (default 0.50).
 """
 
 import importlib
@@ -192,6 +193,29 @@ class TestSessionHygieneThresholds:
         # Even with enormous content, < 4 messages should be skipped
         # (the gateway code checks `len(history) >= 4` before evaluating)
         assert len(history) < 4
+
+
+class TestSessionHygieneThresholdConfig:
+    """Config parsing for the gateway's pre-agent context budget guard."""
+
+    def test_default_hygiene_threshold_is_85_percent(self):
+        from gateway.run import _resolve_hygiene_threshold_pct
+
+        assert _resolve_hygiene_threshold_pct({}) == 0.85
+        assert _resolve_hygiene_threshold_pct({"threshold": 0.50}) == 0.85
+        assert _resolve_hygiene_threshold_pct(None) == 0.85
+
+    def test_configured_hygiene_threshold_is_used(self):
+        from gateway.run import _resolve_hygiene_threshold_pct
+
+        assert _resolve_hygiene_threshold_pct({"hygiene_threshold": 0.70}) == 0.70
+        assert _resolve_hygiene_threshold_pct({"hygiene_threshold": "0.60"}) == 0.60
+
+    @pytest.mark.parametrize("bad_value", ["nope", None, 0, 0.01, 1.0, 1.2, -0.5])
+    def test_invalid_hygiene_threshold_falls_back_to_default(self, bad_value):
+        from gateway.run import _resolve_hygiene_threshold_pct
+
+        assert _resolve_hygiene_threshold_pct({"hygiene_threshold": bad_value}) == 0.85
 
 
 class TestSessionHygieneWarnThreshold:

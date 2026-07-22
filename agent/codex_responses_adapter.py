@@ -233,7 +233,7 @@ def _derive_responses_function_call_id(
         return f"fc_{sanitized[:48]}"
 
     seed = source or str(response_item_id or "") or uuid.uuid4().hex
-    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha1(seed.encode("utf-8"), usedforsecurity=False).hexdigest()[:24]
     return f"fc_{digest}"
 
 

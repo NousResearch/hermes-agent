@@ -84,6 +84,42 @@ def _hash_chat_id(value: str) -> str:
     return _hash_id(value)
 
 
+def _format_whatsapp_phone(identifier: str) -> str:
+    """Return a display phone for WhatsApp phone identifiers, or empty."""
+    normalized = normalize_whatsapp_identifier(identifier)
+    if not normalized or not normalized.isdigit():
+        return ""
+    if not 10 <= len(normalized) <= 15:
+        return ""
+    return f"+{normalized}"
+
+
+def _resolved_whatsapp_phone(source: "SessionSource") -> str:
+    """Resolve a WhatsApp source to a real phone number when one is available.
+
+    WhatsApp can surface DMs as LID values such as ``123...@lid``. The bridge
+    stores LID <-> phone mappings locally; expose only a phone-shaped value so
+    appointment flows can use it without mistaking an unresolved LID for a phone.
+    """
+    if source.platform != Platform.WHATSAPP:
+        return ""
+
+    candidates = [source.user_id, source.chat_id]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = str(candidate)
+        resolved = canonical_whatsapp_identifier(candidate)
+        if not resolved:
+            continue
+        if "@lid" in candidate and resolved == normalize_whatsapp_identifier(candidate):
+            continue
+        phone = _format_whatsapp_phone(resolved)
+        if phone:
+            return phone
+    return ""
+
+
 from .config import (
     Platform,
     GatewayConfig,
@@ -514,6 +550,15 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+
+    if context.source.platform == Platform.WHATSAPP:
+        if redact_pii:
+            lines.append(f"**WhatsApp sender ID:** {_hash_chat_id(context.source.chat_id)}")
+        else:
+            lines.append(f"**WhatsApp sender ID:** {context.source.chat_id}")
+            resolved_phone = _resolved_whatsapp_phone(context.source)
+            if resolved_phone:
+                lines.append(f"**Resolved WhatsApp phone:** {resolved_phone}")
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

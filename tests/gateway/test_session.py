@@ -386,6 +386,79 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
+        assert "**WhatsApp sender ID:** 15551234567@s.whatsapp.net" in prompt
+        assert "**Resolved WhatsApp phone:** +15551234567" in prompt
+
+    def test_whatsapp_prompt_exposes_phone_resolved_from_lid_mapping(self, tmp_path, monkeypatch):
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+            json.dumps("15551234567"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(enabled=True, token=""),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**WhatsApp sender ID:** 999999999999999@lid" in prompt
+        assert "**Resolved WhatsApp phone:** +15551234567" in prompt
+
+    def test_whatsapp_prompt_does_not_treat_unmapped_lid_as_phone(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(enabled=True, token=""),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**WhatsApp sender ID:** 999999999999999@lid" in prompt
+        assert "Resolved WhatsApp phone" not in prompt
+
+    def test_whatsapp_prompt_redacts_sender_phone_when_pii_redaction_enabled(self, tmp_path, monkeypatch):
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+            json.dumps("15551234567"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = GatewayConfig(
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(enabled=True, token=""),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx, redact_pii=True)
+
+        assert "999999999999999" not in prompt
+        assert "15551234567" not in prompt
+        assert "Resolved WhatsApp phone" not in prompt
+        assert "**WhatsApp sender ID:**" in prompt
 
     def test_multi_user_thread_prompt(self):
         """Shared thread sessions show multi-user note instead of single user."""

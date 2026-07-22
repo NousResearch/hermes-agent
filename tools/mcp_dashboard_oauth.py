@@ -69,10 +69,17 @@ class DashboardOAuthFlow:
         with self._lock:
             if self._callback_ready.is_set():
                 raise ValueError("OAuth callback already received")
+            # Compare as bytes: ``secrets.compare_digest`` raises TypeError on a
+            # str containing non-ASCII characters, and ``state`` is an
+            # attacker-controllable OAuth-callback query parameter. Encoding
+            # both operands keeps a crafted non-ASCII state a clean "state
+            # mismatch" rejection instead of an unhandled 500.
             if (
                 self.expected_state is None
                 or state is None
-                or not secrets.compare_digest(self.expected_state, state)
+                or not secrets.compare_digest(
+                    self.expected_state.encode("utf-8"), state.encode("utf-8")
+                )
             ):
                 raise ValueError("OAuth callback state mismatch")
             if error:

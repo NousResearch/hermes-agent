@@ -12647,7 +12647,13 @@ async def mcp_oauth_callback(
             for candidate in candidates
             if candidate.expected_state is not None
             and state is not None
-            and secrets.compare_digest(candidate.expected_state, state)
+            # Compare as bytes: secrets.compare_digest raises TypeError on a str
+            # with non-ASCII characters, and ``state`` is the attacker-
+            # controllable OAuth-callback query parameter — a crafted non-ASCII
+            # value must miss cleanly (404 "flow expired"), not 500.
+            and secrets.compare_digest(
+                candidate.expected_state.encode("utf-8"), state.encode("utf-8")
+            )
         ),
         None,
     )

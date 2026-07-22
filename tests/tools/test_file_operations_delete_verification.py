@@ -34,8 +34,11 @@ def _make_verifying_env(*, delete_success: bool, verify_state: str):
     env = MagicMock()
 
     def execute(command, *args, **kwargs):
+        # Production verify_cmd is: test ! -e <path> && test ! -L <path> && echo GONE || echo STILL_THERE
+        # The combined command starts with "test ! -e" since the shell
+        # evaluates the &&-joined chain as one expression.
         if command.startswith("test ! -e"):
-            # The post-delete verification check
+            # The post-delete verification check (both path-absent AND not-a-symlink)
             if verify_state == "GONE":
                 return {"output": "GONE\n", "error": "", "returncode": 0}
             else:

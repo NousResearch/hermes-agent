@@ -1297,7 +1297,17 @@ class ShellFileOperations(FileOperations):
         # their writes landed. This works for local / docker / ssh / container
         # backends: whichever process actually owns the file is the one
         # we re-query.
-        verify_cmd = f"test ! -e {self._escape_shell_arg(path)} && echo GONE || echo STILL_THERE"
+        #
+        # Check both that the path is absent AND that it isn't a dangling
+        # symlink. A dangling symlink would satisfy `test ! -e` (because
+        # `-e` follows symlinks) but `test ! -L` catches the leftover
+        # symlink case — preventing a successful delete of a symlink-target
+        # from masking the fact that the symlink itself is still on disk.
+        verify_cmd = (
+            f"test ! -e {self._escape_shell_arg(path)} && "
+            f"test ! -L {self._escape_shell_arg(path)} && "
+            f"echo GONE || echo STILL_THERE"
+        )
         verify_result = self._exec(verify_cmd)
         if verify_result.exit_code != 0 or "STILL_THERE" in (verify_result.stdout or ""):
             return WriteResult(error=(

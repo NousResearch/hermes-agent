@@ -843,6 +843,17 @@ def create_quick_snapshot(
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
 
+    # Protected files intentionally skipped for exceeding max_file_size. Unlike
+    # ``failed`` these are NOT capture errors — the cap is deliberate (e.g. a
+    # multi-GB state.db that must not stall an update) — so they are reported as
+    # a plain skip rather than a "corrupted or locked" failure. But a skipped
+    # protected file still leaves the snapshot INCOMPLETE, so it must block
+    # pruning of the last complete snapshot exactly as a failure does (#68907
+    # review): a pre-update run whose state.db crosses the cap would otherwise
+    # delete the previous good snapshot and reintroduce issue #68474's
+    # recovery-loss.
+    size_skipped: Dict[str, str] = {}
+
     def _too_large(path: Path, rel_name: str) -> bool:
         """True (and warn) when ``path`` exceeds the max_file_size cap."""
         if max_file_size is None:
@@ -862,6 +873,9 @@ def create_quick_snapshot(
             rel_name,
             size,
             max_file_size,
+        )
+        size_skipped[rel_name] = (
+            f"{_format_size(size)} exceeds {_format_size(max_file_size)} limit"
         )
         return True
 
@@ -960,6 +974,11 @@ def create_quick_snapshot(
         # protect, and why. Keeps the "was it already broken before the
         # update?" question answerable after the fact (issue #68474).
         meta["failed"] = failed
+    if size_skipped:
+        # Protected files that were present but skipped for exceeding the size
+        # cap. Recorded so the manifest shows WHY the snapshot is incomplete
+        # (and why the previous snapshot was retained instead of pruned).
+        meta["size_skipped"] = size_skipped
     try:
         with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
@@ -989,11 +1008,20 @@ def create_quick_snapshot(
     #
     # An INCOMPLETE snapshot must never evict older snapshots: with the
     # pre-update keep=1 policy, pruning here would delete the last snapshot
-    # that may still hold a good copy of the very file this run failed to
+    # that may still hold a good copy of the very file this run could not
     # capture (in issue #68474 the previous day's snapshot was the only
-    # surviving recovery source).
-    if not failed:
+    # surviving recovery source). A protected file skipped for exceeding the
+    # size cap makes the snapshot just as incomplete as a hard failure, so it
+    # blocks pruning too (#68907 review): otherwise a state.db that crosses the
+    # cap would evict the previous complete snapshot on every pre-update run.
+    if not failed and not size_skipped:
         _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    elif size_skipped and not failed:
+        names = ", ".join(sorted(size_skipped))
+        print(
+            f"  ⚠ Snapshot: keeping older snapshots — protected file(s) "
+            f"exceeded the size cap and were not captured ({names})."
+        )
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id

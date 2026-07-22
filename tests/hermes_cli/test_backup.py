@@ -1568,6 +1568,42 @@ class TestQuickSnapshot:
         assert "skipping state.db" in out
         assert "exceeds" in out
 
+    def test_oversized_protected_file_does_not_evict_prior_snapshot(
+        self, hermes_home, capsys
+    ):
+        """A protected file skipped for exceeding the size cap makes the
+        snapshot incomplete, so the keep=1 prune must NOT delete the previous
+        complete snapshot. Otherwise a state.db that crosses the cap on a
+        pre-update run would destroy the last good recovery source — the exact
+        loss the #68474 fix exists to prevent (#68907 review)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        # A prior COMPLETE snapshot that must survive the incomplete run.
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text('{"id": "20200101-000000", "files": {}}')
+
+        # state.db in the fixture is a few KB — cap below it so it is skipped
+        # for SIZE (not corruption), under the pre-update keep=1 policy.
+        snap_id = create_quick_snapshot(
+            hermes_home=hermes_home, max_file_size=1024, keep=1
+        )
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        # The prior complete snapshot is retained, not evicted.
+        assert prior.is_dir(), "prior complete snapshot was pruned by an incomplete run"
+        # state.db was skipped for size; small protected files still captured.
+        assert not (snap_dir / "state.db").exists()
+        assert (snap_dir / "cron" / "jobs.json").exists()
+        # The manifest records the size skip as the reason it is incomplete.
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" in meta["size_skipped"]
+        assert "state.db" not in meta["files"]
+        out = capsys.readouterr().out
+        assert "keeping older snapshots" in out
+
     def test_max_file_size_none_copies_everything(self, hermes_home):
         """Default (no cap) preserves manual /snapshot behavior."""
         from hermes_cli.backup import create_quick_snapshot

@@ -6549,6 +6549,153 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _restart_dashboard_via_service_manager() -> bool:
+    """Restart a dashboard systemd unit after a code update, if one is installed.
+
+    The upstream ``hermes dashboard`` subcommand installs no service manager, so
+    the running process is killed by PID at the end of ``hermes update`` and the
+    user must relaunch it manually.  Users (and some packaging paths) can install
+    their own ``hermes-dashboard.service`` (e.g. via the dashboard docs or a setup
+    script).  When such a unit exists and is active, restart it the same way
+    gateways are restarted so the dashboard comes back automatically after an
+    update instead of silently dying.
+
+    Returns True if a service-managed dashboard was found (restart attempted);
+    False if no systemd unit owns the dashboard, so the caller should fall back
+    to the legacy PID-kill.
+    """
+    try:
+        from hermes_cli.gateway import (
+            supports_systemd_services,
+            _ensure_user_systemd_env,
+        )
+    except ImportError:
+        return False
+    if not supports_systemd_services():
+        return False
+    try:
+        _ensure_user_systemd_env()
+    except Exception:
+        pass
+
+    def _resolve_manage_cmd(scope, scope_cmd, svc_name):
+        cmd = scope_cmd + ["--no-ask-password"]
+        if (
+            scope == "system"
+            and hasattr(os, "geteuid")
+            and os.geteuid() != 0
+        ):
+            sudo_cmd = ["sudo", "-n"] + scope_cmd + ["--no-ask-password"]
+            sudo_ok = False
+            try:
+                _probe = subprocess.run(
+                    ["sudo", "-n", "true"], capture_output=True, timeout=5,
+                )
+                sudo_ok = _probe.returncode == 0
+                if not sudo_ok:
+                    _probe = subprocess.run(
+                        sudo_cmd + ["reset-failed", svc_name],
+                        capture_output=True, timeout=5,
+                    )
+                    sudo_ok = _probe.returncode == 0
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                sudo_ok = False
+            cmd = sudo_cmd if sudo_ok else None
+        return cmd
+
+    def _wait_active(scope_cmd, svc_name, timeout=10.0):
+        deadline = _time.monotonic() + max(timeout, 0.5)
+        while True:
+            try:
+                _verify = subprocess.run(
+                    scope_cmd + ["is-active", svc_name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if _verify.stdout.strip() == "active":
+                    return True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+            if _time.monotonic() >= deadline:
+                return False
+            _time.sleep(0.5)
+
+    found = False
+    for scope, scope_cmd in [
+        ("user", ["systemctl", "--user"]),
+        ("system", ["systemctl"]),
+    ]:
+        try:
+            result = subprocess.run(
+                scope_cmd
+                + ["list-units", "hermes-dashboard*", "--plain",
+                   "--no-legend", "--no-pager"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            unit = parts[0]
+            if not unit.endswith(".service"):
+                continue
+            svc_name = unit.removesuffix(".service")
+            check = subprocess.run(
+                scope_cmd + ["is-active", svc_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if check.stdout.strip() != "active":
+                continue
+            found = True
+            _manage_cmd = _resolve_manage_cmd(scope, scope_cmd, svc_name)
+            print()
+            print(f"⟲ Restarting dashboard service {svc_name}...")
+            if _manage_cmd is None:
+                _sudo_hint = "sudo " if scope == "system" else ""
+                _scope_flag = "--user " if scope == "user" else ""
+                print(
+                    f"  ⚠ {svc_name} needs root to restart.\n"
+                    f"    Restart it manually:\n"
+                    f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
+                )
+                continue
+            subprocess.run(
+                _manage_cmd + ["reset-failed", svc_name],
+                capture_output=True, text=True, timeout=10,
+            )
+            restart = subprocess.run(
+                _manage_cmd + ["restart", svc_name],
+                capture_output=True, text=True, timeout=15,
+            )
+            if restart.returncode == 0 and _wait_active(
+                scope_cmd, svc_name, timeout=10.0
+            ):
+                print(f"  ✓ Restarted {svc_name}")
+            else:
+                subprocess.run(
+                    _manage_cmd + ["reset-failed", svc_name],
+                    capture_output=True, text=True, timeout=10,
+                )
+                restart = subprocess.run(
+                    _manage_cmd + ["restart", svc_name],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if restart.returncode == 0 and _wait_active(
+                    scope_cmd, svc_name, timeout=10.0
+                ):
+                    print(f"  ✓ Restarted {svc_name} (retry)")
+                else:
+                    err = (restart.stderr or "").strip()
+                    print(
+                        f"  ⚠ Failed to restart {svc_name}"
+                        + (f": {err}" if err else "")
+                        + f"\n    Recover manually: systemctl "
+                        f"{'--user ' if scope == 'user' else ''}restart {svc_name}"
+                    )
+    return found
+
+
 def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace directory *dst* with *src* without leaving *dst* half-deleted.
 
@@ -11672,7 +11819,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  ℹ Leaving running dashboard process(es) untouched because the")
             print("    Node.js dependency refresh did not complete.")
         else:
-            _kill_stale_dashboard_processes()
+            # Prefer restarting a dashboard systemd unit if the user installed
+            # one; otherwise fall back to the legacy PID-kill (the upstream
+            # dashboard has no service manager).
+            if not _restart_dashboard_via_service_manager():
+                _kill_stale_dashboard_processes()
 
         print()
         print("Tip: You can now select a provider and model:")

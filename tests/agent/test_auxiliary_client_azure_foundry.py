@@ -99,6 +99,32 @@ class TestAuxAzureFoundryApiKey:
         assert isinstance(client, _OpenAI)
         assert client.api_key == "sk-azure-static-key"
 
+    def test_apim_chat_completions_adds_api_key_default_header(self, monkeypatch, patch_load_config):
+        from agent import auxiliary_client as _aux
+
+        received = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                received.update(kwargs)
+                self.api_key = kwargs.get("api_key", "")
+                self.base_url = kwargs.get("base_url", "")
+
+        monkeypatch.setattr(_aux, "OpenAI", _FakeOpenAI)
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-azure-static-key")
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://campus-gateway.azure-api.net/openai/v1",
+            "api_mode": "chat_completions",
+            "default": "gpt-4o",
+        })
+
+        client, resolved = _aux._try_azure_foundry(model="gpt-4o")
+
+        assert client is not None
+        assert resolved == "gpt-4o"
+        assert received["default_headers"]["api-key"] == "sk-azure-static-key"
+
     def test_codex_responses_wraps_in_codex_aux_client(self, monkeypatch, patch_load_config):
         from agent.auxiliary_client import _try_azure_foundry, CodexAuxiliaryClient
 

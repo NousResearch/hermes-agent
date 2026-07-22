@@ -544,3 +544,29 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+def azure_openai_api_key_headers(base_url: str, api_key: Any) -> dict[str, str]:
+    """Return Azure OpenAI-compatible static-key headers for *base_url*.
+
+    Azure OpenAI's native API-key contract uses the literal ``api-key``
+    header. Most OpenAI-compatible clients send only
+    ``Authorization: Bearer <key>`` when given a static key, which fails on
+    Azure API Management gateways fronting Azure OpenAI / Foundry resources.
+
+    For Azure OpenAI resource hosts (``*.openai.azure.com``) and APIM hosts
+    (``*.azure-api.net``), attach the additional ``api-key`` header when the
+    credential is a static string. Callable token providers (Microsoft Entra
+    ID) intentionally return ``{}`` so bearer-only auth remains unchanged.
+    """
+    if not isinstance(api_key, str):
+        return {}
+    token = api_key.strip()
+    if not token or token == "no-key-required":
+        return {}
+    if not (
+        base_url_host_matches(base_url, "openai.azure.com")
+        or base_url_host_matches(base_url, "azure-api.net")
+    ):
+        return {}
+    return {"api-key": token}

@@ -1532,6 +1532,25 @@ def _normalize_media_tag_path(raw: str) -> str:
     return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
 
 
+
+
+def _normalize_media_separators(text: str) -> str:
+    """Insert a space before ``MEDIA:`` when it immediately follows a
+    known-deliverable file extension with no intervening separator.
+
+    The agent sometimes emits back-to-back MEDIA tags without a trailing
+    space (``MEDIA:/a.pngMEDIA:/b.png``).  The cleanup regex requires a
+    separator in its lookahead, so these merged tags are invisible to the
+    extractor and media delivery silently fails.  Normalising once at each
+    entry point is cheaper than loosening the regex.  See #68773.
+    """
+    # MEDIA:<ext> immediately followed by MEDIA: or non-whitespace text
+    # Insert a space between the extension and whatever follows.
+    _ext_re = re.compile(
+        r"(?<=\.(?:" + _MEDIA_EXT_ALTERNATION + r"))(?=MEDIA:|\S)",
+        re.IGNORECASE,
+    )
+    return _ext_re.sub(" ", text)
 def _path_lacks_deliverable_extension(path: str) -> bool:
     """True when MEDIA_TAG_CLEANUP_RE's extension alternation does not cover
     ``path`` — either the basename has no extension at all (Caddyfile,
@@ -3802,6 +3821,7 @@ class BasePlatformAdapter(ABC):
         Returns:
             Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
         """
+        content = _normalize_media_separators(content)
         media = []
         cleaned = content
 
@@ -3882,6 +3902,7 @@ class BasePlatformAdapter(ABC):
         ``validate_media_delivery_path`` accepts the path so undeliverable
         paths stay visible for debugging.
         """
+        text = _normalize_media_separators(text)
         if (
             "MEDIA:" not in text
             and "[[audio_as_voice]]" not in text

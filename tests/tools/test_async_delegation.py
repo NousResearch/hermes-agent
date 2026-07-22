@@ -124,7 +124,9 @@ def test_async_executor_workers_are_daemon_threads():
 def test_completion_event_lands_on_shared_queue_with_session_key():
     def runner():
         return {"status": "completed", "summary": "the result",
-                "api_calls": 3, "duration_seconds": 2.0, "model": "test-model"}
+                "api_calls": 3, "duration_seconds": 2.0, "model": "test-model",
+                "input_tokens": 11, "output_tokens": 7, "reasoning_tokens": 5,
+                "cost_usd": 0.02, "exit_reason": "completed"}
 
     res = ad.dispatch_async_delegation(
         goal="compute X", context="some context", toolsets=["web", "file"],
@@ -141,6 +143,48 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+
+    retained = {
+        item["delegation_id"]: item
+        for item in ad.list_async_delegations()
+    }[res["delegation_id"]]
+    assert retained["summary"] == "the result"
+    assert retained["api_calls"] == 3
+    assert retained["duration_seconds"] == 2.0
+    assert retained["input_tokens"] == 11
+    assert retained["output_tokens"] == 7
+    assert retained["reasoning_tokens"] == 5
+    assert retained["cost_usd"] == 0.02
+    assert retained["exit_reason"] == "completed"
+    assert retained["model"] == "test-model"
+
+
+def test_completion_callback_runs_before_record_can_be_pruned():
+    completed = []
+
+    res = ad.dispatch_async_delegation(
+        goal="owned work",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=lambda: {"status": "completed", "summary": "owned result"},
+        completion_callback=completed.append,
+        max_async_children=3,
+    )
+
+    assert _drain_one() is not None
+    assert len(completed) == 1
+    assert completed[0]["delegation_id"] == res["delegation_id"]
+    assert completed[0]["status"] == "completed"
+    assert completed[0]["summary"] == "owned result"
+    retained = next(
+        item
+        for item in ad.list_async_delegations()
+        if item["delegation_id"] == res["delegation_id"]
+    )
+    assert "completion_callback" not in retained
 
 
 def test_rich_reinjection_block_is_self_contained():
@@ -227,6 +271,57 @@ def test_interrupt_all_signals_running_children():
     evt = _drain_for(r["delegation_id"])
     assert evt is not None
     assert evt["status"] == "interrupted"
+
+
+def test_interrupt_delegation_signals_only_requested_child():
+    first = threading.Event()
+    second = threading.Event()
+    interrupted = []
+
+    def first_runner():
+        first.wait(timeout=5)
+        return {"status": "interrupted", "summary": None, "error": "cancelled"}
+
+    def second_runner():
+        second.wait(timeout=5)
+        return {"status": "completed", "summary": "ok"}
+
+    first_res = ad.dispatch_async_delegation(
+        goal="first",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=first_runner,
+        interrupt_fn=lambda: (interrupted.append("first"), first.set()),
+        max_async_children=3,
+    )
+    second_res = ad.dispatch_async_delegation(
+        goal="second",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=second_runner,
+        interrupt_fn=lambda: (interrupted.append("second"), second.set()),
+        max_async_children=3,
+    )
+
+    assert ad.interrupt_delegation(first_res["delegation_id"], reason="test") is True
+    assert interrupted == ["first"]
+    second.set()
+
+    events = []
+    deadline = time.monotonic() + 5
+    while len(events) < 2 and time.monotonic() < deadline:
+        evt = _drain_one(timeout=0.2)
+        if evt is not None:
+            events.append(evt)
+    by_id = {evt["delegation_id"]: evt for evt in events}
+    assert by_id[first_res["delegation_id"]]["status"] == "interrupted"
+    assert by_id[second_res["delegation_id"]]["status"] == "completed"
 
 
 def test_completed_records_pruned_to_cap():
@@ -441,6 +536,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     fake_child._subagent_id = "s1"
 
     gate = threading.Event()
+    completed = []
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
         gate.wait(timeout=60)  # a sync impl would hang delegate_task here
@@ -461,7 +557,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
     out = dt.delegate_task(
         goal="the real task", context="ctx",
-        background=True, parent_agent=parent,
+        background=True, parent_agent=parent, _completion_callback=completed.append,
     )
 
     import json
@@ -482,6 +578,8 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert evt.get("is_batch") is True
     assert len(evt["results"]) == 1
     assert evt["results"][0]["summary"] == "done: the real task"
+    assert completed[0]["delegation_id"] == parsed["delegation_id"]
+    assert completed[0]["summary"] == "done: the real task"
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
@@ -871,5 +969,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

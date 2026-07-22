@@ -1067,6 +1067,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    parent_agent: Any = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1171,6 +1172,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                parent_agent=parent_agent,
             )
 
     _tool_original_args = dict(function_args)
@@ -1300,11 +1302,16 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    dispatch_kwargs = {
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "user_task": user_task,
+                    }
+                    if function_name == "dynamic_workflow" and parent_agent is not None:
+                        dispatch_kwargs["parent_agent"] = parent_agent
                     return registry.dispatch(
                         function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        user_task=user_task,
+                        **dispatch_kwargs,
                     )
             from hermes_cli.middleware import run_tool_execution_middleware
 

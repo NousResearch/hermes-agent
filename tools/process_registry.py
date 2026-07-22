@@ -2031,7 +2031,7 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
-def _format_async_delegation(evt: dict) -> str:
+def _format_async_delegation(evt: dict) -> "str | None":
     """Format an async-delegation completion into a self-contained re-injection.
 
     Carries the FULL original task source (goal, the context the parent

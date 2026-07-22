@@ -17,6 +17,7 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -159,6 +160,55 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestWorkflowScopeMigratesOnRotation:
+    def test_terminal_workflow_stays_visible_on_cli_continuation(self, tmp_path: Path):
+        from tools import dynamic_workflow_tool as dwt
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_WORKFLOW_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+        dwt._reset_for_tests()
+        try:
+            created = json.loads(
+                dwt.handle_dynamic_workflow(
+                    {
+                        "action": "create",
+                        "workflow_id": "wf_rotation",
+                        "objective": "Preserve terminal state",
+                        "nodes": [{"node_id": "worker", "goal": "Complete work"}],
+                    },
+                    parent_agent=agent,
+                )
+            )
+            assert created["workflow"]["workflow_id"] == "wf_rotation"
+            json.loads(
+                dwt.handle_dynamic_workflow(
+                    {
+                        "action": "record_result",
+                        "workflow_id": "wf_rotation",
+                        "node_id": "worker",
+                        "status": "completed",
+                        "summary": "Terminal output",
+                    },
+                    parent_agent=agent,
+                )
+            )
+
+            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+            status = json.loads(
+                dwt.handle_dynamic_workflow(
+                    {"action": "status", "workflow_id": "wf_rotation"},
+                    parent_agent=agent,
+                )
+            )
+            assert agent.session_id != parent
+            assert status["workflow"]["nodes"][0]["summary"] == "Terminal output"
+        finally:
+            dwt._reset_for_tests()
 
 
 class TestFallbackStreakFollowsRotation:

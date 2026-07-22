@@ -29,7 +29,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from toolsets import TOOLSETS
 
@@ -774,7 +774,9 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """
     # Composite toolsets that should never pass through to children, even
     # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
-    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation", "code_execution"})
+    _COMPOSITE_BLOCKED_TOOLSETS = frozenset(
+        {"delegation", "dynamic_workflow", "code_execution"}
+    )
     blocked_toolset_names = {
         name
         for name, defn in TOOLSETS.items()
@@ -795,6 +797,7 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     stored ``disabled_toolsets``.
     """
     blocked_names = set(DELEGATE_BLOCKED_TOOLS)
+    blocked_names.add("dynamic_workflow")
     if role == "orchestrator":
         blocked_names.discard("delegate_task")
     return sorted(
@@ -2431,6 +2434,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    _completion_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -3012,6 +3016,7 @@ def delegate_task(
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
+            completion_callback=_completion_callback,
             max_async_children=_get_max_async_children(),
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.

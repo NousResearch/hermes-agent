@@ -148,6 +148,27 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_dynamic_workflow_toolset_is_distinct_from_delegation():
+    from toolsets import resolve_toolset
+
+    assert resolve_toolset("delegation") == ["delegate_task"]
+    assert resolve_toolset("dynamic_workflow") == ["dynamic_workflow"]
+
+
+def test_get_platform_tools_keeps_dynamic_workflow_toggle_independent():
+    config = {"platform_toolsets": {"cli": ["delegation"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "delegation" in enabled
+    assert "dynamic_workflow" not in enabled
+
+    config = {"platform_toolsets": {"cli": ["dynamic_workflow"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "dynamic_workflow" in enabled
+    assert "delegation" not in enabled
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},
@@ -366,7 +387,7 @@ def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
 
     # Native tools must reappear.
     for ts in ("terminal", "file", "web", "browser", "memory", "delegation",
-               "code_execution", "todo", "session_search", "skills"):
+               "dynamic_workflow", "code_execution", "todo", "session_search", "skills"):
         assert ts in enabled, f"{ts} should be enabled when hermes-cli is listed"
     # User explicitly opted into Spotify — must survive _DEFAULT_OFF_TOOLSETS subtraction.
     assert "spotify" in enabled
@@ -1410,7 +1431,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     """Non-configurable toolsets whose tools are in the composite but not in
     CONFIGURABLE_TOOLSETS should still appear in the result.
     """
-    from toolsets import TOOLSETS
+    from toolsets import TOOLSETS, resolve_toolset
     from hermes_cli.tools_config import PLATFORMS
     from unittest.mock import patch as mock_patch
 
@@ -1422,7 +1443,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
     fake_toolsets["hermes-_test_platform"] = {
         "description": "test composite",
-        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "tools": ["web_search", "web_extract", *resolve_toolset("terminal"), "_test_special_tool"],
         "includes": [],
     }
 
@@ -1763,8 +1784,6 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
-
 def test_vision_picker_writes_provider_and_model(tmp_path, monkeypatch):
     """Picking a provider+model persists auxiliary.vision.{provider,model}.
 

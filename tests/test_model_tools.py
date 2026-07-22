@@ -201,6 +201,27 @@ class TestHandleFunctionCall:
         assert pre_call[1]["middleware_trace"] == expected_trace
         assert post_call[1]["middleware_trace"] == expected_trace
 
+    def test_parent_agent_is_forwarded_only_to_dynamic_workflow(self, monkeypatch):
+        seen = []
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            seen.append((tool_name, args, kwargs))
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+        parent = object()
+
+        handle_function_call("web_search", {"q": "test"}, parent_agent=parent)
+        assert "parent_agent" not in seen[-1][2]
+
+        handle_function_call(
+            "dynamic_workflow",
+            {"action": "status", "workflow_id": "wf_test"},
+            parent_agent=parent,
+        )
+        assert seen[-1][0] == "dynamic_workflow"
+        assert seen[-1][2]["parent_agent"] is parent
+
 
 # =========================================================================
 # Agent loop tools

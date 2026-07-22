@@ -16,6 +16,7 @@ Core invariant these tests pin:
 """
 
 import os
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -380,6 +381,32 @@ def test_write_file_reports_creation_provenance_only_for_new_target(
         "test_created.py", "changed\n", task_id="t1"
     ))
     assert "created_paths" not in overwritten
+
+
+def test_write_file_creation_probe_occurs_inside_path_lock(
+    _isolated_cwd, monkeypatch
+):
+    """A sibling write that wins the lock cannot be labeled as our creation."""
+    workspace, _decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("t1", str(workspace))
+    target = workspace / "test_raced.py"
+    original_lock = ft.file_state.lock_path
+
+    @contextmanager
+    def create_before_locked_write(path):
+        with original_lock(path):
+            Path(path).write_text("sibling content")
+            yield
+
+    monkeypatch.setattr(ft.file_state, "lock_path", create_before_locked_write)
+
+    import json
+    result = json.loads(ft.write_file_tool(
+        "test_raced.py", "agent content", task_id="t1"
+    ))
+
+    assert "created_paths" not in result
+    assert target.read_text() == "agent content"
 
 
 def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):

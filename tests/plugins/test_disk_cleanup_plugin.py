@@ -5,8 +5,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
   * ``disk_cleanup`` library: track / forget / dry_run / quick / status,
     ``is_safe_path`` and ``guess_category`` filtering.
   * Plugin ``__init__``: ``post_tool_call`` hook auto-tracks files created
-    by ``write_file`` / ``terminal``; ``on_session_end`` hook runs quick
-    cleanup when anything was tracked during the turn.
+    by ``write_file``; ``on_session_end`` cleans only that session's paths.
   * Slash command handler: status / dry-run / quick / track / forget /
     unknown subcommand behaviours.
   * Bundled-plugin discovery via ``PluginManager.discover_and_load``.
@@ -211,9 +210,10 @@ class TestStaleCronEntryMigration:
         summary = dg.quick()
         assert summary["deleted"] == 0, "cron/jobs.json must not be deleted"
         assert jobs_json.exists(), "jobs.json must still exist"
-        # The stale entry should have been dropped from tracking.
+        # Legacy records without filesystem identity are preserved for manual
+        # review rather than treated as deletion authority.
         remaining = json.loads(tracked_file.read_text())
-        assert len(remaining) == 0
+        assert len(remaining) == 1
 
     def test_quick_skips_stale_cron_output_for_cron_dir(self, _isolate_env):
         """Stale entry for the cron/ directory itself must not be deleted."""
@@ -317,14 +317,10 @@ class TestStaleCronEntryMigration:
         from datetime import datetime, timezone, timedelta
         old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
 
-        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        tracked_file.parent.mkdir(parents=True, exist_ok=True)
-        tracked_file.write_text(json.dumps([{
-            "path": str(run_md),
-            "category": "cron-output",
-            "timestamp": old_ts,
-            "size": 10,
-        }]))
+        assert dg.track(str(run_md), "cron-output", silent=True)
+        tracked = dg.load_tracked()
+        tracked[0]["timestamp"] = old_ts
+        dg.save_tracked(tracked)
 
         summary = dg.quick()
         assert summary["deleted"] == 1, "valid old cron-output should be deleted"
@@ -468,17 +464,14 @@ class TestTrackForgetQuick:
         dg = _load_lib()
         valid = _isolate_env / "test_valid.py"
         valid.write_text("keep only until the sweep")
+        assert dg.track(str(valid), "test", silent=True)
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        tracked_file.parent.mkdir(parents=True, exist_ok=True)
-        tracked_file.write_text(json.dumps([
+        tracked = dg.load_tracked()
+        tracked.insert(
+            0,
             {"path": str(_isolate_env / "test_malformed.py"), "category": "test"},
-            {
-                "path": str(valid),
-                "category": "test",
-                "timestamp": "2025-01-01T00:00:00+00:00",
-                "size": valid.stat().st_size,
-            },
-        ]))
+        )
+        dg.save_tracked(tracked)
 
         summary = dg.quick()
 
@@ -512,6 +505,23 @@ class TestTrackForgetQuick:
         assert summary["errors"]
         assert locked.exists()
         assert any(item["path"] == str(locked) for item in dg.load_tracked())
+
+    def test_quick_preserves_replacement_at_tracked_path(self, _isolate_env):
+        """A path record cannot authorize deletion of a replacement object."""
+        dg = _load_lib()
+        path = _isolate_env / "test_agent_created.py"
+        path.write_text("agent scratch")
+        assert dg.track(str(path), "test", silent=True)
+
+        path.unlink()
+        path.write_text("human replacement")
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert summary["errors"]
+        assert path.read_text() == "human replacement"
+        assert any(item["path"] == str(path) for item in dg.load_tracked())
 
     def test_quick_prunes_only_marked_stale_hook_output(self, _isolate_env):
         """Hook spill files are owned only after the managed marker exists."""
@@ -702,6 +712,23 @@ class TestPostToolCallHook:
         pi._on_session_end(session_id="s3", completed=True, interrupted=False)
         assert p.exists(), "terminal metadata must not authorize deletion"
 
+    def test_patch_files_created_cannot_authorize_cleanup(self, _isolate_env):
+        """V4A creation labels are ambiguous and never destructive evidence."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_existing.py"
+        p.write_text("human file")
+        pi._on_post_tool_call(
+            tool_name="patch",
+            args={"mode": "patch", "patch": "*** Add File: test_existing.py"},
+            result=json.dumps({"files_created": [str(p)]}),
+            task_id="patch-task",
+            session_id="patch-session",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+        pi._on_session_end(session_id="patch-session")
+        assert p.read_text() == "human file"
+
     def test_terminal_read_only_output_cannot_track_preexisting_test_file(
         self, _isolate_env
     ):
@@ -769,6 +796,28 @@ class TestOnSessionEndHook:
         pi = _load_plugin_init()
         # Nothing tracked → on_session_end should not raise.
         pi._on_session_end(session_id="empty", completed=True, interrupted=False)
+
+    def test_cleanup_is_scoped_to_ending_session(self, _isolate_env):
+        pi = _load_plugin_init()
+        first = _isolate_env / "test_session_one.py"
+        second = _isolate_env / "test_session_two.py"
+        first.write_text("one")
+        second.write_text("two")
+        for path, session in ((first, "s1"), (second, "s2")):
+            pi._on_post_tool_call(
+                tool_name="write_file",
+                args={"path": str(path), "content": path.read_text()},
+                result=json.dumps({"created_paths": [str(path)]}),
+                task_id=f"task-{session}",
+                session_id=session,
+            )
+
+        pi._on_session_end(session_id="s1")
+
+        assert not first.exists()
+        assert second.exists(), "ending session s1 must not clean active session s2"
+        pi._on_session_end(session_id="s2")
+        assert not second.exists()
 
 
 # ---------------------------------------------------------------------------

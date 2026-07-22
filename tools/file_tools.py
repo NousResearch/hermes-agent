@@ -1642,9 +1642,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _resolved = str(_resolve_path_for_task(path, task_id))
         except Exception:
             _resolved = None
-        provenance_path = _canonical_local_path(_resolved) or _canonical_local_path(path)
-        existed_before = _local_path_existed_before(provenance_path)
-
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
             file_ops = _get_file_ops(task_id)
@@ -1653,7 +1650,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
-                _add_created_path_evidence(result_dict, provenance_path, existed_before)
                 _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
@@ -1670,6 +1666,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
+            # Creation evidence must be sampled inside the same per-path
+            # serialization boundary as the write. An earlier probe lets a
+            # concurrent Hermes writer turn "absent" into an overwrite.
+            existed_before = _local_path_existed_before(_resolved)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning

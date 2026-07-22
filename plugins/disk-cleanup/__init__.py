@@ -2,11 +2,10 @@
 
 Wires three behaviours:
 
-1. ``post_tool_call`` hook — consumes explicit ``created_paths`` /
-   ``files_created`` metadata emitted by write-capable tools, then tracks
-   paths matching test/temp patterns under ``HERMES_HOME`` silently.  Terminal
-   calls are excluded because arbitrary shell commands cannot prove whether a
-   path was created or merely moved/observed.
+1. ``post_tool_call`` hook — consumes explicit ``created_paths`` metadata
+   emitted by ``write_file``, then tracks paths matching test/temp patterns
+   under ``HERMES_HOME`` silently.  Terminal and patch calls are excluded
+   because their current result metadata cannot prove exclusive creation.
 
 2. ``on_session_end`` hook — when any test files were auto-tracked
    during the just-finished turn, runs :func:`disk_cleanup.quick` and
@@ -34,9 +33,10 @@ from . import disk_cleanup as dg
 logger = logging.getLogger(__name__)
 
 
-# Per-task set of "test files newly tracked this turn".  Keyed by task_id
-# (or session_id as fallback) so on_session_end can decide whether to run
-# cleanup.  Guarded by a lock — post_tool_call can fire concurrently on
+# Per-session set of "test files newly tracked this turn".  Keyed by session_id
+# (or task_id only when no session identifier exists) so on_session_end can
+# clean only the paths owned by the ending session. Guarded by a lock —
+# post_tool_call can fire concurrently on
 # parallel tool calls.
 _recent_test_tracks: Dict[str, Set[str]] = {}
 _lock = threading.Lock()
@@ -52,7 +52,7 @@ _WINDOWS_PATH_REGEX = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/][^\s'\"`]+)")
 # ---------------------------------------------------------------------------
 
 def _tracker_key(task_id: str, session_id: str) -> str:
-    return task_id or session_id or "default"
+    return session_id or task_id or "default"
 
 
 def _record_track(task_id: str, session_id: str, path: Path, category: str) -> None:
@@ -120,11 +120,10 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
 def _extract_trusted_created_paths(result: Any) -> Set[str]:
     """Return only explicit creation metadata from a tool result.
 
-    ``created_paths`` is emitted by write-capable tools after they establish
-    that a target was absent before a successful write.  ``files_created`` is
-    the existing equivalent emitted by V4A patch application.  Neither field
-    is inferred from free-form output, command text, or the requested path.
-    Malformed or ambiguous result shapes return no paths (fail closed).
+    ``created_paths`` is emitted by ``write_file`` after it establishes that a
+    target was absent before a successful write. Neither free-form output nor
+    V4A ``files_created`` metadata is creation proof. Malformed or ambiguous
+    result shapes return no paths (fail closed).
     """
     if isinstance(result, str):
         try:
@@ -135,13 +134,12 @@ def _extract_trusted_created_paths(result: Any) -> Set[str]:
         return set()
 
     paths: Set[str] = set()
-    for key in ("created_paths", "files_created"):
-        values = result.get(key)
-        if not isinstance(values, list):
-            continue
-        for value in values:
-            if isinstance(value, str) and value:
-                paths.add(value)
+    values = result.get("created_paths")
+    if not isinstance(values, list):
+        return paths
+    for value in values:
+        if isinstance(value, str) and value:
+            paths.add(value)
     return paths
 
 
@@ -162,13 +160,11 @@ def _on_post_tool_call(
     if not isinstance(args, dict):
         return
 
-    if tool_name not in {"write_file", "patch"}:
+    if tool_name != "write_file":
         return
 
-    # Only tools that control the actual write operation may establish
-    # creation provenance.  Terminal before/after existence is correlation,
-    # not authorship: a shell command can move an existing human file or race
-    # another creator into the observed path.  Ambiguity is preserved.
+    # Only write_file currently emits creation evidence sampled inside its
+    # serialized write boundary. Terminal and patch metadata remain ambiguous.
     candidates = _extract_trusted_created_paths(result)
 
     for path_str in candidates:
@@ -177,29 +173,18 @@ def _on_post_tool_call(
 
 def _on_session_end(
     session_id: str = "",
+    task_id: str = "",
     completed: bool = True,
     interrupted: bool = False,
     **_: Any,
 ) -> None:
     """Run quick cleanup if any test files were tracked during this turn."""
-    # Drain both task-level and session-level buckets.  In practice only one
-    # is populated per turn; the other is empty.
-    drained_session = _drain("", session_id)
-    # Also drain any task-scoped buckets that happen to exist.  This is a
-    # cheap sweep: if an agent spawned subagents (each with their own
-    # task_id) they'll have recorded into separate buckets; we want to
-    # cleanup them all at session end.
-    with _lock:
-        task_buckets = list(_recent_test_tracks.keys())
-    for key in task_buckets:
-        if key and key != session_id:
-            _recent_test_tracks.pop(key, None)
-
-    if not drained_session and not task_buckets:
+    drained_session = _drain(task_id, session_id)
+    if not drained_session:
         return
 
     try:
-        summary = dg.quick()
+        summary = dg.quick(paths=drained_session)
     except Exception as exc:
         logger.debug("disk-cleanup quick cleanup failed: %s", exc)
         return
@@ -229,7 +214,7 @@ Subcommands:
 Categories: temp | test | research | download | chrome-profile | cron-output | other
 
 All operations are scoped to HERMES_HOME and /tmp/hermes-*.
-Test files are auto-tracked on write_file / terminal and auto-cleaned at session end.
+Test files created by write_file are auto-tracked and auto-cleaned at session end.
 """
 
 

@@ -27,7 +27,7 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
     from hermes_constants import get_hermes_home
@@ -277,6 +277,29 @@ def _has_active_maintenance_marker(path: Path) -> bool:
     return False
 
 
+def _capture_identity(path: Path) -> Optional[Dict[str, int]]:
+    """Capture the filesystem object identity required for later deletion."""
+    try:
+        stat_result = path.lstat()
+    except (OSError, ValueError):
+        return None
+    return {
+        "version": 1,
+        "device": int(stat_result.st_dev),
+        "inode": int(stat_result.st_ino),
+        "mode": int(stat_result.st_mode),
+        "size": int(stat_result.st_size),
+        "mtime_ns": int(stat_result.st_mtime_ns),
+        "ctime_ns": int(stat_result.st_ctime_ns),
+    }
+
+
+def _identity_matches(path: Path, expected: Dict[str, int]) -> bool:
+    """Return whether *path* is still the exact object that was tracked."""
+    current = _capture_identity(path)
+    return current is not None and current == expected
+
+
 def _validated_tracked_item(item: Any):
     """Return validated tracking fields, or ``None`` for untrusted evidence."""
     if not isinstance(item, dict):
@@ -285,6 +308,7 @@ def _validated_tracked_item(item: Any):
     category = item.get("category")
     timestamp = item.get("timestamp")
     size = item.get("size")
+    identity = item.get("identity")
     if (
         not isinstance(path_value, str)
         or not path_value
@@ -294,6 +318,7 @@ def _validated_tracked_item(item: Any):
         or not isinstance(size, (int, float))
         or isinstance(size, bool)
         or (isinstance(size, float) and not size.is_integer())
+        or not isinstance(identity, dict)
     ):
         return None
     try:
@@ -302,11 +327,23 @@ def _validated_tracked_item(item: Any):
         if parsed_timestamp.tzinfo is None:
             parsed_timestamp = parsed_timestamp.replace(tzinfo=timezone.utc)
         parsed_size = int(size)
-    except (TypeError, ValueError, OSError, OverflowError):
+        parsed_identity = {
+            key: int(identity[key])
+            for key in (
+                "version",
+                "device",
+                "inode",
+                "mode",
+                "size",
+                "mtime_ns",
+                "ctime_ns",
+            )
+        }
+    except (KeyError, TypeError, ValueError, OSError, OverflowError):
         return None
-    if parsed_size < 0:
+    if parsed_size < 0 or parsed_identity["version"] != 1:
         return None
-    return path, category, parsed_timestamp, parsed_size
+    return path, category, parsed_timestamp, parsed_size, parsed_identity
 
 
 def _managed_marker_matches(path: Path, expected: str) -> bool:
@@ -334,6 +371,13 @@ def _remove_path(path: Path) -> Optional[str]:
     except OSError as exc:
         return str(exc)
     return None
+
+
+def _remove_tracked_path(path: Path, identity: Dict[str, int]) -> Optional[str]:
+    """Remove only the unchanged filesystem object authorized by tracking."""
+    if not _identity_matches(path, identity):
+        return "tracked filesystem identity changed"
+    return _remove_path(path)
 
 
 def fmt_size(n: float) -> str:
@@ -364,7 +408,11 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
 
-    size = path.stat().st_size if path.is_file() else 0
+    identity = _capture_identity(path)
+    if identity is None:
+        _log(f"SKIP: {path} (filesystem identity unavailable)")
+        return False
+    size = identity["size"] if path.is_file() else 0
     tracked = load_tracked()
 
     # Deduplicate
@@ -379,6 +427,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "category": category,
         "size": size,
+        "identity": identity,
     })
     save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
@@ -418,8 +467,8 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
             # A malformed record is not deletion authorization.  Omit it
             # from the preview rather than aborting the whole report.
             continue
-        p, cat, timestamp, size = validated
-        if not p.exists() or not is_safe_path(p):
+        p, cat, timestamp, size, identity = validated
+        if not p.exists() or not is_safe_path(p) or not _identity_matches(p, identity):
             continue
         age = (now - timestamp).days
 
@@ -451,13 +500,21 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
 # Quick cleanup
 # ---------------------------------------------------------------------------
 
-def quick() -> Dict[str, Any]:
+def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """Safe deterministic cleanup — no prompts.
 
     Returns: ``{"deleted": N, "artifacts": N, "empty_dirs": N,
                "freed": bytes, "errors": [str, ...]}``.
     """
     tracked = load_tracked()
+    scoped_paths = None
+    if paths is not None:
+        scoped_paths = set()
+        for path in paths:
+            try:
+                scoped_paths.add(str(Path(path).resolve()))
+            except (OSError, TypeError, ValueError):
+                continue
     now = datetime.now(timezone.utc)
     deleted = 0
     freed = 0
@@ -473,7 +530,11 @@ def quick() -> Dict[str, Any]:
             errors.append(f"invalid tracked record: {item!r}")
             new_tracked.append(item)
             continue
-        p, cat, timestamp, size = validated
+        p, cat, timestamp, size, identity = validated
+
+        if scoped_paths is not None and str(p.resolve()) not in scoped_paths:
+            new_tracked.append(item)
+            continue
 
         try:
             p.stat()
@@ -493,6 +554,12 @@ def quick() -> Dict[str, Any]:
         if not is_safe_path(p):
             _log(f"SKIP unsafe tracked path: {p}")
             errors.append(f"{p}: unsafe path")
+            new_tracked.append(item)
+            continue
+
+        if not _identity_matches(p, identity):
+            _log(f"SKIP changed tracked identity: {p}")
+            errors.append(f"{p}: tracked filesystem identity changed")
             new_tracked.append(item)
             continue
 
@@ -527,7 +594,7 @@ def quick() -> Dict[str, Any]:
         )
 
         if should_delete:
-            error = _remove_path(p)
+            error = _remove_tracked_path(p, identity)
             if error is None:
                 freed += size
                 deleted += 1
@@ -538,6 +605,23 @@ def quick() -> Dict[str, Any]:
                 new_tracked.append(item)
         else:
             new_tracked.append(item)
+
+    # Scoped session cleanup is limited to the exact newly tracked paths. The
+    # manual/global quick command additionally performs retention and empty-dir
+    # sweeps under their separately marked ownership roots.
+    if scoped_paths is not None:
+        save_tracked(new_tracked)
+        _log(
+            f"QUICK_SUMMARY: {deleted} files, 0 dirs, "
+            f"{fmt_size(freed)}"
+        )
+        return {
+            "deleted": deleted,
+            "artifacts": 0,
+            "empty_dirs": 0,
+            "freed": freed,
+            "errors": errors,
+        }
 
     # Prune artifact files only inside explicitly marked session directories.
     # The marker is the durable ownership proof; directory names alone are not.
@@ -666,7 +750,7 @@ def deep(
         validated = _validated_tracked_item(item)
         if validated is None:
             continue
-        p, cat, timestamp, size = validated
+        p, cat, timestamp, size, identity = validated
         try:
             p.stat()
         except (FileNotFoundError, OSError, ValueError):
@@ -694,10 +778,10 @@ def deep(
                 validated = _validated_tracked_item(item)
                 if validated is None:
                     continue
-                p, _cat, _timestamp, size = validated
+                p, _cat, _timestamp, size, identity = validated
                 if not is_safe_path(p) or _is_protected_cron_path(p):
                     continue
-                error = _remove_path(p)
+                error = _remove_tracked_path(p, identity)
                 if error is None:
                     to_remove.append(item)
                     freed += size

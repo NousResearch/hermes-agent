@@ -878,7 +878,16 @@ class TurnController {
       return
     }
 
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
+    // When multiple active tools share the same name (e.g. two concurrent
+    // read_file calls), a `tool.progress` event without a `tool_id` is
+    // ambiguous — we can't tell which tool it belongs to.  Updating the
+    // wrong entry would cross-contaminate context.  Only update when
+    // exactly one active tool matches the name.
+    const matching = this.activeTools.filter(tool => tool.name === toolName)
+    if (matching.length !== 1) {
+      return
+    }
+    const index = this.activeTools.indexOf(matching[0])
 
     if (index < 0) {
       return
@@ -917,6 +926,7 @@ class TurnController {
   reset() {
     this.clearReasoning()
     this.clearStatusTimer()
+    this.toolProgressTimer = clear(this.toolProgressTimer)
     this.idle()
     this.bufRef = ''
     this.interrupted = false

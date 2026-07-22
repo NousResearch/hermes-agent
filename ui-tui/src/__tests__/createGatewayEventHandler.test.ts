@@ -274,6 +274,72 @@ describe('createGatewayEventHandler', () => {
     expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
   })
 
+  it('does not cross-contaminate context for parallel same-name tool calls', () => {
+    vi.useFakeTimers()
+    try {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      // Two parallel read_file calls with different contexts
+      onEvent({
+        payload: { context: 'Reading .bash_profile', name: 'read_file', tool_id: 'tc-1' },
+        type: 'tool.start'
+      } as any)
+      onEvent({
+        payload: { context: 'Reading .zshrc', name: 'read_file', tool_id: 'tc-2' },
+        type: 'tool.start'
+      } as any)
+
+      // Progress event for read_file — ambiguous when two active tools share
+      // the same name and the event carries no tool_id.  The safe default is
+      // to drop the update rather than risk assigning it to the wrong tool.
+      onEvent({
+        payload: { name: 'read_file', preview: 'Reading .zshrc (progress)' },
+        type: 'tool.progress'
+      } as any)
+
+      // Flush the batched timer so the turn state reflects any progress update
+      vi.advanceTimersByTime(100)
+
+      const tools = getTurnState().tools
+      expect(tools).toHaveLength(2)
+
+      // Neither tool's context should be overwritten — the progress event
+      // was ambiguous and must be silently dropped.
+      expect(tools[0].context).toBe('Reading .bash_profile')
+      expect(tools[1].context).toBe('Reading .zshrc')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('updates context for single-name tool progress (unambiguous)', () => {
+    vi.useFakeTimers()
+    try {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({
+        payload: { context: 'Reading config', name: 'read_file', tool_id: 'tc-1' },
+        type: 'tool.start'
+      } as any)
+
+      // Only one active read_file — progress is unambiguous and should apply.
+      onEvent({
+        payload: { name: 'read_file', preview: 'Reading config (progress)' },
+        type: 'tool.progress'
+      } as any)
+
+      vi.advanceTimersByTime(100)
+
+      const tools = getTurnState().tools
+      expect(tools).toHaveLength(1)
+      expect(tools[0].context).toBe('Reading config (progress)')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps tool tokens across handler recreation mid-turn', () => {
     const appended: Msg[] = []
 

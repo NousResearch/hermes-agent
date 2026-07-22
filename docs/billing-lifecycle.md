@@ -160,6 +160,13 @@ interactive modal (prompt_toolkit) mirrors the TUI overlay the same way, and
 non-interactive contexts fall back to the same text + portal-link rendering,
 never prompting.
 
+| CLI surface / state | Behavior (parity with TUI / desktop) |
+| --- | --- |
+| `/subscription` on **Free** + admin/owner + interactive | `_subscription_free_catalog` prints the plan catalog from the same `tiers[]` data the TUI uses — one row per enabled paid tier, cheapest first, `name · $/mo · $credits/mo` (monthly credits are DOLLARS → `$22 credits/mo`, never a bare number). A numbered pick opens the `/manage-subscription` deep-link with `plan=<tier_id>` appended so the portal preselects the chosen plan. Starting a new subscription needs a fresh card, so the only action is the portal hand-off (the terminal never charges here). |
+| Any CLI-built manage/subscribe URL | `subscription_manage_url(state, tier_id=…)` appends `plan=<tier_id>` (the stable `tiers[]` id, never a name/slug) **only when a tier was picked** (the Free catalog). The portal validates it server-side and ignores an unknown tier, so the CLI appends unconditionally on a pick, mirroring the TUI's `?plan=`. `org_id` is emitted first, `plan` second. |
+| **Downgrades** in the CLI | Stay **native / in-app** for normal changes (chargeless scheduling via `put_subscription_pending_change`). A blocked downgrade may still print the generic manage URL, but it never carries `plan=<tier_id>` — selected-tier deep-links are reserved for new subscriptions and upgrades. |
+| `/topup` overview action copy | Splits one-time top-up from automatic refill, the distinction stated up front in each first sentence: `Add funds now — a single charge, added to your balance today.` vs `Refill when low — charges $X automatically when your balance falls below $Y.` ("credits" stays out of the dollars-only `/topup` surface — "Add funds now" carries the one-time meaning without it). When auto-reload is off, the automatic line omits concrete amounts. |
+
 ## Forward compatibility
 
 Any `error`/`status`/`reason` code not in the tables above lands on the

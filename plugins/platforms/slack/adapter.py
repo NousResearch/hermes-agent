@@ -373,6 +373,47 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
     return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
 
 
+def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
+    """Walk a Block Kit ``blocks`` tree and return URLs found on any element.
+
+    Returns URLs preserving discovery order with duplicates removed. Used to
+    surface the actionable links (``View graph``, ``View incident``, etc.)
+    embedded in bot-posted alerts so an agent reading the thread can fetch
+    or click them. The companion serializer
+    :func:`_serialize_slack_blocks_for_agent` deliberately strips ``url`` to
+    keep the JSON view compact and to avoid exposing arbitrary URLs through
+    the generic payload dump; this helper is the targeted opt-in for
+    use sites where URLs are the whole point of the message.
+    """
+    if not blocks:
+        return []
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _maybe_add(value: Any) -> None:
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            if value not in seen:
+                seen.add(value)
+                found.append(value)
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            # The common URL-bearing keys across Block Kit (buttons, link
+            # elements in rich_text, image accessories, etc.).
+            for key in ("url", "image_url", "external_url"):
+                if key in node:
+                    _maybe_add(node[key])
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(blocks)
+    return found
+
+
 def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
     """Apply a resolved proxy to a Slack SDK client or clear it explicitly."""
     if hasattr(client, "proxy"):
@@ -4400,6 +4441,57 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Thread context fetching -----
 
+    @staticmethod
+    def _render_message_text(msg: dict, bot_uid: str = "") -> str:
+        """Return bounded display text for a Slack message, surfacing Block Kit content.
+
+        Starts with ``text``, strips bot mentions, then appends rich-text
+        content and actionable URLs from ``blocks`` when present.  Unlike
+        :func:`_serialize_slack_blocks_for_agent` (which can emit up to
+        6 000 chars of JSON per message), this helper produces only the
+        readable text and URL list needed by thread-context and parent-
+        text rendering — bounded by what the blocks actually contain,
+        not a JSON dump.
+        """
+        msg_text = (msg.get("text") or "").strip()
+        if bot_uid:
+            msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+        blocks = msg.get("blocks")
+        extras: list[str] = []
+        if blocks:
+            rich_text = _extract_text_from_slack_blocks(blocks).strip()
+            if rich_text and rich_text not in msg_text:
+                extras.append(rich_text)
+            for block in blocks:
+                block_type = (block or {}).get("type", "")
+                if block_type in ("section", "header", "context"):
+                    text_obj = block.get("text") or {}
+                    if isinstance(text_obj, dict):
+                        section_text = (text_obj.get("text") or "").strip()
+                        if section_text and section_text not in msg_text and all(section_text not in e for e in extras):
+                            extras.append(section_text)
+        # Legacy ``attachments`` (Alertmanager, Grafana, PagerDuty, CI bots):
+        # apps often post with an empty ``text`` and the real content in
+        # attachment fields or attachment-nested blocks.
+        attachments_text = _extract_text_from_slack_attachments(
+            msg.get("attachments") or []
+        ).strip()
+        if attachments_text and attachments_text not in msg_text and all(
+            attachments_text not in e for e in extras
+        ):
+            extras.append(attachments_text)
+        if blocks:
+            urls = _extract_urls_from_slack_blocks(blocks)
+            new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
+            if new_urls:
+                extras.append("URLs: " + ", ".join(new_urls))
+        if extras:
+            addendum = "\n".join(extras)
+            msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum
+
+        return msg_text
+
     async def _fetch_thread_context(
         self,
         channel_id: str,
@@ -4502,24 +4594,9 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     continue
 
-                msg_text = (msg.get("text") or "").strip()
-                # Apps (Alertmanager, Grafana, CI bots) often post with an empty
-                # ``text`` and the content in blocks/attachments — fall back so
-                # messages that started or populate the thread aren't dropped.
-                if not msg_text:
-                    msg_text = _extract_text_from_slack_blocks(
-                        msg.get("blocks")
-                    ).strip()
-                if not msg_text:
-                    msg_text = _extract_text_from_slack_attachments(
-                        msg.get("attachments")
-                    ).strip()
+                msg_text = self._render_message_text(msg, bot_uid=bot_uid)
                 if not msg_text:
                     continue
-
-                # Strip bot mentions from context messages
-                if bot_uid:
-                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
                 prefix = "[thread parent] " if is_parent else ""
                 display_user = msg_user or "unknown"
@@ -4618,17 +4695,7 @@ class SlackAdapter(BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = (parent.get("text") or "").strip()
-            # App-posted parents (e.g. an Alertmanager alert) carry their content
-            # in blocks/attachments with an empty ``text`` — fall back to those.
-            if not text:
-                text = _extract_text_from_slack_blocks(parent.get("blocks")).strip()
-            if not text:
-                text = _extract_text_from_slack_attachments(
-                    parent.get("attachments")
-                ).strip()
-            if bot_uid:
-                text = text.replace(f"<@{bot_uid}>", "").strip()
+            text = self._render_message_text(parent, bot_uid=bot_uid or "")
             return text
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)

@@ -25,6 +25,9 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   ``didChange`` sleeps ``MOCK_LSP_PUSH_DELAY`` seconds (default 1.0)
   and then pushes EMPTY diagnostics.  Models a server that fixes
   the ghost if you actually wait for it.  Pull endpoint rejects.
+- ``"reject_then_unversioned_push"`` — publishes a versioned result on
+  didOpen, then after didChange rejects the pull request first and sends a
+  delayed unversioned push.  Exercises the real reader-loop race.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
@@ -64,6 +67,7 @@ def write_message(obj):
 
 def main():
     script = os.environ.get("MOCK_LSP_SCRIPT", "clean")
+    pending_push = None
 
     while True:
         msg = read_message()
@@ -142,6 +146,29 @@ def main():
                     }
                 )
                 continue
+            if script == "reject_then_unversioned_push":
+                if is_change:
+                    delayed_diag = [
+                        {
+                            **error_diag[0],
+                            "code": "MOCK_UNVERSIONED",
+                            "message": "delayed unversioned diagnostic",
+                        }
+                    ]
+                    pending_push = (uri, delayed_diag)
+                else:
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {
+                                "uri": uri,
+                                "version": version,
+                                "diagnostics": error_diag,
+                            },
+                        }
+                    )
+                continue
             diagnostics = []
             if script == "errors":
                 diagnostics = error_diag
@@ -159,6 +186,26 @@ def main():
             continue
 
         if msg.get("method") == "textDocument/diagnostic":
+            if script == "reject_then_unversioned_push":
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg["id"],
+                        "error": {"code": -32601, "message": "method not found"},
+                    }
+                )
+                if pending_push is not None:
+                    uri, diagnostics = pending_push
+                    pending_push = None
+                    time.sleep(float(os.environ.get("MOCK_LSP_PUSH_DELAY", "0.05")))
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {"uri": uri, "diagnostics": diagnostics},
+                        }
+                    )
+                continue
             if script in {"stale", "slow_push"}:
                 # These scripts model push-only servers so the ghost
                 # can't be papered over by the pull channel.

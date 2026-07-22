@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _hermes_version,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -776,6 +777,29 @@ class TestHealthEndpoint:
             assert isinstance(data["version"], str)
             assert data["version"] != ""
 
+    def test_health_version_prefers_runtime_source_over_stale_metadata(self):
+        """Editable installs can leave importlib.metadata at an older release.
+
+        The health endpoint must report the running Hermes source version, not
+        stale ``hermes_agent-*.dist-info`` metadata from before a source update.
+        """
+        from hermes_cli import __version__
+
+        with patch("importlib.metadata.version", return_value="0.18.0"):
+            assert _hermes_version() == __version__
+
+    @pytest.mark.asyncio
+    async def test_health_endpoint_prefers_runtime_version_over_stale_metadata(self, adapter):
+        from hermes_cli import __version__
+
+        app = _create_app(adapter)
+        with patch("importlib.metadata.version", return_value="0.18.0"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["version"] == __version__
+
     @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
@@ -901,6 +925,26 @@ class TestHealthDetailedEndpoint:
         with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=4), \
              patch("tools.async_delegation.active_count", return_value=2):
             assert adapter._readiness_work_counts() == (3, 4, 2)
+
+    def test_readiness_work_counts_include_stopping_runs(self, adapter):
+        """Regression: _handle_stop_run() sets status="stopping" and holds it
+        there — cooperatively, with no hard timeout — until the agent notices
+        the interrupt and the task actually exits. A run in that window is
+        still doing real executor-thread work and must count as active,
+        the same as "running"; excluding it undercounts active_api_runs for
+        the whole (now-unbounded) cooperative-stop duration."""
+        adapter._run_statuses = {
+            "queued": {"status": "queued"},
+            "running": {"status": "running"},
+            "approval": {"status": "waiting_for_approval"},
+            "stopping": {"status": "stopping"},
+            "done": {"status": "completed"},
+            "cancelled": {"status": "cancelled"},
+        }
+
+        with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
+             patch("tools.async_delegation.active_count", return_value=0):
+            assert adapter._readiness_work_counts() == (4, 0, 0)
 
 
 # ---------------------------------------------------------------------------

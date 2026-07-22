@@ -18,8 +18,8 @@ The ``source`` field is the workflow name that declared the status; the
 assembler uses it to exclude the corresponding job from the synthesized
 ❌ Error list (the job already has its own status section).
 
-The array can contain 0, 1, or 2 results — one per lane that ran
-(``ci_review``, ``mcp_catalog``). When the ``ci-reviewed`` label is
+The array can contain 0 to 3 results — one per lane that ran
+(``ci_review``, ``mcp_catalog``, ``supply_chain``). When the ``ci-reviewed`` label is
 present, the kind is ``info``; when missing, it's ``action_required``
 with the verification checklist.
 """
@@ -44,6 +44,7 @@ SOURCE = "review-label-gate"
 def build_results(
     ci_review: bool,
     mcp_catalog: bool,
+    supply_chain: bool,
     label_present: bool,
 ) -> list[dict]:
     """Build the list of result objects for this source."""
@@ -99,16 +100,28 @@ def build_results(
                 ),
             })
 
+    if supply_chain and not label_present:
+        results.append({
+            "kind": "action_required",
+            "title": "Critical supply chain risk",
+            "summary": "Critical supply chain risk patterns were detected in this PR.",
+            "how_to_fix": (
+                "Review the flagged code carefully. If it is intentional, add the "
+                "`ci-reviewed` label to confirm maintainer review."
+            ),
+        })
+
     return results
 
 
 def build_statuses(
     ci_review: bool,
     mcp_catalog: bool,
+    supply_chain: bool,
     label_present: bool,
 ) -> list[dict]:
     """Build the full review_status array (one entry with a results list)."""
-    results = build_results(ci_review, mcp_catalog, label_present)
+    results = build_results(ci_review, mcp_catalog, supply_chain, label_present)
     if not results:
         return []
     return [{"source": SOURCE, "results": results}]
@@ -120,13 +133,17 @@ def main() -> int:
                         help="Whether CI-sensitive files changed.")
     parser.add_argument("--mcp-catalog", action="store_true",
                         help="Whether the MCP catalog / installer changed.")
+    parser.add_argument("--supply-chain", action="store_true",
+                        help="Whether the critical supply-chain scanner found a risk.")
     parser.add_argument("--label-present", action="store_true",
                         help="Whether the ci-reviewed label is present.")
     parser.add_argument("--output", default="-",
                         help="Output file ('-' for stdout, or a GITHUB_OUTPUT path).")
     args = parser.parse_args()
 
-    statuses = build_statuses(args.ci_review, args.mcp_catalog, args.label_present)
+    statuses = build_statuses(
+        args.ci_review, args.mcp_catalog, args.supply_chain, args.label_present
+    )
     json_str = json.dumps(statuses)
 
     if args.output == "-":

@@ -851,10 +851,14 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 
 ```yaml
 goals:
-  max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  max_turns: 20       # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+                      # Unbounded sentinel: 0, a negative int, or "unbounded"/"infinite"/"none"
+  judge_enabled: true # Whether the judge's verdicts may end the loop (default: true)
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
+`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. Set it to `0`, a negative integer, or the string `"unbounded"` / `"infinite"` / `"none"` to disable the cap — the loop then runs until the judge says `done` or you stop it. Any positive integer is a finite budget, exactly as before.
+
+`judge_enabled` (default `true`) controls whether the judge's verdicts may end the loop. Set it to `false` to strip the judge of its power to terminate: it still runs each turn (its `reason` stays in the continuation banner as a diagnostic) but a `done` verdict is coerced to `continue`. Combined with `max_turns: 0` this yields a fully-unbounded goal loop bounded only by an explicit stop. See [Goals](/user-guide/features/goals) for the full feature.
 
 ### API Timeouts
 

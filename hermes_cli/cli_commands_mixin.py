@@ -2143,7 +2143,7 @@ class CLICommandsMixin:
         # lines (verify:, constraints:, boundaries:, stop when:) are parsed
         # into a completion contract; the remaining prose is the headline.
         # A plain free-form goal with no such lines behaves exactly as before.
-        from hermes_cli.goals import parse_contract
+        from hermes_cli.goals import parse_contract, goal_budget_label
 
         headline, contract = parse_contract(arg)
         goal_text = headline or arg
@@ -2153,7 +2153,7 @@ class CLICommandsMixin:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        _cprint(f"  ⊙ Goal set ({goal_budget_label(state.max_turns)}): {state.goal}")
         if state.has_contract():
             _cprint(f"  {_DIM}Completion contract:{_RST}")
             for line in state.contract.render_block().splitlines():
@@ -2176,7 +2176,7 @@ class CLICommandsMixin:
         set it as the active goal. Falls back to a bare goal if the aux model
         can't produce a contract."""
         from cli import _DIM, _RST, _cprint
-        from hermes_cli.goals import draft_contract
+        from hermes_cli.goals import draft_contract, goal_budget_label
 
         mgr = self._get_goal_manager()
         if mgr is None:
@@ -2197,7 +2197,7 @@ class CLICommandsMixin:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        _cprint(f"  ⊙ Goal set ({goal_budget_label(state.max_turns)}): {state.goal}")
         if state.has_contract():
             _cprint(f"  {_DIM}Drafted completion contract:{_RST}")
             for line in state.contract.render_block().splitlines():

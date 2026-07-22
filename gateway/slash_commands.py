@@ -2486,7 +2486,10 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
-        base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        if state.max_turns is None:
+            base = t("gateway.goal.set_unbounded", goal=state.goal)
+        else:
+            base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
         if state.has_contract():
             return f"{base}\nCompletion contract:\n{state.contract.render_block()}"
         if lower.startswith("draft"):

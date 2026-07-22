@@ -9524,7 +9524,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         session split).
         """
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import GoalManager, resolve_goal_max_turns
             from hermes_cli.config import load_config
         except Exception as exc:
             logging.debug("goal manager unavailable: %s", exc)
@@ -9541,8 +9541,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            # resolve_goal_max_turns maps the unbounded sentinel (0/negative/
+            # string) to None; a finite positive int is unchanged.
+            max_turns = resolve_goal_max_turns(goals_cfg.get("max_turns"))
         except Exception:
+            # On any config error fall back to a FINITE default — a broken
+            # config must never silently grant an unbounded loop.
             max_turns = 20
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)

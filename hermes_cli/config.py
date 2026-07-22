@@ -2412,7 +2412,20 @@ DEFAULT_CONFIG = {
         # asks the user to /goal resume. Protects against judge false
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
+        #
+        # Sentinel for an UNBOUNDED budget: set 0, a negative int, or the
+        # string "unbounded"/"infinite"/"none" to disable the turn cap — the
+        # loop then runs until the judge says done, you /goal clear, or
+        # preemption. Any positive int is a finite budget (unchanged).
         "max_turns": 20,
+        # Whether the goal judge's verdicts may end the loop. Default true.
+        # Set false to strip the judge of its power to terminate: it still
+        # runs each turn (its reason stays in the continuation banner as a
+        # diagnostic) but a "done" verdict is coerced to "continue". Combined
+        # with max_turns: 0 this gives a fully-unbounded goal loop bounded
+        # only by an explicit stop — the supported form of the "infinity"
+        # pattern, replacing an external always-continue judge shim.
+        "judge_enabled": True,
     },
 
     # Mixture of Agents — named presets used by /moa. A preset is an execution

@@ -397,7 +397,12 @@ class GoalState:
     goal: str
     status: str = "active"          # active | paused | done | cleared
     turns_used: int = 0
-    max_turns: int = DEFAULT_MAX_TURNS
+    # Turn budget. ``None`` = unbounded (the budget check is skipped and the
+    # loop is bounded only by the judge / user / preemption). A positive int
+    # is a finite budget. ``0`` never reaches here — resolve_goal_max_turns
+    # maps the 0/negative/unbounded-string config sentinel to ``None`` before
+    # state is constructed.
+    max_turns: Optional[int] = DEFAULT_MAX_TURNS
     created_at: float = 0.0
     last_turn_at: float = 0.0
     last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
@@ -455,11 +460,22 @@ class GoalState:
         subgoals: List[str] = []
         if isinstance(raw_subgoals, list):
             subgoals = [str(s).strip() for s in raw_subgoals if str(s).strip()]
+        # max_turns may be None (unbounded) in new rows; old rows carry a
+        # finite int. Preserve None explicitly — the ``or DEFAULT`` idiom
+        # would otherwise resurrect an unbounded budget as DEFAULT_MAX_TURNS.
+        raw_max_turns = data.get("max_turns", DEFAULT_MAX_TURNS)
+        # Route through the resolver so a literal ``0``/negative/string sentinel
+        # in a hand-edited state file collapses to ``None`` (unbounded) rather
+        # than surviving as a finite-0 budget that would immediately fire
+        # ``0 >= 0``. ``None`` (unbounded) is preserved by the first branch;
+        # positive ints pass through; junk/unrecognised values fall back to
+        # ``DEFAULT_MAX_TURNS`` via the resolver.
+        max_turns = None if raw_max_turns is None else resolve_goal_max_turns(raw_max_turns)
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
             turns_used=int(data.get("turns_used", 0) or 0),
-            max_turns=int(data.get("max_turns", DEFAULT_MAX_TURNS) or DEFAULT_MAX_TURNS),
+            max_turns=max_turns,
             created_at=float(data.get("created_at", 0.0) or 0.0),
             last_turn_at=float(data.get("last_turn_at", 0.0) or 0.0),
             last_verdict=data.get("last_verdict"),
@@ -698,6 +714,100 @@ def _goal_judge_max_tokens() -> int:
     except Exception:
         pass
     return DEFAULT_JUDGE_MAX_TOKENS
+
+# Sentinel values for ``goals.max_turns`` that mean "no turn budget" — the
+# loop runs until the judge says done, the user stops it, or a new message
+# preempts it. ``0`` and any negative int are the machine-friendly form; the
+# strings give users a self-documenting spelling in config.yaml. Anything
+# else (positive int) is a normal finite budget.
+_UNBOUNDED_MAX_TURNS_STRINGS = {"unbounded", "infinite", "infinity", "none", "no limit", "unlimited"}
+
+
+def resolve_goal_max_turns(value: Any) -> Optional[int]:
+    """Normalize a ``goals.max_turns`` config value to a turn budget.
+
+    Returns a positive ``int`` for a finite budget, or ``None`` for an
+    *unbounded* budget (the loop is then bounded only by the judge, the user,
+    or preemption). Unbounded is selected by ``0``, any negative int, or one
+    of the strings in ``_UNBOUNDED_MAX_TURNS_STRINGS``.
+
+    Resolution rules (backward-compatible):
+      - ``None`` / unset        → ``DEFAULT_MAX_TURNS`` (the historical default).
+      - positive int            → that many turns (unchanged behaviour).
+      - ``0`` or negative int   → ``None`` (unbounded). Before this change a
+        ``0``/``None`` was coerced to ``DEFAULT_MAX_TURNS`` by the ``or``
+        idiom, so no existing config could have meant "unbounded" — this adds
+        the missing sentinel without altering any valid prior setting.
+      - a recognised string     → ``None`` (unbounded); unrecognised / junk
+        strings fall back to ``DEFAULT_MAX_TURNS`` rather than crashing.
+
+    The single source of truth for the sentinel so every consumer (CLI,
+    gateway, evaluate_after_turn) agrees; keeps the coercion in one place
+    instead of re-implementing the ``or DEFAULT`` idiom at each call site.
+    """
+    if value is None:
+        return DEFAULT_MAX_TURNS
+    if isinstance(value, bool):
+        # bool is a subclass of int; treat True/False as "unset" rather than
+        # as 1/0 so a stray boolean can't silently mean "1 turn" or "unbounded".
+        return DEFAULT_MAX_TURNS
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if not s:
+            return DEFAULT_MAX_TURNS
+        if s in _UNBOUNDED_MAX_TURNS_STRINGS:
+            return None
+        try:
+            n = int(s)
+        except ValueError:
+            return DEFAULT_MAX_TURNS
+        return n if n > 0 else None
+    # Unknown type — be conservative and keep the historical default.
+    return DEFAULT_MAX_TURNS
+
+
+def goal_judge_enabled(cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether the goal judge's verdicts are allowed to end the loop.
+
+    Reads ``goals.judge_enabled`` (default ``True``). When ``False``, the
+    judge still runs each turn (its ``reason`` text remains a useful
+    diagnostic in the continuation banner) but its ``done`` verdict is
+    coerced to ``continue`` — the loop can then only end via the turn budget,
+    an explicit user stop, or preemption. This is the supported, config-gated
+    way to run an effectively-unbounded goal loop (e.g. the "infinity"
+    pattern) without pointing the judge at an external always-continue shim.
+
+    Fail-open to ``True`` on any error or missing config so a misconfigured
+    value can never silently disable the judge that bounds a normal goal.
+    """
+    try:
+        if cfg is None:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+        value = (cfg.get("goals") or {}).get("judge_enabled", True)
+        # Accept only explicit booleans / common truthy-falsy spellings; any
+        # unrecognised value defaults to enabled (the safe, bounding choice).
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "no", "off", "0", "disabled"}
+        return bool(value)
+    except Exception:
+        return True
+
+
+def _fmt_turns(turns_used: int, max_turns: Optional[int]) -> str:
+    """Render ``turns_used/max_turns`` for goal banners, ``N/∞`` when unbounded."""
+    return f"{turns_used}/{max_turns if max_turns is not None else '∞'}"
+
+
+def goal_budget_label(max_turns: Optional[int]) -> str:
+    """Human label for a goal's turn budget: ``"20-turn budget"`` or
+    ``"unbounded budget"`` when ``max_turns`` is None."""
+    return f"{max_turns}-turn budget" if max_turns is not None else "unbounded budget"
 
 
 def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
@@ -1093,9 +1203,12 @@ class GoalManager:
       feed back into ``run_conversation``.
     """
 
-    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
+    def __init__(self, session_id: str, *, default_max_turns: Optional[int] = DEFAULT_MAX_TURNS):
         self.session_id = session_id
-        self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        # ``None`` = unbounded budget (from resolve_goal_max_turns). Preserve it
+        # rather than coercing through ``or DEFAULT`` — an explicit unbounded
+        # setting must survive to the GoalState.
+        self.default_max_turns = None if default_max_turns is None else int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -1117,7 +1230,7 @@ class GoalManager:
         s = self._state
         if s is None or s.status in {"cleared",}:
             return "No active goal. Set one with /goal <text>."
-        turns = f"{s.turns_used}/{s.max_turns} turns"
+        turns = f"{_fmt_turns(s.turns_used, s.max_turns)} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
         meta = f"{turns}{sub}{con}"
@@ -1146,11 +1259,18 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        # Resolve the effective budget: an explicit per-goal max_turns wins;
+        # otherwise fall back to the manager default. Either may be None
+        # (unbounded). Route an explicit value through ``resolve_goal_max_turns``
+        # so a literal ``0``/negative sentinel collapses to ``None`` (unbounded)
+        # instead of surviving as a finite-0 budget that would immediately fire
+        # ``0 >= 0``; a ``None`` argument means "use the manager default".
+        effective_max_turns = self.default_max_turns if max_turns is None else resolve_goal_max_turns(max_turns)
         state = GoalState(
             goal=goal,
             status="active",
             turns_used=0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=effective_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
             contract=contract if contract is not None else GoalContract(),
@@ -1453,6 +1573,15 @@ class GoalManager:
         state.last_verdict = verdict
         state.last_reason = reason
 
+        # Judge kill-switch: when goals.judge_enabled is false the judge may
+        # not end the loop. Coerce a done verdict to continue (keeping its
+        # reason as a diagnostic in the continuation banner); wait/continue
+        # are unaffected. The budget, an explicit user stop, and preemption
+        # remain as exits — the judge simply loses its power to terminate.
+        if verdict == "done" and not goal_judge_enabled():
+            verdict = "continue"
+            reason = f"[judge disabled] would-be done: {reason}"
+
         # Track consecutive judge parse failures. Reset on any usable reply,
         # including API / transport errors (parse_failed=False) so a flaky
         # network doesn't trip the auto-pause meant for bad judge models.
@@ -1568,7 +1697,9 @@ class GoalManager:
                 ),
             }
 
-        if state.turns_used >= state.max_turns:
+        # Budget exit — skipped entirely when max_turns is None (unbounded):
+        # the loop is then bounded only by the judge, the user, or preemption.
+        if state.max_turns is not None and state.turns_used >= state.max_turns:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
             save_goal(self.session_id, state)
@@ -1592,7 +1723,7 @@ class GoalManager:
             "verdict": "continue",
             "reason": reason,
             "message": (
-                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
+                f"↻ Continuing toward goal ({_fmt_turns(state.turns_used, state.max_turns)}): {reason}"
             ),
         }
 
@@ -1709,6 +1840,12 @@ def run_kanban_goal_loop(
     if max_turns < 1:
         max_turns = DEFAULT_MAX_TURNS
 
+    # Judge kill-switch (read once per worker run): when goals.judge_enabled
+    # is false the judge may not end the loop — a done verdict is coerced to
+    # continue so the worker keeps going until its budget, an explicit
+    # kanban_complete/kanban_block, or a stop. Same gate as the main loop.
+    _judge_enabled = goal_judge_enabled()
+
     last_response = first_response or ""
     # The first turn already consumed one unit of budget.
     turns_used = 1
@@ -1740,6 +1877,10 @@ def run_kanban_goal_loop(
         verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
             verdict = "continue"
+        # Judge kill-switch: a disabled judge cannot end the kanban loop.
+        if verdict == "done" and not _judge_enabled:
+            verdict = "continue"
+            reason = f"[judge disabled] would-be done: {reason}"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 
         if verdict == "done":

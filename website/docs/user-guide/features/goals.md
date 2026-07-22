@@ -155,6 +155,12 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
 
+#### Unbounded budget
+
+Set `goals.max_turns` to `0`, a negative integer, or the string `"unbounded"` / `"infinite"` / `"none"` to **disable the turn cap**. The loop then runs until the judge says `done`, you `/goal clear`, or a real message preempts it — there is no backstop pause. The banner reflects this: `⊙ Goal set (unbounded budget): <goal>` and `/goal status` shows `N/∞` turns. Any positive integer is a finite budget, exactly as before.
+
+Because an unbounded loop has no turn cap, the judge becomes the only thing that can end it on its own — so an unbounded budget pairs naturally with a specific, verifiable goal (ideally a [completion contract](#completion-contracts)) rather than a vague one.
+
 ### User messages always preempt
 
 Any real message you send while a goal is active takes priority over the continuation loop. On the CLI your message lands in `_pending_input` ahead of the queued continuation; on the gateway it goes through the adapter FIFO the same way. The judge runs again after your turn — so if your message happens to complete the goal, the judge will catch it and stop.
@@ -180,7 +186,18 @@ goals:
   # Max continuation turns before Hermes auto-pauses and asks you to
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
+  #
+  # Unbounded sentinel: set 0, a negative int, or "unbounded"/"infinite"/"none"
+  # to disable the turn cap — the loop runs until the judge says done, you
+  # /goal clear, or a message preempts it. Any positive int is a finite budget.
   max_turns: 20
+
+  # Whether the judge's verdicts may end the loop. Default true. Set false to
+  # strip the judge of its power to terminate: it still runs each turn (its
+  # reason stays in the continuation banner as a diagnostic) but a "done"
+  # verdict is coerced to "continue". Combined with max_turns: 0 this gives a
+  # fully-unbounded loop bounded only by an explicit stop.
+  judge_enabled: true
 ```
 
 ### Choosing the judge model

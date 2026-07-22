@@ -14175,14 +14175,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
     # ────────────────────────────────────────────────────────────────
-    def _goal_max_turns_from_config(self) -> int:
+    def _goal_max_turns_from_config(self) -> "Optional[int]":
         """Resolve the configured /goal turn budget for gateway sessions.
 
         GatewayRunner.config is a GatewayConfig dataclass, not the full
         user config mapping. Top-level config blocks such as ``goals`` are
         therefore only available through hermes_cli.config.load_config().
+
+        Returns a positive int for a finite budget, or ``None`` for an
+        unbounded budget (``goals.max_turns`` of ``0``/negative/an
+        unbounded-string, via ``resolve_goal_max_turns``).
         """
         try:
+            from hermes_cli.goals import resolve_goal_max_turns
+
             goals_cfg = (
                 (self.config or {}).get("goals", {})
                 if isinstance(self.config, dict)
@@ -14192,8 +14198,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from hermes_cli.config import load_config
 
                 goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
+            return resolve_goal_max_turns(goals_cfg.get("max_turns"))
         except Exception:
+            # Finite fallback: a config error must not silently grant an
+            # unbounded loop.
             return 20
 
     async def _get_goal_manager_for_event(self, event: "MessageEvent"):

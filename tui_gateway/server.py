@@ -10397,9 +10397,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     sid_key = session.get("session_key") or ""
                     if sid_key:
                         try:
+                            from hermes_cli.goals import resolve_goal_max_turns
+
                             goals_cfg = _load_cfg().get("goals") or {}
-                            goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                            goal_max_turns = resolve_goal_max_turns(goals_cfg.get("max_turns"))
                         except Exception:
+                            # Finite fallback: a config error must not grant
+                            # an unbounded loop.
                             goal_max_turns = 20
                         goal_mgr = GoalManager(
                             session_id=sid_key,
@@ -13758,9 +13762,12 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4001, "no session key")
 
         try:
+            from hermes_cli.goals import resolve_goal_max_turns
+
             goals_cfg = _load_cfg().get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = resolve_goal_max_turns(goals_cfg.get("max_turns"))
         except Exception:
+            # Finite fallback: a config error must not grant an unbounded loop.
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
 
@@ -13802,8 +13809,10 @@ def _(rid, params: dict) -> dict:
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
+        from hermes_cli.goals import goal_budget_label
+
         notice = (
-            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
+            f"⊙ Goal set ({goal_budget_label(state.max_turns)}): {state.goal}\n"
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )

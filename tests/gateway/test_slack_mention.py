@@ -674,6 +674,30 @@ def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     assert _os.environ["SLACK_STRICT_MENTION"] == "true"
 
 
+def test_config_bridges_slack_resolve_permalinks(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  resolve_permalinks: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("SLACK_RESOLVE_PERMALINKS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    import os as _os
+    assert _os.environ["SLACK_RESOLVE_PERMALINKS"] == "true"
+    adapter = SlackAdapter(config.platforms[Platform.SLACK])
+    assert adapter._slack_resolve_permalinks() is True
+
+
 # ---------------------------------------------------------------------------
 # Regression: strict mode must NOT persist mentions into _mentioned_threads
 # ---------------------------------------------------------------------------

@@ -6146,9 +6146,16 @@ class AIAgent:
         )
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
-        """Record the first guardrail decision that should stop this turn."""
-        if decision.should_halt and self._tool_guardrail_halt_decision is None:
-            self._tool_guardrail_halt_decision = decision
+        """Record guardrail halt decisions with rebound count.
+
+        The first halt per turn is a rebound opportunity — the model sees the
+        synthetic tool result and can self-correct.  A second halt in the same
+        turn triggers the real exit break.
+        """
+        if decision.should_halt:
+            self._tool_guardrail_halt_count += 1
+            if self._tool_guardrail_halt_decision is None:
+                self._tool_guardrail_halt_decision = decision
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"

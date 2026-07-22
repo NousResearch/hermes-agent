@@ -5062,26 +5062,34 @@ def run_conversation(
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
-                    _turn_exit_reason = "guardrail_halt"
-                    final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(
-                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
+                        f"⚠️ Tool guardrail blocked {decision.tool_name}: {decision.code}"
                     )
-                    messages.append({"role": "assistant", "content": final_response})
-                    # Emit the halt message to the client so it's not
-                    # indistinguishable from a crash.  The stream display
-                    # was flushed (callback(None)) before tool execution,
-                    # but the callback is still alive — fire the text
-                    # through it so SSE/TUI clients see the explanation.
-                    if final_response:
-                        agent._safe_print(f"\n{final_response}\n")
-                        if agent.stream_delta_callback:
-                            try:
-                                agent.stream_delta_callback(final_response)
-                                agent.stream_delta_callback(None)
-                            except Exception:
-                                pass
-                    break
+
+                    if agent._tool_guardrail_halt_count >= 2:
+                        # Second guardrail halt in the same turn — the model
+                        # already had one rebound chance but failed to
+                        # self-correct.  End the turn with a controlled halt.
+                        _turn_exit_reason = "guardrail_halt"
+                        final_response = agent._toolguard_controlled_halt_response(decision)
+                        messages.append({"role": "assistant", "content": final_response})
+                        if final_response:
+                            agent._safe_print(f"\n{final_response}\n")
+                            if agent.stream_delta_callback:
+                                try:
+                                    agent.stream_delta_callback(final_response)
+                                    agent.stream_delta_callback(None)
+                                except Exception:
+                                    pass
+                        break
+
+                    # First guardrail halt this turn — the synthetic tool
+                    # result is already in messages.  Give the model exactly
+                    # one rebound chance to see the error and self-correct.
+                    # Reset the decision so the next before_call (if any)
+                    # can record a second strike.
+                    agent._tool_guardrail_halt_decision = None
+                    continue
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the

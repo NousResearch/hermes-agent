@@ -1005,20 +1005,16 @@ def _load_profile_yaml(profile_dir: Path) -> dict:
 
 
 def _deep_merge_with_conflicts(
-    base: dict, overlay: dict, prefix: str = ""
-) -> Tuple[dict, List[str]]:
+    base: dict, overlay: dict, prefix: str = "",
+    base_label: str = "base", overlay_label: str = "overlay",
+) -> Tuple[dict, list]:
     """Deep-merge *overlay* into *base* and report conflicting keys.
 
-    Returns ``(merged, conflicts)`` where *conflicts* is a list of
-    human-readable conflict descriptions like ``"display.compact: true (base)
-    vs false (overlay)"``.
-
-    Scalar values conflict when they differ.  Dicts are recursed into.
-    Lists are NOT merged — the overlay's list replaces the base's list
-    (treated as a scalar).
+    Returns ``(merged, conflicts)`` where each conflict is a
+    ``(key_path, base_value, overlay_value, base_label, overlay_label)`` tuple.
     """
     merged = dict(base)
-    conflicts: List[str] = []
+    conflicts: list = []
 
     for key, overlay_val in overlay.items():
         fq = f"{prefix}.{key}" if prefix else key
@@ -1026,15 +1022,15 @@ def _deep_merge_with_conflicts(
             merged[key] = overlay_val
         elif isinstance(merged[key], dict) and isinstance(overlay_val, dict):
             sub_merged, sub_conflicts = _deep_merge_with_conflicts(
-                merged[key], overlay_val, prefix=fq
+                merged[key], overlay_val, prefix=fq,
+                base_label=base_label, overlay_label=overlay_label,
             )
             merged[key] = sub_merged
             conflicts.extend(sub_conflicts)
         elif merged[key] != overlay_val:
             conflicts.append(
-                f"{fq}: {merged[key]!r} (base) vs {overlay_val!r} (overlay)"
+                (fq, merged[key], overlay_val, base_label, overlay_label)
             )
-            # Keep the base value; caller is responsible for resolving.
     return merged, conflicts
 
 
@@ -1100,16 +1096,90 @@ def _resolve_inherited_config(
     merged_ancestors: dict = {}
     for anc_cfg in ancestor_configs:
         merged_ancestors, conflicts = _deep_merge_with_conflicts(
-            merged_ancestors, anc_cfg
+            merged_ancestors, anc_cfg,
+            base_label="ancestor", overlay_label="ancestor",
         )
         for c in conflicts:
-            all_warnings.append(f"[inherited_from] {c} (using first ancestor's value)")
+            all_warnings.append(
+                f"[inherited_from] {c[0]}: {c[1]!r} vs {c[2]!r} "
+                f"(using first ancestor's value)"
+            )
 
     # Apply the profile's own config on top (highest priority).
     # Swap args so child (raw) is the base — its values win on conflict.
     merged, _ = _deep_merge_with_conflicts(raw, merged_ancestors)
 
     return merged, all_warnings
+
+
+def _resolve_conflicts_interactively(
+    conflicts: list,
+) -> dict:
+    """Prompt the user to resolve each conflict interactively.
+
+    Returns a dict of ``{key_path: chosen_value}`` for values the user
+    selected, or ``{key_path: None}`` for skipped conflicts.
+    """
+    if not conflicts:
+        return {}
+
+    print("\nConflicts detected between parent profiles:\n")
+    resolutions: dict = {}
+
+    for i, (key, val1, val2, label1, label2) in enumerate(conflicts, 1):
+        print(f"[{i}] {key}")
+        print(f"    1) {label1}: {val1!r}")
+        print(f"    2) {label2}: {val2!r}")
+        print(f"    3) Skip (don't set)")
+
+        while True:
+            try:
+                choice = input(f"    Choose [1-3]: ").strip()
+                if choice == "1":
+                    resolutions[key] = val1
+                    break
+                elif choice == "2":
+                    resolutions[key] = val2
+                    break
+                elif choice == "3":
+                    resolutions[key] = None
+                    break
+                else:
+                    print("    Invalid choice. Enter 1, 2, or 3.")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                resolutions[key] = val1  # default to first
+                break
+        print()
+
+    return resolutions
+
+
+def _apply_resolutions(config: dict, resolutions: dict) -> dict:
+    """Apply resolved conflict values to a config dict via dotted keys."""
+    import copy
+    result = copy.deepcopy(config)
+    for key_path, value in resolutions.items():
+        if value is None:
+            continue  # skip
+        parts = key_path.split(".")
+        target = result
+        for part in parts[:-1]:
+            if part not in target:
+                target[part] = {}
+            target = target[part]
+        target[parts[-1]] = value
+    return result
+
+
+def _merge_with_labels(
+    base: dict, overlay: dict,
+    base_label: str, overlay_label: str,
+) -> Tuple[dict, list]:
+    """Merge *overlay* into *base*, tracking source labels for conflicts."""
+    return _deep_merge_with_conflicts(
+        base, overlay, base_label=base_label, overlay_label=overlay_label,
+    )
 
 
 def _collect_inherited_from_union(
@@ -1140,26 +1210,43 @@ def _collect_inherited_from_union(
 
 def _merge_and_flatten_configs(
     source_names: List[str],
+    *,
+    interactive: bool = False,
 ) -> Tuple[dict, List[str]]:
     """Merge effective configs from multiple source profiles.
 
     Returns ``(merged, warnings)``.
 
-    Each source's effective config is resolved through its own
-    ``inherited_from`` chain.  Conflicts between sources produce warnings
-    and keep the first source's value.
+    When *interactive* is True, conflicts between sources prompt the
+    user to choose a winner.  Otherwise the first source's value is
+    kept and a warning is emitted.
     """
     merged: dict = {}
     all_warnings: List[str] = []
+    all_conflicts: list = []
+    prev_label = ""
 
-    for name in source_names:
+    for i, name in enumerate(source_names):
         src_cfg, src_warnings = _resolve_inherited_config(name)
         all_warnings.extend(src_warnings)
-        merged, conflicts = _deep_merge_with_conflicts(merged, src_cfg)
-        for c in conflicts:
-            all_warnings.append(
-                f"[clone merge] {c} (keeping value from earlier source)"
+        curr_label = name
+        if i == 0:
+            merged = src_cfg
+        else:
+            merged, conflicts = _merge_with_labels(
+                merged, src_cfg,
+                base_label=prev_label, overlay_label=curr_label,
             )
+            all_conflicts.extend(conflicts)
+            for c in conflicts:
+                all_warnings.append(
+                    f"[clone merge] {c[0]}: {c[1]!r} vs {c[2]!r}"
+                )
+        prev_label = curr_label
+
+    if interactive and all_conflicts:
+        resolutions = _resolve_conflicts_interactively(all_conflicts)
+        merged = _apply_resolutions(merged, resolutions)
 
     return merged, all_warnings
 
@@ -1311,7 +1398,9 @@ def create_profile(
     # write a flat config.yaml, and collect inherited_from from ancestors.
     _clone_warnings: List[str] = []
     if len(_clone_sources) > 1 and not clone_all:
-        merged_cfg, _clone_warnings = _merge_and_flatten_configs(_clone_sources)
+        merged_cfg, _clone_warnings = _merge_and_flatten_configs(
+            _clone_sources, interactive=True,
+        )
         inherited_union = _collect_inherited_from_union(_clone_sources)
 
         # Write the flat merged config
@@ -1448,26 +1537,47 @@ def inherit_profile(
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    # Build inherited config: merge ancestors, detect inter-ancestor conflicts
-    merged_ancestors: dict = {}
+    # Build inherited config: merge ancestors, detect inter-parent conflicts,
+    # and resolve them interactively.
+    all_conflicts: list = []
     all_warnings: List[str] = []
-    for src in source_names:
+    prev_label = ""
+    merged_ancestors: dict = {}
+    for i, src in enumerate(source_names):
         src_cfg, src_warnings = _resolve_inherited_config(src)
         all_warnings.extend(src_warnings)
-        merged_ancestors, conflicts = _deep_merge_with_conflicts(
-            merged_ancestors, src_cfg
-        )
-        for c in conflicts:
-            all_warnings.append(
-                f"[inherit merge] {c} (using first parent's value)"
+        curr_label = src
+        if i == 0:
+            merged_ancestors = src_cfg
+        else:
+            merged_ancestors, conflicts = _merge_with_labels(
+                merged_ancestors, src_cfg,
+                base_label=prev_label, overlay_label=curr_label,
             )
+            all_conflicts.extend(conflicts)
+            for c in conflicts:
+                all_warnings.append(
+                    f"[inherit merge] {c[0]}: {c[1]!r} vs {c[2]!r}"
+                )
+        prev_label = curr_label
 
-    # Write config.yaml with inherited_from
+    # Interactive conflict resolution
+    resolutions = _resolve_conflicts_interactively(all_conflicts)
+    merged_ancestors = _apply_resolutions(merged_ancestors, resolutions)
+
+    # Write config.yaml with inherited_from + any resolved overrides
     import yaml as _yaml
     child_config: dict = {"inherited_from": list(source_names)}
-    # Carry over any keys the child wants to set explicitly.
-    # For now, the child starts empty; the user can edit config.yaml
-    # to set overrides.
+    # Write any resolved conflicts as explicit overrides in the child config
+    for key_path, value in resolutions.items():
+        if value is not None:
+            parts = key_path.split(".")
+            target = child_config
+            for part in parts[:-1]:
+                if part not in target:
+                    target[part] = {}
+                target = target[part]
+            target[parts[-1]] = value
     config_path = profile_dir / "config.yaml"
     with open(config_path, "w", encoding="utf-8") as _f:
         _yaml.dump(child_config, _f, default_flow_style=False, allow_unicode=True,

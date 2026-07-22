@@ -3120,6 +3120,40 @@ class TestReactions:
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
     @pytest.mark.asyncio
+    async def test_thread_context_timeout_still_dispatches_and_acknowledges(self, adapter):
+        """A stalled optional thread fetch cannot make an @mention disappear."""
+        adapter.THREAD_CONTEXT_FETCH_TIMEOUT_SECONDS = 0.01
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._resolve_user_name = AsyncMock(return_value="Tyler")
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="")
+
+        async def stalled_thread_context(**_kwargs):
+            await asyncio.sleep(1)
+            return "unreachable context"
+
+        adapter._fetch_thread_context = stalled_thread_context
+        event = {
+            "text": "<@U_BOT> hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": "1234567890.000010",
+            "thread_ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
+        received = adapter.handle_message.await_args.args[0]
+        assert received.text == "hello"
+        assert received.reply_to_message_id == "1234567890.000001"
+        assert "1234567890.000010" in adapter._reacting_message_ids
+        adapter._app.client.reactions_add.assert_any_await(
+            channel="C123", timestamp="1234567890.000010", name="eyes"
+        )
+
+    @pytest.mark.asyncio
     async def test_reactions_failure_outcome(self, adapter):
         """Failed processing should add :x: instead of :white_check_mark:."""
         adapter._app.client.reactions_add = AsyncMock()

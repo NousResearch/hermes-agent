@@ -490,6 +490,11 @@ class SlackAdapter(BasePlatformAdapter):
     # ``reply_in_thread: false`` path in ``_handle_slack_message``).  So a
     # continuable cron delivered flat here continues in-context on a plain reply.
     supports_inchannel_continuable = True
+    # Thread history is optional Slack API enrichment. It must never keep an
+    # @mention from reaching the gateway if conversations.replies is slow.
+    THREAD_CONTEXT_FETCH_TIMEOUT_SECONDS = 3.0
+    THREAD_PARENT_FETCH_TIMEOUT_SECONDS = 1.0
+    USER_NAME_FETCH_TIMEOUT_SECONDS = 2.0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -535,6 +540,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
+        # Direct mentions get an :eyes: acknowledgement before optional thread
+        # enrichment. This prevents on_processing_start from adding it twice.
+        self._early_reaction_message_ids: set = set()
         # Track active Assistant statuses by (team_id, channel_id, thread_ts)
         # so cleanup cannot clear an overlapping Slack Connect workspace.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
@@ -2539,6 +2547,12 @@ class SlackAdapter(BasePlatformAdapter):
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
+        early_reactions = getattr(self, "_early_reaction_message_ids", set())
+        if ts in early_reactions:
+            # The adapter already acknowledged this direct mention before
+            # optional thread enrichment ran, so avoid a duplicate API call.
+            early_reactions.discard(ts)
+            return
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
             await self._add_reaction(
@@ -2555,6 +2569,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not ts or ts not in self._reacting_message_ids:
             return
         self._reacting_message_ids.discard(ts)
+        getattr(self, "_early_reaction_message_ids", set()).discard(ts)
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
@@ -3412,6 +3427,10 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
         """Handle an incoming Slack message event."""
+        intake_started_at = time.monotonic()
+        thread_context_seconds = 0.0
+        identity_lookup_seconds = 0.0
+        parent_lookup_seconds = 0.0
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
@@ -3710,6 +3729,19 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
+        # Acknowledge a direct mention immediately after routing/access checks.
+        # Thread context below is optional enrichment and must not make a
+        # received mention look dropped while Slack API calls are slow.
+        _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
+        if _should_react and ts:
+            self._reacting_message_ids.add(ts)
+            self._early_reaction_message_ids.add(ts)
+            # _add_reaction catches its own failures; do not block dispatch on
+            # a best-effort UI acknowledgement.
+            asyncio.create_task(
+                self._add_reaction(channel_id, ts, "eyes", str(team_id or ""))
+            )
+
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
         if is_thread_reply and not self._has_active_session_for_thread(
@@ -3718,12 +3750,25 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             team_id=team_id,
         ):
-            thread_context = await self._fetch_thread_context(
-                channel_id=channel_id,
-                thread_ts=event_thread_ts,
-                current_ts=ts,
-                team_id=team_id,
-            )
+            context_started_at = time.monotonic()
+            try:
+                thread_context = await asyncio.wait_for(
+                    self._fetch_thread_context(
+                        channel_id=channel_id,
+                        thread_ts=str(event_thread_ts),
+                        current_ts=ts,
+                        team_id=team_id,
+                    ),
+                    timeout=self.THREAD_CONTEXT_FETCH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Slack] Thread context fetch timed out after %.1fs; "
+                    "continuing with the triggering message",
+                    self.THREAD_CONTEXT_FETCH_TIMEOUT_SECONDS,
+                )
+                thread_context = ""
+            thread_context_seconds = time.monotonic() - context_started_at
             if thread_context:
                 text = thread_context + text
 
@@ -3985,10 +4030,23 @@ class SlackAdapter(BasePlatformAdapter):
             else:
                 msg_type = MessageType.DOCUMENT
 
-        # Resolve user display name (cached after first lookup)
-        user_name = await self._resolve_user_name(
-            user_id, chat_id=channel_id, team_id=team_id
-        )
+        # Resolve user display name (cached after first lookup). This is display
+        # decoration rather than a routing requirement, so use the Slack ID if
+        # users.info is slow instead of blocking the agent turn.
+        identity_started_at = time.monotonic()
+        try:
+            user_name = await asyncio.wait_for(
+                self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id),
+                timeout=self.USER_NAME_FETCH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[Slack] users.info timed out after %.1fs for %s; using user ID",
+                self.USER_NAME_FETCH_TIMEOUT_SECONDS,
+                user_id,
+            )
+            user_name = user_id
+        identity_lookup_seconds = time.monotonic() - identity_started_at
 
         # Slack's AI Agent Messages tab shows visible app threads; title the
         # first DM thread turn from the user's prompt when Slack AI APIs are
@@ -4041,17 +4099,29 @@ class SlackAdapter(BasePlatformAdapter):
         # available to avoid redundant conversations.replies calls.
         reply_to_text = None
         if thread_ts and thread_ts != ts:
+            parent_started_at = time.monotonic()
             try:
                 reply_to_text = (
-                    await self._fetch_thread_parent_text(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        team_id=team_id,
+                    await asyncio.wait_for(
+                        self._fetch_thread_parent_text(
+                            channel_id=channel_id,
+                            thread_ts=thread_ts,
+                            team_id=team_id,
+                        ),
+                        timeout=self.THREAD_PARENT_FETCH_TIMEOUT_SECONDS,
                     )
                     or None
                 )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Slack] Thread parent fetch timed out after %.1fs; "
+                    "continuing without reply context",
+                    self.THREAD_PARENT_FETCH_TIMEOUT_SECONDS,
+                )
+                reply_to_text = None
             except Exception:  # pragma: no cover - defensive
                 reply_to_text = None
+            parent_lookup_seconds = time.monotonic() - parent_started_at
 
         msg_event = MessageEvent(
             text=text,
@@ -4072,14 +4142,6 @@ class SlackAdapter(BasePlatformAdapter):
             },
         )
 
-        # Only react when bot is directly addressed (1:1 DM or @mention).
-        # MPIMs are shared surfaces: reacting to every group-DM message (even
-        # when unmentioned) is visible noise to the whole group, so they must
-        # be @mentioned to earn a reaction — same as any channel.
-        _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
-        if _should_react:
-            self._reacting_message_ids.add(ts)
-
         # App-context is per-turn, user-controlled Slack UI state. Surface it
         # with the inbound user message rather than storing it on SessionSource:
         # putting it in the cached system prompt would rebuild the agent whenever
@@ -4092,6 +4154,18 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{msg_event.text}"
             )
 
+        if is_thread_reply:
+            logger.info(
+                "[Slack] Thread intake ready: channel=%s thread=%s message=%s "
+                "total=%.3fs context=%.3fs identity=%.3fs parent=%.3fs",
+                channel_id,
+                thread_ts,
+                ts,
+                time.monotonic() - intake_started_at,
+                thread_context_seconds,
+                identity_lookup_seconds,
+                parent_lookup_seconds,
+            )
         await self.handle_message(msg_event)
 
     # ----- Approval button support (Block Kit) -----

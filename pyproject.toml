@@ -72,6 +72,12 @@ dependencies = [
   # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
   # Pinned to the version already resolved in uv.lock (no resolution churn).
   "packaging==26.0",
+  # MQTT client — used by the `mesh` controller (registry/validation) and
+  # by mesh nodes at runtime. Declared as a core dep so the controller-side
+  # imports in mesh/ don't ModuleNotFoundError on a fresh install without
+  # the `mesh` extra. The remote-node venv installs it via deps.txt too;
+  # pinning here keeps the controller and nodes on the same version.
+  "paho-mqtt==2.1.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both

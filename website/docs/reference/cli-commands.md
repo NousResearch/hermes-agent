@@ -41,6 +41,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
+| `hermes mesh` | Provision and manage mesh fleet nodes over SSH (init, add, remove, list, status). |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
@@ -210,6 +211,28 @@ If you've only configured OpenRouter, `/model` will only show OpenRouter models.
 :::
 
 On a `--global` switch, provider and base URL changes are persisted to `config.yaml` alongside the model. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
+
+## `hermes mesh`
+
+```bash
+hermes mesh <subcommand>
+```
+
+Provision and manage fleet nodes from a controller over SSH. Each node runs a generated systemd service built from a role template. Run `hermes mesh <command> -h` for per-command options. Also available as `python -m mesh <subcommand>`.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `init` | One-time controller setup (writes `~/.hermes/mesh/config.yaml`). |
+| `ssh-setup <host>` | Bootstrap passwordless SSH trust + sudoers on a host. |
+| `add <host> --role <role>` | Provision a new node from a role template. |
+| `remove <host> [--purge]` | Decommission a node (optionally delete remote files). |
+| `list` | List registered nodes. |
+| `status [<host>]` | Show node health and config-drift detection. |
+| `restart <host>` | `systemctl restart` the node's service over SSH. |
+| `logs <host> [--follow]` | Tail the node's `journalctl` logs. |
+| `role list` / `role new <name>` | List or scaffold role templates. |
 
 ## `hermes gateway`
 

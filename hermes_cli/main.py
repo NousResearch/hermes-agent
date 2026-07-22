@@ -2633,6 +2633,15 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_mesh(args):
+    """Fleet provisioner — forwards to the ``hermes mesh`` CLI surface."""
+    from hermes_cli.mesh import main as _mesh_main
+
+    rc = _mesh_main(getattr(args, "mesh_args", None) or [])
+    if isinstance(rc, int) and rc != 0:
+        raise SystemExit(rc)
+
+
 def cmd_proxy(args):
     """Local OpenAI-compatible proxy to OAuth providers."""
     # Lazy import — pulls in aiohttp, which is gated behind an extras install
@@ -13774,6 +13783,25 @@ def main():
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
     migrate_parser.set_defaults(func=cmd_migrate)
+
+    # =========================================================================
+    # mesh command — fleet provisioner (forwards to hermes_cli.mesh)
+    # =========================================================================
+    mesh_parser = subparsers.add_parser(
+        "mesh",
+        help="Provision and manage mesh fleet nodes",
+        description=(
+            "Provision and manage mesh fleet nodes. Commands: init, ssh-setup, "
+            "add, remove, list, status, restart, logs, role. "
+            "Run `hermes mesh <command> -h` for per-command help."
+        ),
+    )
+    mesh_parser.add_argument(
+        "mesh_args",
+        nargs=argparse.REMAINDER,
+        help="mesh subcommand and its arguments (e.g. add <host> --role bare)",
+    )
+    mesh_parser.set_defaults(func=cmd_mesh)
 
     # =========================================================================
     # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)

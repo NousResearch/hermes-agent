@@ -20,7 +20,8 @@
 //   - POST /healthz     -> {"ok": true}
 //   - POST /send        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...",
-//              "format": "text" | "markdown" (default "text")}
+//              "format": "text" | "markdown" (default "text"),
+//              "replyTo": "..." | null}
 //   - POST /send-attachment -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
@@ -720,7 +721,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, format = "text" } = body || {};
+      const { spaceId, text, format = "text", replyTo } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
@@ -732,7 +733,10 @@ const server = http.createServer(async (req, res) => {
       // readable plain text on platforms that don't.
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
-      const result = await space.send(builder);
+      const target = replyTo ? knownMessages.get(replyTo) : null;
+      const result = target
+        ? await target.reply(builder)
+        : await space.send(builder);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {

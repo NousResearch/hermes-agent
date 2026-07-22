@@ -72,6 +72,21 @@ async def test_sidecar_send_includes_markdown_format(
     assert path == "/send"
     assert body["format"] == "markdown"
     assert body["text"] == _MD  # passed through unstripped
+    assert "replyTo" not in body
+
+
+@pytest.mark.asyncio
+async def test_sidecar_send_forwards_reply_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send("+15551234567", "reply", reply_to="incoming-msg-123")
+
+    path, body = calls[0]
+    assert path == "/send"
+    assert body["replyTo"] == "incoming-msg-123"
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ class HermesAgent < Formula
 
     pkgshare.install "skills", "optional-skills"
 
-    %w[hermes hermes-agent hermes-acp].each do |exe|
+    %w[hermes hermes-agent hermes-acp hermes-a2a].each do |exe|
       next unless (libexec/"bin"/exe).exist?
 
       (bin/exe).write_env_script(

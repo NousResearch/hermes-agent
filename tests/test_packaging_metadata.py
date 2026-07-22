@@ -198,8 +198,8 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
                 ver = spec.split("==", 1)[1].split(";", 1)[0].strip()
                 found[extra] = ver
 
-    # The four server-surface extras must each carry the direct pin.
-    for extra in ("web", "mcp", "computer-use", "dev"):
+    # The server-surface extras must each carry the direct pin.
+    for extra in ("web", "mcp", "computer-use", "dev", "a2a"):
         assert extra in found, (
             f"[{extra}] no longer pins starlette directly — CVE-2026-48710 "
             f"regression risk (mcp/fastapi pull it transitively with no upper bound)"

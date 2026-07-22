@@ -14,8 +14,9 @@ Python on Windows has two long-standing text-encoding footguns:
 
 This module fixes both on Windows *only* — POSIX is untouched.  It
 should be imported at the very top of every Hermes entry point
-(``hermes``, ``hermes-agent``, ``hermes-acp``, ``python -m gateway.run``,
-``batch_runner.py``, ``cron/scheduler.py``) before any other imports
+(``hermes``, ``hermes-agent``, ``hermes-acp``, ``hermes-a2a``,
+``python -m gateway.run``, ``batch_runner.py``, ``cron/scheduler.py``)
+before any other imports
 that might do file I/O or print to stdout.
 
 What this module does on Windows:

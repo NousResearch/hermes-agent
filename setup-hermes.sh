@@ -215,7 +215,7 @@ else
     _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
     _ALL_EXTRAS=(
         modal daytona messaging matrix cron cli dev tts-premium slack
-        pty honcho mcp homeassistant sms acp voice dingtalk feishu google
+        pty honcho mcp homeassistant sms acp a2a voice dingtalk feishu google
         bedrock web youtube
     )
     _SAFE_EXTRAS=()

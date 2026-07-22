@@ -1,0 +1,8 @@
+name: a2a-platform
+label: A2A (Agent2Agent)
+kind: platform
+version: 1.0.0
+description: >
+  A2A protocol server for Hermes Agent. Exposes an Agent Card and accepts
+  agent tasks over JSON-RPC and server-sent events.
+author: Yuri Gui (@yugui923) and Hermes Agent

@@ -106,6 +106,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("integrations/providers", "Providers", None),
         ("user-guide/features/mcp", "MCP (Model Context Protocol)", None),
         ("user-guide/features/acp", "ACP (Agent Context Protocol)", None),
+        ("user-guide/features/a2a", "A2A (Agent2Agent Protocol)", None),
         ("user-guide/features/api-server", "API Server", None),
         ("user-guide/features/honcho", "Honcho Memory", None),
         ("user-guide/features/provider-routing", "Provider Routing", None),

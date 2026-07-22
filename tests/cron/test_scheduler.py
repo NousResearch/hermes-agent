@@ -1253,6 +1253,26 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
+    @pytest.mark.parametrize("enabled_toolsets", [["memory"], ["coding"]])
+    def test_run_job_keeps_memory_enabled_for_memory_toolsets(self, tmp_path, enabled_toolsets):
+        """Direct and composite memory toolsets enable persistent memory in cron."""
+        job = {
+            "id": "memory-toolset-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": enabled_toolsets,
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is False
+
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
 

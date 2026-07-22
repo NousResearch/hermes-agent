@@ -3337,6 +3337,9 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        _cron_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+        from agent.memory_manager import memory_provider_tools_enabled
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3355,7 +3358,7 @@ def run_job(
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            enabled_toolsets=_cron_toolsets,
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
@@ -3364,7 +3367,7 @@ def run_job(
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory=not memory_provider_tools_enabled(_cron_toolsets),
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

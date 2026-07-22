@@ -769,7 +769,8 @@ def _record_patch_failure(task_id: str, resolved_path: str) -> int:
                 del task_failures[first_key]
             except StopIteration:
                 pass
-        task_failures[resolved_path] = task_failures.get(resolved_path, 0) + 1
+        count = task_failures.get(resolved_path, 0) + 1
+        task_failures[resolved_path] = min(count, 10)
         return task_failures[resolved_path]
 
 

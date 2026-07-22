@@ -1331,6 +1331,7 @@ class TestFetchModelMetadata:
         import agent.model_metadata as mm
         mm._model_metadata_cache = {}
         mm._model_metadata_cache_time = 0
+        mm._openrouter_fetch_warned = False
 
     def _isolate_disk_cache(self, monkeypatch, tmp_path):
         import agent.model_metadata as mm
@@ -1518,6 +1519,78 @@ class TestFetchModelMetadata:
 
         result = fetch_model_metadata(force_refresh=True)
         assert result == {}
+
+    def test_config_opt_out_skips_network(self, tmp_path, monkeypatch):
+        """openrouter.disable_metadata_fetch in config.yaml skips the network."""
+        import yaml
+        from hermes_cli.config import get_config_path
+
+        self._reset_cache()
+        self._isolate_disk_cache(monkeypatch, tmp_path)
+        config_path = get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            yaml.safe_dump({"openrouter": {"disable_metadata_fetch": True}}),
+            encoding="utf-8",
+        )
+
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            result = fetch_model_metadata(force_refresh=True)
+
+        mock_get.assert_not_called()
+        assert result == {}
+
+    def test_failure_warns_once_then_debug(self, tmp_path, monkeypatch, caplog):
+        """Repeated fetch failures log WARNING once per process, then DEBUG."""
+        import logging
+        self._reset_cache()
+        self._isolate_disk_cache(monkeypatch, tmp_path)
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=Exception("Tunnel connection failed: 502 Bad Gateway"),
+        ):
+            with caplog.at_level(logging.DEBUG, logger="agent.model_metadata"):
+                fetch_model_metadata(force_refresh=True)
+                fetch_model_metadata(force_refresh=True)
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "Failed to fetch model metadata" in r.getMessage()
+        ]
+        debugs = [
+            r for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and "Failed to fetch model metadata" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert len(debugs) >= 1
+
+    def test_failure_negative_cache_backs_off_on_cold_start(self, tmp_path, monkeypatch):
+        """A failed fetch writes a fresh disk marker so cold starts back off."""
+        import agent.model_metadata as mm
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=Exception("Tunnel connection failed: 502"),
+        ) as mock_get:
+            first = fetch_model_metadata(force_refresh=True)
+            assert first == {}
+            assert mock_get.call_count == 1
+            # The failed fetch persisted a fresh negative-cache marker.
+            assert cache_path.exists()
+
+            # Simulate a cold start: drop in-memory state, keep the disk marker.
+            mm._model_metadata_cache = {}
+            mm._model_metadata_cache_time = 0
+
+            second = fetch_model_metadata()
+            assert second == {}
+            # Backed off on the fresh marker — no second network hit.
+            assert mock_get.call_count == 1
 
 
 # =========================================================================

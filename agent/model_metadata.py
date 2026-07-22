@@ -107,6 +107,11 @@ def _strip_provider_prefix(model: str) -> str:
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
+# Flip to True after the first failed OpenRouter metadata fetch so the failure
+# is logged at WARNING once per process, then DEBUG — a blocked/offline
+# openrouter.ai (corporate proxy, air-gap) otherwise floods logs on every cold
+# start. Reset to False on a successful fetch.
+_openrouter_fetch_warned: bool = False
 _novita_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _novita_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
@@ -908,12 +913,48 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(bare_model, entry)
 
 
+def _openrouter_metadata_disabled() -> bool:
+    """True when operators opt out of the OpenRouter model-metadata fetch.
+
+    Configure this in ``config.yaml`` where ``openrouter.ai`` is unreachable —
+    corporate proxies that refuse the CONNECT tunnel (502), firewalls, or
+    air-gapped hosts::
+
+        openrouter:
+          disable_metadata_fetch: true
+
+    The fetch is then skipped entirely; model context/pricing resolve from the
+    hardcoded tiers plus any cached data, and the log stays clean.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        or_config = load_config_readonly().get("openrouter", {})
+    except Exception:
+        return False
+    if not isinstance(or_config, dict):
+        return False
+    return bool(or_config.get("disable_metadata_fetch", False))
+
+
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Fetch model metadata from OpenRouter (cached for 1 hour)."""
-    global _model_metadata_cache, _model_metadata_cache_time
+    """Fetch model metadata from OpenRouter (cached for 1 hour).
+
+    Degrades cleanly when ``openrouter.ai`` is unreachable: the failure is logged
+    once per process (then at DEBUG), and a negative cache is recorded — the
+    in-memory timestamp is refreshed and the disk cache is touched — so callers
+    back off for the TTL instead of re-hitting a known-blocked endpoint on every
+    request and cold start. Set ``openrouter.disable_metadata_fetch: true`` in
+    ``config.yaml`` to skip the network entirely.
+    """
+    global _model_metadata_cache, _model_metadata_cache_time, _openrouter_fetch_warned
 
     if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
         return _model_metadata_cache
+
+    if _openrouter_metadata_disabled():
+        # Opted out: never touch the network — serve the best cache we have.
+        return _model_metadata_cache or _load_model_metadata_disk_cache()
 
     if not force_refresh:
         disk_age = _model_metadata_disk_cache_age_seconds()
@@ -923,6 +964,11 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache = disk_cache
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
+            # A fresh-but-empty disk cache is the negative-cache marker written
+            # by a recent failed fetch (below): back off for the TTL rather than
+            # re-hitting a known-unreachable endpoint on every cold start.
+            _model_metadata_cache_time = time.time() - disk_age
+            return {}
 
     try:
         # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
@@ -948,24 +994,29 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
         _model_metadata_cache = cache
         _model_metadata_cache_time = time.time()
+        _openrouter_fetch_warned = False
         _save_model_metadata_disk_cache(cache)
         logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         return cache
 
     except Exception as e:
-        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        if _model_metadata_cache:
-            return _model_metadata_cache
-        disk_cache = _load_model_metadata_disk_cache()
-        if disk_cache:
-            _model_metadata_cache = disk_cache
-            disk_age = _model_metadata_disk_cache_age_seconds()
-            if disk_age is not None:
-                _model_metadata_cache_time = time.time() - min(disk_age, _MODEL_CACHE_TTL)
-            else:
-                _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
-            return _model_metadata_cache
-        return {}
+        # Log once per process at WARNING, then DEBUG — a blocked/offline
+        # openrouter.ai otherwise floods the log on every cold start.
+        if _openrouter_fetch_warned:
+            logger.debug("Failed to fetch model metadata from OpenRouter: %s", e)
+        else:
+            logger.warning("Failed to fetch model metadata from OpenRouter: %s", e)
+            _openrouter_fetch_warned = True
+
+        # Negative cache: reuse any metadata we already have and mark it fresh so
+        # we back off for the TTL instead of retrying every call. Persist it so
+        # sibling/cold-start processes back off too — an empty file is a valid
+        # "recently failed" marker honored by the read path above.
+        fallback = _model_metadata_cache or _load_model_metadata_disk_cache()
+        _model_metadata_cache = fallback
+        _model_metadata_cache_time = time.time()
+        _save_model_metadata_disk_cache(fallback)
+        return fallback
 
 
 def fetch_endpoint_model_metadata(

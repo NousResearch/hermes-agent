@@ -1467,6 +1467,17 @@ Notes:
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](/user-guide/configuration#openrouter-routing--pareto-code-for-auxiliary-tasks).
 
+## Disabling the OpenRouter metadata fetch
+
+Hermes fetches model context/pricing metadata from `openrouter.ai/api/v1/models` as a fallback for context-length and cost resolution. Where `openrouter.ai` is unreachable — corporate proxies that refuse the CONNECT tunnel (502), firewalls, or air-gapped hosts — this fetch stalls each cold start and floods the log. Skip it entirely with `disable_metadata_fetch` in `~/.hermes/config.yaml`:
+
+```yaml
+openrouter:
+  disable_metadata_fetch: true   # default false
+```
+
+When disabled, model context and pricing resolve from the hardcoded tiers plus any previously cached data, and no network call is made. Leave it `false` (the default) on hosts that can reach `openrouter.ai`.
+
 ## Fallback Providers
 
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:

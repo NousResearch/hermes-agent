@@ -164,6 +164,32 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     return None
 
 
+def _enforce_fixed_task_authority(
+    tid: str, board: Optional[str] = None
+) -> Optional[str]:
+    """Keep explicitly authority-scoped workers inside their own task and board.
+
+    Legacy workers retain their existing cross-task comment/read behavior. The
+    dispatcher sets the authority marker only when a task carries an explicit
+    ``toolsets`` value, including the security-significant empty list.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK_AUTHORITY") != "task_toolsets.v1":
+        return None
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid or tid != env_tid:
+        return tool_error(
+            f"fixed-authority worker is scoped to task {env_tid or '<missing>'}; "
+            f"refusing access to {tid}"
+        )
+    env_board = os.environ.get("HERMES_KANBAN_BOARD")
+    if board and env_board and board != env_board:
+        return tool_error(
+            f"fixed-authority worker is scoped to board {env_board}; "
+            f"refusing access to {board}"
+        )
+    return None
+
+
 def _connect(board: Optional[str] = None):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
@@ -373,6 +399,9 @@ def _handle_show(args: dict, **kw) -> str:
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
     board = args.get("board")
+    ownership_err = _enforce_fixed_task_authority(tid, board)
+    if ownership_err:
+        return ownership_err
     try:
         kb, conn = _connect(board=board)
         try:
@@ -824,6 +853,9 @@ def _handle_comment(args: dict, **kw) -> str:
     # comments are the deliberate handoff channel between tasks.
     author = os.environ.get("HERMES_PROFILE") or "worker"
     board = args.get("board")
+    ownership_err = _enforce_fixed_task_authority(str(tid), board)
+    if ownership_err:
+        return ownership_err
     try:
         kb, conn = _connect(board=board)
         try:
@@ -1019,13 +1051,16 @@ def _handle_attach_url(args: dict, **kw) -> str:
 
 
 def _handle_attachments(args: dict, **kw) -> str:
-    """List a task's attachments (read-only; no ownership restriction)."""
+    """List a task's attachments."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
     board = args.get("board")
+    ownership_err = _enforce_fixed_task_authority(tid, board)
+    if ownership_err:
+        return ownership_err
     try:
         kb, conn = _connect(board=board)
         try:

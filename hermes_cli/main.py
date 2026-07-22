@@ -12847,13 +12847,19 @@ def _read_ssh_session_token_file(path: str) -> str:
 
     import stat as _stat
     from pathlib import Path as _Path
-    from hermes_constants import get_hermes_home as _get_hermes_home
 
     if not os.path.isabs(path):
         raise SystemExit("--ssh-session-token-file must be absolute")
 
     token_path = _Path(path)
-    token_root = _get_hermes_home() / "desktop-ssh"
+    # The Desktop client writes the token under $HOME/.hermes/desktop-ssh: a
+    # literal "~/.hermes/desktop-ssh" in apps/desktop/electron/remote-lifecycle.ts
+    # expanded against the account's $HOME, independent of HERMES_HOME and the
+    # active profile. Anchor validation to that same OS-home path, NOT to
+    # get_hermes_home(): a non-default sticky profile (or any HERMES_HOME pointing
+    # elsewhere, e.g. a Docker /opt/data root) re-homes get_hermes_home() and
+    # would otherwise reject every token the client legitimately wrote (#69551).
+    token_root = _Path.home() / ".hermes" / "desktop-ssh"
     try:
         relative = token_path.relative_to(token_root)
     except ValueError as exc:

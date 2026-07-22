@@ -14679,8 +14679,7 @@ def main():
             if not sessions:
                 print("No sessions found.")
                 return
-
-            # Short workspace label: the repo/dir basename, "—" when unbound. The
+# Short workspace label: the repo/dir basename, "—" when unbound. The
             # Workspace column only appears once at least one session carries one
             # (or when filtering), so all-unbound listings read as before.
             def _ws_label(s):
@@ -14690,44 +14689,57 @@ def main():
             has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
             has_titles = any(s.get("title") for s in sessions)
 
+            from rich.console import Console
+            from rich.table import Table
+
             if has_ws:
                 if has_titles:
-                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                    print("─" * 110)
+                    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+                    table.add_column("Title", width=28, no_wrap=True)
+                    table.add_column("Workspace", width=18, no_wrap=True)
+                    table.add_column("Last Active", width=13, no_wrap=True)
+                    table.add_column("ID")
                 else:
-                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                    print("─" * 100)
+                    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+                    table.add_column("Preview", width=38, no_wrap=True)
+                    table.add_column("Workspace", width=18, no_wrap=True)
+                    table.add_column("Last Active", width=13, no_wrap=True)
+                    table.add_column("Src", width=6, no_wrap=True)
+                    table.add_column("ID")
                 for s in sessions:
                     last_active = _relative_time(s.get("last_active"))
                     ws = _ws_label(s)[:16]
                     if has_titles:
                         title = (s.get("title") or "—")[:26]
-                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                        table.add_row(title, ws, last_active, s["id"])
                     else:
                         preview = s.get("preview", "")[:36]
-                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                        table.add_row(preview, ws, last_active, s["source"], s["id"])
+                Console().print(table)
                 return
 
+            table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+            table.add_column("Last Active", width=13, no_wrap=True)
+            table.add_column("ID", width=24, no_wrap=True)
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                table.add_column("Title", width=32, no_wrap=True)
+                table.add_column("Preview")
             else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
+                table.add_column("Preview")
+                table.add_column("Src", width=6, no_wrap=True)
+
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
-                preview = (
-                    s.get("preview", "")[:38]
-                    if has_titles
-                    else s.get("preview", "")[:48]
-                )
+                sid = s["id"]
                 if has_titles:
                     title = (s.get("title") or "—")[:30]
-                    sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    preview = (s.get("preview", "") or "")[:80]
+                    table.add_row(last_active, sid, title, preview)
                 else:
-                    sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    preview = (s.get("preview", "") or "")[:80]
+                    table.add_row(last_active, sid, preview, s["source"])
+
+            Console().print(table)
 
         elif action == "export":
             from hermes_cli.session_filters import (

@@ -94,6 +94,40 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
+  it('preserves urls used as markdown link labels', () => {
+    const cases = [
+      '[https://example.com](https://example.com)',
+      '[https://example.com:8080/path?q=test#hash](https://example.com:8080/path?q=test#hash)',
+      '[http://user@example.com](http://user@example.com)'
+    ]
+
+    for (const input of cases) {
+      expect(preprocessMarkdown(input)).toBe(input)
+    }
+  })
+
+  it('matches the outer label bracket around bracket-containing urls', () => {
+    const cases = [
+      '[https://[::1]:8080/status](https://[::1]:8080/status)',
+      '[docs [https://example.com/path]](https://example.com/path)',
+      '[prefix [nested] https://example.com/path](https://example.com/path)',
+      '[[inner](https://i.example) outer](https://o.example)',
+      '[a\\]b](https://example.com)'
+    ]
+
+    for (const input of cases) {
+      expect(preprocessMarkdown(input)).toBe(input)
+    }
+  })
+
+  it('keeps bare prose autolinking and inline code behavior', () => {
+    const input = 'Docs: https://example.com/docs and `https://example.com/code`'
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('Docs: <https://example.com/docs>')
+    expect(output).toContain('`https://example.com/code`')
+  })
+
   it('strips orphan numeric citation markers outside code spans', () => {
     const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
 

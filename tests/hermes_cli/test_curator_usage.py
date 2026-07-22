@@ -110,3 +110,14 @@ def test_usage_command_is_registered():
     assert args.sort == "recent"
     assert args.provenance == "hub"
     assert args.json is True
+
+
+def test_repair_usage_command_is_registered():
+    """The `repair-usage` subcommand must be wired into the argparse tree."""
+    import argparse
+    import hermes_cli.curator as curator_cli
+
+    parser = argparse.ArgumentParser(prog="hermes curator")
+    curator_cli.register_cli(parser)
+    args = parser.parse_args(["repair-usage"])
+    assert args.func is curator_cli._cmd_repair_usage

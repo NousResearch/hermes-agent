@@ -177,6 +177,59 @@ def test_status_no_skills_produces_clean_empty_output(curator_status_env):
     assert "least active" not in out
 
 
+def test_repair_usage_command_prints_summary(monkeypatch, capsys):
+    from hermes_cli import curator as curator_cli
+    import tools.skill_usage as skill_usage
+
+    monkeypatch.setattr(
+        skill_usage,
+        "repair_orphan_usage_records",
+        lambda: {
+            "marked_active": ["restored-skill"],
+            "marked_archived": ["archived-skill"],
+            "removed": ["missing-skill"],
+        },
+    )
+
+    assert curator_cli._cmd_repair_usage(Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "curator: repaired usage records" in out
+    assert "marked_active: restored-skill" in out
+    assert "marked_archived: archived-skill" in out
+    assert "removed: missing-skill" in out
+
+
+def test_repair_usage_command_fails_when_persistence_fails(monkeypatch, capsys):
+    from hermes_cli import curator as curator_cli
+    import tools.skill_usage as skill_usage
+
+    def _fail():
+        raise skill_usage.UsagePersistenceError("simulated write failure")
+
+    monkeypatch.setattr(skill_usage, "repair_orphan_usage_records", _fail)
+
+    assert curator_cli._cmd_repair_usage(Namespace()) == 1
+    out = capsys.readouterr().out
+    assert "failed to repair usage records" in out
+    assert "simulated write failure" in out
+    assert "curator: repaired usage records" not in out
+
+
+def test_repair_usage_command_prints_noop(monkeypatch, capsys):
+    from hermes_cli import curator as curator_cli
+    import tools.skill_usage as skill_usage
+
+    monkeypatch.setattr(
+        skill_usage,
+        "repair_orphan_usage_records",
+        lambda: {"marked_active": [], "marked_archived": [], "removed": []},
+    )
+
+    assert curator_cli._cmd_repair_usage(Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "usage records already match filesystem" in out
+
+
 def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
     import agent.curator as curator_state
     import hermes_cli.curator as curator_cli

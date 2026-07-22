@@ -16,6 +16,63 @@ def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
         bump_view(skill_name)
 
 
+def _repair_with_paused_active_scan(
+    hermes_home: str,
+    skill_name: str,
+    active_checked,
+    continue_scan,
+    result_queue,
+) -> None:
+    """Pause repair after its active lookup while it holds lifecycle locks."""
+    os.environ["HERMES_HOME"] = hermes_home
+    import importlib
+    import tools.skill_usage as skill_usage
+
+    importlib.reload(skill_usage)
+    original_find = skill_usage._find_skill_dir
+
+    def _paused_find(name: str):
+        result = original_find(name)
+        if name == skill_name:
+            active_checked.set()
+            if not continue_scan.wait(10):
+                raise RuntimeError("timed out waiting to continue repair scan")
+        return result
+
+    skill_usage._find_skill_dir = _paused_find
+    try:
+        result_queue.put(("ok", skill_usage.repair_orphan_usage_records()))
+    except Exception as exc:  # pragma: no cover - asserted through child result
+        result_queue.put(("error", repr(exc)))
+
+
+def _restore_with_state_signal(
+    hermes_home: str,
+    skill_name: str,
+    restore_started,
+    state_update_reached,
+    result_queue,
+) -> None:
+    """Signal when restore reaches metadata update after its directory move."""
+    os.environ["HERMES_HOME"] = hermes_home
+    import importlib
+    import tools.skill_usage as skill_usage
+
+    importlib.reload(skill_usage)
+    original_set_state = skill_usage.set_state
+
+    def _signaled_set_state(name: str, state: str) -> None:
+        state_update_reached.set()
+        original_set_state(name, state)
+
+    skill_usage.set_state = _signaled_set_state
+    restore_started.set()
+    try:
+        result_queue.put(("ok", skill_usage.restore_skill(skill_name)))
+    except Exception as exc:  # pragma: no cover - asserted through child result
+        result_queue.put(("error", repr(exc)))
+
+
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with a clean skills/ dir for each test.
@@ -561,6 +618,201 @@ def test_restore_prefers_timestamped_dupe_over_unrelated_sibling(skills_home):
     assert "name: report-card" not in restored
     assert not dupe.exists()       # the dupe moved out of the archive
     assert sibling.exists()        # the unrelated sibling stayed put
+
+
+def test_repair_orphan_usage_records_reconciles_managed_records(skills_home):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+
+    _write_skill(skills_dir, "back-active")
+    skill_usage.mark_agent_created("back-active")
+    skill_usage.set_state("back-active", skill_usage.STATE_ARCHIVED)
+
+    archived = skills_dir / ".archive" / "imports" / "archived-only"
+    archived.mkdir(parents=True)
+    (archived / "SKILL.md").write_text(
+        "---\nname: archived-only\ndescription: archived\n---\n",
+        encoding="utf-8",
+    )
+    skill_usage.mark_agent_created("archived-only")
+
+    skill_usage.mark_agent_created("missing-skill")
+    data = skill_usage.load_usage()
+    data["manual-record"] = {"created_by": None, "state": skill_usage.STATE_ACTIVE}
+    data["bundled-record"] = {"created_by": "agent", "state": skill_usage.STATE_ACTIVE}
+    skill_usage.save_usage(data)
+    (skills_dir / ".bundled_manifest").write_text("bundled-record:abc\n", encoding="utf-8")
+
+    summary = skill_usage.repair_orphan_usage_records()
+
+    assert summary == {
+        "marked_active": ["back-active"],
+        "marked_archived": ["archived-only"],
+        "removed": ["missing-skill"],
+    }
+    repaired = skill_usage.load_usage()
+    assert repaired["back-active"]["state"] == skill_usage.STATE_ACTIVE
+    assert repaired["back-active"]["archived_at"] is None
+    assert repaired["archived-only"]["state"] == skill_usage.STATE_ARCHIVED
+    assert repaired["archived-only"]["archived_at"] is not None
+    assert "missing-skill" not in repaired
+    assert repaired["manual-record"]["state"] == skill_usage.STATE_ACTIVE
+    assert repaired["bundled-record"]["state"] == skill_usage.STATE_ACTIVE
+
+
+def test_repair_orphan_usage_records_noops_when_already_consistent(skills_home):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "steady")
+    skill_usage.mark_agent_created("steady")
+
+    assert skill_usage.repair_orphan_usage_records() == {
+        "marked_active": [],
+        "marked_archived": [],
+        "removed": [],
+    }
+
+
+def test_repair_does_not_accept_frontmatter_only_archive_match(skills_home):
+    """Repair must not claim an archive is recoverable when restore cannot
+    resolve its directory name, even if SKILL.md frontmatter matches."""
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    renamed = skills_dir / ".archive" / "imports" / "renamed-directory"
+    renamed.mkdir(parents=True)
+    (renamed / "SKILL.md").write_text(
+        "---\nname: orphan-record\ndescription: archived\n---\n",
+        encoding="utf-8",
+    )
+    skill_usage.mark_agent_created("orphan-record")
+
+    ok, msg = skill_usage.restore_skill("orphan-record")
+    assert not ok
+    assert "not found" in msg.lower()
+
+    assert skill_usage.repair_orphan_usage_records() == {
+        "marked_active": [],
+        "marked_archived": [],
+        "removed": ["orphan-record"],
+    }
+    assert "orphan-record" not in skill_usage.load_usage()
+    assert renamed.exists()
+
+
+def test_repair_raises_and_preserves_disk_when_persistence_fails(
+    skills_home, monkeypatch
+):
+    import tools.skill_usage as skill_usage
+
+    skill_usage.mark_agent_created("gone")
+    usage_path = skill_usage._usage_file()
+    before = usage_path.read_bytes()
+
+    def _replace_fails(*_args, **_kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(skill_usage.os, "replace", _replace_fails)
+
+    with pytest.raises(skill_usage.UsagePersistenceError, match="failed to persist"):
+        skill_usage.repair_orphan_usage_records()
+
+    assert usage_path.read_bytes() == before
+    assert not any(
+        path.name.startswith(".usage_") for path in usage_path.parent.iterdir()
+    )
+
+
+def test_repair_and_restore_are_serialized_across_processes(skills_home):
+    """Repair must not erase provenance while restore is moving the same skill."""
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir / ".archive", "race-skill")
+    record = skill_usage._empty_record()
+    record.update(
+        {
+            "created_by": "agent",
+            "use_count": 7,
+            "view_count": 3,
+            "patch_count": 2,
+            "state": skill_usage.STATE_ACTIVE,
+        }
+    )
+    skill_usage.save_usage({"race-skill": record})
+
+    ctx = mp.get_context("spawn")
+    active_checked = ctx.Event()
+    continue_scan = ctx.Event()
+    restore_started = ctx.Event()
+    state_update_reached = ctx.Event()
+    repair_results = ctx.Queue()
+    restore_results = ctx.Queue()
+
+    repair = ctx.Process(
+        target=_repair_with_paused_active_scan,
+        args=(
+            str(skills_home),
+            "race-skill",
+            active_checked,
+            continue_scan,
+            repair_results,
+        ),
+    )
+    restore = ctx.Process(
+        target=_restore_with_state_signal,
+        args=(
+            str(skills_home),
+            "race-skill",
+            restore_started,
+            state_update_reached,
+            restore_results,
+        ),
+    )
+
+    repair.start()
+    assert active_checked.wait(10), "repair never reached the active-directory scan"
+    restore.start()
+    assert restore_started.wait(10), "restore process never started"
+
+    # While repair is paused holding the lifecycle lock, restore must not move
+    # the archive or reach set_state(). The old implementation reaches this
+    # event, then blocks on the usage lock and loses provenance after repair.
+    reached_before_release = state_update_reached.wait(2)
+    continue_scan.set()
+
+    repair.join(15)
+    restore.join(15)
+    if repair.is_alive():
+        repair.terminate()
+    if restore.is_alive():
+        restore.terminate()
+
+    assert repair.exitcode == 0
+    assert restore.exitcode == 0
+    assert not reached_before_release
+    assert state_update_reached.is_set()
+    assert repair_results.get(timeout=2) == (
+        "ok",
+        {
+            "marked_active": [],
+            "marked_archived": ["race-skill"],
+            "removed": [],
+        },
+    )
+    restore_status, restore_result = restore_results.get(timeout=2)
+    assert restore_status == "ok"
+    assert restore_result[0] is True
+
+    repaired = skill_usage.load_usage()["race-skill"]
+    assert repaired["created_by"] == "agent"
+    assert repaired["use_count"] == 7
+    assert repaired["view_count"] == 3
+    assert repaired["patch_count"] == 2
+    assert repaired["state"] == skill_usage.STATE_ACTIVE
+    assert (skills_dir / "race-skill" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------

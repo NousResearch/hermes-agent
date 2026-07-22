@@ -384,6 +384,29 @@ def _cmd_prune(args) -> int:
     return 0
 
 
+def _cmd_repair_usage(args) -> int:
+    """Synchronize curator-managed usage records with active/archive dirs."""
+    from tools import skill_usage
+
+    try:
+        summary = skill_usage.repair_orphan_usage_records()
+    except skill_usage.UsagePersistenceError as e:
+        print(f"curator: failed to repair usage records: {e}")
+        return 1
+
+    changed = sum(len(v) for v in summary.values())
+    if changed == 0:
+        print("curator: usage records already match filesystem")
+        return 0
+
+    print("curator: repaired usage records")
+    for key in ("marked_active", "marked_archived", "removed"):
+        names = summary.get(key) or []
+        if names:
+            print(f"  {key}: {', '.join(names)}")
+    return 0
+
+
 def _cmd_backup(args) -> int:
     """Take a manual snapshot of the skills tree. Same mechanism as the
     automatic pre-run snapshot, just user-initiated."""
@@ -650,6 +673,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
         help="Show what would be archived without doing it",
     )
     p_prune.set_defaults(func=_cmd_prune)
+
+    p_repair_usage = subs.add_parser(
+        "repair-usage",
+        help="Repair curator-managed .usage.json records against active/.archive dirs",
+    )
+    p_repair_usage.set_defaults(func=_cmd_repair_usage)
 
     p_backup = subs.add_parser(
         "backup",

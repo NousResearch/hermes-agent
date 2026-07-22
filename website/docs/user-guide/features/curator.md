@@ -107,7 +107,14 @@ hermes curator restore <skill>  # move an archived skill back to active
 hermes curator list-archived    # list skills currently in ~/.hermes/skills/.archive/
 hermes curator archive <skill>  # manually archive a single skill now
 hermes curator prune [--days N] # bulk-archive agent-created skills idle >= N days (default 90)
+hermes curator repair-usage     # reconcile curator-managed usage records with restorable skills
 ```
+
+`repair-usage` is a recovery command for stale `.usage.json` records left by
+interrupted or manual filesystem changes. It changes usage metadata only; it
+does not move skill directories. Archived records are retained only when
+`hermes curator restore <name>` can resolve the same exact archive-directory or
+timestamped-collision name. Curator-ineligible records are left untouched.
 
 ## Backups and rollback
 

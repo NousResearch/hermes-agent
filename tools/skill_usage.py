@@ -86,10 +86,13 @@ def _usage_file() -> Path:
     return _skills_dir() / ".usage.json"
 
 
+class UsagePersistenceError(RuntimeError):
+    """Raised when a required usage-sidecar write cannot be persisted."""
+
+
 @contextmanager
-def _usage_file_lock():
-    """Serialize .usage.json read-modify-write cycles across processes."""
-    lock_path = _usage_file().with_suffix(".json.lock")
+def _exclusive_file_lock(lock_path: Path):
+    """Hold an exclusive cross-process lock for the supplied path."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     if fcntl is None and msvcrt is None:
@@ -120,6 +123,25 @@ def _usage_file_lock():
             except (OSError, IOError):
                 pass
         fd.close()
+
+
+@contextmanager
+def _usage_file_lock():
+    """Serialize .usage.json read-modify-write cycles across processes."""
+    with _exclusive_file_lock(_usage_file().with_suffix(".json.lock")):
+        yield
+
+
+@contextmanager
+def _lifecycle_lock():
+    """Serialize archive/restore/repair filesystem and metadata transitions.
+
+    Lifecycle callers always acquire this lock before ``_usage_file_lock``.
+    Telemetry-only writers acquire the usage lock alone, so the ordering cannot
+    invert and deadlock.
+    """
+    with _exclusive_file_lock(_skills_dir() / ".lifecycle.lock"):
+        yield
 
 
 def _archive_dir() -> Path:
@@ -517,28 +539,33 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
     return clean
 
 
+def _save_usage_strict(data: Dict[str, Dict[str, Any]]) -> None:
+    """Atomically persist the usage map, propagating every write failure."""
+    path = _usage_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".usage_", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
     """Write the usage map atomically. Best-effort — errors are logged, not raised."""
-    path = _usage_file()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".usage_", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _save_usage_strict(data)
     except Exception as e:
-        logger.debug("Failed to write %s: %s", path, e, exc_info=True)
+        logger.debug("Failed to write %s: %s", _usage_file(), e, exc_info=True)
 
 
 def get_record(skill_name: str) -> Dict[str, Any]:
@@ -694,6 +721,12 @@ def forget(skill_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def archive_skill(skill_name: str) -> Tuple[bool, str]:
+    """Archive one skill as a serialized filesystem + metadata transition."""
+    with _lifecycle_lock():
+        return _archive_skill_locked(skill_name)
+
+
+def _archive_skill_locked(skill_name: str) -> Tuple[bool, str]:
     """Move a curator-eligible skill directory to ~/.hermes/skills/.archive/.
 
     Returns (ok, message). Never archives hub-installed skills. Bundled
@@ -754,7 +787,45 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     return True, f"archived to {dest}"
 
 
+def _find_archived_skill_candidates(skill_name: str) -> List[Path]:
+    """Return archive directories that ``restore_skill`` can restore by name.
+
+    Archive entries are either an exact directory-name match or the
+    ``<skill>-YYYYMMDDHHMMSS`` collision form written by ``archive_skill``.
+    Frontmatter names are deliberately not used: repair and restore must agree
+    about whether a record is recoverable.
+    """
+    archive_root = _archive_dir()
+    if not archive_root.exists():
+        return []
+
+    exact = sorted(
+        p for p in archive_root.rglob("*")
+        if p.is_dir() and p.name == skill_name
+    )
+    if exact:
+        return exact
+
+    prefix = f"{skill_name}-"
+    return sorted(
+        (
+            p for p in archive_root.rglob("*")
+            if p.is_dir()
+            and p.name.startswith(prefix)
+            and len(p.name) - len(prefix) == 14
+            and p.name[len(prefix):].isdigit()
+        ),
+        reverse=True,
+    )
+
+
 def restore_skill(skill_name: str) -> Tuple[bool, str]:
+    """Restore one skill as a serialized filesystem + metadata transition."""
+    with _lifecycle_lock():
+        return _restore_skill_locked(skill_name)
+
+
+def _restore_skill_locked(skill_name: str) -> Tuple[bool, str]:
     """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
     top-level layout; original category nesting is NOT reconstructed.
 
@@ -782,29 +853,7 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     if not archive_root.exists():
         return False, "no archive directory"
 
-    # Try exact name match first, then the timestamped-duplicate fallback.
-    # Recursive walk handles nested archive layouts (e.g. .archive/<category>/<skill>/)
-    # left behind by older archive paths or external imports.
-    candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
-    if not candidates:
-        # A name collision makes archive_skill() disambiguate by appending its
-        # UTC timestamp ("<skill>-YYYYMMDDHHMMSS", a 14-digit suffix), so only
-        # that exact shape is another copy of THIS skill. A bare
-        # startswith(f"{skill_name}-") also swallows unrelated sibling skills —
-        # restoring "git" would otherwise pull an archived "git-helpers" out of
-        # the archive and rename it to "git", destroying the sibling's only
-        # copy. Require the suffix to be the timestamp archive_skill writes.
-        prefix = f"{skill_name}-"
-        candidates = sorted(
-            [
-                p for p in archive_root.rglob("*")
-                if p.is_dir()
-                and p.name.startswith(prefix)
-                and len(p.name) - len(prefix) == 14
-                and p.name[len(prefix):].isdigit()
-            ],
-            reverse=True,
-        )
+    candidates = _find_archived_skill_candidates(skill_name)
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
 
@@ -861,6 +910,65 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
             if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
                 return skill_md.parent
     return None
+
+
+def repair_orphan_usage_records() -> Dict[str, List[str]]:
+    """Repair curator-managed usage records that do not match disk state.
+
+    Reconciles only records explicitly opted into curator management and still
+    eligible for local curation. Bundled, hub-installed, and unmanaged records
+    are left untouched. An archive counts only when ``restore_skill()`` can
+    resolve it by the same exact-directory or timestamped-collision rules.
+
+    Returns a summary with three sorted lists:
+    - ``marked_active``: archived records whose skill dir is active again
+    - ``marked_archived``: active/stale records whose skill dir is restorable
+    - ``removed``: managed records with no active or restorable archived skill
+    """
+    removed: List[str] = []
+    marked_archived: List[str] = []
+    marked_active: List[str] = []
+
+    with _lifecycle_lock(), _usage_file_lock():
+        data = load_usage()
+        for name, rec in list(data.items()):
+            if not _is_curator_managed_record(rec) or not is_agent_created(name):
+                continue
+
+            active_dir = _find_skill_dir(name)
+            archived_candidates = _find_archived_skill_candidates(name)
+            state = rec.get("state", STATE_ACTIVE)
+
+            if active_dir is not None:
+                if state == STATE_ARCHIVED:
+                    rec["state"] = STATE_ACTIVE
+                    rec["archived_at"] = None
+                    marked_active.append(name)
+                continue
+
+            if archived_candidates:
+                if state != STATE_ARCHIVED:
+                    rec["state"] = STATE_ARCHIVED
+                    rec["archived_at"] = rec.get("archived_at") or _now_iso()
+                    marked_archived.append(name)
+                continue
+
+            removed.append(name)
+            data.pop(name, None)
+
+        if removed or marked_archived or marked_active:
+            try:
+                _save_usage_strict(data)
+            except Exception as e:
+                raise UsagePersistenceError(
+                    f"failed to persist repaired usage records: {e}"
+                ) from e
+
+    return {
+        "marked_active": sorted(marked_active),
+        "marked_archived": sorted(marked_archived),
+        "removed": sorted(removed),
+    }
 
 
 # ---------------------------------------------------------------------------

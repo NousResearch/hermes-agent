@@ -1,8 +1,9 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, type ReactNode, useEffect, useRef, useState } from 'react'
 
-import type { GridTestState } from '../app/interfaces.js'
+import { sparkRows } from '../lib/charts.js'
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
+import type { GridTestState } from '../sdk/apps/gridTestState.js'
 import type { Theme } from '../theme.js'
 
 import { GridAreas, type GridAreaWidget } from './widgetGrid.js'
@@ -17,8 +18,6 @@ import { GridAreas, type GridAreaWidget } from './widgetGrid.js'
 const HEADER_ROWS = 3
 const STREAM_ROWS = 3
 const GRID_HEIGHT = HEADER_ROWS + STREAM_ROWS * 6
-
-const SPARK_CHARS = '▁▂▃▄▅▆▇█'
 
 interface StreamDef {
   id: string
@@ -55,37 +54,6 @@ const useHistory = (tick: number, sample: () => number, cap = 240) => {
   }, [tick])
 
   return historyRef.current
-}
-
-/**
- * Render history as a column chart `rows` lines tall (top line first). Each
- * column gets `rows * 8` vertical levels — full blocks below the value, a
- * partial eighth-block at the value row, spaces above — so a promoted (taller)
- * cell genuinely gains chart resolution rather than just whitespace.
- */
-const sparkRows = (history: number[], width: number, rows: number): string[] => {
-  const window = history.slice(-Math.max(1, width))
-
-  if (!window.length) {
-    return Array.from({ length: rows }, () => '')
-  }
-
-  const min = Math.min(...window)
-  const max = Math.max(...window)
-  const range = max - min || 1
-  const levels = window.map(v => Math.max(1, Math.round(((v - min) / range) * rows * 8)))
-
-  return Array.from({ length: rows }, (_, lineIdx) => {
-    const rowFromBottom = rows - 1 - lineIdx
-
-    return levels
-      .map(level => {
-        const filled = Math.min(8, Math.max(0, level - rowFromBottom * 8))
-
-        return filled === 0 ? ' ' : SPARK_CHARS[filled - 1]
-      })
-      .join('')
-  })
 }
 
 // ── stream panels ───────────────────────────────────────────────────────────
@@ -311,8 +279,10 @@ function StreamPanel({
       paddingX={1}
       width={cell.width}
     >
+      {/* No phantom icon column: unfocused titles sit flush left — the ▸
+          appears (and shifts the title) only while focused. */}
       <Text bold={focused} color={focused ? t.color.primary : t.color.label} wrap="truncate">
-        {focused ? '▸ ' : '  '}
+        {focused ? '▸ ' : ''}
         {title}
         {main ? ' ·' : ''}
       </Text>

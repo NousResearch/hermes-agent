@@ -1016,6 +1016,83 @@ class TestDelegationExclusion:
 
 
 # =========================================================================
+# Both layers together: discovery scope (#63144) × bookend bounding (#69334)
+#
+# Compaction touches two independent layers of session_search:
+#   1. Discovery scope — compaction-archived rows on the current session must
+#      surface in discovery (this PR).
+#   2. Content bounding — bookends must exclude generated compaction handoff
+#      summaries and cap message content length (#43175 / #69334).
+# A compacted session exercises both at once: its archived content is the FTS
+# hit, while the compaction summary row it produced sits at the session tail,
+# exactly where bookend_end is sampled.
+# =========================================================================
+
+class TestCompactionDiscoveryBothLayers:
+    """Compacted-session content is discoverable AND its bookends still
+    exclude compaction summaries / cap content length."""
+
+    def _seed_compacted_session(self, db):
+        db.create_session("s_both", source="cli")
+        # Long normal opening — exercises the 1200-char bookend cap.
+        db.append_message("s_both", role="user",
+                          content="Kick off the obsidian gateway migration. " + "o" * 5000)
+        db.append_message("s_both", role="assistant",
+                          content="Starting the obsidian gateway migration plan.")
+        # Padding so the anchored window doesn't swallow the bookends.
+        for i in range(10):
+            db.append_message("s_both", role="user", content=f"migration step {i}")
+            db.append_message("s_both", role="assistant", content=f"migration step {i} done")
+        # The FTS match target — will be archived by compaction below.
+        db.append_message("s_both", role="user",
+                          content="the obsidian gateway needs a quartz keystone to activate")
+        db.append_message("s_both", role="assistant",
+                          content="Noted: quartz keystone required for the obsidian gateway.")
+        for i in range(5):
+            db.append_message("s_both", role="user", content=f"wrap-up {i}")
+            db.append_message("s_both", role="assistant", content=f"wrapped {i}")
+        # Compact in place: everything above becomes active=0/compacted=1 and
+        # the handoff summary is inserted as the new live tail.
+        db.archive_and_compact("s_both", [
+            {"role": "user",
+             "content": "[CONTEXT COMPACTION — REFERENCE ONLY] "
+                        "Earlier turns were compacted into this summary. " + "s" * 50000},
+            {"role": "assistant", "content": "Continuing after compaction."},
+        ])
+        db._conn.commit()
+
+    def test_archived_hit_surfaces_with_bounded_summary_free_bookends(self, db):
+        self._seed_compacted_session(db)
+
+        result = json.loads(session_search(
+            query="quartz keystone", db=db, current_session_id="s_both",
+        ))
+
+        # Layer 1 — discovery scope: the archived (active=0, compacted=1)
+        # content on the CURRENT session must surface.
+        assert result["success"] is True
+        assert result["count"] >= 1
+        entry = result["results"][0]
+        assert entry["session_id"] == "s_both"
+
+        # Layer 2a — summary exclusion: the compaction handoff row sits at the
+        # session tail (freshly inserted by archive_and_compact), exactly where
+        # bookend_end samples — it must be filtered out.
+        for msg in entry.get("bookend_start", []) + entry.get("bookend_end", []):
+            assert "[CONTEXT COMPACTION" not in (msg.get("content") or "")
+
+        # Layer 2b — content caps: bookends ≤1200 chars, window ≤4000 chars.
+        for msg in entry.get("bookend_start", []) + entry.get("bookend_end", []):
+            assert len(msg.get("content") or "") <= 1210
+        for msg in entry.get("messages", []):
+            assert len(msg.get("content") or "") <= 4010
+
+        # The long-but-legitimate opening survives (capped, not dropped).
+        bookend_contents = [m.get("content") or "" for m in entry.get("bookend_start", [])]
+        assert any("obsidian gateway migration" in c for c in bookend_contents)
+
+
+# =========================================================================
 # Teknium review round 2: rewind exclusion + delegation-under-compression
 # =========================================================================
 

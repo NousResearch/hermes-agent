@@ -172,6 +172,13 @@ _LEGACY_WEB_BACKENDS = frozenset(
     {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
 )
 
+# Legacy built-in backends that can EXTRACT page content. The rest
+# (searxng, brave-free, ddgs, xai) are search-only. Used to reason about a
+# backend's capability when the plugin registry isn't populated yet — e.g.
+# unit tests that call ``_get_*_backend()`` without triggering discovery.
+# Every legacy backend supports search, so no separate search set is needed.
+_LEGACY_EXTRACT_BACKENDS = frozenset({"parallel", "firecrawl", "tavily", "exa"})
+
 
 def _registered_web_provider(backend: str):
     """Return a plugin-registered web provider by name, or ``None``.
@@ -258,11 +265,18 @@ def _get_backend() -> str:
     # providers via their own is_available() gate. We hold the provider
     # object already, so probe it directly rather than round-tripping through
     # _is_backend_available() (which would re-do the registry lookup).
+    #
+    # This is the SHARED default (used as the base for both search and
+    # extract), whose historical fallback is a search-capable provider
+    # (firecrawl). Extract-only plugin providers (e.g. web/native) must be
+    # opted into explicitly via web.extract_backend, so skip anything that
+    # can't search here — otherwise an installed extract-only provider would
+    # silently become the web_search backend and every search would fail.
     for provider in _list_registered_web_providers():
         if provider.name in _LEGACY_WEB_BACKENDS:
             continue
         try:
-            if provider.is_available():
+            if provider.supports_search() and provider.is_available():
                 return provider.name
         except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
             logger.debug("web provider %r.is_available() raised: %s", provider.name, exc)
@@ -295,17 +309,86 @@ def _get_extract_backend() -> str:
     return _get_capability_backend("extract")
 
 
+def _backend_supports(backend: str, capability: str) -> bool:
+    """Whether *backend* can serve *capability* (``"search"`` | ``"extract"``).
+
+    Prefers the registered provider's own ``supports_search()`` /
+    ``supports_extract()`` flags; falls back to hardcoded legacy knowledge when
+    the registry isn't populated yet. Unknown names default to ``True`` so we
+    never override a backend we can't reason about.
+    """
+    backend = (backend or "").lower().strip()
+    provider = _registered_web_provider(backend)
+    if provider is not None:
+        try:
+            return bool(
+                provider.supports_search() if capability == "search"
+                else provider.supports_extract()
+            )
+        except Exception:  # noqa: BLE001 — a broken provider can't be trusted; assume capable
+            return True
+    if backend in _LEGACY_WEB_BACKENDS:
+        if capability == "extract":
+            return backend in _LEGACY_EXTRACT_BACKENDS
+        return True  # every legacy backend supports search
+    return True
+
+
+def _first_available_backend_for(capability: str) -> Optional[str]:
+    """First registered provider that is available AND supports *capability*.
+
+    Used to rescue a capability whose shared-fallback backend can't serve it
+    (e.g. a search-only ddgs when we need extract). Returns ``None`` when no
+    capable provider is available so the caller keeps the original backend.
+    """
+    for provider in _list_registered_web_providers():
+        try:
+            supports = (
+                provider.supports_search() if capability == "search"
+                else provider.supports_extract()
+            )
+            if supports and provider.is_available():
+                return provider.name
+        except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
+            logger.debug(
+                "web provider probe failed during %s fallback: %s", capability, exc
+            )
+    return None
+
+
 def _get_capability_backend(capability: str) -> str:
     """Shared helper for per-capability backend selection.
 
     Reads ``web.{capability}_backend`` from config; if set and available,
     uses it. Otherwise falls through to the shared ``_get_backend()``.
+
+    The shared fallback is capability-agnostic, so it can resolve to a backend
+    that cannot serve *this* capability — a search-only backend (ddgs, searxng,
+    brave-free) when extract is requested, or the hardcoded ``firecrawl``
+    default when no key is set. When that happens, auto-pick an available
+    provider that actually supports the capability (e.g. the keyless ``native``
+    extractor) so a fully unconfigured install with only free plugins still
+    works: ddgs for search + native for extract, with zero config.
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
     if specific and _is_backend_available(specific):
         return specific
-    return _get_backend()
+    backend = _get_backend()
+    # Auto-rescue applies ONLY to a fully unconfigured install — no explicit
+    # web.backend and no explicit web.{capability}_backend. An explicit choice
+    # is respected literally: a search-only backend deliberately configured for
+    # extract must surface a clear "search-only" error downstream rather than
+    # silently switching providers (contract covered by the per-provider
+    # search-only error tests).
+    explicit = bool(specific) or bool((cfg.get("backend") or "").strip())
+    if not explicit and not (
+        _is_backend_available(backend) and _backend_supports(backend, capability)
+    ):
+        alt = _first_available_backend_for(capability)
+        if alt is not None:
+            return alt
+    return backend
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -855,6 +938,11 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
+            # Load plugins BEFORE selecting the backend so the registry is
+            # populated when _get_extract_backend() reasons about provider
+            # capabilities (extract-only auto-fallback below). Mirrors the
+            # web_search_tool dispatcher, which already discovers first.
+            _ensure_web_plugins_loaded()
             backend = _get_extract_backend()
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
@@ -864,7 +952,6 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
-            _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,

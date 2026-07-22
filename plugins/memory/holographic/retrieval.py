@@ -109,6 +109,10 @@ class FactRetriever:
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+        # Episode graph propagation — surface sibling facts from the same
+        # conversation episode (no-op when episodes table is empty)
+        if results:
+            results = self.episode_propagate(results)
         return results
 
     def probe(
@@ -652,3 +656,125 @@ class FactRetriever:
             return math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0
+
+    # ------------------------------------------------------------------
+    # Episode graph propagation
+    # ------------------------------------------------------------------
+
+    def episode_propagate(self, results: list[dict],
+                          episode_boost: float = 1.5) -> list[dict]:
+        """Expand results with sibling facts from the same episode.
+
+        Graph propagation: for each fact in results, find its episodes,
+        then find other facts in the same episodes and attach them to the
+        result set at a reduced score. This surfaces contextually related
+        facts from the same conversation episode, even if they don't
+        keyword-match the query directly.
+
+        Original results keep their scores; siblings get ``original_score *
+        episode_boost`` (default 1.5), which usually places them below
+        directly-matched facts but above unrelated facts.
+        """
+        if not results:
+            return results
+
+        conn = self.store._conn
+        fact_ids = [r["fact_id"] for r in results]
+        placeholders = ",".join("?" * len(fact_ids))
+
+        # Find all episodes linked to our matched facts
+        episode_rows = conn.execute(
+            f"""SELECT DISTINCT ef.episode_id
+                FROM episode_facts ef
+                WHERE ef.fact_id IN ({placeholders})""",
+            fact_ids,
+        ).fetchall()
+
+        if not episode_rows:
+            return results  # No episode links = no propagation
+
+        episode_ids = [row["episode_id"] for row in episode_rows]
+        ep_placeholders = ",".join("?" * len(episode_ids))
+
+        # Find sibling facts — any fact in the same episodes that is NOT
+        # already in the result set
+        sibling_rows = conn.execute(
+            f"""SELECT DISTINCT ef2.fact_id, f.content, f.category, f.tags,
+                    f.trust_score, f.retrieval_count, f.helpful_count,
+                    f.created_at, f.updated_at
+                FROM episode_facts ef2
+                JOIN facts f ON f.fact_id = ef2.fact_id
+                WHERE ef2.episode_id IN ({ep_placeholders})
+                AND ef2.fact_id NOT IN ({placeholders})""",
+            episode_ids + fact_ids,
+        ).fetchall()
+
+        if not sibling_rows:
+            return results
+
+        existing_ids = set(fact_ids)
+        avg_score = sum(r.get("score", 0.5) for r in results) / len(results)
+        sibling_score = avg_score * episode_boost
+
+        for row in sibling_rows:
+            if row["fact_id"] not in existing_ids:
+                results.append({
+                    "fact_id": row["fact_id"],
+                    "content": row["content"],
+                    "category": row["category"],
+                    "tags": row["tags"],
+                    "trust_score": row["trust_score"],
+                    "retrieval_count": row["retrieval_count"],
+                    "helpful_count": row["helpful_count"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "score": sibling_score,
+                })
+                existing_ids.add(row["fact_id"])
+
+        # Sort: direct matches first, then siblings
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results
+
+    @staticmethod
+    def pronoun_resolve(text: str, speaker_name: str = "the user") -> str:
+        """Resolve first-person pronouns to a named entity for consistent storage.
+
+        Replaces 'I', 'my', 'me', 'mine' with the speaker's name so facts
+        stored from first-person statements are entity-resolvable later.
+        Also handles Chinese first-person pronouns (我, 我的, etc.).
+
+        Example:
+            "I prefer dark mode" → "the user prefers dark mode"
+            "My project uses pytest" → "the user's project uses pytest"
+            "我喜欢深色模式" → "the user喜欢深色模式"
+        """
+        import re
+        result = text
+
+        # ── English pronouns ────────────────────────────────────────────
+        # "I + auxiliary/verb" patterns
+        result = re.sub(
+            r"\bI\s+(have|am|was|will|can|would|should|might|do|did|don't|didn't)\b",
+            lambda m: f"{speaker_name} {m.group(1)}",
+            result,
+        )
+        # Standalone "I" (after other patterns already handled)
+        result = re.sub(r"\bI\b", speaker_name, result)
+        result = re.sub(r"\bmy\b", f"{speaker_name}'s", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bme\b", speaker_name, result, flags=re.IGNORECASE)
+        result = re.sub(r"\bmine\b", f"{speaker_name}'s", result, flags=re.IGNORECASE)
+
+        # ── Chinese pronouns ────────────────────────────────────────────
+        # 我的 → speaker_name的  (possessive, must run first to avoid partial replace)
+        result = re.sub(r"我的", f"{speaker_name}的", result)
+        # 我 + common verbs/patterns
+        result = re.sub(
+            r"我(喜欢|用|要|是|想|觉得|认为|感觉|希望|需要|知道|会|可以|能|应该|做|去|来|说|问|找|有|给|让|准备|打算|计划|决定)",
+            lambda m: f"{speaker_name}{m.group(1)}",
+            result,
+        )
+        # Generic standalone 我 (not 我们)
+        result = re.sub(r"(?<!们)我(?!们)", speaker_name, result)
+
+        return result

@@ -109,6 +109,70 @@ class TestFormatSessionInfo:
         assert "config" in info
 
 
+class TestChannelOverrideSessionInfo:
+    """The /new banner must advertise the channel override's model/provider,
+    not the global config default the session won't actually use."""
+
+    _RUNTIME = {"provider": "openrouter", "base_url": "", "api_key": ""}
+
+    def _runner_with_override(self, runner, chat_id="123", **override_kwargs):
+        from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+        runner.config = GatewayConfig(platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                channel_overrides={chat_id: ChannelOverride(**override_kwargs)},
+            ),
+        })
+        return runner
+
+    def _source(self, chat_id="123", thread_id=None):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform.TELEGRAM, chat_id=chat_id, user_id="u1",
+            thread_id=thread_id,
+        )
+
+    def test_override_model_and_provider_shown(self, runner, tmp_path):
+        self._runner_with_override(runner, model="override-model", provider="anthropic")
+        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: base-model\n  provider: openrouter\n",
+                                  "base-model", self._RUNTIME)
+        with p1, p2, p3:
+            info = runner._format_session_info(self._source())
+        assert "override-model" in info
+        assert "anthropic" in info
+        assert "base-model" not in info
+
+    def test_no_source_uses_base_model(self, runner, tmp_path):
+        self._runner_with_override(runner, model="override-model")
+        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: base-model\n",
+                                  "base-model", self._RUNTIME)
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "base-model" in info
+        assert "override-model" not in info
+
+    def test_unmatched_chat_uses_base_model(self, runner, tmp_path):
+        self._runner_with_override(runner, chat_id="999", model="override-model")
+        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: base-model\n",
+                                  "base-model", self._RUNTIME)
+        with p1, p2, p3:
+            info = runner._format_session_info(self._source(chat_id="123"))
+        assert "base-model" in info
+        assert "override-model" not in info
+
+    def test_override_provider_survives_runtime_failure(self, runner, tmp_path):
+        self._runner_with_override(runner, model="override-model", provider="anthropic")
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("model:\n  default: base-model\n  context_length: 4096\n")
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("gateway.run._resolve_gateway_model", return_value="base-model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("no creds")):
+            info = runner._format_session_info(self._source())
+        assert "override-model" in info
+        assert "anthropic" in info
+
+
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,
     not the multiplexer's base config."""

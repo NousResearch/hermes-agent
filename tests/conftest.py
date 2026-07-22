@@ -413,6 +413,45 @@ def _isolate_hermes_home(_hermetic_environment):
     return None
 
 
+# ── Kanban write guard (#69283) ─────────────────────────────────────────
+# When hermetic isolation is bypassed (stale checkout, wrong rootdir,
+# direct invocation), kanban writes silently pollute the real ~/.hermes.
+# This autouse fixture patches ``kanban_db.connect`` to assert the
+# resolved DB path is under the test's HERMES_HOME. If not, it raises
+# instead of writing — converting silent data pollution into a loud
+# test error.
+
+@pytest.fixture(autouse=True)
+def _kanban_write_guard(_hermetic_environment):
+    """Fail-closed guard: kanban DB writes must target the test temp home."""
+    test_home = os.environ.get("HERMES_HOME", "")
+    if not test_home:
+        return  # no HERMES_HOME set — nothing to guard
+
+    try:
+        import hermes_cli.kanban_db as _kdb
+    except ImportError:
+        return
+
+    _orig_connect = _kdb.connect
+
+    def _guarded_connect(*args, **kwargs):
+        resolved = _kdb.kanban_home()
+        resolved_str = str(resolved)
+        # If the resolved kanban home is not under the test's HERMES_HOME,
+        # isolation has been bypassed — refuse to write.
+        if test_home not in resolved_str and not resolved_str.startswith(test_home):
+            raise RuntimeError(
+                f"kanban_write_guard: kanban_home() resolved to {resolved_str} "
+                f"which is NOT under the test HERMES_HOME ({test_home}). "
+                f"Hermetic isolation has been bypassed — refusing to write "
+                f"to the real ~/.hermes. See #69283."
+            )
+        return _orig_connect(*args, **kwargs)
+
+    _kdb.connect = _guarded_connect
+
+
 # ── Module-level state reset — replaced by per-file process isolation ──────
 #
 # Each test FILE runs in a freshly-spawned ``python -m pytest <file>``

@@ -340,6 +340,93 @@ class TestOSSBackendRecreateQdrantDims:
         assert called, "create_col was called on Memory's own vector_store"
         assert client.deleted
 
+    def test_no_vector_store_itself_noop(self):
+        """When Memory.vector_store is None, nothing happens."""
+        backend = OSSBackend.__new__(OSSBackend)
+        backend._memory = type("M", (), {"vector_store": None, "collection_name": "mem0"})()
+        backend._recreate_qdrant_if_dims_changed(384)
+        # Should not raise
+
+    def test_dims_none_skips_delete(self):
+        """When Qdrant reports None dims, nothing happens."""
+        class _NoDimsCollectionInfo:
+            class _Vectors:
+                size = None
+            config = type("C", (), {"params": type("P", (), {"vectors": _Vectors()})()})()
+
+        class _NoDimsQdrantClient(_FakeQdrantClient):
+            def get_collection(self, name):
+                return _NoDimsCollectionInfo()
+
+        client = _NoDimsQdrantClient(existing_dims=384)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(512)
+        assert not client.deleted
+
+    def test_on_disk_respected(self):
+        """The vector store's on_disk setting is passed to create_col."""
+        client = _FakeQdrantClient(existing_dims=128)
+        vs = _FakeVectorStore(client, on_disk=True)
+        backend = OSSBackend.__new__(OSSBackend)
+        memory = type("M", (), {"vector_store": vs, "collection_name": "mem0"})()
+        backend._memory = memory
+        called = []
+        original = vs.create_col
+        def tracking(vector_size, on_disk):
+            called.append((vector_size, on_disk))
+            return original(vector_size, on_disk)
+        vs.create_col = tracking
+
+        backend._recreate_qdrant_if_dims_changed(384)
+
+        assert client.deleted
+        assert called[0] == (384, True), "on_disk=True should be forwarded"
+
+    def test_missing_create_col_does_not_delete(self):
+        """When vector store lacks create_col, the collection is NOT deleted
+        (bare create_collection would produce a degraded collection)."""
+        client = _FakeQdrantClient(existing_dims=128)
+
+        class _VSWoCreate:
+            def __init__(self, c):
+                self.client = c
+                self.on_disk = False
+
+        vs = _VSWoCreate(client)
+        backend = OSSBackend.__new__(OSSBackend)
+        memory = type("M", (), {"vector_store": vs, "collection_name": "mem0"})()
+        backend._memory = memory
+
+        backend._recreate_qdrant_if_dims_changed(384)
+
+        assert not client.deleted, "Should NOT delete when create_col is absent"
+
+    def test_partial_failure_does_not_hide_error(self, caplog):
+        """When delete succeeds but create_col raises, the exception is logged."""
+        import logging
+        caplog.set_level(logging.ERROR)
+
+        class _RaisingVectorStore:
+            def __init__(self):
+                self.client = _FakeQdrantClient(existing_dims=128)
+                self.on_disk = False
+            def create_col(self, vector_size, on_disk):
+                raise RuntimeError("create_col failed: connection refused")
+
+        vs = _RaisingVectorStore()
+        backend = OSSBackend.__new__(OSSBackend)
+        memory = type("M", (), {
+            "vector_store": vs,
+            "collection_name": "mem0",
+        })()
+        backend._memory = memory
+
+        backend._recreate_qdrant_if_dims_changed(384)
+
+        assert vs.client.deleted, "Collection should still be deleted"
+        assert "Failed to recreate Qdrant collection" in caplog.text
+        assert "create_col failed" in caplog.text
+
 
 class TestOSSBackendConstructorNoExtraClient:
     """Constructor-level: verify __init__ does NOT create a separate QdrantClient."""

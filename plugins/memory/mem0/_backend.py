@@ -225,11 +225,16 @@ class OSSBackend(Mem0Backend):
         ``Memory.from_config`` already created the collection (or left an
         existing one untouched, since ``create_col`` skips when it exists). If
         that existing collection has the wrong dims we delete it and rebuild it
-        *through the vector store* so BM25 sparse vectors and filter indexes are
-        restored — a bare ``create_collection`` would drop them.
+        *only through the vector store's ``create_col``*, which restores BM25
+        sparse vectors and filter indexes.  A bare ``create_collection`` would
+        drop them, so we never delete unless we know we can properly rebuild.
         """
+        import logging
+        log = logging.getLogger(__name__)
         try:
             vs = getattr(self._memory, "vector_store", None)
+            if vs is None:
+                return
             client = getattr(vs, "client", None)
             if client is None:
                 return
@@ -244,24 +249,30 @@ class OSSBackend(Mem0Backend):
                 current_dims = first.size if first else None
             else:
                 current_dims = getattr(vectors, "size", None)
-            if current_dims is not None and current_dims != expected_dims:
-                client.delete_collection(collection_name)
-                # Rebuild through the vector store to restore BM25 sparse
-                # vectors and filter indexes; fall back to a bare collection
-                # only if the store doesn't expose create_col.
-                if hasattr(vs, "create_col"):
-                    on_disk = getattr(vs, "on_disk", False)
-                    vs.create_col(expected_dims, on_disk)
-                else:
-                    from qdrant_client.models import VectorParams, Distance
-                    client.create_collection(
-                        collection_name=collection_name,
-                        vectors_config=VectorParams(
-                            size=expected_dims, distance=Distance.COSINE
-                        ),
-                    )
+            if current_dims is None or current_dims == expected_dims:
+                return
+
+            # Only proceed if the vector store exposes a proper create_col.
+            # A bare client.create_collection cannot restore BM25 sparse vectors,
+            # filter indexes, on_disk, or named-vector config — the resulting
+            # degraded collection is worse than the original dim mismatch.
+            if not hasattr(vs, "create_col"):
+                log.warning(
+                    "Qdrant collection %r has dims %d != expected %d, but "
+                    "vector store has no create_col — skipping recreate.",
+                    collection_name, current_dims, expected_dims,
+                )
+                return
+
+            on_disk = getattr(vs, "on_disk", False)
+            client.delete_collection(collection_name)
+            vs.create_col(expected_dims, on_disk)
         except Exception:
-            pass
+            log.exception(
+                "Failed to recreate Qdrant collection %r with dims %d",
+                getattr(self._memory, "collection_name", "mem0"),
+                expected_dims,
+            )
 
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:

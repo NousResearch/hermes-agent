@@ -4510,6 +4510,13 @@ def cmd_project(args):
     return projects_command(args)
 
 
+def cmd_mission(args):
+    """Mission Control dry-run preview wrapper."""
+    from hermes_cli.mission import mission_command
+
+    sys.exit(mission_command(args))
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -13418,7 +13425,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "mission", "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -14206,6 +14213,14 @@ def main():
 
     project_parser = _build_project_parser(subparsers)
     project_parser.set_defaults(func=cmd_project)
+
+    # =========================================================================
+    # mission command — dry-run Mission Control graph preview
+    # =========================================================================
+    from hermes_cli.mission import build_parser as _build_mission_parser
+
+    mission_parser = _build_mission_parser(subparsers)
+    mission_parser.set_defaults(func=cmd_mission)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

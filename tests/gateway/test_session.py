@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
+    SessionEntry,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -2010,6 +2011,54 @@ class TestGatewayRoutingTable:
         restarted._ensure_loaded()
         assert restarted._entries[entry.session_key].session_id == entry.session_id
         restarted._db.close()
+
+    def test_successful_empty_canonical_load_preserves_live_entry(self, tmp_path):
+        key = "agent:main:telegram:group:-100:42"
+        live = SessionEntry.from_dict(self._entry_data(key, "live-session"))
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._entries[key] = live
+
+        store._ensure_loaded()
+
+        assert store._entries[key] is live
+        assert store._entries[key].session_id == "live-session"
+        store._db.close()
+
+    def test_canonical_row_overwrites_conflicting_live_entry(self, tmp_path):
+        import hermes_state
+
+        key = "agent:main:telegram:group:-100:42"
+        canonical = self._entry_data(key, "canonical-session")
+        db = hermes_state.SessionDB()
+        db.save_gateway_routing_entry(
+            key, json.dumps(canonical), scope=str(tmp_path.resolve())
+        )
+        db.close()
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._entries[key] = SessionEntry.from_dict(
+            self._entry_data(key, "live-stale-session")
+        )
+        store._ensure_loaded()
+
+        assert store._entries[key].session_id == "canonical-session"
+        store._db.close()
+
+    def test_canonical_load_failure_retains_live_entry_for_retry(self, tmp_path):
+        key = "agent:main:telegram:group:-100:42"
+        live = SessionEntry.from_dict(self._entry_data(key, "live-session"))
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._entries[key] = live
+        store._db.load_gateway_routing_entries = MagicMock(
+            side_effect=RuntimeError("canonical unavailable")
+        )
+
+        with pytest.raises(RuntimeError, match="canonical unavailable"):
+            store._ensure_loaded()
+
+        assert store._loaded is False
+        assert store._entries[key] is live
+        store._db.close()
 
     def test_transient_canonical_load_failure_fails_closed_then_retries(self, tmp_path):
         """A failed DB read must not make the legacy mirror authoritative."""

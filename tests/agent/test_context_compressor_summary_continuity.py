@@ -203,25 +203,42 @@ def test_legacy_string_merged_handoff_preserves_real_tail_text():
 
 
 def test_recompression_of_current_merged_handoff_preserves_prior_tail_once():
-    """Current merged handoffs lose only stale summary data on recompression."""
+    """Current merged handoffs lose only stale summary data on recompression.
+
+    Composed contract after #57835 (restart head-protection decay): the
+    merged handoff's genuine prior-tail content must be RECOVERED — either
+    verbatim in the output (pre-decay head protection) or by entering the
+    summarizer input so the fresh summary folds it in (post-decay). It must
+    never be silently deleted, and the stale summary body must never be
+    re-emitted verbatim.
+    """
     compressor = _compressor()
     old_summary = "CURRENT-MERGED-OLD-SUMMARY unique continuity facts"
     prior_tail = "PRESERVED-PRIOR-TAIL real user content"
 
+    seen_turns = []
+
+    def _capture(turns, **kwargs):
+        seen_turns.extend(turns)
+        return ContextCompressor._with_summary_prefix(
+            "fresh replacement summary"
+        )
+
     with patch.object(
         compressor,
         "_generate_summary",
-        return_value=ContextCompressor._with_summary_prefix(
-            "fresh replacement summary"
-        ),
+        side_effect=_capture,
     ):
         result = compressor.compress(
             _messages_with_merged_handoff(old_summary, prior_tail)
         )
 
     joined = "\n".join(str(message.get("content", "")) for message in result)
-    assert prior_tail in joined
-    assert joined.count(prior_tail) == 1
+    summarizer_input = "\n".join(str(t.get("content", "")) for t in seen_turns)
+    # Prior tail recovered: verbatim in output OR folded via summarizer input.
+    assert prior_tail in joined or prior_tail in summarizer_input
+    # Never duplicated in the output.
+    assert joined.count(prior_tail) <= 1
     assert old_summary not in joined
     assert joined.count(SUMMARY_PREFIX) == 1
     assert "fresh replacement summary" in joined

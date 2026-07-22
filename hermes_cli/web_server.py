@@ -94,11 +94,6 @@ from gateway.status import (
     read_runtime_status,
 )
 from gateway.restart import resolve_restart_drain_timeout
-from hermes_cli.memory_providers import (
-    MemoryProvider as DeclaredMemoryProvider,
-    ProviderField as DeclaredProviderField,
-    get_memory_provider as get_declared_memory_provider,
-)
 from utils import env_var_enabled
 
 try:

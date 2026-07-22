@@ -527,6 +527,70 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
   assert.match(lockWrite, /"hermesHome":"\/home\/alice\/\.hermes"/)
 })
 
+test('connect() derives lock/token/log paths from a custom remote HERMES_HOME, not ~/.hermes', async () => {
+  // Reproduces the reported bug: a remote with a custom HERMES_HOME (e.g. a
+  // Hermes host running with HERMES_HOME=/root/hermes-data) must upload the
+  // token and read/write the lockfile & log under THAT home's desktop-ssh dir,
+  // not the hardcoded ~/.hermes default — otherwise the backend validates the
+  // token file against a directory Desktop never wrote it to.
+  const customHome = '/root/hermes-data'
+  const scopedRoot = `${customHome}/desktop-ssh`
+  const writes: string[] = []
+  const uploads: string[] = []
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''], // no lockfile
+    [/HERMES_HOME/, `${customHome}\n`],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [
+      /python3 -c/,
+      c => {
+        uploads.push(c)
+
+        return ''
+      }
+    ],
+    [/setsid/, '600\n'],
+    [/kill -0 600/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=46600\n'],
+    [
+      /printf '%s' '/,
+      c => {
+        writes.push(c)
+
+        return ''
+      }
+    ]
+  ])
+
+  const result = await connect(connectDeps(ssh, { adoptServedToken: async () => 'fresh' }))
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 600)
+
+  const lockWrite = writes.find(c => c.includes('schemaVersion')) || ''
+  assert.ok(lockWrite.includes(`"hermesHome":"${customHome}"`), 'lockfile must record the probed custom home')
+
+  assert.ok(
+    ssh.calls.some(c => c.includes(`mkdir -p '${scopedRoot}`)),
+    'lockfile directory must be created under the custom home, not ~/.hermes'
+  )
+  assert.ok(
+    uploads.some(c => c.includes(scopedRoot)),
+    'the one-time token must be uploaded under the custom home'
+  )
+
+  const spawnCmd = ssh.calls.find(c => /setsid|nohup/.test(c)) || ''
+  assert.ok(spawnCmd.includes(scopedRoot), 'the spawned dashboard log/token-file paths must be under the custom home')
+
+  assert.ok(
+    !ssh.calls.some(c => c.includes('~/.hermes/desktop-ssh')),
+    'must not fall back to the hardcoded ~/.hermes root when HERMES_HOME is customized'
+  )
+})
+
 test('connect() respawns when the lockfile pid is dead (killed dashboard)', async () => {
   const lock = ownedLock({ tokenFingerprint: fingerprintToken('t') })
 

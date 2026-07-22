@@ -458,3 +458,32 @@ class TestMinimaxSwitchModelCredentialGuard:
             # The key passed to build_anthropic_client should be the MiniMax key
             build_args = mock_build.call_args
             assert build_args[0][0] == "mm-key-123"
+
+
+
+class TestMinimaxCNEndpointRegression:
+    """Regression for #69287: minimax-cn ``inference_base_url`` must
+    point to the Chat Completions endpoint (``/v1``), not the
+    ``/anthropic`` endpoint. The ``/anthropic`` endpoint silently
+    hallucinates when vision requests go through it (e.g. for
+    ``MiniMax-M3`` vision), producing garbage text descriptions
+    instead of an explicit error.
+    """
+
+    def test_minimax_cn_uses_chat_completions_endpoint(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        cfg = PROVIDER_REGISTRY["minimax-cn"]
+        assert cfg.inference_base_url == "https://api.minimaxi.com/v1", (
+            f"minimax-cn must use Chat Completions /v1 endpoint, "
+            f"got {cfg.inference_base_url!r}"
+        )
+
+    def test_minimax_cn_endpoint_does_not_have_anthropic_path(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        cfg = PROVIDER_REGISTRY["minimax-cn"]
+        assert "/anthropic" not in cfg.inference_base_url, (
+            f"minimax-cn must NOT use /anthropic endpoint (regression "
+            f"of #69287); got {cfg.inference_base_url!r}"
+        )

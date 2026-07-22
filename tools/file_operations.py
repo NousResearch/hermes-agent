@@ -37,6 +37,7 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
+    get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -1289,8 +1290,9 @@ class ShellFileOperations(FileOperations):
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
-        if _is_write_denied(path):
-            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        denied = get_write_denied_error(path, verb="Delete")
+        if denied:
+            return WriteResult(error=denied)
 
         # We can't shell out to ``rm`` here — it doesn't exist on Windows
         # ``cmd.exe`` or PowerShell, so this code path is what's left when
@@ -1335,8 +1337,9 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            if _is_write_denied(p):
-                return WriteResult(error=f"Move denied: {p} is a protected path")
+            denied = get_write_denied_error(p, verb="Move")
+            if denied:
+                return WriteResult(error=denied)
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )
@@ -1383,8 +1386,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = get_write_denied_error(path)
+        if denied:
+            return WriteResult(error=denied)
 
         # ── Fail-closed pre-write syntax gate ───────────────────────────
         # Validate the CANDIDATE content BEFORE any bytes touch disk —
@@ -1566,8 +1570,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = get_write_denied_error(path)
+        if denied:
+            return PatchResult(error=denied)
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"

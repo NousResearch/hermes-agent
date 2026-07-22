@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -407,12 +408,76 @@ def fetch_bitwarden_secrets(
             "`hermes secrets bitwarden setup`."
         )
 
-    secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+    try:
+        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+    except RuntimeError as exc:
+        # Live fetch failed. Fall back to a stale disk cache ONLY for
+        # transport-level failures (network down, DNS error, transient BWS
+        # outage / timeout) — never for AUTH_FAILED or a malformed-output
+        # INTERNAL error, where serving old secrets would mask a real
+        # config/credential problem the caller needs to see.  Without this
+        # fallback a fleet of bots sharing one BWS project all stop working
+        # on a single network blip.
+        #
+        # `cache_ttl_seconds <= 0` means the caller opted out of caching
+        # entirely (DiskCache.read/write both short-circuit on it) — honor
+        # that on the fallback path too, so a zero-TTL caller never gets a
+        # secret value that didn't come from a live fetch just now.
+        # `ttl_seconds=inf` on the read call itself bypasses freshness (we
+        # explicitly want a stale hit here); the caller's real TTL is what
+        # gates whether we even attempt the read, via the check above.
+        if (
+            use_cache
+            and cache_ttl_seconds > 0
+            and _classify_bws_error(str(exc)) in (ErrorKind.NETWORK, ErrorKind.TIMEOUT)
+        ):
+            stale = _DISK_CACHE.read(cache_key, float("inf"), home_path)
+            if stale is not None:
+                age = max(0.0, time.time() - stale.fetched_at)
+                _CACHE[cache_key] = stale
+                return stale.secrets, [
+                    f"bws live fetch failed ({exc}); "
+                    f"falling back to stale disk cache ({int(age)}s old)"
+                ]
+        raise
     entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
     _CACHE[cache_key] = entry
     if use_cache:
         _DISK_CACHE.write(cache_key, entry, cache_ttl_seconds, home_path)
     return secrets, warnings
+
+
+def _summarize_bws_stderr(raw: str) -> str:
+    """Reduce a bws (Rust color-eyre) error dump to its cause line(s).
+
+    bws failures look like::
+
+        Error:
+           0: Received error message from server: [400 Bad Request] {"error":"invalid_client"}
+
+        Location:
+           crates/bws/src/main.rs:108
+        ...
+
+    Everything from ``Location:`` on is diagnostic noise for a Hermes
+    user.  Keep the numbered cause lines (joined), drop the rest, and
+    fall back to the stripped raw text when the shape is unrecognized.
+    """
+    text = raw.replace("\x1b", "").strip()
+    if not text:
+        return text
+    causes: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("Location:", "Backtrace omitted", "Run with ")):
+            break
+        if stripped in ("", "Error:"):
+            continue
+        # Cause lines are numbered "0: ...", "1: ..." — strip the index.
+        stripped = re.sub(r"^\d+:\s*", "", stripped)
+        if stripped:
+            causes.append(stripped)
+    return "; ".join(causes) if causes else text
 
 
 def _run_bws_list(
@@ -448,9 +513,11 @@ def _run_bws_list(
         raise RuntimeError(f"failed to invoke bws: {exc}") from exc
 
     if proc.returncode != 0:
-        # bws writes auth/network errors to stderr in plain English.
-        # Strip ANSI just in case and surface the first 200 chars.
-        err = (proc.stderr or proc.stdout or "").strip().replace("\x1b", "")
+        # bws writes auth/network errors to stderr as a Rust error-report
+        # dump (color-eyre): an "Error:" header, indented cause lines, then
+        # "Location:" / "Backtrace omitted" noise.  Strip ANSI and boil it
+        # down to the meaningful cause line(s) before surfacing.
+        err = _summarize_bws_stderr(proc.stderr or proc.stdout or "")
         raise RuntimeError(
             f"bws exited {proc.returncode}: {err[:200]}"
         )
@@ -690,11 +757,29 @@ class BitwardenSource(SecretSource):
         except RuntimeError as exc:
             result.error = str(exc)
             result.error_kind = _classify_bws_error(str(exc))
+            if result.error_kind == ErrorKind.AUTH_FAILED:
+                # Translate the raw OAuth reject into what it actually means
+                # for the user before the mechanics.
+                result.error = (
+                    "Bitwarden rejected the machine-account access token "
+                    f"({access_token_env}) — it was likely revoked, expired, "
+                    f"or belongs to another region.  ({result.error})"
+                )
             return result
 
         result.secrets = secrets
         result.warnings.extend(warnings)
         return result
+
+    def remediation(self, kind, cfg: dict) -> str:
+        if kind in (ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
+            return (
+                "Run `hermes secrets bitwarden token` to paste a fresh access "
+                "token (create one in the Bitwarden web app: Secrets Manager → "
+                "Machine accounts → Access tokens).  Wrong region?  Re-run "
+                "`hermes secrets bitwarden setup` and pick EU/self-hosted."
+            )
+        return super().remediation(kind, cfg)
 
 
 def _classify_bws_error(message: str) -> ErrorKind:
@@ -705,7 +790,13 @@ def _classify_bws_error(message: str) -> ErrorKind:
     if "binary not available" in lowered or "failed to invoke" in lowered:
         return ErrorKind.BINARY_MISSING
     if any(tok in lowered for tok in ("unauthorized", "invalid token",
-                                      "access token", "401", "403")):
+                                      "access token", "401", "403",
+                                      # The BSM identity endpoint rejects a
+                                      # revoked/expired/deleted machine-account
+                                      # token with an OAuth-style
+                                      # `[400 Bad Request] {"error":"invalid_client"}`.
+                                      "invalid_client", "invalid_grant",
+                                      "400 bad request")):
         return ErrorKind.AUTH_FAILED
     if any(tok in lowered for tok in ("network", "connection", "resolve",
                                       "download", "dns")):
@@ -718,6 +809,17 @@ def _classify_bws_error(message: str) -> ErrorKind:
 # ---------------------------------------------------------------------------
 
 
+def clear_caches(home_path: Optional[Path] = None) -> None:
+    """Drop in-process AND disk caches.
+
+    Used after a token rotation (`hermes secrets bitwarden token`) so the
+    next startup fetches fresh with the new credential instead of serving
+    a pull cached under the old token's fingerprint.
+    """
+    _CACHE.clear()
+    _DISK_CACHE.clear(home_path)
+
+
 def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     """Clear in-process AND disk caches.
 
@@ -725,5 +827,4 @@ def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     Without it we fall back to the same default resolution as the cache
     writer itself.
     """
-    _CACHE.clear()
-    _DISK_CACHE.clear(home_path)
+    clear_caches(home_path)

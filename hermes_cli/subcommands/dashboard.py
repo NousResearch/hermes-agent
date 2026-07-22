@@ -149,6 +149,20 @@ def build_dashboard_parser(
     serve_parser.add_argument(
         "--no-open", action="store_true", help=argparse.SUPPRESS
     )
+    serve_parser.add_argument(
+        "--ssh-session-token-file",
+        dest="ssh_session_token_file",
+        metavar="PATH",
+        default=None,
+        help="Read a one-shot Desktop SSH session token from PATH",
+    )
+    serve_parser.add_argument(
+        "--ssh-owner-nonce",
+        dest="ssh_owner_nonce",
+        metavar="NONCE",
+        default=None,
+        help="Identify a Desktop-owned SSH backend process",
+    )
     # `headless_backend` marks the lean path: desktop/remote clients speak pure
     # JSON-RPC/WS, so `serve` skips the web UI build AND never serves the SPA
     # (cmd_dashboard exports HERMES_SERVE_HEADLESS=1). `dashboard` leaves it

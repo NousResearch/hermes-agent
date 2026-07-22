@@ -101,6 +101,38 @@ _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# Exact name/prompt pairs used by historical cron unit fixtures. A July 2026
+# isolation regression left recurring copies in a live store; each copy had no
+# task context yet constructed SessionDB/AIAgent and spent model tokens every
+# day. Pairing the prompt with its fixture name avoids quarantining a legitimate
+# concise job whose user-visible instruction happens to be ``build`` or ``x``.
+_CONTEXT_FREE_FIXTURE_PAIRS = frozenset(
+    {
+        ("claim job", "x"),
+        ("paused job", "x"),
+        ("daily build", "build"),
+        ("hourly build", "build"),
+        ("w", "echo hi"),
+    }
+)
+# The leaked fixture batch was created during this bounded incident window.
+# Requiring the historical creation timestamp prevents a future legitimate job
+# with the same concise name/prompt pair from being treated as test debris.
+_CONTEXT_FREE_FIXTURE_CREATED_AFTER = "2026-07-16T00:00:00+00:00"
+_CONTEXT_FREE_FIXTURE_CREATED_BEFORE = "2026-07-18T00:00:00+00:00"
+_CONTEXT_FIELDS = (
+    "script",
+    "skills",
+    "skill",
+    "workdir",
+    "context_from",
+    "origin",
+    "model",
+    "provider",
+    "base_url",
+    "enabled_toolsets",
+)
+
 
 @dataclass(frozen=True)
 class _CronStorePaths:
@@ -173,6 +205,11 @@ def use_cron_store(home: Union[str, Path]):
 def get_cron_output_dir() -> Path:
     """Return the output directory for the active cron store context."""
     return _current_cron_store().output_dir
+
+
+def get_cron_dir() -> Path:
+    """Return the cron directory for the active profile/store context."""
+    return _current_cron_store().cron_dir
 
 
 # Fallback stale-recovery window for a one-shot's running-claim (#59229) when
@@ -1431,6 +1468,73 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return None
 
 
+def context_free_fixture_reason(job: Dict[str, Any]) -> Optional[str]:
+    """Return a quarantine reason for one known historical fixture record."""
+    if not isinstance(job, dict) or job.get("no_agent"):
+        return None
+    name = " ".join(str(job.get("name") or "").strip().lower().split())
+    prompt = " ".join(str(job.get("prompt") or "").strip().lower().split())
+    if (name, prompt) not in _CONTEXT_FREE_FIXTURE_PAIRS:
+        return None
+    if any(job.get(field) for field in _CONTEXT_FIELDS):
+        return None
+    deliver = str(job.get("deliver") or "").strip().lower()
+    if deliver not in {"", "local", "origin"} or job.get("attach_to_session"):
+        return None
+    try:
+        created_at = _ensure_aware(datetime.fromisoformat(str(job.get("created_at") or "")))
+        incident_start = _ensure_aware(
+            datetime.fromisoformat(_CONTEXT_FREE_FIXTURE_CREATED_AFTER)
+        )
+        incident_end = _ensure_aware(
+            datetime.fromisoformat(_CONTEXT_FREE_FIXTURE_CREATED_BEFORE)
+        )
+    except (TypeError, ValueError):
+        return None
+    if not incident_start <= created_at < incident_end:
+        return None
+    return (
+        f"historical context-free fixture prompt {prompt!r} has no script, skill, "
+        "workdir, upstream context, origin, explicit model/provider, narrowed "
+        "toolset, external delivery, or attached session"
+    )
+
+
+def quarantine_context_free_fixture_job(
+    job_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], bool]:
+    """Atomically reload and pause a context-free fixture job.
+
+    Returns ``(current_job, reason, changed)``. The reload and predicate check
+    happen under the jobs lock so a stale due-job snapshot cannot pause a job
+    that the user has since edited into a meaningful task.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for index, raw_job in enumerate(jobs):
+            if raw_job.get("id") != job_id:
+                continue
+            current = _normalize_job_record(raw_job)
+            reason = context_free_fixture_reason(current)
+            if not reason:
+                return current, None, False
+            if not current.get("enabled", True) or current.get("state") == "paused":
+                return current, reason, False
+            updated = copy.deepcopy(raw_job)
+            updated.update(
+                {
+                    "enabled": False,
+                    "state": "paused",
+                    "paused_at": _hermes_now().isoformat(),
+                    "paused_reason": f"auto-quarantined by cron admission fuse: {reason}",
+                }
+            )
+            jobs[index] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(updated), reason, True
+    return None, None, False
+
+
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
@@ -1607,8 +1711,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
-def claim_dispatch(job_id: str) -> bool:
+def claim_dispatch(job_id: str, *, require_persisted: bool = False) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
+
+    ``require_persisted`` is used by scheduler/provider dispatch. If the row was
+    deleted after admission reloaded it, the missing row rejects the dispatch
+    instead of preserving the direct handed-in-job compatibility path.
 
     Increments ``repeat.completed`` under the cross-process jobs lock and
     persists the claim immediately, so that if the tick dies mid-execution
@@ -1662,6 +1770,12 @@ def claim_dispatch(job_id: str) -> bool:
             )
             return True
 
+        if require_persisted:
+            logger.info(
+                "claim_dispatch: job_id %s was removed after admission — rejecting",
+                job_id,
+            )
+            return False
         logger.debug(
             "claim_dispatch: job_id %s not in store — proceeding without claim "
             "(handed-in job dict; nothing to persist a claim against)",
@@ -2143,6 +2257,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
 
+                # Mark only the returned copy, never the persisted record. The
+                # scheduler uses this provenance bit to reject a due snapshot
+                # whose authoritative store row is deleted before dispatch.
+                job["_persisted_due_snapshot"] = True
                 due.append(job)
         except Exception:
             logger.exception(

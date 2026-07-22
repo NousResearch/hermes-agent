@@ -277,13 +277,22 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    advance_next_run,
+    claim_dispatch,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    quarantine_context_free_fixture_job,
+    save_job_output,
+)
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
 
 # Canonical silence tokens recognized in cron output.  Cron's contract is
 # intentionally looser than the gateway's exact-whole-response rule: the cron
@@ -3708,12 +3717,23 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    require_persisted: bool = False,
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
     that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
     Chronos) run the identical sequence — no duplicated correctness.
+
+    ``require_persisted`` is set by scheduler/provider dispatch paths. It makes
+    deletion after due-job snapshotting authoritative while preserving the
+    documented direct handed-in-job behavior for embedders and focused tests.
 
     It does NOT decide whether the job is due, claim it, or compute the next
     run — those are the caller's concern (``tick`` advances ``next_run_at``
@@ -3725,8 +3745,105 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     """
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+        try:
+            execution_id = create_execution(job["id"], source="direct")["id"]
+        except Exception as ledger_error:
+            logger.error(
+                "Job '%s' rejected before execution: could not create audit claim: %s",
+                job.get("id", "?"),
+                ledger_error,
+            )
+            return False
+
+    def _finish_admission_rejection(detail: str) -> None:
+        """Best-effort terminal audit write that must never enable execution."""
+        try:
+            finish_execution(execution_id, success=False, error=detail)
+        except Exception as ledger_error:
+            logger.error(
+                "Job '%s': could not record admission rejection: %s",
+                job.get("id", "?"),
+                ledger_error,
+            )
+
     try:
+        # Re-read the persisted job under the store lock before admission. A
+        # due-job snapshot can race a user edit; the current record is the
+        # authority for both quarantine and execution. Store/lock failures are
+        # admission failures, never reasons to continue into the agent path.
+        try:
+            current_job, fixture_reason, quarantined_now = (
+                quarantine_context_free_fixture_job(job["id"])
+            )
+        except Exception as admission_error:
+            detail = f"Cron admission check failed before execution: {admission_error}"
+            _finish_admission_rejection(detail)
+            logger.error("Job '%s': %s", job.get("id", "?"), detail)
+            return False
+
+        if require_persisted and current_job is None:
+            detail = "Job no longer exists in the active cron store; execution was rejected."
+            _finish_admission_rejection(detail)
+            logger.info("Job '%s': %s", job.get("id", "?"), detail)
+            return True
+
+        if current_job is not None:
+            current_execution_id = job.get("execution_id")
+            job = dict(current_job)
+            if current_execution_id:
+                job["execution_id"] = current_execution_id
+
+        if fixture_reason:
+            paused_reason = job.get("paused_reason") or (
+                f"auto-quarantined by cron admission fuse: {fixture_reason}"
+            )
+            detail = f"Cron admission rejected before execution: {paused_reason}"
+            _finish_admission_rejection(detail)
+            if quarantined_now:
+                job_name = str(
+                    job.get("name") or job.get("prompt") or job["id"] or "cron job"
+                )
+                quarantined_doc = (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job['id']}\n"
+                    f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    "**Status:** QUARANTINED\n\n"
+                    f"{paused_reason}. No session or agent was constructed.\n"
+                )
+                try:
+                    save_job_output(job["id"], quarantined_doc)
+                except Exception as receipt_error:
+                    logger.error(
+                        "Job '%s': quarantine receipt could not be saved: %s",
+                        job["id"],
+                        receipt_error,
+                    )
+                try:
+                    _notify_provider_jobs_changed()
+                except Exception as notify_error:
+                    logger.error(
+                        "Job '%s': provider could not be notified of quarantine: %s",
+                        job["id"],
+                        notify_error,
+                    )
+                logger.warning(
+                    "Job '%s' (ID: %s): %s",
+                    job_name,
+                    job["id"],
+                    paused_reason,
+                )
+            return True
+
+        # A stale due snapshot can also race a manual pause. Do not execute a
+        # current record that is already inactive.
+        if current_job is not None and (
+            not job.get("enabled", True) or job.get("state") == "paused"
+        ):
+            _finish_admission_rejection(
+                "Job was paused or disabled before execution started."
+            )
+            return True
+
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
         # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
@@ -3734,15 +3851,23 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # use advance_next_run) and infinite/no-repeat jobs. This lives here in
         # the shared body so BOTH the built-in ticker and the external provider
         # (Chronos fire_due) get at-most-times semantics.
-        if not claim_dispatch(job["id"]):
+        dispatch_claimed = (
+            claim_dispatch(job["id"], require_persisted=True)
+            if require_persisted
+            else claim_dispatch(job["id"])
+        )
+        if not dispatch_claimed:
             logger.info(
-                "Job '%s': one-shot dispatch limit reached — skipping",
+                "Job '%s': dispatch claim rejected — missing row or one-shot limit reached",
                 job.get("name", job["id"]),
             )
             finish_execution(
                 execution_id,
                 success=False,
-                error="Dispatch claim rejected; execution was not started.",
+                error=(
+                    "Dispatch claim rejected; persisted job was removed or the "
+                    "one-shot execution limit was reached."
+                ),
             )
             return True  # not an error — already handled/removed
 
@@ -3980,7 +4105,13 @@ def tick(
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return run_one_job(
+                job,
+                adapters=adapters,
+                loop=loop,
+                verbose=verbose,
+                require_persisted=bool(job.get("_persisted_due_snapshot")),
+            )
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so

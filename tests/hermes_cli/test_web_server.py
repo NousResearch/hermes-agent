@@ -9305,6 +9305,152 @@ class TestValidateProviderCredential:
         assert captured["url"] == "https://text.example.com/v1/models"
         assert captured["headers"] == {"Authorization": "Bearer sk-secret"}
 
+    def test_local_endpoint_falls_back_to_v1_models_and_resolves_base_url(self, monkeypatch):
+        """A URL entered without /v1 enumerates via /v1/models, and
+        resolved_base_url carries the /v1 variant for the caller to persist."""
+        probed = []
+
+        class _Resp:
+            def __init__(self, code, payload=None):
+                self.status_code = code
+                self._payload = payload
+
+            @property
+            def is_success(self):
+                return 200 <= self.status_code < 300
+
+            def json(self):
+                if self._payload is None:
+                    raise ValueError("no body")
+                return self._payload
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                probed.append(url)
+                if url == "http://127.0.0.1:39080/v1/models":
+                    return _Resp(200, {"data": [{"id": "deepseek/deepseek-v4-pro"}]})
+                return _Resp(404, {"error": "Unexpected endpoint or method."})
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self._post("OPENAI_BASE_URL", "http://127.0.0.1:39080").json()
+        assert data["ok"] is True and data["reachable"] is True
+        assert data["models"] == ["deepseek/deepseek-v4-pro"]
+        assert data["resolved_base_url"] == "http://127.0.0.1:39080/v1"
+        assert probed == [
+            "http://127.0.0.1:39080/models",
+            "http://127.0.0.1:39080/v1/models",
+        ]
+
+    def test_local_endpoint_entered_with_v1_keeps_resolved_base_url(self, monkeypatch):
+        """A working entered URL is echoed back; no fallback probe fires."""
+        probed = []
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "gpt-oss-120b"}]}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                probed.append(url)
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self._post("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1").json()
+        assert data["ok"] is True
+        assert data["models"] == ["gpt-oss-120b"]
+        assert data["resolved_base_url"] == "http://127.0.0.1:8000/v1"
+        assert probed == ["http://127.0.0.1:8000/v1/models"]
+
+    def test_local_endpoint_versioned_path_gets_no_v1_alternate(self, monkeypatch):
+        """An already-versioned URL (/v1beta, /api/v2, …) is probed as-is —
+        appending /v1 to it could never be right."""
+        probed = []
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "gemini-3-flash"}]}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                probed.append(url)
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self._post("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1beta").json()
+        assert data["ok"] is True
+        assert data["resolved_base_url"] == "http://127.0.0.1:8000/v1beta"
+        assert probed == ["http://127.0.0.1:8000/v1beta/models"]
+
+    def test_local_endpoint_reachable_but_no_models_keeps_legacy_ok(self, monkeypatch):
+        """No models at either path — legacy contract: ok=True, empty list."""
+        class _Resp:
+            status_code = 404
+            is_success = False
+
+            def json(self):
+                return {"error": "Unexpected endpoint or method."}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self._post("OPENAI_BASE_URL", "http://127.0.0.1:39080").json()
+        assert data["ok"] is True and data["reachable"] is True
+        assert data["models"] == []
+        assert data["resolved_base_url"] == "http://127.0.0.1:39080"
+
+    def test_local_endpoint_unreachable_blocks(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        data = self._post("OPENAI_BASE_URL", "http://127.0.0.1:39080").json()
+        assert data["ok"] is False and data["reachable"] is False
+
     def test_local_endpoint_without_key_sends_no_auth_header(self, monkeypatch):
         """No key → no Authorization header (keyless local servers unaffected)."""
         captured = {}

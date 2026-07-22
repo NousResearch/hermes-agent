@@ -93,7 +93,7 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
-from utils import env_var_enabled
+from utils import env_var_enabled, url_path_has_version_segment
 
 try:
     from fastapi import (
@@ -7510,18 +7510,53 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # ids the endpoint advertises (OpenAI ``/v1/models`` shape) so the GUI can
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
+        base = value.rstrip("/")
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Chat POSTs {base_url}/chat/completions verbatim, so probe the URL as
+        # entered AND its "/v1" variant, and report the one that served the
+        # model list (resolved_base_url) for the caller to persist.
+        if base.lower().endswith("/v1"):
+            candidates = [base, base[: -len("/v1")].rstrip("/")]
+        elif url_path_has_version_segment(base):
+            # Already versioned (/api/v2, /v1beta, …) — no /v1 alternate.
+            candidates = [base]
+        else:
+            candidates = [base, base + "/v1"]
+        reachable = False
         try:
             with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-                resp = client.get(url, headers=headers)
-            return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+                for candidate in candidates:
+                    try:
+                        resp = client.get(candidate + "/models", headers=headers)
+                    except Exception:
+                        continue
+                    reachable = True
+                    models = _parse_model_ids(resp)
+                    if models:
+                        return {
+                            "ok": True,
+                            "reachable": True,
+                            "message": "",
+                            "models": models,
+                            "resolved_base_url": candidate,
+                        }
         except Exception:
-            return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+            pass
+        if reachable:
+            # No models at either path — keep the legacy "any HTTP response
+            # proves it's up" contract.
+            return {
+                "ok": True,
+                "reachable": True,
+                "message": "",
+                "models": [],
+                "resolved_base_url": base,
+            }
+        return {"ok": False, "reachable": False, "message": f"Could not reach {base}/models."}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:

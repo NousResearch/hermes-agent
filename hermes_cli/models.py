@@ -3767,8 +3767,13 @@ def probe_api_models(
             "used_fallback": False,
         }
 
+    from utils import url_path_has_version_segment
+
     if normalized.endswith("/v1"):
         alternate_base = normalized[:-3].rstrip("/")
+    elif url_path_has_version_segment(normalized):
+        # Already versioned (/api/v2, /v1beta, …) — a /v1 alternate is nonsense.
+        alternate_base = ""
     else:
         alternate_base = normalized + "/v1"
 
@@ -4303,11 +4308,21 @@ def validate_requested_model(
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
+                # Found only via the probe's /v1 fallback: chat uses the
+                # configured base URL verbatim and would 404 — surface the
+                # working URL instead of validating silently.
+                message = None
+                if probe.get("used_fallback") and probe.get("resolved_base_url"):
+                    message = (
+                        f"Note: this endpoint answered at `{probe.get('resolved_base_url')}/models`, "
+                        f"not at the configured base URL. If chat requests fail with 404, "
+                        f"set the base URL to `{probe.get('resolved_base_url')}`."
+                    )
                 return {
                     "accepted": True,
                     "persist": True,
                     "recognized": True,
-                    "message": None,
+                    "message": message,
                 }
 
             # Auto-correct if the top match is very similar (e.g. typo)

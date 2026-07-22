@@ -74,7 +74,7 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
-from utils import base_url_host_matches, env_var_enabled
+from utils import base_url_host_matches, env_var_enabled, url_path_has_version_segment
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,117 @@ _LOCAL_PROCESSING_MODULES = frozenset({
 _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
+
+
+# Minimum wait before re-probing a base URL whose /v1/models probe failed.
+_V1_PROBE_RETRY_SECONDS = 60.0
+
+
+def _resolve_v1_probe_verify(base_url: str):
+    """TLS ``verify`` for the ``/v1/models`` heal probe, matching the client.
+
+    The chat client applies per-custom-provider ``ssl_ca_cert``/``ssl_verify``
+    (``apply_custom_provider_tls_to_client_kwargs``); a bare ``requests.get``
+    bypasses that, so an endpoint behind a private CA could 404 and then never
+    self-heal because the verification probe itself fails TLS.
+    """
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_tls_settings,
+            load_config_readonly,
+        )
+
+        tls = get_custom_provider_tls_settings(
+            base_url, get_compatible_custom_providers(load_config_readonly())
+        )
+        if tls.get("ssl_verify") is False:
+            return False
+        if tls.get("ssl_ca_cert"):
+            return tls["ssl_ca_cert"]
+    except Exception:
+        logger.debug("custom-provider TLS resolution skipped for v1 probe", exc_info=True)
+    try:
+        from agent.model_metadata import _resolve_requests_verify
+
+        return _resolve_requests_verify()
+    except Exception:
+        return True
+
+
+def _maybe_apply_v1_suffix_fallback(agent, status_code) -> bool:
+    """Self-heal a custom OpenAI-compatible ``base_url`` missing ``/v1``.
+
+    Model detection probes ``{base}/v1/models`` as a fallback, so such a
+    base_url looks healthy while every chat POST to
+    ``{base_url}/chat/completions`` 404s. Verify ``{base}/v1/models`` answers
+    before rewriting (a model-level 404 on a correct base_url is left alone),
+    then switch the session to ``{base}/v1``. Probe verdicts are cached per
+    base URL: a verified base re-heals without re-probing when credential
+    rotation or fallback activation restores the un-suffixed URL, and a
+    failed probe is retried after ``_V1_PROBE_RETRY_SECONDS`` so a transient
+    blip doesn't disable the heal for a long-lived session. Returns True
+    when the call should be retried.
+    """
+    if status_code != 404 or agent.api_mode != "chat_completions":
+        return False
+    base = str(agent.base_url or "").rstrip("/")
+    if not base.lower().startswith(("http://", "https://")):
+        return False
+    # Already-versioned paths (/v1, /api/v2, /v1beta, …) never get a /v1 suffix.
+    if url_path_has_version_segment(base):
+        return False
+    try:
+        # Azure OpenAI paths are versioned differently — never rewrite.
+        if agent._is_azure_openai_url():
+            return False
+    except Exception:
+        return False
+
+    verdicts = getattr(agent, "_v1_suffix_probe_verdicts", None)
+    if verdicts is None:
+        verdicts = agent._v1_suffix_probe_verdicts = {}
+    v1_base = base + "/v1"
+    prior = verdicts.get(base)
+    if prior != "verified":
+        if prior is not None and (time.monotonic() - prior) < _V1_PROBE_RETRY_SECONDS:
+            return False
+        verdicts[base] = time.monotonic()
+        headers = {}
+        api_key = getattr(agent, "api_key", None)
+        if isinstance(api_key, str) and api_key and api_key != "no-key-required":
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            import requests
+
+            resp = requests.get(
+                v1_base + "/models",
+                headers=headers,
+                timeout=5,
+                verify=_resolve_v1_probe_verify(base),
+            )
+            payload = resp.json() if resp.ok else None
+            if not (isinstance(payload, dict) and isinstance(payload.get("data"), list)):
+                return False
+        except Exception:
+            return False
+        verdicts[base] = "verified"
+
+    agent.base_url = v1_base
+    if isinstance(getattr(agent, "_client_kwargs", None), dict):
+        agent._client_kwargs["base_url"] = v1_base
+    try:
+        if agent.client is not None:
+            agent.client.base_url = v1_base
+    except Exception:
+        agent.client = None
+    agent._vprint(
+        f"{agent.log_prefix}⚠️  {base}/chat/completions returned 404 but "
+        f"{v1_base}/models answers — retrying with base URL {v1_base}. "
+        f"Add /v1 to the configured base_url to skip this probe.",
+        force=True,
+    )
+    return True
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -2779,6 +2890,10 @@ def run_conversation(
 
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
+
+                # ── Custom endpoint saved without /v1 — rewrite and retry ──
+                if _maybe_apply_v1_suffix_fallback(agent, status_code):
+                    continue
 
                 # ── Classify the error for structured recovery decisions ──
                 _compressor = getattr(agent, "context_compressor", None)

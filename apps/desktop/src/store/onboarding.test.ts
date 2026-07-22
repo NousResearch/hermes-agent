@@ -502,6 +502,48 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
   })
 
+  it('persists the probe-resolved /v1 base URL, not the bare root the user entered', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // Models were only found at the /v1 variant — the bare root must not
+        // be persisted (chat would 404).
+        return {
+          ok: true,
+          reachable: true,
+          message: '',
+          models: ['deepseek/deepseek-v4-pro'],
+          resolved_base_url: 'http://127.0.0.1:39080/v1'
+        }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'deepseek/deepseek-v4-pro', base_url: 'http://127.0.0.1:39080/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:39080', '', {
+      requestGateway: readyGateway()
+    })
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'deepseek/deepseek-v4-pro',
+      base_url: 'http://127.0.0.1:39080/v1'
+    })
+  })
+
   it('reports the runtime reason when resolution still fails after saving', async () => {
     installApiMock(async ({ path }: { path: string }) => {
       if (path === '/api/providers/validate') {

@@ -8,6 +8,10 @@ interface RemoteConnectionRetryOptions {
   sleep?: (delayMs: number) => Promise<void>
 }
 
+function remoteHttpStatusError(statusCode: number | undefined, detail: unknown): Error & { statusCode: number } {
+  return Object.assign(new Error(`${statusCode}: ${String(detail || '')}`), { statusCode: statusCode || 500 })
+}
+
 function requiresOauthLogin(error: unknown, seen = new Set<object>()): boolean {
   if (!error || typeof error !== 'object' || seen.has(error)) {
     return false
@@ -131,6 +135,7 @@ async function resolveReadyRemoteConnectionWithRetry<T>(
 
 export {
   isRetryableRemoteConnectionError,
+  remoteHttpStatusError,
   requiresOauthLogin,
   resolveReadyRemoteConnectionWithRetry,
   resolveRemoteConnectionWithRetry

@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   isRetryableRemoteConnectionError,
+  remoteHttpStatusError,
   requiresOauthLogin,
   resolveReadyRemoteConnectionWithRetry,
   resolveRemoteConnectionWithRetry
@@ -27,6 +28,15 @@ test('401 and 403 require OAuth login and are never retried', async () => {
 
     assert.equal(attempts, 1)
   }
+})
+
+test('production HTTP errors preserve status for immediate auth classification', () => {
+  const error = remoteHttpStatusError(403, 'forbidden')
+
+  assert.equal(error.message, '403: forbidden')
+  assert.equal(error.statusCode, 403)
+  assert.equal(requiresOauthLogin(error), true)
+  assert.equal(isRetryableRemoteConnectionError(error), false)
 })
 
 test('wrapped sign-in-required failures are never retried', async () => {

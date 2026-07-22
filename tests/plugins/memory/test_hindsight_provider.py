@@ -794,15 +794,20 @@ class TestPrefetch:
         assert provider.prefetch("test") == ""
 
     def test_prefetch_default_preamble(self, provider):
+        # Simulate a properly-keyed cache entry warmed by a prior
+        # queue_prefetch("test", session_id="test-session"). The
+        # provider fixture is initialized with session_id="test-session".
         provider._prefetch_result = "- some memory"
-        result = provider.prefetch("test")
+        provider._prefetch_key = ("test-session", "test")
+        result = provider.prefetch("test", session_id="test-session")
         assert "Hindsight Memory" in result
         assert "- some memory" in result
 
     def test_prefetch_custom_preamble(self, provider_with_config):
         p = provider_with_config(recall_prompt_preamble="Custom header:")
         p._prefetch_result = "- memory line"
-        result = p.prefetch("test")
+        p._prefetch_key = ("test-session", "test")
+        result = p.prefetch("test", session_id="test-session")
         assert result.startswith("Custom header:")
         assert "- memory line" in result
 
@@ -854,6 +859,103 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    # ------------------------------------------------------------------
+    # Regression: prefetch(query) must not return an unkeyed result from
+    # a previous queue_prefetch() for a different query. (B1 from the
+    # Hindsight LTM repair plan; reproducer at
+    # ~/.hermes/scripts/hindsight-ltm-repair/repro_prefetch_and_metadata.py.)
+    # ------------------------------------------------------------------
+    def test_prefetch_does_not_return_stale_queued_result_for_different_query(self, provider):
+        """If queue_prefetch(A) warms a result for topic A, a subsequent
+        prefetch(B) for an unrelated topic B must NOT return A's recall.
+
+        The provider must only return recall whose key matches the
+        current (query, session_id) being prefetched. Anything else is
+        safe-empty.
+        """
+        # Arrange — stub arecall so we can control what gets cached for
+        # topic A. arecall is called with kwargs by queue_prefetch.
+        topic_a = "Topic A: Barcelona hotel recommendation"
+        topic_b = "Topic B: current session start time"
+        marker_a = "ALPHA_BARCELONA_PREFETCH_MARKER"
+
+        def _recall_for_a(**kwargs):
+            assert kwargs.get("query") == topic_a
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"Hotel notes {marker_a}")]
+            )
+
+        provider._client.arecall = AsyncMock(side_effect=_recall_for_a)
+
+        # Warm the cache for topic A (this populates _prefetch_result
+        # in the background writer thread).
+        provider.queue_prefetch(topic_a, session_id="session-A")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        # Act — now ask for topic B, which was never queued.
+        injected = provider.prefetch(topic_b, session_id="session-A")
+
+        # Assert — the marker for A must not leak into B's prefetch.
+        assert marker_a not in injected, (
+            "prefetch(B) returned a stale result keyed to A's queue_prefetch; "
+            "this is the H1 unkeyed-cache bug."
+        )
+        # Safe-empty when there is no fresh keyed result for the current
+        # query: prefetch must return "" rather than a stale prior result.
+        assert injected == "", (
+            "prefetch(B) should return empty when no fresh keyed cache "
+            "hit exists for (B, session-A); got non-empty injection."
+        )
+
+    def test_prefetch_returns_cached_result_when_query_matches(self, provider):
+        """The positive companion: queue_prefetch(A) followed by
+        prefetch(A, same session) MUST return A's warmed recall."""
+        topic_a = "Topic A: Barcelona hotel recommendation"
+        marker_a = "ALPHA_BARCELONA_PREFETCH_MARKER"
+
+        def _recall_for_a(**kwargs):
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"Hotel notes {marker_a}")]
+            )
+
+        provider._client.arecall = AsyncMock(side_effect=_recall_for_a)
+
+        provider.queue_prefetch(topic_a, session_id="session-A")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        injected = provider.prefetch(topic_a, session_id="session-A")
+
+        assert marker_a in injected, (
+            "queue_prefetch(A) → prefetch(A) on the same session should "
+            "return the warmed recall."
+        )
+
+    def test_prefetch_does_not_return_cached_result_across_sessions(self, provider):
+        """A cache entry warmed for session-A must not satisfy a
+        prefetch(same query) issued from session-B."""
+        topic = "Topic A: Barcelona hotel recommendation"
+        marker_a = "ALPHA_BARCELONA_PREFETCH_MARKER"
+
+        def _recall(**kwargs):
+            return SimpleNamespace(
+                results=[SimpleNamespace(text=f"Hotel notes {marker_a}")]
+            )
+
+        provider._client.arecall = AsyncMock(side_effect=_recall)
+
+        provider.queue_prefetch(topic, session_id="session-A")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        injected = provider.prefetch(topic, session_id="session-B")
+        assert marker_a not in injected, (
+            "A cache entry keyed to session-A must not satisfy prefetch "
+            "for session-B even when the query string matches."
+        )
+        assert injected == ""
 
 
 # ---------------------------------------------------------------------------

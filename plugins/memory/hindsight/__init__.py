@@ -659,6 +659,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
+        # Key the cached prefetch result by (session_id, query) so that
+        # prefetch(B) cannot return a result that was warmed by an earlier
+        # queue_prefetch(A). Without this guard, the unkeyed
+        # _prefetch_result leaks A's recall into B's context, which is the
+        # H1 stale-prefetch bug (see Hindsight LTM repair plan B1 and
+        # ~/.hermes/scripts/hindsight-ltm-repair/repro_prefetch_and_metadata.py).
+        # Empty string sentinel matches the unset state of _prefetch_result.
+        self._prefetch_key: tuple[str, str] | None = None
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         # Single-writer model for retain. sync_turn() enqueues; the writer
@@ -1467,11 +1475,32 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
             self._prefetch_thread.join(timeout=3.0)
+        # Read result + key under the same lock so the writer thread in
+        # queue_prefetch can't update one without the other.
+        expected_key = (session_id or "", query or "")
         with self._prefetch_lock:
+            cached_key = self._prefetch_key
             result = self._prefetch_result
+            # Always invalidate the cache after a read attempt. Even on a
+            # miss (key mismatch) we drop the stale entry so that a future
+            # prefetch() can't reuse it after the next queue_prefetch.
+            # This preserves the original "one-shot" semantics of the
+            # cache while keeping it safe across mismatched queries.
             self._prefetch_result = ""
+            self._prefetch_key = None
         if not result:
             logger.debug("Prefetch: no results available")
+            return ""
+        if cached_key != expected_key:
+            # Stale entry from a previous queue_prefetch(other_query) or
+            # other_session. Safe-empty is the correct response per the
+            # provider contract; do NOT inject the prior result.
+            logger.debug(
+                "Prefetch: dropping stale cached entry "
+                "(cached_key=%r expected_key=%r)",
+                cached_key,
+                expected_key,
+            )
             return ""
         logger.debug("Prefetch: returning %d chars of context", len(result))
         header = self._recall_prompt_preamble or (
@@ -1494,6 +1523,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # Truncate query to max chars
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
+
+        # Snapshot the key the result will be filed under. This is the
+        # query as it will be sent to the daemon (post-truncation) and
+        # the session_id supplied by the caller. prefetch() will only
+        # return the cached result if it sees the same key.
+        cache_key = (session_id or "", query or "")
 
         def _run():
             try:
@@ -1520,6 +1555,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
+                        self._prefetch_key = cache_key
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 
@@ -1886,6 +1922,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
             self._prefetch_result = ""
+            self._prefetch_key = None
 
         # 3. Now rotate to the new session.
         if parent_session_id:

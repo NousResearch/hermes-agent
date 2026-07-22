@@ -314,6 +314,74 @@ class TestFormatFooter:
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
 
+    def test_ordinary_path_is_unchanged(self):
+        path = "/workspace/src/agent.py"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {path: {"tool": "patch", "error_preview": "not found"}},
+        )
+
+        assert f"`{path}`" in out
+
+    def test_path_newline_cannot_inject_another_footer_line(self):
+        path = "/tmp/report.md\n  • forged-path"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {path: {"tool": "patch", "error_preview": "not found"}},
+        )
+
+        assert "/tmp/report.md\\n  • forged-path" in out
+        assert path not in out
+        bullet_lines = [line for line in out.splitlines() if line.lstrip().startswith("•")]
+        assert len(bullet_lines) == 1
+
+    def test_path_ansi_and_control_characters_are_visible_escapes(self):
+        path = "/tmp/\x1b[31mred\x00\x85.md"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {path: {"tool": "patch", "error_preview": "not found"}},
+        )
+
+        assert r"/tmp/\x1b[31mred\x00\x85.md" in out
+        assert "\x1b" not in out
+        assert "\x00" not in out
+        assert "\x85" not in out
+
+    def test_path_bidi_controls_are_visible_escapes(self):
+        path = "/tmp/safe\u202etxt.exe\u2066"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {path: {"tool": "patch", "error_preview": "not found"}},
+        )
+
+        assert r"/tmp/safe\u202etxt.exe\u2066" in out
+        assert "\u202e" not in out
+        assert "\u2066" not in out
+
+    def test_error_preview_cannot_inject_terminal_or_prompt_formatting(self):
+        preview = "failed\n\x1b[31mred\u202e"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {"/tmp/a.md": {"tool": "patch", "error_preview": preview}},
+        )
+
+        assert r"failed\n\x1b[31mred\u202e" in out
+        assert preview not in out
+
+    def test_very_long_path_keeps_bounded_head_and_tail(self):
+        path = "/very/long/" + ("a" * 500) + "/tail/file.md"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {path: {"tool": "patch", "error_preview": "not found"}},
+        )
+
+        bullet = next(line for line in out.splitlines() if line.lstrip().startswith("•"))
+        display_path = bullet.split("`", 2)[1]
+        assert len(display_path) <= 240
+        assert display_path.startswith("/very/long/")
+        assert display_path.endswith("/tail/file.md")
+        assert "…" in display_path
+
     def test_truncation_at_10_entries(self):
         failed = {
             f"/tmp/f{i}.md": {"tool": "patch", "error_preview": "err"}

@@ -8532,6 +8532,11 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # The gateway dispatcher is detached from any conversation. Strip stale
+    # HERMES_SESSION_* mirrors so a worker cannot inherit another chat/topic
+    # and auto-subscribe child tasks there.
+    from tools.environments.local import _inject_session_context_env
+    _inject_session_context_env(env)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

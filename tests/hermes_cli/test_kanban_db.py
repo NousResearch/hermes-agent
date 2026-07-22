@@ -3096,16 +3096,26 @@ class TestSharedBoardPaths:
         assert kb.kanban_db_path() == default_home / "kanban.db"
         assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
 
-    def test_dispatcher_spawn_injects_kanban_db_and_workspaces_root(
+    def test_dispatcher_spawn_injects_kanban_paths_without_stale_session(
         self, tmp_path, monkeypatch
     ):
-        # The dispatcher's `_default_spawn` must inject HERMES_KANBAN_DB
-        # and HERMES_KANBAN_WORKSPACES_ROOT into the worker env so the
-        # worker converges on the dispatcher's paths even when the
-        # `-p <profile>` flag rewrites HERMES_HOME.
+        # The dispatcher must pin board paths while stripping any unrelated
+        # HERMES_SESSION_* identity inherited from the long-lived gateway.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         self._set_home(monkeypatch, tmp_path, default_home)
+
+        from gateway import session_context as sc
+
+        monkeypatch.setattr(sc, "_session_context_engaged", True)
+        sc.reset_session_vars()
+        for key, value in {
+            "HERMES_SESSION_PLATFORM": "telegram",
+            "HERMES_SESSION_CHAT_ID": "-100123",
+            "HERMES_SESSION_THREAD_ID": "12",
+            "HERMES_SESSION_KEY": "agent:main:telegram:group:-100123:12",
+        }.items():
+            monkeypatch.setenv(key, value)
 
         captured = {}
 
@@ -3144,6 +3154,13 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        for key in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_KEY",
+        ):
+            assert key not in env
 
 
 # ---------------------------------------------------------------------------

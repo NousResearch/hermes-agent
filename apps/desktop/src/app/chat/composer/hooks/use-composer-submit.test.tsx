@@ -21,6 +21,7 @@ function renderSubmitHook({ attachments = [], busy = false, text = '' }: SubmitH
   const onSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
+
   const clearDraft = vi.fn(() => {
     draftRef.current = ''
     editorRef.current!.textContent = ''
@@ -63,7 +64,10 @@ describe('useComposerSubmit busy-turn routing', () => {
   })
 
   it('steers a plain-text follow-up instead of queueing or stopping', async () => {
-    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'change course' })
+    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'change course'
+    })
 
     act(() => {
       hook.result.current.submitDraft()
@@ -94,6 +98,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
   it('queues an attachment-bearing follow-up while busy', () => {
     const attachment: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.txt' }
+
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       attachments: [attachment],
       busy: true,

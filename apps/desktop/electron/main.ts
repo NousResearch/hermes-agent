@@ -6,7 +6,7 @@ import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   app,
@@ -127,6 +127,12 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import { imageFormatExtension, imageSaveFilename } from './image-save-filename'
+import {
+  createSingleFlightOperation,
+  encodedImageDimensions,
+  imageDimensionsWithinLimit
+} from './image-save-operation'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -975,6 +981,15 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+const trustedRendererWindows = new Set()
+
+function registerTrustedRendererWindow(win) {
+  trustedRendererWindows.add(win)
+  win.once('closed', () => trustedRendererWindows.delete(win))
+}
+
+let hermesProcess = null
+let connectionPromise = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
@@ -1188,7 +1203,7 @@ function rememberLog(chunk) {
   scheduleDesktopLogFlush()
 }
 
-function openExternalUrl(rawUrl) {
+async function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
 
   if (!raw) {
@@ -1217,24 +1232,27 @@ function openExternalUrl(rawUrl) {
       return false
     }
 
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
-        }
+    try {
+      const error = await shell.openPath(localPath)
 
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+      if (!error) {
+        return true
+      }
 
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
-        }
-      })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
+      rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
 
-    return true
+      try {
+        shell.showItemInFolder(localPath)
+      } catch (revealError) {
+        rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
+      }
+
+      return false
+    } catch (error) {
+      rememberLog(`[file] openPath rejected: ${error.message}`)
+
+      return false
+    }
   }
 
   if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
@@ -1246,24 +1264,46 @@ function openExternalUrl(rawUrl) {
   if (IS_WSL) {
     rememberLog(`[link] opening via WSL→Windows: ${url}`)
 
-    const proc = spawn('cmd.exe', ['/c', 'start', '""', url], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    })
+    try {
+      return await new Promise(resolve => {
+        const proc = spawn('cmd.exe', ['/c', 'start', '""', url], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true
+        })
 
-    proc.on('error', error => {
-      rememberLog(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
-      shell.openExternal(url).catch(fallback => rememberLog(`[link] xdg-open failed: ${fallback.message}`))
-    })
-    proc.unref()
+        proc.once('spawn', () => {
+          proc.unref()
+          resolve(true)
+        })
+        proc.once('error', async error => {
+          rememberLog(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
 
-    return true
+          try {
+            await shell.openExternal(url)
+            resolve(true)
+          } catch (fallback) {
+            rememberLog(`[link] xdg-open failed: ${fallback.message}`)
+            resolve(false)
+          }
+        })
+      })
+    } catch (error) {
+      rememberLog(`[link] cmd.exe start failed: ${error.message}`)
+
+      return false
+    }
   }
 
-  shell.openExternal(url).catch(error => rememberLog(`[link] openExternal failed: ${error.message}`))
+  try {
+    await shell.openExternal(url)
 
-  return true
+    return true
+  } catch (error) {
+    rememberLog(`[link] openExternal failed: ${error.message}`)
+
+    return false
+  }
 }
 
 async function openPreviewInBrowser(rawUrl) {
@@ -4050,15 +4090,28 @@ function extensionForMimeType(mimeType) {
   return ''
 }
 
-function filenameFromUrl(rawUrl, fallback = 'image') {
-  try {
-    const parsed = new URL(rawUrl)
-    const base = path.basename(decodeURIComponent(parsed.pathname || ''))
+async function readBoundedFileHandle(handle, maxBytes) {
+  const chunks = []
+  let byteLength = 0
 
-    return base && base.includes('.') ? base : fallback
-  } catch {
-    return fallback
+  while (byteLength <= maxBytes) {
+    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, maxBytes + 1 - byteLength))
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null)
+
+    if (!bytesRead) {
+      return Buffer.concat(chunks, byteLength)
+    }
+
+    byteLength += bytesRead
+
+    if (byteLength > maxBytes) {
+      throw new Error('Image is too large')
+    }
+
+    chunks.push(chunk.subarray(0, bytesRead))
   }
+
+  throw new Error('Image is too large')
 }
 
 // Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
@@ -4352,86 +4405,266 @@ function fetchLinkTitle(rawUrl) {
   return pending
 }
 
-async function resourceBufferFromUrl(rawUrl) {
-  if (!rawUrl) {
-    throw new Error('Missing URL')
+const MAX_IMAGE_SAVE_BYTES = 32 * 1024 * 1024
+const MAX_IMAGE_DIMENSION = 16_384
+const MAX_DECODED_IMAGE_PIXELS = 40_000_000
+const IMAGE_FETCH_TIMEOUT_MS = 30_000
+const MAX_CONCURRENT_IMAGE_FETCHES = 1
+let activeImageFetches = 0
+const withImageOperation = createSingleFlightOperation('Another image operation is already in progress')
+
+function validateImageResource(buffer, mimeType, { decode = false } = {}) {
+  const declaredExtension = extensionForMimeType(mimeType)
+  const detectedExtension = imageFormatExtension(buffer)
+
+  if (!declaredExtension || detectedExtension !== declaredExtension) {
+    throw new Error('Could not read image')
   }
 
-  if (rawUrl.startsWith('data:')) {
-    const match = rawUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
+  const encodedDimensions = encodedImageDimensions(buffer, detectedExtension)
 
-    if (!match) {
-      throw new Error('Invalid data URL')
-    }
-
-    const mimeType = match[1] || 'application/octet-stream'
-    const encoded = match[3] || ''
-    const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
-
-    return { buffer, mimeType }
+  if (
+    !encodedDimensions ||
+    !imageDimensionsWithinLimit(
+      encodedDimensions.width,
+      encodedDimensions.height,
+      MAX_IMAGE_DIMENSION,
+      MAX_DECODED_IMAGE_PIXELS
+    )
+  ) {
+    throw new Error('Image dimensions are too large')
   }
 
-  if (/^file:/i.test(rawUrl)) {
-    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
-    const buffer = await fs.promises.readFile(resolvedPath)
-
-    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
+  if (!decode) {
+    return { detectedExtension, image: null }
   }
 
-  const parsed = new URL(rawUrl)
-  const client = parsed.protocol === 'https:' ? https : http
+  if (detectedExtension === '.svg') {
+    throw new Error('SVG images cannot be copied to the clipboard')
+  }
 
-  return new Promise((resolve, reject) => {
-    const req = client.get(parsed, res => {
-      if ((res.statusCode || 500) >= 400) {
-        reject(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
-        res.resume()
-
-        return
-      }
-
-      const chunks = []
-      res.on('error', reject)
-      res.on('data', chunk => chunks.push(chunk))
-      res.on('end', () => {
-        resolve({
-          buffer: Buffer.concat(chunks),
-          mimeType: res.headers['content-type'] || 'application/octet-stream'
-        })
-      })
-    })
-
-    req.on('error', reject)
-  })
-}
-
-async function copyImageFromUrl(rawUrl) {
-  const { buffer } = (await resourceBufferFromUrl(rawUrl)) as any
   const image = nativeImage.createFromBuffer(buffer)
 
   if (image.isEmpty()) {
     throw new Error('Could not read image')
   }
 
-  clipboard.writeImage(image)
-}
+  const { width, height } = image.getSize()
 
-async function saveImageFromUrl(rawUrl) {
-  const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
-  const fallbackName = filenameFromUrl(rawUrl, `image${extensionForMimeType(mimeType) || '.png'}`)
-
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Image',
-    defaultPath: fallbackName
-  })
-
-  if (result.canceled || !result.filePath) {
-    return false
+  if (!imageDimensionsWithinLimit(width, height, MAX_IMAGE_DIMENSION, MAX_DECODED_IMAGE_PIXELS)) {
+    throw new Error('Image dimensions are too large')
   }
 
-  await fs.promises.writeFile(result.filePath, buffer)
+  return { detectedExtension, image }
+}
 
-  return true
+async function resourceBufferFromUrl(rawUrl) {
+  if (!rawUrl) {
+    throw new Error('Missing URL')
+  }
+
+  if (/^data:/i.test(rawUrl)) {
+    if (rawUrl.length > Math.ceil((MAX_IMAGE_SAVE_BYTES * 4) / 3) + 1024) {
+      throw new Error('Image is too large')
+    }
+
+    const match = rawUrl.match(/^data:([^;,]+)?(?:;(?!base64(?:;|,))[^,;]*)*(;base64)?,(.*)$/is)
+
+    if (!match) {
+      throw new Error('Invalid data URL')
+    }
+
+    const mimeType = match[1] || 'application/octet-stream'
+
+    if (!extensionForMimeType(mimeType)) {
+      throw new Error('Unsupported image type')
+    }
+
+    const encoded = match[3] || ''
+    let buffer
+
+    if (match[2]) {
+      const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+      const decodedBytes = Math.max(0, Math.floor((encoded.length * 3) / 4) - padding)
+
+      if (decodedBytes > MAX_IMAGE_SAVE_BYTES) {
+        throw new Error('Image is too large')
+      }
+
+      buffer = Buffer.from(encoded, 'base64')
+    } else {
+      // Percent escapes only shrink the UTF-8 byte count, so the encoded
+      // payload is a conservative pre-allocation bound for decodeURIComponent.
+      if (Buffer.byteLength(encoded, 'utf8') > MAX_IMAGE_SAVE_BYTES) {
+        throw new Error('Image is too large')
+      }
+
+      buffer = Buffer.from(decodeURIComponent(encoded), 'utf8')
+    }
+
+    if (buffer.length > MAX_IMAGE_SAVE_BYTES) {
+      throw new Error('Image is too large')
+    }
+
+    return { buffer, mimeType }
+  }
+
+  if (/^file:/i.test(rawUrl)) {
+    const { realPath, stat: validatedStat } = await resolveReadableFileForIpc(rawUrl, {
+      maxBytes: MAX_IMAGE_SAVE_BYTES,
+      purpose: 'Image save'
+    })
+
+    const noFollow = fs.constants.O_NOFOLLOW || 0
+    const handle = await fs.promises.open(realPath, fs.constants.O_RDONLY | noFollow)
+
+    try {
+      const stat = await handle.stat()
+
+      if (!stat.isFile()) {
+        throw new Error('Image source is not a regular file')
+      }
+
+      if (stat.dev !== validatedStat.dev || stat.ino !== validatedStat.ino) {
+        throw new Error('Image source changed during validation')
+      }
+
+      if (stat.size > MAX_IMAGE_SAVE_BYTES) {
+        throw new Error('Image is too large')
+      }
+
+      const buffer = await readBoundedFileHandle(handle, MAX_IMAGE_SAVE_BYTES)
+
+      return { buffer, mimeType: mimeTypeForPath(realPath) }
+    } finally {
+      await handle.close()
+    }
+  }
+
+  const parsed = new URL(rawUrl)
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Unsupported image URL protocol: ${parsed.protocol}`)
+  }
+
+  const client = parsed.protocol === 'https:' ? https : http
+
+  if (activeImageFetches >= MAX_CONCURRENT_IMAGE_FETCHES) {
+    throw new Error('Too many concurrent image requests')
+  }
+
+  activeImageFetches += 1
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let req
+
+    const finish = (error, value = undefined) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      clearTimeout(deadline)
+      activeImageFetches = Math.max(0, activeImageFetches - 1)
+
+      if (error) {
+        reject(error)
+      } else {
+        resolve(value)
+      }
+    }
+
+    const deadline = setTimeout(() => {
+      req?.destroy()
+      finish(new Error('Image fetch timed out'))
+    }, IMAGE_FETCH_TIMEOUT_MS)
+
+    req = client.get(parsed, res => {
+      if ((res.statusCode || 500) >= 400) {
+        finish(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
+        res.destroy()
+        req.destroy()
+
+        return
+      }
+
+      const contentLength = Number(res.headers['content-length'] || 0)
+
+      if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_SAVE_BYTES) {
+        finish(new Error('Image is too large'))
+        res.destroy()
+
+        return
+      }
+
+      const chunks = []
+      let byteLength = 0
+
+      res.on('error', error => finish(error))
+      res.on('data', chunk => {
+        byteLength += chunk.length
+
+        if (byteLength > MAX_IMAGE_SAVE_BYTES) {
+          req.destroy(new Error('Image is too large'))
+
+          return
+        }
+
+        chunks.push(chunk)
+      })
+      res.on('end', () => {
+        const mimeType = res.headers['content-type'] || 'application/octet-stream'
+
+        if (!extensionForMimeType(mimeType)) {
+          finish(new Error('Unsupported image type'))
+
+          return
+        }
+
+        finish(null, {
+          buffer: Buffer.concat(chunks),
+          mimeType
+        })
+      })
+    })
+
+    req.on('error', error => finish(error))
+  })
+}
+
+async function copyImageFromUrl(rawUrl) {
+  return withImageOperation(async () => {
+    const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
+    const { image } = validateImageResource(buffer, mimeType, { decode: true })
+
+    if (!image) {
+      throw new Error('Could not read image')
+    }
+
+    clipboard.writeImage(image)
+  })
+}
+
+async function saveImageFromUrl(rawUrl, suggestedFilename = '') {
+  return withImageOperation(async () => {
+    const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
+    const { detectedExtension } = validateImageResource(buffer, mimeType)
+    const fallbackName = imageSaveFilename(rawUrl, suggestedFilename, detectedExtension)
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Image',
+      defaultPath: fallbackName
+    })
+
+    if (result.canceled || !result.filePath) {
+      return false
+    }
+
+    await fs.promises.writeFile(result.filePath, buffer)
+
+    return true
+  })
 }
 
 async function writeComposerImage(buffer, ext = '.png') {
@@ -5106,7 +5339,7 @@ function installContextMenu(window) {
           label: 'Open Image',
           click: () => {
             if (params.srcURL && !params.srcURL.startsWith('data:')) {
-              openExternalUrl(params.srcURL)
+              void openExternalUrl(params.srcURL).catch(error => rememberLog(`Open image failed: ${error.message}`))
             }
           },
           enabled: !params.srcURL.startsWith('data:')
@@ -5138,7 +5371,9 @@ function installContextMenu(window) {
       template.push(
         {
           label: 'Open Link',
-          click: () => openExternalUrl(params.linkURL)
+          click: () => {
+            void openExternalUrl(params.linkURL).catch(error => rememberLog(`Open link failed: ${error.message}`))
+          }
         },
         {
           label: 'Copy Link',
@@ -8046,6 +8281,32 @@ async function startHermes() {
 // stays confined to the dev server / packaged file URL, and the preview /
 // devtools / zoom / context-menu affordances behave identically everywhere.
 //
+function isTrustedRendererUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl)
+
+    if (DEV_SERVER) {
+      return parsed.origin === new URL(DEV_SERVER).origin
+    }
+
+    return parsed.protocol === 'file:' && path.resolve(fileURLToPath(parsed)) === path.resolve(resolveRendererIndex())
+  } catch {
+    return false
+  }
+}
+
+function isTrustedRendererEvent(event) {
+  const owner = BrowserWindow.fromWebContents(event.sender)
+
+  return Boolean(
+    owner &&
+      !owner.isDestroyed() &&
+      trustedRendererWindows.has(owner) &&
+      event.senderFrame === event.sender.mainFrame &&
+      isTrustedRendererUrl(event.senderFrame.url)
+  )
+}
+
 // `zoom` is opt-out for the pet overlay: it sizes its own OS window to fit the
 // sprite in unzoomed CSS px (overlayWindowSize -> setBounds) and has its own
 // Alt+wheel scale, so inheriting the global UI zoom would render the mascot
@@ -8068,17 +8329,17 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
-    openExternalUrl(details.url)
+    void openExternalUrl(details.url).catch(error => rememberLog(`Open window failed: ${error.message}`))
 
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
+    if (isTrustedRendererUrl(url)) {
       return
     }
 
     event.preventDefault()
-    openExternalUrl(url)
+    void openExternalUrl(url).catch(error => rememberLog(`Open navigation failed: ${error.message}`))
   })
 }
 
@@ -8130,6 +8391,8 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     backgroundColor: getWindowBackgroundColor(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  registerTrustedRendererWindow(win)
 
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -8412,6 +8675,8 @@ function createWindow() {
     // windows, stalling the live answer until refocus. See session-windows.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  registerTrustedRendererWindow(mainWindow)
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -9531,7 +9796,13 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl', (event, url, suggestedFilename) => {
+  if (!isTrustedRendererEvent(event)) {
+    throw new Error('Unauthorized image save request')
+  }
+
+  return saveImageFromUrl(String(url || ''), String(suggestedFilename || ''))
+})
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data
@@ -9648,9 +9919,13 @@ ipcMain.on('hermes:keep-awake', (_event, on) => {
   }
 })
 
-ipcMain.handle('hermes:openExternal', (_event, url) => {
-  if (!openExternalUrl(url)) {
-    throw new Error('Invalid external URL')
+ipcMain.handle('hermes:openExternal', async (event, url) => {
+  if (!isTrustedRendererEvent(event)) {
+    throw new Error('Unauthorized external URL request')
+  }
+
+  if (!(await openExternalUrl(url))) {
+    throw new Error('Could not open external URL')
   }
 })
 

@@ -102,6 +102,16 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
   })
 
+  it('handles rejected desktop bridge opens', async () => {
+    const openExternal = vi.fn().mockRejectedValue(new Error('native open failed'))
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="https://example.com/failure">Failing link</ExternalLink>)
+    fireEvent.click(screen.getByRole('link', { name: 'Failing link' }))
+
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://example.com/failure'))
+  })
+
   it('shows a trailing external-link icon', () => {
     installDesktopBridge()
 

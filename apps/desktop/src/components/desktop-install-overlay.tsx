@@ -369,7 +369,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               </Button>
               <Button
                 onClick={() => {
-                  window.hermesDesktop?.openExternal?.(ups.docsUrl)
+                  void window.hermesDesktop?.openExternal?.(ups.docsUrl).catch(() => undefined)
                 }}
                 size="sm"
                 variant="ghost"

@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
+  downloadName?: string
   slot?: string
 }
 
@@ -18,10 +19,18 @@ export interface ImageActionCopy {
   savingImage: string
 }
 
-export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+export function ZoomableImage({
+  className,
+  containerClassName,
+  downloadName,
+  src,
+  alt,
+  slot,
+  ...props
+}: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
-  const { download, saving } = useImageDownload(src)
+  const { download, saving } = useImageDownload(src, downloadName)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const canOpen = Boolean(src)
 

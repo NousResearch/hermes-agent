@@ -94,7 +94,7 @@ function PreviewLoadError({
             href={error.url}
             onClick={event => {
               event.preventDefault()
-              void window.hermesDesktop?.openExternal(error.url)
+              void window.hermesDesktop?.openExternal(error.url).catch(() => undefined)
             }}
           >
             {compactUrl(error.url)}

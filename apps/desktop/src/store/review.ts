@@ -426,6 +426,14 @@ export async function pushChanges(): Promise<void> {
   })
 }
 
+function openExternalSilently(url: string): void {
+  try {
+    void Promise.resolve(window.hermesDesktop?.openExternal?.(url)).catch(() => undefined)
+  } catch {
+    // Opening a browser is best-effort; the PR state itself remains valid.
+  }
+}
+
 // PR button: open the existing PR in the browser, or create one (pushing first)
 // then open it. Caller gates this on shipInfo.ghReady.
 export async function createOrOpenPr(): Promise<void> {
@@ -438,7 +446,7 @@ export async function createOrOpenPr(): Promise<void> {
   const existing = $reviewShipInfo.get().pr
 
   if (existing?.url) {
-    void window.hermesDesktop?.openExternal?.(existing.url)
+    openExternalSilently(existing.url)
 
     return
   }
@@ -447,7 +455,7 @@ export async function createOrOpenPr(): Promise<void> {
     const { url } = await ctx.review.createPr(ctx.cwd)
 
     if (url) {
-      void window.hermesDesktop?.openExternal?.(url)
+      openExternalSilently(url)
     }
 
     void refreshShipInfo()

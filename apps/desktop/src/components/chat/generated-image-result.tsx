@@ -5,6 +5,7 @@ import { type FC, useEffect, useState } from 'react'
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
 import { useImageDownload } from '@/hooks/use-image-download'
+import { useOpenMediaFile } from '@/hooks/use-open-media-file'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl, mediaName } from '@/lib/media'
@@ -51,7 +52,10 @@ async function resolveImageSrc(path: string): Promise<string> {
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {
   const { t } = useI18n()
   const copy = t.desktop
-  const image = result === undefined ? null : generatedImageFromResult(result)
+  const resolvedImage = result === undefined ? null : generatedImageFromResult(result)
+  const image = resolvedImage?.trim() || null
+  const fullFile = image && !/^data:/i.test(image) ? image : undefined
+  const downloadName = fullFile ? mediaName(fullFile) : undefined
   const pending = result === undefined
 
   const [ratio, setRatio] = useState(() => hintedRatio(aspectRatio))
@@ -60,7 +64,8 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const [canvasGone, setCanvasGone] = useState(false)
   const [failed, setFailed] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
-  const { download, saving } = useImageDownload(src)
+  const { download, saving } = useImageDownload(src, downloadName)
+  const { downloadsRemoteFile, open: openFullFile, openFailed } = useOpenMediaFile(fullFile)
 
   useEffect(() => setRatio(hintedRatio(aspectRatio)), [aspectRatio])
 
@@ -95,16 +100,20 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
 
   if (failed && image) {
     return (
-      <a
-        className="mt-2 inline-block font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
-        href="#"
-        onClick={event => {
-          event.preventDefault()
-          void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
-        }}
-      >
-        {copy.openImage}: {mediaName(image)}
-      </a>
+      <>
+        <button
+          className="mt-2 inline-block bg-transparent font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+          onClick={openFullFile}
+          type="button"
+        >
+          {downloadsRemoteFile ? 'Download' : copy.openImage}: {mediaName(image)}
+        </button>
+        {openFailed && (
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Couldn&apos;t open or download {mediaName(image)}.
+          </span>
+        )}
+      </>
     )
   }
 
@@ -164,6 +173,22 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
           <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
         )}
       </span>
+      {fullFile && (
+        <>
+          <button
+            className="mt-1 block bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+            onClick={openFullFile}
+            type="button"
+          >
+            {downloadsRemoteFile ? 'Download' : 'Open'} full file
+          </button>
+          {openFailed && (
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Couldn&apos;t open or download {mediaName(fullFile)}.
+            </span>
+          )}
+        </>
+      )}
       {src && (
         <ImageLightbox
           alt="Generated image"

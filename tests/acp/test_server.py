@@ -1761,9 +1761,9 @@ class TestSlashCommands:
         )
         mock_save.assert_called_once_with(state.session_id)
 
-    def test_compact_works_when_auto_compaction_disabled(self, agent, mock_manager):
+    def test_compress_works_when_auto_compaction_disabled(self, agent, mock_manager):
         """compression.enabled: false disables *automatic* compaction only —
-        manual /compact must still compress (matches CLI /compress and the
+        manual /compress must still compress (matches CLI /compress and the
         gateway handler)."""
         state = self._make_state(mock_manager)
         state.history = [
@@ -1787,7 +1787,7 @@ class TestSlashCommands:
                 side_effect=[40, 12],
             ),
         ):
-            result = agent._handle_slash_command("/compact", state)
+            result = agent._handle_slash_command("/compress", state)
 
         assert "disabled" not in result.lower()
         assert "Context compressed: 4 -> 1 messages" in result

@@ -2023,7 +2023,7 @@ class HermesACPAgent(acp.Agent):
         if getattr(agent, "compression_enabled", True) is False:
             lines.append(
                 "Auto-compaction is disabled (compression.enabled: false); "
-                "/compact still compresses manually."
+                "/compress still compresses manually."
             )
         else:
             lines.append("Tip: run /compress to compress manually before the threshold.")
@@ -2052,7 +2052,7 @@ class HermesACPAgent(acp.Agent):
         try:
             agent = state.agent
             # No compression_enabled gate: the flag disables *automatic*
-            # compaction only; manual /compact must keep working (matches
+            # compaction only; manual /compress must keep working (matches
             # the CLI /compress and gateway handlers).
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."

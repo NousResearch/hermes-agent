@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
@@ -499,11 +500,144 @@ def auth_remove_command(args) -> None:
         print(line)
 
 
+_AUTH_STATUS_FIELDS = (
+    "last_status",
+    "last_status_at",
+    "last_error_code",
+    "last_error_reason",
+    "last_error_message",
+    "last_error_reset_at",
+)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except Exception:
+        return left == right
+
+
+def _iter_known_profile_homes() -> list[tuple[str, Path]]:
+    """Return default + named profile homes without expensive profile metadata scans."""
+    try:
+        from hermes_cli import profiles as profile_mod
+
+        targets: list[tuple[str, Path]] = [("default", profile_mod.get_profile_dir("default"))]
+        profiles_root = profile_mod._get_profiles_root()
+        if profiles_root.is_dir():
+            for entry in sorted(profiles_root.iterdir()):
+                if not entry.is_dir() or entry.name == "default":
+                    continue
+                try:
+                    name = profile_mod.normalize_profile_name(entry.name)
+                    profile_mod.validate_profile_name(name)
+                except ValueError:
+                    continue
+                targets.append((name, entry))
+        return targets
+    except Exception:
+        return []
+
+
+def _label_for_profile_home(home: Path, known_homes: list[tuple[str, Path]]) -> str:
+    for name, known_home in known_homes:
+        if _same_path(home, known_home):
+            return name
+    return "current"
+
+
+def _auth_reset_targets(*, include_all_profiles: bool, current_profile_only: bool) -> list[tuple[str, Path]]:
+    from hermes_constants import get_hermes_home
+
+    current_home = get_hermes_home()
+    known_homes = _iter_known_profile_homes()
+    default_home = next((home for name, home in known_homes if name == "default"), current_home)
+
+    candidates: list[tuple[str, Path]] = [
+        (_label_for_profile_home(current_home, known_homes), current_home)
+    ]
+    if not current_profile_only:
+        # Named profiles may inherit credentials from the root auth.json when
+        # they have no local entry for a provider. Reset that fallback store too,
+        # but do not materialize fallback credentials into the profile's auth.json.
+        candidates.append(("default", default_home))
+        if include_all_profiles:
+            candidates.extend(known_homes)
+
+    deduped: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for name, home in candidates:
+        try:
+            key = str(home.resolve(strict=False))
+        except Exception:
+            key = str(home)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((name, home))
+    return deduped
+
+
+def _reset_provider_statuses_in_home(home: Path, provider: str) -> int:
+    """Clear persisted local status fields for one provider in one profile auth.json."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(home)
+    try:
+        with auth_mod._auth_store_lock():
+            auth_store = auth_mod._load_auth_store()
+            pool = auth_store.get("credential_pool")
+            if not isinstance(pool, dict):
+                return 0
+            entries = pool.get(provider)
+            if not isinstance(entries, list):
+                return 0
+
+            count = 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if not any(entry.get(field) is not None for field in _AUTH_STATUS_FIELDS):
+                    continue
+                for field in _AUTH_STATUS_FIELDS:
+                    entry[field] = None
+                count += 1
+            if count:
+                auth_mod._save_auth_store(auth_store)
+            return count
+    finally:
+        reset_hermes_home_override(token)
+
+
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    pool = load_pool(provider)
-    count = pool.reset_statuses()
-    print(f"Reset status on {count} {provider} credentials")
+    from hermes_constants import get_hermes_home
+
+    known_homes = _iter_known_profile_homes()
+    default_home = next((home for name, home in known_homes if name == "default"), get_hermes_home())
+    current_is_default = _same_path(get_hermes_home(), default_home)
+    current_profile_only = bool(getattr(args, "current_profile_only", False))
+    include_all_profiles = bool(getattr(args, "all_profiles", False)) or (
+        current_is_default and not current_profile_only
+    )
+
+    results: list[tuple[str, int]] = []
+    total = 0
+    for name, home in _auth_reset_targets(
+        include_all_profiles=include_all_profiles,
+        current_profile_only=current_profile_only,
+    ):
+        count = _reset_provider_statuses_in_home(home, provider)
+        results.append((name, count))
+        total += count
+
+    if len(results) <= 1:
+        print(f"Reset status on {total} {provider} credentials")
+        return
+
+    touched = ", ".join(f"{name}:{count}" for name, count in results if count)
+    suffix = f" ({touched})" if touched else ""
+    print(f"Reset status on {total} {provider} credentials across {len(results)} profiles{suffix}")
 
 
 def auth_status_command(args) -> None:

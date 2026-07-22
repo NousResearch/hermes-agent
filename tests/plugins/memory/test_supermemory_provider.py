@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import threading
+import urllib.error
 
 import pytest
 
@@ -733,3 +734,93 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+def _http_402():
+    return urllib.error.HTTPError(
+        url="https://api.supermemory.ai/v3/memories",
+        code=402,
+        msg="Payment Required",
+        hdrs={},
+        fp=None,
+    )
+
+
+def test_tool_store_credit_exhaustion_is_actionable(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_402()
+
+    provider._client.add_memory = exhausted
+
+    result = json.loads(provider._tool_store({"content": "Please remember this durable fact"}))
+
+    assert "HTTP 402 Payment Required" in result["error"]
+    assert "credits may be exhausted" in result["error"]
+    status_path = provider._status_path
+    assert status_path is not None and status_path.exists()
+    status = json.loads(status_path.read_text())
+    assert status["credit_exhausted"] is True
+    assert status["operation"] == "store memory"
+    assert "Do not claim new long-term memories were saved" in provider.system_prompt_block()
+
+
+def test_session_ingest_credit_exhaustion_persists_warning(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_402()
+
+    provider._client.ingest_conversation = exhausted
+
+    provider.on_session_end([
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ])
+
+    assert provider._credit_exhaustion_warning
+    assert "HTTP 402 Payment Required" in provider.system_prompt_block()
+
+
+def test_successful_store_clears_credit_exhaustion_warning(provider):
+    provider._record_credit_exhaustion(_http_402(), "store memory")
+    assert provider._credit_exhaustion_warning
+
+    result = json.loads(provider._tool_store({"content": "Please remember this durable fact"}))
+
+    assert result["saved"] is True
+    assert provider._credit_exhaustion_warning == ""
+    assert provider._status_path is not None and not provider._status_path.exists()
+
+
+def test_prefetch_credit_exhaustion_persists_warning(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_402()
+
+    provider._client.get_profile = exhausted
+
+    assert provider.prefetch("what do you remember?") == ""
+    assert "prefetch failed" in provider._credit_exhaustion_warning
+
+
+def test_session_switch_credit_exhaustion_persists_warning(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_402()
+
+    provider.sync_turn("remember this important thing", "noted for later", session_id="session-1")
+    provider._client.ingest_conversation = exhausted
+
+    provider.on_session_switch("session-2")
+
+    assert "session switch ingest failed" in provider._credit_exhaustion_warning
+    assert provider._session_id == "session-2"
+
+
+def test_on_memory_write_credit_exhaustion_persists_warning(provider):
+    def exhausted(*args, **kwargs):
+        raise _http_402()
+
+    provider._client.add_memory = exhausted
+
+    provider.on_memory_write("add", "memory", "Jordan likes concise docs")
+    assert provider._write_thread is not None
+    provider._write_thread.join(timeout=1)
+
+    assert "memory write failed" in provider._credit_exhaustion_warning

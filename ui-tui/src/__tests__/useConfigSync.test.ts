@@ -4,12 +4,12 @@ import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
   hydrateFullConfig,
+  type McpRevState,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
-  syncMcpReload,
-  type McpRevState
+  syncMcpReload
 } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
@@ -449,11 +449,13 @@ describe('syncMcpReload (revision-aware ack)', () => {
 
   it('does not stack requests while one is in flight', async () => {
     let resolveFirst!: (v: unknown) => void
+
     const gw = {
       request: vi.fn(() => new Promise(res => (resolveFirst = res))),
       on: vi.fn(),
       off: vi.fn()
     } as any
+
     const state = freshState()
 
     const first = syncMcpReload(gw, 's1', 'rev-b', state)

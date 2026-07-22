@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { GridTestState } from '../app/interfaces.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  handleStackedModalInput,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -142,5 +144,98 @@ describe('dismissSensitivePrompt', () => {
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
     await pending
+  })
+})
+
+// Review on #20379 (finding 3): a dialog stacked over /grid-test was
+// visually modal but did not receive input — the grid branch ran first, so
+// every advertised close key (Esc/q/Enter) mutated the hidden grid instead
+// of closing the visible dialog. Input routing must follow visual stacking.
+describe('handleStackedModalInput — dialog over grid-test', () => {
+  const baseModalKey = {
+    ctrl: false,
+    downArrow: false,
+    escape: false,
+    leftArrow: false,
+    return: false,
+    rightArrow: false,
+    upArrow: false
+  }
+
+  const grid: GridTestState = {
+    activeCol: 1,
+    activeRow: 1,
+    areas: false,
+    cols: 4,
+    gap: null,
+    nested: false,
+    paddingX: null,
+    rows: 3,
+    streamFocus: 0,
+    streamMain: 0,
+    streams: false,
+    zoomed: false
+  }
+
+  beforeEach(() => {
+    resetOverlayState()
+    patchOverlayState({ gridTest: { ...grid } })
+  })
+
+  const openDialogViaD = () => {
+    expect(handleStackedModalInput(getOverlayState(), baseModalKey, 'd')).toBe(true)
+    expect(getOverlayState().dialog).not.toBeNull()
+    expect(getOverlayState().gridTest).not.toBeNull()
+  }
+
+  it.each([
+    ['Esc', { ...baseModalKey, escape: true }, ''],
+    ['q', baseModalKey, 'q'],
+    ['Enter', { ...baseModalKey, return: true }, ''],
+    ['Ctrl+C', { ...baseModalKey, ctrl: true }, 'c']
+  ])('%s closes only the dialog, leaving the grid untouched', (_label, key, ch) => {
+    openDialogViaD()
+
+    const gridBefore = getOverlayState().gridTest
+
+    expect(handleStackedModalInput(getOverlayState(), key, ch)).toBe(true)
+    expect(getOverlayState().dialog).toBeNull()
+    // The grid must be byte-identical: not closed, not zoomed, not reset.
+    expect(getOverlayState().gridTest).toBe(gridBefore)
+  })
+
+  it('after the dialog closes, the same keys route to the grid again', () => {
+    openDialogViaD()
+    handleStackedModalInput(getOverlayState(), { ...baseModalKey, escape: true }, '')
+    expect(getOverlayState().dialog).toBeNull()
+
+    // Esc now closes the grid — the dialog no longer shields it.
+    expect(handleStackedModalInput(getOverlayState(), { ...baseModalKey, escape: true }, '')).toBe(true)
+    expect(getOverlayState().gridTest).toBeNull()
+  })
+
+  it('the dialog swallows grid keys entirely while open (no leak-through)', () => {
+    openDialogViaD()
+
+    const gridBefore = getOverlayState().gridTest
+
+    // 'a' toggles areas mode when the grid has focus — it must not now.
+    expect(handleStackedModalInput(getOverlayState(), baseModalKey, 'a')).toBe(true)
+    expect(getOverlayState().gridTest).toBe(gridBefore)
+    expect(getOverlayState().dialog).not.toBeNull()
+  })
+
+  it('stacking works from streams mode too', () => {
+    patchOverlayState({ gridTest: { ...grid, streams: true } })
+    openDialogViaD()
+
+    expect(handleStackedModalInput(getOverlayState(), { ...baseModalKey, return: true }, '')).toBe(true)
+    expect(getOverlayState().dialog).toBeNull()
+    expect(getOverlayState().gridTest?.streams).toBe(true)
+  })
+
+  it('reports unconsumed when neither modal is up', () => {
+    resetOverlayState()
+    expect(handleStackedModalInput(getOverlayState(), baseModalKey, 'x')).toBe(false)
   })
 })

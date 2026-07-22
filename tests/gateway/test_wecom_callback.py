@@ -53,6 +53,36 @@ class TestWecomCrypto:
         with pytest.raises(SignatureError):
             crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
 
+    def test_signature_mismatch_rejected(self):
+        """decrypt() rejects a well-formed but wrong 40-char hex signature."""
+        from plugins.platforms.wecom.wecom_crypto import SignatureError
+        app = _app()
+        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+        encrypted_xml = crypt.encrypt("<xml/>", nonce="abc", timestamp="9999")
+        root = ET.fromstring(encrypted_xml)
+        with pytest.raises(SignatureError):
+            crypt.decrypt(
+                "0" * 40,  # correct length but wrong value
+                root.findtext("TimeStamp", default=""),
+                root.findtext("Nonce", default=""),
+                root.findtext("Encrypt", default=""),
+            )
+
+    def test_signature_match_accepted(self):
+        """decrypt() succeeds when the correct constant-time signature is supplied."""
+        app = _app()
+        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+        plaintext = "<xml><Content>timing-safe</Content></xml>"
+        encrypted_xml = crypt.encrypt(plaintext, nonce="xyz", timestamp="1234")
+        root = ET.fromstring(encrypted_xml)
+        result = crypt.decrypt(
+            root.findtext("MsgSignature", default=""),
+            root.findtext("TimeStamp", default=""),
+            root.findtext("Nonce", default=""),
+            root.findtext("Encrypt", default=""),
+        )
+        assert b"timing-safe" in result
+
 
 class TestWecomCallbackEventConstruction:
     def test_build_event_extracts_text_message(self):

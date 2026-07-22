@@ -467,6 +467,7 @@ def init_agent(
     chat_type: str = None,
     thread_id: str = None,
     gateway_session_key: str = None,
+    bound_skills: "list[str] | None" = None,
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
@@ -559,6 +560,10 @@ def init_agent(
     agent._print_fn = None
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
+    # Explicit skill allow-list (cron jobs with ``skills=[...]``). None =
+    # unrestricted; a list scopes the offer-time skill index — see
+    # build_skills_system_prompt.
+    agent.bound_skills = bound_skills
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id

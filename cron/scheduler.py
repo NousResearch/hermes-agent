@@ -2335,7 +2335,12 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+def _build_job_prompt(
+    job: dict,
+    prerun_script: Optional[tuple] = None,
+    *,
+    bound_skills_out: Optional[list] = None,
+) -> Optional[str]:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
@@ -2345,6 +2350,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             When provided, the script is not re-executed and the cached
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
+        bound_skills_out: Optional list the caller supplies to receive the
+            CANONICAL names of the skills that actually loaded — bundle members
+            expanded and absolute-path/alias lookups resolved to the same names
+            the offer-time skill index emits. ``run_job`` passes one so the
+            system prompt can scope its skill index to exactly this job's
+            skills; other callers (and tests) omit it and get the plain string
+            return unchanged. Left empty when the job lists no skills.
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -2471,6 +2483,21 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     parts = []
     skipped: list[str] = []
+
+    def _bind(name: object) -> None:
+        # Record a canonical loaded-skill name into the caller's out-list, in
+        # first-seen order without duplicates. These mirror what the offer-time
+        # skill index emits (frontmatter name / directory slug), so
+        # build_skills_system_prompt(bound_skills=...) can match them: bundle
+        # members come from the expanded loaded_skill_names, and single skills
+        # use skill_view's resolved ``name`` (already normalized for
+        # absolute-path / alias lookups).
+        if bound_skills_out is None:
+            return
+        text = str(name or "").strip()
+        if text and text not in bound_skills_out:
+            bound_skills_out.append(text)
+
     for skill_name in skill_names:
         # Cron jobs historically accepted only skill names here, but the CLI/gateway
         # slash-command path lets bundles shadow skills with the same slug. Mirror
@@ -2485,6 +2512,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             )
             if bundle_payload:
                 bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                for _member in _loaded_bundle_skills:
+                    _bind(_member)
                 if parts:
                     parts.append("")
                 parts.append(bundle_message)
@@ -2508,6 +2537,11 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
             skipped.append(skill_name)
             continue
+
+        # Bind the canonical resolved name (skill_view normalizes absolute
+        # paths / aliases and returns the frontmatter name), falling back to
+        # the raw entry if the payload omitted it.
+        _bind(loaded.get("name") or skill_name)
 
         # Bump usage so the curator sees this skill as actively used.
         try:
@@ -2878,8 +2912,11 @@ def run_job(
             )
             return True, silent_doc, SILENT_MARKER, None
 
+    _bound_skills_out: list = []
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        prompt = _build_job_prompt(
+            job, prerun_script=prerun_script, bound_skills_out=_bound_skills_out
+        )
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
@@ -3363,6 +3400,10 @@ def run_job(
             # context files (AGENTS.md / CLAUDE.md / .cursorrules) from there.
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
+            # Scope the offer-time skill index to the job's canonically-loaded
+            # skills (bundle members expanded, paths/aliases normalized).
+            # Empty (no skills, or none resolved) → None = full index.
+            bound_skills=_bound_skills_out or None,
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",

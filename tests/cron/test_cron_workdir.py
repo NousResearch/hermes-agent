@@ -305,7 +305,7 @@ class TestRunJobTerminalCwd:
         )
 
         # Stub scheduler helpers that would otherwise hit the filesystem / config.
-        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, bound_skills_out=None: "hi")
         monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)

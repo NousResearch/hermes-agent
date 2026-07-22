@@ -105,6 +105,84 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
     return f"{base_name} / {topic_label}"
 
 
+def _iter_telegram_group_topics(group_topics: Any):
+    """Yield normalized Telegram group topic entries from supported config shapes."""
+    if isinstance(group_topics, dict):
+        group_topics_iter = (
+            {"chat_id": chat_id, "topics": topics}
+            for chat_id, topics in group_topics.items()
+        )
+    elif isinstance(group_topics, list):
+        group_topics_iter = (entry for entry in group_topics if isinstance(entry, dict))
+    else:
+        return
+
+    for chat_entry in group_topics_iter:
+        if not isinstance(chat_entry, dict):
+            continue
+        chat_id = chat_entry.get("chat_id")
+        if chat_id is None:
+            continue
+        topics = chat_entry.get("topics", [])
+        if not isinstance(topics, list):
+            continue
+        chat_name = chat_entry.get("chat_name") or chat_entry.get("name") or str(chat_id)
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            thread_id = topic.get("thread_id")
+            if thread_id is None:
+                continue
+            yield {
+                "chat_id": str(chat_id),
+                "chat_name": str(chat_name),
+                "thread_id": str(thread_id),
+                "topic_name": str(topic.get("name") or f"topic {thread_id}"),
+            }
+
+
+def _build_telegram(adapter=None, *, include_sessions: bool = True) -> List[Dict[str, str]]:
+    """Build Telegram targets from sessions plus configured forum topic metadata."""
+    session_channels = _build_from_sessions("telegram") if include_sessions else []
+    channels = session_channels if isinstance(session_channels, list) else []
+    by_id = {
+        str(ch.get("id")): dict(ch)
+        for ch in channels
+        if isinstance(ch, dict) and ch.get("id")
+    }
+
+    config_extra: Dict[str, Any] = {}
+    try:
+        if adapter is not None and getattr(adapter, "config", None):
+            config_extra = getattr(adapter.config, "extra", {}) or {}
+        else:
+            from gateway.config import Platform, load_gateway_config
+
+            gw_cfg = load_gateway_config()
+            platforms = getattr(gw_cfg, "platforms", None) or {}
+            telegram_cfg = platforms.get(Platform.TELEGRAM) or platforms.get("telegram")
+            config_extra = getattr(telegram_cfg, "extra", {}) or {}
+    except Exception as e:
+        logger.debug("Channel directory: failed to load Telegram config metadata: %s", e)
+
+    for topic in _iter_telegram_group_topics(config_extra.get("group_topics")):
+        chat_id = topic["chat_id"]
+        thread_id = topic["thread_id"]
+        entry_id = f"{chat_id}:{thread_id}"
+        existing = by_id.get(entry_id, {})
+        existing.update(
+            {
+                "id": entry_id,
+                "name": f"{topic['chat_name']} / {topic['topic_name']}",
+                "type": existing.get("type") or "group",
+                "thread_id": thread_id,
+            }
+        )
+        by_id[entry_id] = existing
+
+    return list(by_id.values())
+
+
 # ---------------------------------------------------------------------------
 # Build / refresh
 # ---------------------------------------------------------------------------
@@ -125,6 +203,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.TELEGRAM:
+                platforms["telegram"] = await asyncio.to_thread(_build_telegram, adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -133,7 +213,10 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     # process. Historical session origins for disabled/decommissioned platforms
     # must not be resurrected into the active send-target directory (stale
     # targets make send_message route to platforms that can no longer deliver).
-    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    # Telegram is handled by _build_telegram so configured-but-unseen forum
+    # topics can be exposed without resurrecting old Telegram session history
+    # when no Telegram adapter is active.
+    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook", "telegram"})
     adapter_platform_names = {getattr(p, "value", str(p)) for p in adapters}
     for plat in Platform:
         plat_name = plat.value

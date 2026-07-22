@@ -1499,6 +1499,57 @@ class SessionStore:
             now=now,
         )
 
+    def _refresh_entry_origin_locked(
+        self, entry: SessionEntry, source: SessionSource
+    ) -> bool:
+        """Refresh cached origin metadata from a newer message source."""
+        changed = False
+        old_chat_name = entry.origin.chat_name if entry.origin else None
+        old_chat_id = entry.origin.chat_id if entry.origin else None
+
+        if entry.origin is None:
+            entry.origin = source
+            changed = True
+        else:
+            for attr in (
+                "chat_name",
+                "chat_type",
+                "thread_id",
+                "chat_topic",
+                "user_name",
+                "user_id",
+                "chat_id",
+                "platform",
+                "user_id_alt",
+                "chat_id_alt",
+                "scope_id",
+                "guild_id",
+                "parent_chat_id",
+                "message_id",
+                "profile",
+            ):
+                value = getattr(source, attr, None)
+                if value and value != getattr(entry.origin, attr, None):
+                    setattr(entry.origin, attr, value)
+                    changed = True
+
+        if source.platform and source.platform != entry.platform:
+            entry.platform = source.platform
+            changed = True
+        if source.chat_type and source.chat_type != entry.chat_type:
+            entry.chat_type = source.chat_type
+            changed = True
+        if source.chat_name and (
+            not entry.display_name
+            or entry.display_name == old_chat_name
+            or entry.display_name == str(old_chat_id)
+        ):
+            if source.chat_name != entry.display_name:
+                entry.display_name = source.chat_name
+                changed = True
+
+        return changed
+
     def _query_recoverable_session(self, *, session_key, source, now):
         """DB-only half of _recover_session_from_db (no lock needed).
 
@@ -1976,6 +2027,7 @@ class SessionStore:
         was_auto_reset = False
         auto_reset_reason = None
         reset_had_activity = False
+        _needs_peer_record = False
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -2015,6 +2067,7 @@ class SessionStore:
                 elif entry.session_id != _stale_session_id:
                     # Another thread handled this entry during our lock-free
                     # window.  Treat as healthy -- bump updated_at and save.
+                    _needs_peer_record = self._refresh_entry_origin_locked(entry, source)
                     entry.updated_at = now
                     _needs_save = True
                 else:
@@ -2028,6 +2081,7 @@ class SessionStore:
                         entry = None
                         _needs_recover = True
                     else:
+                        _needs_peer_record = self._refresh_entry_origin_locked(entry, source)
                         entry.updated_at = now
                         _needs_save = True
             else:
@@ -2047,6 +2101,7 @@ class SessionStore:
                         published = recovered
                 entry = published
                 _needs_save = True
+                _needs_peer_record = True
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another
@@ -2092,6 +2147,14 @@ class SessionStore:
 
         if _needs_save:
             self._save_entries()
+
+        if self._db and _needs_peer_record and entry is not None:
+            self._record_gateway_session_peer(
+                entry.session_id,
+                session_key,
+                entry.origin,
+                display_name=entry.display_name,
+            )
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:

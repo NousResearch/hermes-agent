@@ -1829,6 +1829,37 @@ class TestGatewaySessionDbRecovery:
         assert row["chat_type"] == "dm"
         assert row["thread_id"] == "topic-1"
 
+    def test_reused_session_refreshes_origin_metadata_in_state_db(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100123",
+            chat_type="group",
+            user_id="user-1",
+            thread_id="42",
+        )
+        entry = store.get_or_create_session(source)
+
+        richer_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100123",
+            chat_name="Build Room",
+            chat_type="group",
+            user_id="user-1",
+            thread_id="42",
+            chat_topic="Release",
+        )
+        reused = store.get_or_create_session(richer_source)
+
+        assert reused.session_id == entry.session_id
+        assert reused.origin.chat_name == "Build Room"
+        assert reused.origin.chat_topic == "Release"
+        row = store._db.get_session(entry.session_id)
+        origin = json.loads(row["origin_json"])
+        assert row["display_name"] == "Build Room"
+        assert origin["chat_name"] == "Build Room"
+        assert origin["chat_topic"] == "Release"
+
     def test_recovers_missing_sessions_json_mapping_from_state_db(self, tmp_path):
         config = GatewayConfig()
         source = SessionSource(

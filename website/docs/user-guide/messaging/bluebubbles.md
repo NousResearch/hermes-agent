@@ -101,7 +101,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 
 - **Inbound:** BlueBubbles sends `new-message` webhook events to a local listener. Hermes acknowledges `updated-message` delivery/read-state events without starting another agent turn, and also rejects duplicate message GUIDs as a safety net.
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
-- **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
+- **Media:** Images, voice messages, videos, and documents are supported in both directions. Hermes retries inbound attachment downloads briefly within BlueBubbles' single webhook delivery; if one file remains unavailable, valid caption text and successfully downloaded siblings still reach the agent. If every attachment fails, the agent receives an explicit unavailable-attachment placeholder so the user turn is not lost.
 
 ## Environment Variables
 

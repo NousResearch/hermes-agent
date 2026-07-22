@@ -730,11 +730,13 @@ def run_conversation(
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # ── Code skew guard (#68178) ───────────────────────────────
         # Check whether the source tree has been updated underneath this
-        # long-lived process. Log warning, adopt the new revision fingerprint,
-        # and continue turn seamlessly without abruptly canceling active work.
+        # long-lived process. Log warning, notify user in context, adopt
+        # the new revision fingerprint, and continue turn seamlessly.
         _skew_warning = getattr(agent, "_check_code_skew_before_turn", lambda: None)()
         if _skew_warning:
             logger.warning("Code skew detected at API call #%d: %s. Adopting new revision and continuing turn.", api_call_count + 1, _skew_warning)
+            notify_msg = f"[System Notification: {_skew_warning} - Source code revision updated; adopting changes and continuing conversation seamlessly.]"
+            messages.append({"role": "user", "content": notify_msg})
             ack_fn = getattr(agent, "_acknowledge_code_skew", None)
             if ack_fn:
                 ack_fn()

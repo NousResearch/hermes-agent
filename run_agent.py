@@ -3049,44 +3049,30 @@ class AIAgent:
 
     @classmethod
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
-        """Render the per-turn failed-mutation dict as a user-facing footer.
+        """Render a safe aggregate advisory for failed file mutations.
 
-        Displays up to 10 paths with their first error preview, then a
-        count of any additional failures.  Returns an empty string when
-        the dict is empty so callers can concatenate unconditionally.
-
-        Every file path that reaches the user-facing text — both the bullet
-        path and any path echoed inside the tool's error preview — is
-        backtick-wrapped via ``_neutralize_footer_paths`` so the gateway's
-        bare-path media extractor can never auto-attach a protected file
-        (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
+        Tool-call arguments and error previews are untrusted model/provider data:
+        a corrupted argument can contain a plausible but false path.  Keep those
+        details in the tool transcript rather than echoing them after an otherwise
+        complete final answer.  The footer reports only aggregate counts by tool.
         """
         if not failed:
             return ""
-        lines = [
+        tool_counts: Dict[str, int] = {}
+        for info in failed.values():
+            tool = str(info.get("tool") or "file mutation")
+            tool_counts[tool] = tool_counts.get(tool, 0) + 1
+        breakdown = ", ".join(
+            f"{count} {tool}" for tool, count in sorted(tool_counts.items())
+        )
+        return (
             "⚠️ File-mutation verifier: "
             f"{len(failed)} file-mutation target(s) failed and were not later "
             "confirmed successful under the same path. Other edits may still "
-            "have succeeded this turn. Run `git status` or `read_file` to confirm."
-        ]
-        shown = 0
-        for path, info in failed.items():
-            if shown >= 10:
-                break
-            preview = (info.get("error_preview") or "").strip()
-            tool = info.get("tool") or "patch"
-            if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
-            else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
-            shown += 1
-        remaining = len(failed) - shown
-        if remaining > 0:
-            lines.append(f"  • … and {remaining} more")
-        # Neutralize any path the preview text echoed (the bullet path is
-        # already backticked above; the lookbehind keeps it from being
-        # double-wrapped).
-        return cls._neutralize_footer_paths("\n".join(lines))
+            "have succeeded this turn. Inspect the tool transcript, then run "
+            "`git status` or `read_file` to confirm. "
+            f"Failed calls by tool: {breakdown}."
+        )
 
     def _turn_completion_explainer_enabled(self) -> bool:
         """Check whether the end-of-turn completion explainer footer is on.

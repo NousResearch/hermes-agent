@@ -311,26 +311,39 @@ class TestFormatFooter:
         )
         assert "1 file-mutation target(s) failed" in out
         assert "file(s) were NOT modified" not in out
-        assert "/tmp/a.md" in out
-        assert "Could not find old_string" in out
+        assert "/tmp/a.md" not in out
+        assert "Could not find old_string" not in out
+        assert "Failed calls by tool: 1 patch" in out
         assert "git status" in out  # user-actionable hint
 
-    def test_truncation_at_10_entries(self):
+    def test_corrupted_tool_arguments_are_not_echoed(self):
+        corrupted_path = (
+            "/Usershashed/karthik/GDrive - 33rd Avenue JR/"
+            "hermes-agent_jeeves/projects/jarvis-san-pdf -gmail-incident/PROGRESS.md"
+        )
+        corrupted_preview = f"Failed to write {corrupted_path}"
+
+        out = AIAgent._format_file_mutation_failure_footer(
+            {corrupted_path: {"tool": "write_file", "error_preview": corrupted_preview}},
+        )
+
+        assert "1 file-mutation target(s) failed" in out
+        assert corrupted_path not in out
+        assert corrupted_preview not in out
+
+    def test_many_failures_are_aggregated_without_untrusted_details(self):
         failed = {
             f"/tmp/f{i}.md": {"tool": "patch", "error_preview": "err"}
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
         assert "15 file-mutation target(s) failed" in out
-        assert "… and 5 more" in out
-        # Ten file bullets + header + "and X more" line
-        lines = out.split("\n")
-        bullet_lines = [ln for ln in lines if ln.lstrip().startswith("•")]
-        assert len(bullet_lines) == 11  # 10 shown + 1 summary
+        assert "Failed calls by tool: 15 patch" in out
+        assert "/tmp/f0.md" not in out
+        assert "err" not in out
 
-    def test_paths_are_backtick_wrapped(self):
-        """Footer paths must be inline-code wrapped so the gateway's bare-path
-        media extractor can't auto-attach them (#35584 defense-in-depth)."""
+    def test_sensitive_paths_and_error_previews_are_not_rendered(self):
+        """Untrusted details cannot leak or become gateway attachments."""
         out = AIAgent._format_file_mutation_failure_footer(
             {"/home/u/.hermes/config.yaml": {
                 "tool": "patch",
@@ -340,16 +353,9 @@ class TestFormatFooter:
                 ),
             }},
         )
-        # Path still human-readable.
-        assert "/home/u/.hermes/config.yaml" in out
-        # Bullet path is backticked.
-        assert "`/home/u/.hermes/config.yaml`" in out
-        # The path echoed inside the preview is ALSO backticked (the real
-        # file_operations.py denial message embeds it in single quotes, which
-        # do NOT block the gateway extractor's regex).
-        assert "'`/home/u/.hermes/config.yaml`'" in out
-        # No double-backticking anywhere.
-        assert "``" not in out
+        assert "/home/u/.hermes/config.yaml" not in out
+        assert "protected system/credential file" not in out
+        assert "Failed calls by tool: 1 patch" in out
 
     def test_footer_path_not_extracted_by_gateway(self):
         """End-to-end: the gateway's extract_local_files must NOT pull a

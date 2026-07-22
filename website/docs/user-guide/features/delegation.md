@@ -292,6 +292,7 @@ delegation:
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # include_tool_trace: true                # Set false to omit the per-child tool_trace field from delegate_task results and save tokens. Controls ONLY tool_trace; all other observability fields (status, model, tokens, api_calls, exit_reason, errors) are always returned.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

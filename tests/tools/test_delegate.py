@@ -784,6 +784,67 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
+    def _run_traced_delegation(self):
+        """Run a mocked delegation whose child made one tool call; return the
+        first result entry. Shared by the include_tool_trace config tests."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 5000
+            mock_child.session_completion_tokens = 1200
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 3,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "web_search", "arguments": '{"query": "test"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": '{"results": [1,2,3]}'},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Trace config test", parent_agent=parent))
+        return result["results"][0]
+
+    @patch("tools.delegate_tool._load_config", return_value={"include_tool_trace": False})
+    def test_tool_trace_omitted_when_config_disables_it(self, _mock_cfg):
+        """delegation.include_tool_trace=false omits ONLY tool_trace; every
+        other observability field is still returned."""
+        entry = self._run_traced_delegation()
+
+        self.assertNotIn("tool_trace", entry)
+        # All other observability fields are unaffected.
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["model"], "claude-sonnet-4-6")
+        self.assertEqual(entry["exit_reason"], "completed")
+        self.assertEqual(entry["api_calls"], 3)
+        self.assertEqual(entry["tokens"]["input"], 5000)
+        self.assertEqual(entry["tokens"]["output"], 1200)
+        self.assertIn("duration_seconds", entry)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_tool_trace_present_by_default(self, _mock_cfg):
+        """When include_tool_trace is absent from config, the default is true
+        and tool_trace is returned as before."""
+        entry = self._run_traced_delegation()
+
+        self.assertIn("tool_trace", entry)
+        self.assertEqual(len(entry["tool_trace"]), 1)
+        self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+
+    @patch("tools.delegate_tool._load_config", return_value={"include_tool_trace": True})
+    def test_tool_trace_present_when_explicitly_enabled(self, _mock_cfg):
+        entry = self._run_traced_delegation()
+
+        self.assertIn("tool_trace", entry)
+        self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+
     def test_tool_trace_handles_list_content_blocks(self):
         """Tool-result content blocks should not crash observability metadata."""
         parent = _make_mock_parent(depth=0)

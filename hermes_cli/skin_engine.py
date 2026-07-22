@@ -42,6 +42,10 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       diff_removed: "#ffdcdc"            # Diff removed-line background
       diff_added_word: "#248a3d"         # Diff added word-level foreground
       diff_removed_word: "#cf222e"       # Diff removed word-level foreground
+      syntax_string: "#FFBF00"           # Code strings; falls back to ui_accent
+      syntax_number: "#FFF8DC"           # Code numbers; falls back to ui_text
+      syntax_keyword: "#CD7F32"          # Code keywords; falls back to ui_border
+      syntax_comment: "#CC9B1F"          # Code comments; falls back to banner_dim
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)

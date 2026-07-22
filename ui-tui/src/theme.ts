@@ -23,6 +23,12 @@ export interface ThemeColors {
   /** Reasoning/thinking body text. Defaults to `muted`. */
   thinking: string
 
+  /** Code-block syntax highlight. Default to accent/text/border/muted. */
+  syntaxString: string
+  syntaxNumber: string
+  syntaxKeyword: string
+  syntaxComment: string
+
   prompt: string
   sessionLabel: string
   sessionBorder: string
@@ -309,6 +315,13 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     // parents (tool marker → accent, reasoning body → muted).
     tool: seeds.accent,
     thinking: muted,
+
+    // Code-syntax tokens default to brand tokens (unchanged highlighting)
+    // but are independently skinnable.
+    syntaxString: seeds.accent,
+    syntaxNumber: seeds.text,
+    syntaxKeyword: seeds.border ?? tones.border,
+    syntaxComment: muted,
 
     prompt: seeds.prompt ?? seeds.text,
     // sessionLabel/sessionBorder track the muted tone — "same role, same
@@ -855,7 +868,12 @@ export function fromSkin(
     diffAdded: c('diff_added') ?? derived.diffAdded,
     diffRemoved: c('diff_removed') ?? derived.diffRemoved,
     diffAddedWord: c('diff_added_word') ?? derived.diffAddedWord,
-    diffRemovedWord: c('diff_removed_word') ?? derived.diffRemovedWord
+    diffRemovedWord: c('diff_removed_word') ?? derived.diffRemovedWord,
+    // Code-syntax tokens: overridable, else the derived brand-token defaults.
+    syntaxString: c('syntax_string') ?? derived.syntaxString,
+    syntaxNumber: c('syntax_number') ?? derived.syntaxNumber,
+    syntaxKeyword: c('syntax_keyword') ?? derived.syntaxKeyword,
+    syntaxComment: c('syntax_comment') ?? derived.syntaxComment
   }
 
   // 4. Guard: contrast floors against the real background + fill polarity.

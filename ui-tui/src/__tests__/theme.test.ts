@@ -548,6 +548,23 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(fallback.color.thinking).toBe('#123456')
   })
 
+  it('gives code syntax its own keys, defaulting to accent/text/border/muted', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const themed = fromSkin(
+      { syntax_string: '#aa0000', syntax_number: '#00aa00', syntax_keyword: '#0000aa', syntax_comment: '#888888' },
+      {}
+    )
+
+    expect(themed.color.syntaxString).toBe('#aa0000')
+    expect(themed.color.syntaxNumber).toBe('#00aa00')
+    expect(themed.color.syntaxKeyword).toBe('#0000aa')
+    expect(themed.color.syntaxComment).toBe('#888888')
+
+    const fallback = fromSkin({ ui_accent: '#abcdef' }, {})
+    expect(fallback.color.syntaxString).toBe('#abcdef') // string follows accent
+  })
+
   it('lets skins override diff colors', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 

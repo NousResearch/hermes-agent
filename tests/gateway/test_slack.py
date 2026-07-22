@@ -939,6 +939,20 @@ class TestSlackProxyBehavior:
         assert adapter._handler.proxy == "http://proxy.example.com:3128"
         assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
         assert "hermes_feedback" in created_apps[0].registered_actions
+        assert "hermes_clarify_other" in created_apps[0].registered_actions
+        clarify_choice_patterns = [
+            action_id
+            for action_id in created_apps[0].registered_actions
+            if hasattr(action_id, "fullmatch")
+        ]
+        assert any(
+            pattern.fullmatch("hermes_clarify_choice_0")
+            for pattern in clarify_choice_patterns
+        )
+        assert not any(
+            pattern.fullmatch("hermes_clarify_choice")
+            for pattern in clarify_choice_patterns
+        )
 
     @pytest.mark.asyncio
     async def test_connect_clears_proxy_when_no_proxy_matches_slack(self):

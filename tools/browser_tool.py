@@ -86,6 +86,31 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_BROWSER_TTL",
 )
 
+# Unlike a terminal, agent-browser and the Chromium process it launches never
+# need the operator's general AWS credential chain. The shared subprocess
+# policy intentionally preserves these variables for trusted terminal use, so
+# remove them explicitly at this narrower process boundary.
+_BROWSER_AWS_CREDENTIAL_KEYS: tuple[str, ...] = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_ROLE_SESSION_DURATION",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT",
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE",
+)
+
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
@@ -99,6 +124,8 @@ def _build_browser_env() -> dict:
     from tools.environments.local import hermes_subprocess_env
 
     env = hermes_subprocess_env(inherit_credentials=False)
+    for _key in _BROWSER_AWS_CREDENTIAL_KEYS:
+        env.pop(_key, None)
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
@@ -166,6 +193,19 @@ _SANE_PATH_DIRS = (
     "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
+# Keep this browser-tool locator local to the tool runtime path. The
+# /browser connect command has its own CDP attach/launch locator in
+# hermes_cli.browser_connect; both intentionally cover macOS app bundles,
+# but this path must stay usable when only browser tool availability and
+# runtime checks are in scope. If a third consumer appears, extract a
+# neutral shared browser locator instead of growing either side.
+_DARWIN_BROWSER_APP_SUFFIXES = (
+    "Google Chrome.app/Contents/MacOS/Google Chrome",
+    "Chromium.app/Contents/MacOS/Chromium",
+    "Brave Browser.app/Contents/MacOS/Brave Browser",
+    "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+)
+
 
 
 @functools.lru_cache(maxsize=1)
@@ -213,6 +253,26 @@ def _merge_browser_path(existing_path: str = "") -> str:
             prefix_parts.append(part)
 
     return os.pathsep.join(prefix_parts + path_parts)
+
+
+def _browser_subprocess_env(
+    task_socket_dir: str,
+    *,
+    include_browser_executable: bool = True,
+) -> Dict[str, str]:
+    """Build the credential-scrubbed env shared by agent-browser subprocess paths."""
+    browser_env = _build_browser_env()
+    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+    if include_browser_executable and "AGENT_BROWSER_EXECUTABLE_PATH" not in browser_env:
+        chromium_executable = _detect_system_chromium_executable()
+        if chromium_executable:
+            browser_env["AGENT_BROWSER_EXECUTABLE_PATH"] = chromium_executable
+    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(
+            BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000
+        )
+    return browser_env
 
 # Throttle screenshot cleanup to avoid repeated full directory scans.
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
@@ -1095,12 +1155,7 @@ def _run_chrome_fallback_command(
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-    browser_env = _build_browser_env()
-    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-
-    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
-        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+    browser_env = _browser_subprocess_env(task_socket_dir)
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
         full = base_args + [cmd] + cmd_args
@@ -2423,21 +2478,13 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = _build_browser_env()
-
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-        browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-
-        # Tell the agent-browser daemon to self-terminate after being idle
-        # for our configured inactivity timeout.  This is the daemon-side
-        # counterpart to our Python-side _cleanup_inactive_browser_sessions
-        # — the daemon kills itself and its Chrome children when no CLI
-        # commands arrive within the window.  Added in agent-browser 0.24.
-        if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
-            idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
-            browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+        # used during CLI discovery. Local sessions also receive a resolved
+        # system browser executable when one is available.
+        browser_env = _browser_subprocess_env(
+            task_socket_dir,
+            include_browser_executable=not session_info.get("cdp_url"),
+        )
 
         # Inject --no-sandbox when needed (issue #15765):
         # - Running as root: Chromium always refuses to start without it
@@ -4574,6 +4621,39 @@ def _chromium_search_roots() -> List[str]:
     return roots
 
 
+def _darwin_browser_app_paths(home: Optional[str] = None) -> Tuple[str, ...]:
+    """Return system and per-user macOS browser bundle executable paths."""
+    if home is None:
+        home = os.path.expanduser("~")
+    roots = ["/Applications"]
+    if home:
+        roots.append(os.path.join(home, "Applications"))
+    return tuple(os.path.join(root, suffix) for suffix in _DARWIN_BROWSER_APP_SUFFIXES for root in roots)
+
+
+def _detect_system_chromium_executable() -> Optional[str]:
+    """Return a configured/system browser executable path when one is available."""
+    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if ab_path:
+        if os.path.isfile(ab_path):
+            return ab_path
+        resolved = shutil.which(ab_path)
+        if resolved:
+            return resolved
+
+    for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+
+    if sys.platform == "darwin":
+        for candidate in _darwin_browser_app_paths():
+            if os.path.isfile(candidate):
+                return candidate
+
+    return None
+
+
 def _chromium_installed() -> bool:
     """Return True when a usable Chromium (or headless-shell) build is on disk.
 
@@ -4582,7 +4662,7 @@ def _chromium_installed() -> bool:
     1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
        agent-browser at a pre-installed Chrome/Chromium.
     2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
-       ``chromium-browser``, ``chrome``).
+       ``chromium-browser``, ``chrome``) or a macOS app bundle.
     3. Playwright's browser cache (current logic) — directories containing
        ``chromium-*`` or ``chromium_headless_shell-*``.
 
@@ -4597,21 +4677,8 @@ def _chromium_installed() -> bool:
     if _cached_chromium_installed is not None:
         return _cached_chromium_installed
 
-    # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
-    if ab_path:
-        if os.path.isfile(ab_path) or shutil.which(ab_path):
-            _cached_chromium_installed = True
-            return True
-
-    # 2. System Chrome/Chromium in PATH (common names)
-    system_chrome = (
-        shutil.which("google-chrome")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or shutil.which("chrome")
-    )
-    if system_chrome:
+    # 1-2. Explicit env var, PATH browsers, and macOS app bundles.
+    if _detect_system_chromium_executable():
         _cached_chromium_installed = True
         return True
 

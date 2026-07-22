@@ -442,3 +442,51 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             expires_in,
         )
         return token
+
+
+async def standalone_send(
+    pconfig: PlatformConfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Out-of-process WeCom callback delivery via the proactive send API.
+
+    Implements the standalone_sender_fn contract so send_message and cron
+    deliveries work when the gateway isn't running in this process. Only the
+    outbound access-token pipeline is opened — connect() is never called, so
+    the inbound callback HTTP server port stays free and this can coexist
+    with a live gateway callback listener on the same host.
+
+    Replies in callback mode are text-only over message/send; media_files and
+    force_document are accepted-and-ignored per the sender contract.
+    """
+    del thread_id, media_files, force_document
+    # Outbound only needs httpx; aiohttp/defusedxml guard the inbound server.
+    if not HTTPX_AVAILABLE:
+        return {"error": "WeCom Callback: httpx not installed. Install with: pip install 'hermes-agent[wecom]'"}
+    adapter = WecomCallbackAdapter(pconfig)
+    if not adapter._apps:
+        return {"error": "WeCom Callback: no callback apps configured (need corp_id/corp_secret or an apps block)"}
+    try:
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+
+        adapter._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
+        try:
+            result = await adapter.send(chat_id, message)
+        finally:
+            await adapter._http_client.aclose()
+            adapter._http_client = None
+    except Exception as exc:
+        return {"error": f"WeCom Callback send failed: {exc}"}
+    if not result.success:
+        return {"error": f"WeCom Callback send failed: {result.error}"}
+    return {
+        "success": True,
+        "platform": "wecom_callback",
+        "chat_id": chat_id,
+        "message_id": result.message_id,
+    }

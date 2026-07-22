@@ -347,3 +347,113 @@ class TestWecomCallbackBodySizeLimit:
         assert response.status != 413
 
 
+
+
+class TestWecomCallbackStandaloneSend:
+    """standalone_send must deliver without a live runner or port bind."""
+
+    @pytest.mark.asyncio
+    async def test_delivers_without_binding_callback_port(self, monkeypatch):
+        import plugins.platforms.wecom.callback_adapter as ca
+
+        calls = {"post": [], "closed": False}
+
+        class FakeResponse:
+            def __init__(self, data):
+                self._data = data
+
+            def json(self):
+                return self._data
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get(self, url, params=None):
+                return FakeResponse(
+                    {"errcode": 0, "access_token": "tok-standalone", "expires_in": 7200}
+                )
+
+            async def post(self, url, json=None):
+                calls["post"].append((url, json))
+                return FakeResponse({"errcode": 0, "msgid": "m-1"})
+
+            async def aclose(self):
+                calls["closed"] = True
+
+        monkeypatch.setattr(ca.httpx, "AsyncClient", FakeClient)
+
+        async def _no_connect(self, **kwargs):
+            raise AssertionError("standalone_send must not call connect()")
+
+        monkeypatch.setattr(ca.WecomCallbackAdapter, "connect", _no_connect)
+
+        result = await ca.standalone_send(_config(), "ww1234567890:alice", "hello")
+
+        assert result == {
+            "success": True,
+            "platform": "wecom_callback",
+            "chat_id": "ww1234567890:alice",
+            "message_id": "m-1",
+        }
+        url, payload = calls["post"][0]
+        assert payload["touser"] == "alice"
+        assert "tok-standalone" in url
+        assert calls["closed"] is True
+
+    @pytest.mark.asyncio
+    async def test_error_when_no_apps_configured(self):
+        from plugins.platforms.wecom.callback_adapter import standalone_send
+
+        result = await standalone_send(
+            PlatformConfig(enabled=True, extra={}), "alice", "hi"
+        )
+
+        assert "no callback apps configured" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_send_failure_surfaces_as_error_dict(self, monkeypatch):
+        import plugins.platforms.wecom.callback_adapter as ca
+
+        class FakeResponse:
+            def __init__(self, data):
+                self._data = data
+
+            def json(self):
+                return self._data
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def get(self, url, params=None):
+                return FakeResponse(
+                    {"errcode": 0, "access_token": "tok", "expires_in": 7200}
+                )
+
+            async def post(self, url, json=None):
+                return FakeResponse({"errcode": 60011, "errmsg": "no privilege"})
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setattr(ca.httpx, "AsyncClient", FakeClient)
+
+        result = await ca.standalone_send(_config(), "alice", "hello")
+
+        assert result["error"].startswith("WeCom Callback send failed")
+        assert "60011" in result["error"]
+
+    def test_register_supplies_standalone_sender_fn(self):
+        from plugins.platforms.wecom import adapter as wecom_adapter
+        from plugins.platforms.wecom.callback_adapter import standalone_send
+
+        registered = {}
+
+        class Ctx:
+            def register_platform(self, **kwargs):
+                registered[kwargs["name"]] = kwargs
+
+        wecom_adapter.register(Ctx())
+
+        assert registered["wecom_callback"]["standalone_sender_fn"] is standalone_send

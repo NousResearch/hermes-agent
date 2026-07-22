@@ -42,7 +42,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, _coerce_bool
 from utils import env_int, env_bool
 
 logger = logging.getLogger(__name__)
@@ -448,6 +448,13 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         self._skip_attachments = extra.get("skip_attachments", False)
 
+        # Use BODY.PEEK[] for IMAP fetch to avoid marking messages as read on
+        # the server.  Set to false to restore the legacy RFC822 behaviour.
+        #   platforms:
+        #     email:
+        #       imap_peek: false
+        self._imap_peek = _coerce_bool(extra.get("imap_peek"), True)
+
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
         # before trusting it for authorization. The From: header is
         # attacker-controlled and unauthenticated by IMAP, so an allowlist keyed
@@ -479,6 +486,11 @@ class EmailAdapter(BasePlatformAdapter):
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        # Highest UID known to be consumed in the current UIDVALIDITY epoch.
+        # BODY.PEEK[] leaves fetched messages UNSEEN, so this durable-in-process
+        # boundary prevents replay after _seen_uids evicts older entries.
+        self._uid_watermark: Optional[int] = None
+        self._uidvalidity: Optional[int] = None
         self._poll_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
@@ -505,6 +517,98 @@ class EmailAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    def _max_uid(self, uids) -> Optional[int]:
+        """Largest numeric UID in ``uids`` (bytes/str/int), or ``None``.
+
+        Non-numeric entries are skipped so one malformed UID can't poison the
+        watermark. Returns ``None`` for an empty / all-malformed collection.
+        """
+        best: Optional[int] = None
+        for uid in uids:
+            try:
+                n = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if best is None or n > best:
+                best = n
+        return best
+
+    def _seed_seen_uids(self, uids) -> None:
+        """Seed UID state from all messages in the current mailbox epoch.
+
+        Called once from ``connect()`` with every UID currently in the mailbox.
+        The watermark (highest existing UID) is computed from the *full* set
+        before trimming, so trimming can never lower the consumed boundary.
+        """
+        uid_list = list(uids)
+        self._seen_uids = set(uid_list)
+        self._uid_watermark = self._max_uid(uid_list)
+        self._trim_seen_uids()
+
+    def _record_consumed_uid(self, uid) -> None:
+        """Record a UID as consumed and advance the replay boundary."""
+        try:
+            numeric_uid = int(uid)
+        except (TypeError, ValueError):
+            numeric_uid = None
+        if numeric_uid is not None and (
+            self._uid_watermark is None or numeric_uid > self._uid_watermark
+        ):
+            self._uid_watermark = numeric_uid
+        self._seen_uids.add(uid)
+        if len(self._seen_uids) > self._seen_uids_max:
+            self._trim_seen_uids()
+
+    @staticmethod
+    def _read_uidvalidity(imap) -> Optional[int]:
+        """Return the selected mailbox's UIDVALIDITY, when advertised."""
+        try:
+            response = imap.response("UIDVALIDITY")
+        except Exception:
+            return None
+        if not isinstance(response, (tuple, list)) or len(response) < 2:
+            return None
+        values = response[1]
+        if not isinstance(values, (tuple, list)) or not values:
+            return None
+        raw = values[-1]
+        if isinstance(raw, bytes):
+            raw = raw.decode("ascii", errors="ignore")
+        match = re.search(r"\d+", str(raw))
+        return int(match.group(0)) if match else None
+
+    def _sync_uidvalidity(self, imap) -> bool:
+        """Reset and reseed UID state when the mailbox epoch changes."""
+        current = self._read_uidvalidity(imap)
+        if current is None:
+            return True
+        if self._uidvalidity is None:
+            self._uidvalidity = current
+            return True
+        if current == self._uidvalidity:
+            return True
+
+        status, data = imap.uid("search", None, "ALL")
+        if status != "OK" or not data:
+            logger.warning(
+                "[Email] UIDVALIDITY changed from %s to %s but UID state could not be reseeded",
+                self._uidvalidity,
+                current,
+            )
+            return False
+
+        old_uidvalidity = self._uidvalidity
+        self._uidvalidity = current
+        existing_uids = data[0].split() if data[0] else []
+        self._seed_seen_uids(existing_uids)
+        logger.info(
+            "[Email] UIDVALIDITY changed from %s to %s; reseeded %d existing UIDs",
+            old_uidvalidity,
+            current,
+            len(existing_uids),
+        )
+        return True
 
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
@@ -587,12 +691,10 @@ class EmailAdapter(BasePlatformAdapter):
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
+            self._uidvalidity = self._read_uidvalidity(imap)
             status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
+            if status == "OK" and data:
+                self._seed_seen_uids(data[0].split() if data[0] else [])
             imap.logout()
             logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
@@ -656,20 +758,35 @@ class EmailAdapter(BasePlatformAdapter):
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
+                if not self._sync_uidvalidity(imap):
+                    return results
 
                 status, data = imap.uid("search", None, "UNSEEN")
                 if status != "OK" or not data or not data[0]:
                     return results
 
-                for uid in data[0].split():
+                uids = data[0].split()
+                try:
+                    uids = sorted(uids, key=int)
+                except (TypeError, ValueError):
+                    pass
+
+                for uid in uids:
                     if uid in self._seen_uids:
                         continue
-                    self._seen_uids.add(uid)
-                    # Trim periodically to prevent unbounded memory growth
-                    if len(self._seen_uids) > self._seen_uids_max:
-                        self._trim_seen_uids()
+                    # BODY.PEEK[] leaves consumed mail UNSEEN. Skip anything at
+                    # or below the consumed boundary even if _seen_uids evicted
+                    # it after crossing the bounded-set cap (#60637).
+                    if self._uid_watermark is not None:
+                        try:
+                            if int(uid) <= self._uid_watermark:
+                                continue
+                        except (TypeError, ValueError):
+                            pass
+                    self._record_consumed_uid(uid)
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    fetch_cmd = "(BODY.PEEK[])" if self._imap_peek else "(RFC822)"
+                    status, msg_data = imap.uid("fetch", uid, fetch_cmd)
                     if status != "OK":
                         continue
 
@@ -1252,6 +1369,42 @@ def _build_adapter(config):
     return EmailAdapter(config)
 
 
+def _apply_yaml_config(yaml_cfg: dict, email_cfg: dict) -> Optional[dict]:
+    """Bridge ``platforms.email.*`` keys into ``PlatformConfig.extra``.
+
+    Implements the ``apply_yaml_config_fn`` contract (#24849). The generic
+    shared-key loop in ``load_gateway_config()`` bridges only a fixed key set
+    (allow_from, require_mention, dm_policy, …); it does not cover
+    email-specific options. The EmailAdapter reads ``imap_peek`` and
+    ``skip_attachments`` from ``PlatformConfig.extra``, so without this hook a
+    top-level ``platforms.email.imap_peek: false`` would never reach the
+    adapter (only a nested ``extra:`` block would). Bridge them here.
+    """
+    # Match load_gateway_config() precedence: gateway.platforms is the base,
+    # top-level platforms overrides it, and the legacy direct email block has
+    # final precedence when present. ``email_cfg`` preserves direct calls to
+    # this hook in isolation (including plugin tests).
+    effective: dict = dict(email_cfg) if isinstance(email_cfg, dict) else {}
+    gateway_cfg = yaml_cfg.get("gateway") if isinstance(yaml_cfg, dict) else None
+    gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+    platforms = yaml_cfg.get("platforms") if isinstance(yaml_cfg, dict) else None
+    sources = (
+        gateway_platforms.get("email") if isinstance(gateway_platforms, dict) else None,
+        platforms.get("email") if isinstance(platforms, dict) else None,
+        yaml_cfg.get("email") if isinstance(yaml_cfg, dict) else None,
+    )
+    for source in sources:
+        if isinstance(source, dict):
+            effective.update(source)
+
+    seeded: dict = {}
+    if "imap_peek" in effective:
+        seeded["imap_peek"] = effective["imap_peek"]
+    if "skip_attachments" in effective:
+        seeded["skip_attachments"] = effective["skip_attachments"]
+    return seeded or None
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
@@ -1259,6 +1412,7 @@ def register(ctx) -> None:
         label="Email",
         adapter_factory=_build_adapter,
         check_fn=check_email_requirements,
+        apply_yaml_config_fn=_apply_yaml_config,
         is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps",

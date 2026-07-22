@@ -388,6 +388,41 @@ def test_gateway_health_export_start_is_fail_open_when_otlp_missing(monkeypatch)
     assert runtime.reason == "otlp_unavailable"
 
 
+def test_gateway_health_export_shutdown_flushes_before_unsubscribe(monkeypatch):
+    from agent.monitoring import emitter
+    from agent.monitoring.gateway_health_export import GatewayHealthExportRuntime
+
+    calls = []
+
+    class FakeEmitter:
+        def flush(self, timeout):
+            calls.append(("flush", timeout))
+
+        def unsubscribe(self, subscriber):
+            calls.append(("unsubscribe", subscriber))
+
+    class Streamer:
+        def shutdown(self):
+            calls.append(("shutdown", self))
+
+    streamer = Streamer()
+    log_streamer = Streamer()
+    monkeypatch.setattr(emitter, "get_emitter", lambda: FakeEmitter())
+
+    runtime = GatewayHealthExportRuntime(
+        enabled=True,
+        streamer=streamer,
+        log_streamer=log_streamer,
+    )
+    runtime.shutdown()
+
+    assert calls[0][0] == "flush"
+    assert calls[1:3] == [
+        ("unsubscribe", streamer),
+        ("unsubscribe", log_streamer),
+    ]
+
+
 def test_gateway_health_export_streams_only_gateway_events(monkeypatch):
     from agent.monitoring import gateway_health_export
 

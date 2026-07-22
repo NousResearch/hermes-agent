@@ -118,12 +118,13 @@ class GatewayHealthExportRuntime:
             except Exception:
                 pass
 
-        # Detach synchronously so no new records are collected during a slow
-        # exporter shutdown. Network flush/close then runs under one bounded
-        # daemon-thread deadline and can never delay gateway teardown.
+        # All producers above are now stopped. Drain queued and in-flight
+        # events before detaching subscribers so the terminal lifecycle event
+        # cannot race exporter shutdown. The barrier is bounded and fail-open.
         try:
             from agent.monitoring.emitter import get_emitter
             emitter = get_emitter()
+            emitter.flush(timeout=1.0)
             if self.streamer is not None:
                 emitter.unsubscribe(self.streamer)
             if self.log_streamer is not None:
@@ -131,6 +132,8 @@ class GatewayHealthExportRuntime:
         except Exception:
             pass
 
+        # Network flush/close runs under one bounded daemon-thread deadline and
+        # can never delay gateway teardown indefinitely.
         closeables = [
             item for item in (self.streamer, self.log_streamer, self.metric_provider)
             if item is not None

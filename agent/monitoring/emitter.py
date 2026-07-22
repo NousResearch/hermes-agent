@@ -67,6 +67,7 @@ class MonitoringEmitter:
                 # Drop oldest to make room — bounded memory, newest-wins.
                 try:
                     self._q.get_nowait()
+                    self._q.task_done()
                     self._dropped += 1
                     self._q.put_nowait(payload)
                 except Exception:
@@ -99,7 +100,11 @@ class MonitoringEmitter:
                     batch.append(self._q.get_nowait())
                 except queue.Empty:
                     break
-            self._dispatch(batch)
+            try:
+                self._dispatch(batch)
+            finally:
+                for _ in batch:
+                    self._q.task_done()
 
     def _dispatch(self, batch) -> None:
         # Fan-out to subscribers (OTLP streamers) — fully fail-isolated.
@@ -126,15 +131,23 @@ class MonitoringEmitter:
 
     # ── introspection / shutdown (tests, CLI) ───────────────────────────────
     def flush(self, timeout: float = 2.0) -> None:
-        """Block until the queue drains (test/CLI helper, NOT the hot path)."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._q.empty():
-                # give the dispatcher a tick to finish the in-flight batch
-                time.sleep(0.05)
-                if self._q.empty():
-                    return
-            time.sleep(0.02)
+        """Wait boundedly for queued and in-flight batches to finish dispatch."""
+        if timeout <= 0:
+            return
+
+        finished = threading.Event()
+
+        def _wait_for_completion() -> None:
+            self._q.join()
+            finished.set()
+
+        waiter = threading.Thread(
+            target=_wait_for_completion,
+            name="hermes-monitoring-flush",
+            daemon=True,
+        )
+        waiter.start()
+        finished.wait(timeout=timeout)
 
     def stats(self) -> Dict[str, int]:
         return {

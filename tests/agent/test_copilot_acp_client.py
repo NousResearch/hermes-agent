@@ -284,6 +284,193 @@ def _fake_popen_capture(captured):
     return _fake
 
 
+class _FakeACPProcess:
+    def __init__(self) -> None:
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO(
+            "\n".join(
+                [
+                    json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                    json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s1"}}),
+                    json.dumps({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                ]
+            )
+            + "\n"
+        )
+        self.stderr = io.StringIO()
+        self._terminated = False
+
+    def poll(self):
+        return None
+
+    def terminate(self) -> None:
+        self._terminated = True
+
+    def wait(self, timeout=None) -> int:
+        return 0
+
+    def kill(self) -> None:
+        self._terminated = True
+
+
+def test_run_prompt_uses_local_process_cwd_but_sends_remote_acp_cwd(tmp_path):
+    process_cwd = tmp_path / "local-spawn"
+    process_cwd.mkdir()
+    remote_cwd = "/srv/remote/repo"
+    captured = {}
+    proc = _FakeACPProcess()
+
+    def _fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        captured["proc"] = proc
+        return proc
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="ssh",
+        acp_args=["remote", "copilot", "--acp", "--stdio"],
+        acp_cwd=remote_cwd,
+        process_cwd=str(process_cwd),
+    )
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake):
+        response_text, reasoning_text = client._run_prompt("hello", timeout_seconds=1)
+
+    assert response_text == ""
+    assert reasoning_text == ""
+    assert captured["cmd"] == ["ssh", "remote", "copilot", "--acp", "--stdio"]
+    assert captured["kwargs"]["cwd"] == str(process_cwd.resolve())
+
+    sent = [
+        json.loads(line)
+        for line in proc.stdin.getvalue().splitlines()
+        if line.strip()
+    ]
+    initialize = next(payload for payload in sent if payload["method"] == "initialize")
+    assert "fs" not in initialize["params"]["clientCapabilities"]
+    session_new = next(payload for payload in sent if payload["method"] == "session/new")
+    assert session_new["params"]["cwd"] == remote_cwd
+
+
+def test_ssh_acp_cwd_preserves_existing_local_path_as_remote(tmp_path):
+    process_cwd = tmp_path / "local-spawn"
+    process_cwd.mkdir()
+    captured = {}
+    proc = _FakeACPProcess()
+
+    def _fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return proc
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="ssh",
+        acp_args=["remote", "copilot", "--acp", "--stdio"],
+        acp_cwd="/tmp",
+        process_cwd=str(process_cwd),
+    )
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake):
+        client._run_prompt("hello", timeout_seconds=1)
+
+    assert captured["kwargs"]["cwd"] == str(process_cwd.resolve())
+    sent = [
+        json.loads(line)
+        for line in proc.stdin.getvalue().splitlines()
+        if line.strip()
+    ]
+    initialize = next(payload for payload in sent if payload["method"] == "initialize")
+    assert "fs" not in initialize["params"]["clientCapabilities"]
+    session_new = next(payload for payload in sent if payload["method"] == "session/new")
+    assert session_new["params"]["cwd"] == "/tmp"
+
+
+def test_remote_acp_cwd_rejects_local_fs_callbacks(tmp_path):
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="ssh",
+        acp_args=["remote", "copilot", "--acp", "--stdio"],
+        acp_cwd="/srv/remote/repo",
+        process_cwd=str(tmp_path),
+    )
+    process = _FakeProcess()
+
+    handled = client._handle_server_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "fs/read_text_file",
+            "params": {"path": "/srv/remote/repo/README.md"},
+        },
+        process=process,
+        cwd="/srv/remote/repo",
+        text_parts=[],
+        reasoning_parts=[],
+        fs_enabled=False,
+    )
+
+    assert handled is True
+    response = json.loads(process.stdin.getvalue().strip())
+    assert response["id"] == 99
+    assert response["error"]["code"] == -32601
+    assert "non-local session cwd" in response["error"]["message"]
+
+
+def test_run_prompt_uses_acp_cwd_as_process_cwd_when_local(tmp_path):
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
+
+
+def test_run_prompt_sends_resolved_session_cwd_for_relative_local_path(monkeypatch, tmp_path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+    proc = _FakeACPProcess()
+
+    def _fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return proc
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="copilot",
+        acp_args=["--acp", "--stdio"],
+        acp_cwd="repo",
+    )
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake):
+        client._run_prompt("hello", timeout_seconds=1)
+
+    expected = str(project.resolve())
+    assert captured["kwargs"]["cwd"] == expected
+    sent = [
+        json.loads(line)
+        for line in proc.stdin.getvalue().splitlines()
+        if line.strip()
+    ]
+    initialize = next(payload for payload in sent if payload["method"] == "initialize")
+    assert initialize["params"]["clientCapabilities"]["fs"] == {
+        "readTextFile": True,
+        "writeTextFile": True,
+    }
+    session_new = next(payload for payload in sent if payload["method"] == "session/new")
+    assert session_new["params"]["cwd"] == expected
+
+
 def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):
     hermes_home = tmp_path / "hermes"
     (hermes_home / "home").mkdir(parents=True)

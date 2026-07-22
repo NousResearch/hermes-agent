@@ -1888,6 +1888,7 @@ def resolve_runtime_provider(
             "api_key": creds.get("api_key", ""),
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
+            "cwd": creds.get("cwd"),
             "source": creds.get("source", "process"),
             "requested_provider": requested_provider,
         }

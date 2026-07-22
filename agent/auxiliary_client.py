@@ -5268,6 +5268,7 @@ def resolve_provider_client(
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None
             args = list(creds.get("args") or [])
+            cwd = str(creds.get("cwd", "")).strip() or None
             if not final_model:
                 logger.warning(
                     "resolve_provider_client: copilot-acp requested but no model "
@@ -5287,6 +5288,7 @@ def resolve_provider_client(
                 base_url=base_url,
                 command=command,
                 args=args,
+                acp_cwd=cwd,
             )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

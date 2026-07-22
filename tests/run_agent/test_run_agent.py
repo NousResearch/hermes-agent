@@ -7035,6 +7035,7 @@ def test_aiagent_uses_copilot_acp_client():
             provider="copilot-acp",
             acp_command="/usr/local/bin/copilot",
             acp_args=["--acp", "--stdio"],
+            acp_cwd="/remote/project",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -7047,6 +7048,48 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+    assert mock_acp_client.call_args.kwargs["acp_cwd"] == "/remote/project"
+
+
+def test_aiagent_routed_copilot_acp_forwards_acp_cwd():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve,
+        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+    ):
+        routed_client = MagicMock()
+        routed_client.api_key = "copilot-acp"
+        routed_client.base_url = "acp://copilot"
+        routed_client._acp_command = "ssh"
+        routed_client._acp_args = ["remote", "copilot", "--acp", "--stdio"]
+        routed_client._acp_cwd = "/runtime/project"
+        mock_resolve.return_value = (routed_client, "claude-sonnet-4")
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            model="claude-sonnet-4",
+            provider="copilot-acp",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "ssh"
+    assert mock_acp_client.call_args.kwargs["args"] == [
+        "remote",
+        "copilot",
+        "--acp",
+        "--stdio",
+    ]
+    assert mock_acp_client.call_args.kwargs["acp_cwd"] == "/runtime/project"
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):

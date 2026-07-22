@@ -394,6 +394,29 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_copilot_acp_resolver_preserves_trusted_cwd(self, monkeypatch):
+        def fake_credentials(provider):
+            assert provider == "copilot-acp"
+            return {
+                "api_key": "copilot-acp",
+                "base_url": "acp://copilot",
+                "command": "ssh",
+                "args": ["remote", "copilot", "--acp", "--stdio"],
+                "cwd": "/remote/project",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            fake_credentials,
+        )
+
+        client, model = resolve_provider_client("copilot-acp", model="claude-sonnet-4")
+
+        assert model == "claude-sonnet-4"
+        assert client._acp_command == "ssh"
+        assert client._acp_args == ["remote", "copilot", "--acp", "--stdio"]
+        assert client._acp_cwd == "/remote/project"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

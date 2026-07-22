@@ -48,6 +48,7 @@ _DEPRECATION_MARKERS = (
     "has been deprecated",
     "no commands will be executed",
 )
+_REMOTE_TRANSPORT_COMMANDS = {"ssh", "ssh.exe", "mosh", "mosh-client"}
 
 
 def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
@@ -72,6 +73,78 @@ def _resolve_args() -> list[str]:
     if not raw:
         return ["--acp", "--stdio"]
     return shlex.split(raw)
+
+
+def _command_tokens(command: str | None, args: list[str] | None) -> list[str]:
+    tokens: list[str] = []
+    if command:
+        try:
+            tokens.extend(shlex.split(command))
+        except ValueError:
+            tokens.append(str(command))
+    tokens.extend(str(arg) for arg in (args or []))
+    return tokens
+
+
+def _uses_remote_transport(
+    command: str | None,
+    args: list[str] | None,
+    base_url: str | None,
+) -> bool:
+    if str(base_url or "").startswith("acp+tcp://"):
+        return True
+    for token in _command_tokens(command, args):
+        name = Path(token).name.lower()
+        if name in _REMOTE_TRANSPORT_COMMANDS:
+            return True
+    return False
+
+
+def _resolve_local_cwd(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = Path(str(value)).expanduser()
+    if candidate.is_dir():
+        return str(candidate.resolve())
+    return None
+
+
+def _resolve_process_cwd(
+    process_cwd: str | None = None,
+    acp_cwd: str | None = None,
+    *,
+    local_session: bool = True,
+) -> str:
+    if process_cwd:
+        return str(Path(process_cwd).resolve())
+    if local_session:
+        local_acp_cwd = _resolve_local_cwd(acp_cwd)
+        if local_acp_cwd:
+            return local_acp_cwd
+    return str(Path(os.getcwd()).resolve())
+
+
+def _resolve_session_cwd(
+    acp_cwd: str | None,
+    process_cwd: str,
+    *,
+    local_session: bool = True,
+) -> str:
+    if acp_cwd is None or not str(acp_cwd).strip():
+        return process_cwd
+    if local_session:
+        local_acp_cwd = _resolve_local_cwd(acp_cwd)
+        if local_acp_cwd:
+            return local_acp_cwd
+    return str(acp_cwd)
+
+
+def _session_uses_local_fs(acp_cwd: str | None, *, local_session: bool = True) -> bool:
+    if not local_session:
+        return False
+    if acp_cwd is None or not str(acp_cwd).strip():
+        return True
+    return _resolve_local_cwd(acp_cwd) is not None
 
 
 def _resolve_home_dir() -> str:
@@ -405,6 +478,7 @@ class CopilotACPClient:
         acp_command: str | None = None,
         acp_args: list[str] | None = None,
         acp_cwd: str | None = None,
+        process_cwd: str | None = None,
         command: str | None = None,
         args: list[str] | None = None,
         **_: Any,
@@ -414,7 +488,25 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
-        self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        self._remote_transport = _uses_remote_transport(
+            self._acp_command,
+            self._acp_args,
+            self.base_url,
+        )
+        self._process_cwd = _resolve_process_cwd(
+            process_cwd,
+            acp_cwd,
+            local_session=not self._remote_transport,
+        )
+        self._acp_cwd = _resolve_session_cwd(
+            acp_cwd,
+            self._process_cwd,
+            local_session=not self._remote_transport,
+        )
+        self._acp_fs_enabled = _session_uses_local_fs(
+            acp_cwd,
+            local_session=not self._remote_transport,
+        )
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
@@ -510,7 +602,7 @@ class CopilotACPClient:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                cwd=self._acp_cwd,
+                cwd=self._process_cwd,
                 env=_build_subprocess_env(),
             )
         except FileNotFoundError as exc:
@@ -578,6 +670,7 @@ class CopilotACPClient:
                     msg,
                     process=proc,
                     cwd=self._acp_cwd,
+                    fs_enabled=self._acp_fs_enabled,
                     text_parts=text_parts,
                     reasoning_parts=reasoning_parts,
                 ):
@@ -613,16 +706,18 @@ class CopilotACPClient:
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
         try:
+            client_capabilities: dict[str, Any] = {}
+            if self._acp_fs_enabled:
+                client_capabilities["fs"] = {
+                    "readTextFile": True,
+                    "writeTextFile": True,
+                }
+
             _request(
                 "initialize",
                 {
                     "protocolVersion": 1,
-                    "clientCapabilities": {
-                        "fs": {
-                            "readTextFile": True,
-                            "writeTextFile": True,
-                        }
-                    },
+                    "clientCapabilities": client_capabilities,
                     "clientInfo": {
                         "name": "hermes-agent",
                         "title": "Hermes Agent",
@@ -669,6 +764,7 @@ class CopilotACPClient:
         cwd: str,
         text_parts: list[str] | None,
         reasoning_parts: list[str] | None,
+        fs_enabled: bool = True,
     ) -> bool:
         method = msg.get("method")
         if not isinstance(method, str):
@@ -696,6 +792,12 @@ class CopilotACPClient:
 
         if method == "session/request_permission":
             response = _permission_denied(message_id)
+        elif method in {"fs/read_text_file", "fs/write_text_file"} and not fs_enabled:
+            response = _jsonrpc_error(
+                message_id,
+                -32601,
+                "ACP file-system callbacks are disabled for non-local session cwd.",
+            )
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)

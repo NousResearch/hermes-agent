@@ -764,6 +764,27 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _resolve_inherited_acp_cwd(parent_agent) -> Optional[str]:
+    """Trusted parent/session cwd for ACP child sessions.
+
+    Unlike prompt workspace hints, ACP cwd may be a remote path that does not
+    exist on the local host (for example an SSH-backed Copilot ACP runtime), so
+    preserve non-empty runtime state literally.
+    """
+    candidates = [
+        getattr(parent_agent, "acp_cwd", None),
+        getattr(parent_agent, "session_cwd", None),
+        getattr(parent_agent, "terminal_cwd", None),
+        getattr(parent_agent, "cwd", None),
+        os.getenv("TERMINAL_CWD"),
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and text not in {".", "auto", "cwd"}:
+            return text
+    return None
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools.
 
@@ -1082,6 +1103,8 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # ACP session cwd override from trusted runtime/provider config only.
+    override_acp_cwd: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1280,6 +1303,7 @@ def _build_child_agent(
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])
     )
+    effective_acp_cwd = override_acp_cwd or _resolve_inherited_acp_cwd(parent_agent)
 
     # When override_provider is set (e.g. delegation.provider: minimax-cn),
     # the subagent must use direct API calls — not the parent's ACP transport.
@@ -1288,6 +1312,7 @@ def _build_child_agent(
     if override_provider and not override_acp_command:
         effective_acp_command = None
         effective_acp_args = []
+        effective_acp_cwd = None
 
     if override_acp_command:
         # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
@@ -1369,6 +1394,7 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        acp_cwd=effective_acp_cwd,
         max_iterations=max_iterations,
 
         reasoning_config=child_reasoning,
@@ -2605,6 +2631,7 @@ def delegate_task(
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                override_acp_cwd=creds.get("cwd"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3251,6 +3278,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": None,
             "request_overrides": None,
             "max_output_tokens": None,
+            "cwd": None,
         }
 
     # Provider is configured — resolve full credentials
@@ -3283,6 +3311,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "cwd": runtime.get("cwd"),
     }
 
 
@@ -3615,7 +3644,7 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
-_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args", "acp_cwd"}
 
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:

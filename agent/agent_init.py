@@ -291,6 +291,7 @@ def init_agent(
     api_mode: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
+    acp_cwd: str | None = None,
     command: str = None,
     args: list[str] | None = None,
     model: str = "",
@@ -447,6 +448,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
+    agent.acp_cwd = acp_cwd
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
@@ -978,6 +980,8 @@ def init_agent(
             if agent.provider == "copilot-acp":
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
+                if agent.acp_cwd:
+                    client_kwargs["acp_cwd"] = agent.acp_cwd
             effective_base = base_url
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers
@@ -1023,6 +1027,19 @@ def init_agent(
                 }
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
+                if agent.provider == "copilot-acp":
+                    client_kwargs["command"] = (
+                        agent.acp_command
+                        or getattr(_routed_client, "_acp_command", None)
+                    )
+                    client_kwargs["args"] = list(
+                        agent.acp_args
+                        or getattr(_routed_client, "_acp_args", None)
+                        or []
+                    )
+                    routed_acp_cwd = getattr(_routed_client, "_acp_cwd", None)
+                    if agent.acp_cwd or routed_acp_cwd:
+                        client_kwargs["acp_cwd"] = agent.acp_cwd or routed_acp_cwd
                 # Preserve provider-specific headers the router set.  The
                 # OpenAI SDK stores caller-provided default_headers in
                 # _custom_headers; older/mocked clients may expose

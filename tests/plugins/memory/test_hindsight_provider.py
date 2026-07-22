@@ -423,6 +423,7 @@ class TestConfig:
         class FakeHindsightEmbedded:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
+                self.config = {}
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
@@ -442,6 +443,37 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+    def test_get_client_updates_embedded_daemon_config_from_existing_profile_env(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                self.config = {"HINDSIGHT_API_LLM_MODEL": "narrow"}
+                captured["config"] = self.config
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "gpt-4.1-nano",
+            "llm_base_url": "http://localhost:11434/v1",
+            "idle_timeout": 0,
+        }
+        p._llm_base_url = "http://localhost:11434/v1"
+
+        p._get_client()
+
+        assert captured["config"]["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+        assert captured["config"]["HINDSIGHT_API_LLM_API_KEY"] == "test-key"
+        assert captured["config"]["HINDSIGHT_API_LLM_MODEL"] == "gpt-4.1-nano"
+        assert captured["config"]["HINDSIGHT_API_LLM_BASE_URL"] == "http://localhost:11434/v1"
+        assert captured["config"]["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
 
 class TestPostSetup:

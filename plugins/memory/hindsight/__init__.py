@@ -1033,10 +1033,15 @@ class HindsightMemoryProvider(MemoryProvider):
                     llm_provider = "openai"
                 logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
                              self._config.get("profile", "hermes"), llm_provider)
+                llm_api_key = (
+                    self._config.get("llmApiKey")
+                    or self._config.get("llm_api_key")
+                    or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+                )
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=llm_api_key,
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:
@@ -1050,6 +1055,14 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._idle_timeout = idle_timeout
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
+                # HindsightEmbedded builds its daemon config from constructor
+                # kwargs. Keep that config aligned with Hermes' existing profile
+                # env generation before _ensure_started() can materialize it.
+                client_config = getattr(self._client, "config", None)
+                if isinstance(client_config, dict):
+                    client_config.update(
+                        _build_embedded_profile_env(self._config, llm_api_key=llm_api_key or None)
+                    )
             else:
                 _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
@@ -1431,6 +1444,10 @@ class HindsightMemoryProvider(MemoryProvider):
                             client._manager.stop(profile)
 
                     client._ensure_started()
+                    # Some Hindsight daemon-manager paths rewrite the profile env
+                    # during ensure/start from their internal config. Re-materialize
+                    # from Hermes' existing profile env generation afterward.
+                    _materialize_embedded_profile_env(self._config)
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:

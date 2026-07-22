@@ -252,3 +252,4 @@ def test_nested_bundled_plugin_metadata_is_packaged():
     assert "**/plugin.yaml" in plugin_data
     assert "**/plugin.yml" in plugin_data
     assert "**/README.md" in plugin_data
+    assert "**/roles.yaml" in plugin_data

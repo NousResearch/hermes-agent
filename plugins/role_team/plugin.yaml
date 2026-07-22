@@ -1,0 +1,8 @@
+name: role-team
+version: 1.0.0
+description: Opt-in persistent role sessions and delegated role coordination
+kind: standalone
+platforms: [linux, macos, windows]
+toolsets: [role_team]
+provides:
+  tools: [invoke_role, role_team_status]

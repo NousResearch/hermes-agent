@@ -154,6 +154,7 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     assert "recursive-include plugins" in manifest and "plugin.yaml" in manifest, (
         "MANIFEST.in must recursive-include plugins plugin.yaml/plugin.yml (sdist)"
     )
+    assert "roles.yaml" in manifest, "plugin role catalogues must ship in sdists"
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in

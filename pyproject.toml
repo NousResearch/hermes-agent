@@ -355,6 +355,7 @@ plugins = [
   "**/plugin.yaml",
   "**/plugin.yml",
   "**/README.md",
+  "**/roles.yaml",
 ]
 
 [tool.setuptools.packages.find]

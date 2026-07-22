@@ -2093,6 +2093,95 @@ class SessionDB:
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
+    def mutate_session(
+        self,
+        session_id: str,
+        mutator: Callable[[Optional[Dict[str, Any]]], Dict[str, Any]],
+        *,
+        create: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Atomically read-modify-write lifecycle/config metadata.
+
+        The callback executes inside the existing short ``BEGIN IMMEDIATE``
+        transaction and must only compute a patch. Missing rows fail closed
+        unless ``create`` defaults are supplied. Values are selected by key
+        presence so ``None``, ``0``, empty mappings, and empty lists remain
+        intentional values.
+        """
+        if not session_id:
+            raise ValueError("session_id is required")
+        if not callable(mutator):
+            raise TypeError("mutator must be callable")
+
+        mutable_fields = {
+            "source", "model", "model_config", "parent_session_id", "cwd",
+            "ended_at", "end_reason",
+        }
+
+        def _encoded(field: str, value: Any) -> Any:
+            if field == "model_config" and value is not None:
+                if not isinstance(value, dict):
+                    raise TypeError("model_config must be a mapping or None")
+                return json.dumps(value)
+            return value
+
+        def _validate(fields: Dict[str, Any], label: str) -> None:
+            unknown = set(fields) - mutable_fields
+            if unknown:
+                raise ValueError(
+                    f"Unsupported {label} session field(s): "
+                    + ", ".join(sorted(unknown))
+                )
+
+        def _do(conn: sqlite3.Connection) -> Dict[str, Any]:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            current = dict(row) if row is not None else None
+            patch = mutator(dict(current) if current is not None else None)
+            if not isinstance(patch, dict):
+                raise TypeError("session mutator must return a mapping")
+            _validate(patch, "mutable")
+
+            if current is None:
+                if create is None:
+                    raise KeyError(f"session {session_id!r} is missing")
+                seed = dict(create)
+                _validate(seed, "create")
+                seed.update(patch)
+                source = str(seed.get("source") or "").strip()
+                if not source:
+                    raise ValueError("create.source is required")
+                conn.execute(
+                    """INSERT INTO sessions
+                       (id, source, model, model_config, parent_session_id,
+                        cwd, started_at, ended_at, end_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id, source, seed.get("model"),
+                        _encoded("model_config", seed.get("model_config")),
+                        seed.get("parent_session_id"), seed.get("cwd"),
+                        time.time(), seed.get("ended_at"), seed.get("end_reason"),
+                    ),
+                )
+            elif patch:
+                fields = list(patch)
+                assignments = ", ".join(f"{field} = ?" for field in fields)
+                values = [_encoded(field, patch[field]) for field in fields]
+                conn.execute(
+                    f"UPDATE sessions SET {assignments} WHERE id = ?",
+                    (*values, session_id),
+                )
+
+            updated = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if updated is None:
+                raise RuntimeError(f"session {session_id!r} disappeared during mutation")
+            return dict(updated)
+
+        return self._execute_write(_do)
+
     def record_gateway_session_peer(
         self,
         session_id: str,

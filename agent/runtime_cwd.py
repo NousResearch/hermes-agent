@@ -12,6 +12,7 @@ contextvar; CLI/cron fall through to `TERMINAL_CWD`/launch cwd.
 
 import logging
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,16 @@ def set_session_cwd(cwd: str | None) -> Token:
 
 def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
+
+
+@contextmanager
+def scoped_session_cwd(cwd: str | None):
+    """Pin one execution scope's cwd and restore it on every exit."""
+    token = set_session_cwd(cwd)
+    try:
+        yield
+    finally:
+        _SESSION_CWD.reset(token)
 
 
 def _session_cwd_override() -> str:

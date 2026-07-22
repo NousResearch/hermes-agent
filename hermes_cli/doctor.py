@@ -1075,9 +1075,6 @@ def run_doctor(args):
                     "(should be under 'model:' section)"
                 )
                 if should_fix:
-                    # Coerce scalar/None ``model:`` into a dict before mutation —
-                    # ``setdefault("model", {})`` would return an existing scalar
-                    # and then ``model_section[k] = ...`` would raise TypeError.
                     raw_model = raw_config.get("model")
                     if isinstance(raw_model, dict):
                         model_section = raw_model
@@ -1098,6 +1095,34 @@ def run_doctor(args):
                     fixed_count += 1
                 else:
                     issues.append("Stale root-level provider/base_url in config.yaml — run 'hermes doctor --fix'")
+        except Exception:
+            pass
+
+        # Warn if dashboard.basic_auth is configured but 'basic' plugin is
+        # disabled — causes 'no auth providers registered' on non-loopback
+        # bind with no actionable hint (#54489). Must run after the block
+        # above that loads raw_config.
+        try:
+            _dash = raw_config.get("dashboard") or {}
+            _ba = _dash.get("basic_auth") or {}
+            _plugins_disabled = raw_config.get("plugins", {}).get("disabled") or []
+            if _ba.get("username") and "basic" in _plugins_disabled:
+                check_warn(
+                    "dashboard.basic_auth is configured but 'basic' plugin is disabled",
+                    "(dashboard auth will fail on non-loopback bind)"
+                )
+                if should_fix:
+                    try:
+                        _plugins_disabled.remove("basic")
+                        from utils import atomic_yaml_write
+                        atomic_yaml_write(config_path, raw_config)
+                        check_ok("Removed 'basic' from plugins.disabled")
+                        fixed_count += 1
+                    except Exception as fix_err:
+                        check_warn(f"Auto-fix failed: {fix_err}")
+                        issues.append("Remove 'basic' from plugins.disabled in config.yaml")
+                else:
+                    issues.append("Remove 'basic' from plugins.disabled to enable dashboard auth")
         except Exception:
             pass
 

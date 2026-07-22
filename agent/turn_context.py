@@ -265,6 +265,39 @@ class TurnContext:
     ext_prefetch_cache: str = ""
 
 
+def _compose_pre_persist_returns(user_message, results):
+    """Compose pre_persist_user_message plugin returns into user_message. Pure.
+
+    Order: (1) winning ``user_message`` replace — highest ``data.priority``,
+    ties → first (stable) — sets the body; (2) ``{"context"}`` dicts and bare
+    strings appended raw at the tail (back-compat, unwrapped). A return of
+    ``None`` is ignored.
+    """
+    replaces, raw_tail = [], []
+    for r in results:
+        if isinstance(r, str):
+            if r.strip():
+                raw_tail.append(r)
+            continue
+        if not isinstance(r, dict):
+            continue
+        if r.get("context"):
+            raw_tail.append(str(r["context"]))
+        if r.get("user_message") is not None:
+            replaces.append((int((r.get("data") or {}).get("priority", 0)),
+                             str(r["user_message"])))
+    if replaces:
+        if len(replaces) > 1:
+            logger.warning("pre_persist_user_message: %d user_message "
+                           "replacements; highest priority (ties->first) wins",
+                           len(replaces))
+        replaces.sort(key=lambda t: -t[0])  # stable: ties keep original order
+        user_message = replaces[0][1]
+    if raw_tail:
+        user_message = user_message + "\n\n" + "\n\n".join(raw_tail)
+    return user_message
+
+
 def build_turn_context(
     agent,
     user_message: Any,
@@ -364,6 +397,10 @@ def build_turn_context(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+    # One-shot signal: set by the pre_persist hook below only when its returns
+    # must correct an already-durable staged user row in place (CLI close path).
+    # Reset each turn so a prior turn's flag can never leak forward.
+    agent._persist_user_message_durable_rewrite = None
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -375,6 +412,26 @@ def build_turn_context(
     # interleave transcript writes. Cleared in _persist_session.
     from agent.agent_runtime_helpers import note_turn_start
     note_turn_start(agent, turn_id)
+
+    # P2.1 host contract: a turn-scoped execution_id tagged onto every ordinary
+    # per-turn hook so plugins can tell live turns from background forks without
+    # prompt-text/turn-id heuristics.
+    #
+    # A fork stamps a caller-supplied context on its agent BEFORE run_conversation
+    # (background_review sets _execution_kind="background_review" + _execution_id
+    # = ReviewExecutionContext.execution_id); preserve that verbatim so every
+    # hook firing in the fork shares one id. An ordinary live turn instead gets a
+    # FRESH execution_id EACH turn — the provenance is per-turn, so a reused live
+    # agent must not carry its first turn's id forward.
+    _caller_kind = getattr(agent, "_execution_kind", None)
+    if _caller_kind and _caller_kind != "live":
+        # Fork (or any caller-tagged) context: keep it; only fill an id if the
+        # caller tagged the kind but left the id unset.
+        if not getattr(agent, "_execution_id", None):
+            agent._execution_id = uuid.uuid4().hex
+    else:
+        agent._execution_kind = "live"
+        agent._execution_id = uuid.uuid4().hex
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0
@@ -499,6 +556,57 @@ def build_turn_context(
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             should_review_memory = True
             agent._turns_since_memory = 0
+
+    # Plugin hook: pre_persist_user_message — agent-path ingress. Fragments
+    # returned here are folded into user_message BEFORE the turn's
+    # crash-resilience persist and the API call, so they land on the wire
+    # — the agent-path analogue of the gateway's pre_gateway_dispatch
+    # event.text mutation. Runs after the CLI-staged handoff match and the
+    # original_user_message capture above, both of which must see the raw
+    # (pre-hook) text; user_msg is already in `messages`, so the composed
+    # body is written back into the dict in place.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _pp = _invoke_hook(
+            "pre_persist_user_message",
+            session_id=agent.session_id or "",
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            conversation_history=messages[:current_turn_user_idx],
+            platform=getattr(agent, "platform", None) or "",
+            sender_id=getattr(agent, "_user_id", None) or "",
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
+        )
+        user_message = _compose_pre_persist_returns(user_message, _pp)
+        # Returns are 'pre_persist' by contract — they must reach the persisted
+        # DB row, not only this turn's wire. The gateway may set a persist
+        # override to the pre-hook message (agent._persist_user_message_override,
+        # consumed by _apply_persist_user_message_override); the session flush
+        # writes THAT to the DB row. Without re-composing the returns onto it,
+        # an injected block reaches the API the turn it fires, then vanishes
+        # from replayed history next turn (the row held the raw body). Skip
+        # multimodal (list) content, mirroring the override applier. Guarded on
+        # `is not None` so it is a no-op when no override was set.
+        _ov = getattr(agent, "_persist_user_message_override", None)
+        if _pp and _ov is not None and not isinstance(_ov, list):
+            _composed_override = _compose_pre_persist_returns(_ov, _pp)
+            agent._persist_user_message_override = _composed_override
+            # If this staged user dict was ALREADY written durably (the CLI
+            # close safety-net persists the pending dict and stamps it
+            # `_db_persisted` before this turn's hook runs), the append-only
+            # flush will SKIP it on marker — the recomposed override above never
+            # reaches the durable row. Flag a one-shot in-place correction the
+            # flush applies instead of skipping (see
+            # AIAgent._flush_messages_to_session_db). No-op on the ordinary path
+            # where the dict is not yet persisted (flush writes it fresh).
+            from run_agent import _DB_PERSISTED_MARKER
+            if _pp and user_msg.get(_DB_PERSISTED_MARKER):
+                agent._persist_user_message_durable_rewrite = _composed_override
+    except Exception as exc:
+        logger.warning("pre_persist_user_message hook failed: %s", exc)
+    user_msg["content"] = user_message
 
     # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
     # and notify the host so it can play hearts. Token-free, never touches the
@@ -704,6 +812,8 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

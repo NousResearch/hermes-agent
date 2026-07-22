@@ -451,3 +451,72 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
 
+
+# ── P2.1 execution provenance ────────────────────────────────────────────────
+#
+# The prologue seeds a turn-scoped execution_id + execution_kind on the agent
+# and threads them into the ordinary per-turn hooks so a plugin can tell a live
+# turn from a background-review fork turn without prompt-text/turn-id heuristics.
+
+
+def test_execution_kind_defaults_to_live():
+    agent = _FakeAgent()
+    _build(agent)
+    assert agent._execution_kind == "live"
+    assert agent._execution_id  # a non-empty turn-scoped id was seeded
+
+
+def test_execution_kind_not_overwritten_when_caller_tagged():
+    """A caller (e.g. background_review) sets _execution_kind before the turn
+    builds; the prologue must not clobber it back to 'live'."""
+    agent = _FakeAgent()
+    agent._execution_kind = "background_review"
+    agent._execution_id = "fork-id-123"
+    _build(agent)
+    assert agent._execution_kind == "background_review"
+    assert agent._execution_id == "fork-id-123"
+
+
+def test_live_execution_id_regenerates_each_turn():
+    """Provenance is per-TURN: a reused live agent must get a fresh execution_id
+    on every turn, not carry its first turn's id forward."""
+    agent = _FakeAgent()
+    _build(agent)
+    first_id = agent._execution_id
+    assert first_id
+    assert agent._execution_kind == "live"
+
+    _build(agent)
+    second_id = agent._execution_id
+    assert second_id
+    assert agent._execution_kind == "live"
+    assert second_id != first_id, "live execution_id must regenerate each turn"
+
+
+def test_fork_execution_id_preserved_across_turns():
+    """A caller-tagged fork context is stable: the same execution_id ties every
+    turn/hook of the fork together (contrast the per-turn live id)."""
+    agent = _FakeAgent()
+    agent._execution_kind = "background_review"
+    agent._execution_id = "fork-id-123"
+    _build(agent)
+    _build(agent)
+    assert agent._execution_kind == "background_review"
+    assert agent._execution_id == "fork-id-123"
+
+
+def test_execution_provenance_passed_to_pre_persist_hook():
+    agent = _FakeAgent()
+    captured = {}
+
+    def _capture(hook_name, **kwargs):
+        if hook_name == "pre_persist_user_message":
+            captured.update(kwargs)
+        return []
+
+    with patch("hermes_cli.plugins.invoke_hook", _capture):
+        _build(agent)
+
+    assert captured.get("execution_kind") == "live"
+    assert captured.get("execution_id") == agent._execution_id
+

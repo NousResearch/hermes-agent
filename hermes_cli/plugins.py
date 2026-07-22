@@ -171,6 +171,14 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Agent-path ingress hook. Fired once per user turn in build_turn_context,
+    # BEFORE the inbound user message is appended and persisted (unlike
+    # pre_llm_call, which fires after the crash-resilience persist and whose
+    # context is ephemeral). Plugins return {"context": "..."} or a str; the
+    # host joins all non-None returns and appends them to user_message so they
+    # persist to the session DB (and thus onto the wire). Kwargs: session_id,
+    # task_id, turn_id, user_message, conversation_history, platform, sender_id.
+    "pre_persist_user_message",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
@@ -212,6 +220,19 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Background-review host contract (P2.1). Plugins piggyback on the
+    # self-improvement review fork through these instead of monkey-patching.
+    #   background_review_started  — kwargs: context (ReviewExecutionContext),
+    #                               prompt, review_memory, review_skills;
+    #                               return {"prompt_suffix": str} (concatenated).
+    #   background_review_message  — kwargs: context, message (observer-only);
+    #                               per assistant message from the fork.
+    #   background_review_finished — kwargs: context, messages (list[dict]),
+    #                               status ("finished"|"failed"), error (str|None);
+    #                               fires once, including exception paths.
+    "background_review_started",
+    "background_review_message",
+    "background_review_finished",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

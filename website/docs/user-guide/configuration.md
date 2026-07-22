@@ -1411,7 +1411,7 @@ For unattended gateway / server deployments, enable hard stops so a stuck agent 
 ```yaml
 tool_loop_guardrails:
   warnings_enabled: true       # inject warnings into tool results (default: true)
-  hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
+  hard_stop_enabled: false     # also BLOCK the next call past the threshold (default: false)
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
@@ -1422,7 +1422,7 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 ```
 
-`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. The failure that reaches a hard-stop threshold is still returned to the model; if it attempts that tool again, the next call is blocked before execution. This gives the model one chance to choose a different tool or report the blocker. See also [Docker / unattended deployments](docker.md).
 
 ## TTS Configuration
 

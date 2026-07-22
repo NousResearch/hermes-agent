@@ -5268,6 +5268,29 @@ def block_task(
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
+            child_row = conn.execute(
+                "SELECT child_id FROM task_links WHERE parent_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if child_row is not None:
+                unsatisfied_parent = conn.execute(
+                    """
+                    SELECT l.parent_id
+                      FROM task_links l
+                      JOIN tasks p ON p.id = l.parent_id
+                     WHERE l.child_id = ?
+                       AND p.status != 'done'
+                     LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                if unsatisfied_parent is None:
+                    raise ValueError(
+                        "dependency block is invalid after successor creation "
+                        "when no unsatisfied parent remains; complete parent "
+                        f"task {task_id} because successor "
+                        f"{child_row['child_id']} already exists"
+                    )
             cur = conn.execute(
                 """
                 UPDATE tasks

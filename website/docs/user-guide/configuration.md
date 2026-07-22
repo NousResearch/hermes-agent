@@ -755,7 +755,25 @@ auxiliary:
     model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
+    timeout: 120                                    # Per-operation/inactivity timeout; effective minimum is 300s
+    wall_clock_timeout: 0                           # Total summary-workflow deadline; 0/null/unset disables it
 ```
+
+`auxiliary.compression.timeout` is an SDK/transport inactivity timeout, not a
+total request-duration limit. A provider that keeps sending response bytes can
+therefore run longer than this value. Set `wall_clock_timeout` to a positive
+number to opt into a total deadline spanning auxiliary retries, provider
+fallbacks, and the compressor's main-model fallback. Values below the effective
+inactivity timeout are clamped upward (compression currently has a 300-second
+minimum). When the total deadline expires, Hermes preserves the original
+messages, pauses summary retries on the normal timeout cooldown ladder, and
+continues without rotating the session.
+
+Enabling the deadline trades eventual summary success for bounded interaction
+latency. A timed-out daemon request may continue in the background until its
+transport inactivity timeout fires, and preserving an already oversized
+transcript can leave the next model request near its hard context limit. Leave
+the setting disabled unless that tradeoff is preferable for your provider.
 
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.

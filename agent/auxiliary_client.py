@@ -46,6 +46,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -3571,6 +3572,37 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     return False
 
 
+class AuxiliaryWallClockTimeout(TimeoutError):
+    """Raised before an auxiliary request that would start past its deadline."""
+
+
+def _create_chat_completion_with_deadline(
+    client: Any,
+    kwargs: Dict[str, Any],
+    wall_clock_deadline: Optional[float],
+) -> Any:
+    """Start one sync request only while the shared wall-clock budget remains."""
+    request_kwargs = kwargs
+    if wall_clock_deadline is not None:
+        remaining = wall_clock_deadline - time.monotonic()
+        if remaining <= 0:
+            raise AuxiliaryWallClockTimeout(
+                "Auxiliary wall-clock deadline exceeded before starting another request"
+            )
+
+        # SDK timeouts are inactivity based. Capping them cannot stop a
+        # byte-trickling request, but it prevents a late retry from receiving a
+        # fresh full timeout while the caller's watchdog handles the hard cap.
+        request_kwargs = dict(kwargs)
+        request_timeout = request_kwargs.get("timeout")
+        if isinstance(request_timeout, (int, float)) and not isinstance(
+            request_timeout, bool
+        ):
+            request_kwargs["timeout"] = min(float(request_timeout), remaining)
+
+    return client.chat.completions.create(**request_kwargs)
+
+
 def _retry_same_provider_sync(
     *,
     task: Optional[str],
@@ -3588,6 +3620,7 @@ def _retry_same_provider_sync(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    wall_clock_deadline: Optional[float] = None,
 ) -> Any:
     if task == "vision":
         _, retry_client, retry_model = resolve_vision_provider_client(
@@ -3627,7 +3660,10 @@ def _retry_same_provider_sync(
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
-        retry_client.chat.completions.create(**retry_kwargs), task,
+        _create_chat_completion_with_deadline(
+            retry_client, retry_kwargs, wall_clock_deadline
+        ),
+        task,
     )
 
 
@@ -3835,6 +3871,7 @@ def _call_fallback_candidate_sync(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    wall_clock_deadline: Optional[float] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery.
 
@@ -3873,7 +3910,11 @@ def _call_fallback_candidate_sync(
         base_url=fb_base)
     try:
         return _validate_llm_response(
-            fb_client.chat.completions.create(**fb_kwargs), task)
+            _create_chat_completion_with_deadline(
+                fb_client, fb_kwargs, wall_clock_deadline
+            ),
+            task,
+        )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3890,7 +3931,11 @@ def _call_fallback_candidate_sync(
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
                     return _validate_llm_response(
-                        retry_client.chat.completions.create(**retry_kwargs), task)
+                        _create_chat_completion_with_deadline(
+                            retry_client, retry_kwargs, wall_clock_deadline
+                        ),
+                        task,
+                    )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -6442,6 +6487,50 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     return effective
 
 
+def _get_task_wall_clock_timeout(task: str) -> Optional[float]:
+    """Resolve an opt-in total deadline for an auxiliary task.
+
+    ``auxiliary.<task>.timeout`` is an SDK/transport inactivity timeout; it does
+    not bound total request duration while a provider keeps sending bytes. A
+    positive ``wall_clock_timeout`` adds that separate bound. Disabled values
+    preserve the historical call path exactly.
+    """
+    if not task:
+        return None
+
+    raw = _get_auxiliary_task_config(task).get("wall_clock_timeout")
+    if raw is None or raw == "":
+        return None
+    try:
+        configured = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid auxiliary.%s.wall_clock_timeout=%r; expected a "
+            "non-negative number",
+            task,
+            raw,
+        )
+        return None
+    if not math.isfinite(configured) or configured <= 0:
+        return None
+
+    # A total deadline shorter than the task's effective per-operation timeout
+    # would expire before one legitimate transport timeout can complete. Clamp
+    # against the canonical resolver so compression includes its 300s floor.
+    effective_inactivity_timeout = _effective_aux_timeout(task, None)
+    if configured < effective_inactivity_timeout:
+        logger.warning(
+            "auxiliary.%s.wall_clock_timeout=%.1fs is below the effective "
+            "inactivity timeout %.1fs; clamped to %.1fs",
+            task,
+            configured,
+            effective_inactivity_timeout,
+            effective_inactivity_timeout,
+        )
+        return effective_inactivity_timeout
+    return configured
+
+
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
     """Read auxiliary.<task>.extra_body and return a shallow copy when valid.
 
@@ -6919,6 +7008,7 @@ def call_llm(
     max_tokens: int = None,
     tools: list = None,
     timeout: float = None,
+    wall_clock_deadline: Optional[float] = None,
     extra_body: dict = None,
     reasoning_config: Optional[dict] = None,
     api_mode: str = None,
@@ -6943,6 +7033,8 @@ def call_llm(
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
+        wall_clock_deadline: Optional absolute monotonic deadline shared by all
+              synchronous retries and fallback candidates.
         extra_body: Additional request body fields.
         reasoning_config: Optional Hermes reasoning config for direct model calls
               such as MoA reference/aggregator slots.
@@ -7077,7 +7169,9 @@ def call_llm(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
-        return client.chat.completions.create(**kwargs)
+        return _create_chat_completion_with_deadline(
+            client, kwargs, wall_clock_deadline
+        )
 
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
@@ -7100,8 +7194,10 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task,
-                provider=resolved_provider, base_url=_base_info)
+                _create_chat_completion_with_deadline(
+                    client, kwargs, wall_clock_deadline
+                ),
+                task, provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7133,7 +7229,11 @@ def call_llm(
                 time.sleep(_backoff)
                 try:
                     return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                        _create_chat_completion_with_deadline(
+                            client, kwargs, wall_clock_deadline
+                        ),
+                        task,
+                    )
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise
@@ -7141,6 +7241,8 @@ def call_llm(
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
     except Exception as first_err:
+        if isinstance(first_err, AuxiliaryWallClockTimeout):
+            raise
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)
@@ -7150,7 +7252,11 @@ def call_llm(
             )
             try:
                 return _validate_llm_response(
-                    client.chat.completions.create(**retry_kwargs), task)
+                    _create_chat_completion_with_deadline(
+                        client, retry_kwargs, wall_clock_deadline
+                    ),
+                    task,
+                )
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 # If retry still fails, fall through to the max_tokens /
@@ -7188,7 +7294,11 @@ def call_llm(
             kwargs.pop("max_completion_tokens", None)
             try:
                 return _validate_llm_response(
-                    client.chat.completions.create(**kwargs), task)
+                    _create_chat_completion_with_deadline(
+                        client, kwargs, wall_clock_deadline
+                    ),
+                    task,
+                )
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -7218,7 +7328,11 @@ def call_llm(
                 kwargs["model"] = healed_model
                 try:
                     return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                        _create_chat_completion_with_deadline(
+                            client, kwargs, wall_clock_deadline
+                        ),
+                        task,
+                    )
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -7251,7 +7365,11 @@ def call_llm(
                     kwargs["model"] = refreshed_model
                 try:
                     return _validate_llm_response(
-                        refreshed_client.chat.completions.create(**kwargs), task)
+                        _create_chat_completion_with_deadline(
+                            refreshed_client, kwargs, wall_clock_deadline
+                        ),
+                        task,
+                    )
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -7279,7 +7397,11 @@ def call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 return _validate_llm_response(
-                    refreshed_client.chat.completions.create(**kwargs), task)
+                    _create_chat_completion_with_deadline(
+                        refreshed_client, kwargs, wall_clock_deadline
+                    ),
+                    task,
+                )
 
         # ── Auth refresh retry ───────────────────────────────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -7312,6 +7434,7 @@ def call_llm(
                     effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
+                    wall_clock_deadline=wall_clock_deadline,
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
@@ -7328,7 +7451,11 @@ def call_llm(
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                        _create_chat_completion_with_deadline(
+                            client, kwargs, wall_clock_deadline
+                        ),
+                        task,
+                    )
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
@@ -7355,6 +7482,7 @@ def call_llm(
                         effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
                         reasoning_config=reasoning_config,
+                        wall_clock_deadline=wall_clock_deadline,
                     )
                 except Exception as retry2_err:
                     # The rotated key also hit a quota/auth wall.  Mark it
@@ -7477,7 +7605,8 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
-                    reasoning_config=reasoning_config)
+                    reasoning_config=reasoning_config,
+                    wall_clock_deadline=wall_clock_deadline)
                 if fb_resp is not None:
                     return fb_resp
                 # The candidate had a stale/unrefreshable credential and was
@@ -7492,7 +7621,8 @@ def call_llm(
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
-                        reasoning_config=reasoning_config)
+                        reasoning_config=reasoning_config,
+                        wall_clock_deadline=wall_clock_deadline)
                     if fb_resp is not None:
                         return fb_resp
             # All fallback layers exhausted — emit a single user-visible

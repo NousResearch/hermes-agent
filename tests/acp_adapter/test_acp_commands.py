@@ -18,12 +18,25 @@ class FakeAgent:
         self.valid_tool_names = set()
         self.steers = []
         self.runs = []
+        self.interrupted = False
+        self.interrupt_calls = 0
+        self.clear_interrupt_calls = 0
 
     def steer(self, text):
         self.steers.append(text)
         return True
 
+    def interrupt(self):
+        self.interrupted = True
+        self.interrupt_calls += 1
+
+    def clear_interrupt(self):
+        self.interrupted = False
+        self.clear_interrupt_calls += 1
+
     def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
+        if self.interrupted:
+            return {"final_response": "", "messages": list(conversation_history or []), "interrupted": True}
         self.runs.append(user_message)
         messages = list(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
@@ -196,3 +209,34 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_acp_idle_cancel_does_not_poison_next_prompt():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    await acp_agent.cancel(state.session_id)
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="second question")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == ["second question"]
+    assert fake.interrupt_calls == 0
+    assert fake.clear_interrupt_calls == 1
+    assert not state.cancel_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_acp_running_cancel_still_interrupts_current_prompt():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.is_running = True
+    state.current_prompt_text = "long first question"
+
+    await acp_agent.cancel(state.session_id)
+
+    assert fake.interrupt_calls == 1
+    assert fake.clear_interrupt_calls == 0
+    assert state.cancel_event.is_set()
+    assert state.interrupted_prompt_text == "long first question"

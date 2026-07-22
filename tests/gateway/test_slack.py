@@ -1535,6 +1535,157 @@ class TestBangPrefixCommands:
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "authored_text", ["!queue  --flag  value  ", "/queue  --flag  value  "]
+    )
+    async def test_typed_command_preserves_trailing_argument_whitespace(
+        self, adapter, authored_text
+    ):
+        """Canonicalization may remove composer padding, never argument bytes."""
+        await adapter._handle_slack_message(self._make_event(authored_text))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/queue  --flag  value  "
+        assert msg_event.get_command_args() == "--flag  value  "
+
+    @pytest.mark.asyncio
+    async def test_leading_space_bang_command_is_rewritten(self, adapter):
+        """Composer indentation before ``!cmd`` must not defeat the rewrite."""
+        await adapter._handle_slack_message(self._make_event("  !queue follow up"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/queue follow up"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_leading_space_slash_command_is_a_command(self, adapter):
+        """Users type `` /stop`` so Slack itself doesn't intercept the slash."""
+        await adapter._handle_slack_message(self._make_event(" /stop"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/stop"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "stop"
+
+    @pytest.mark.asyncio
+    async def test_mentioned_bang_command_is_normalized(self, adapter):
+        """Mention stripping must not leave ``!command`` as ordinary text."""
+        evt = self._make_event(
+            "<@U_BOT> !reasoning xhigh",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/reasoning xhigh"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "reasoning"
+        assert msg_event.get_command_args() == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_mentioned_unknown_bang_passes_through(self, adapter):
+        """``@bot !nice work`` is a casual message — must NOT be rewritten."""
+        evt = self._make_event(
+            "<@U_BOT> !nice work",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!nice work"
+        assert msg_event.message_type != MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mentioned_bang_command_ignores_rich_text_context(self, adapter):
+        """The combined mention + composer-block path retains exact arguments."""
+        evt = self._make_event(
+            "<@U_BOT> !reasoning xhigh",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        evt["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "user", "user_id": "U_BOT"},
+                            {"type": "text", "text": " !reasoning xhigh"},
+                        ],
+                    },
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [{"type": "text", "text": "quoted context"}],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/reasoning xhigh"
+        assert "quoted context" not in msg_event.text
+        assert msg_event.get_command_args() == "xhigh"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "enrichment",
+        [
+            {"attachments": [{"title": "Spec", "from_url": "https://example.com/spec", "text": "preview"}]},
+            {"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "UI metadata"}}]},
+        ],
+        ids=["unfurl", "block-kit"],
+    )
+    async def test_bang_command_ignores_enrichment(self, adapter, enrichment):
+        """Rich Slack metadata is agent context, never command arguments."""
+        event = self._make_event("!reasoning xhigh")
+        event.update(enrichment)
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/reasoning xhigh"
+        assert msg_event.get_command_args() == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_bang_command_ignores_app_view_context(self, adapter):
+        """Slack Agent-view metadata is prompt context, never command input."""
+        event = self._make_event("!reasoning xhigh")
+        event["app_context"] = {"channel_id": "C_VIEWED"}
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/reasoning xhigh"
+        assert msg_event.get_command() == "reasoning"
+        assert msg_event.get_command_args() == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_non_command_retains_app_view_context(self, adapter):
+        """Skipping app context is command-specific, not a loss of prompt context."""
+        event = self._make_event("What is happening?")
+        event["app_context"] = {"channel_id": "C_VIEWED"}
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert msg_event.text.startswith(
+            "[Slack app context: user is viewing channel C_VIEWED]\n\n"
+        )
+        assert msg_event.text.endswith("What is happening?")
+
+    @pytest.mark.asyncio
     async def test_bang_queue_survives_first_thread_context_backfill(self, adapter):
         """Backfill stays out of command text while remaining available."""
         adapter._has_active_session_for_thread = MagicMock(return_value=False)
@@ -4578,6 +4729,59 @@ class TestSlashCommands:
         await adapter._handle_slash_command(command)
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/model anthropic/claude-sonnet-4"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("thread_payload", "expected_thread_id"),
+        [
+            ({"thread_ts": "1111111111.000001"}, "1111111111.000001"),
+            ({"message": {"thread_ts": "2222222222.000001"}}, "2222222222.000001"),
+            ({"container": {"thread_ts": "3333333333.000001"}}, "3333333333.000001"),
+            ({"message_ts": "4444444444.000001"}, "4444444444.000001"),
+            ({"container": {"message_ts": "5555555555.000001"}}, "5555555555.000001"),
+            (
+                {
+                    "message_ts": "fallback-message-ts",
+                    "message": {"thread_ts": "parent-thread-ts"},
+                },
+                "parent-thread-ts",
+            ),
+        ],
+    )
+    async def test_native_slash_preserves_thread_identity(
+        self, adapter, thread_payload, expected_thread_id
+    ):
+        """Native Slack slash payload variants keep replies in their thread."""
+        command = {
+            "command": "/reasoning",
+            "text": "xhigh",
+            "user_id": "U1",
+            "channel_id": "C1",
+            **thread_payload,
+        }
+
+        await adapter._handle_slash_command(command)
+
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.source.thread_id == expected_thread_id
+        assert msg.text == "/reasoning xhigh"
+
+    @pytest.mark.asyncio
+    async def test_native_slash_preserves_raw_argument_payload(self, adapter):
+        """Only the command delimiter is nonsemantic; raw Slack input stays intact."""
+        raw_args = "  --flag  value  "
+        command = {
+            "command": "/queue",
+            "text": raw_args,
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == f"/queue {raw_args}"
+        assert msg.get_command_args() == "--flag  value  "
 
     @pytest.mark.asyncio
     async def test_legacy_hermes_prefix_still_works(self, adapter):

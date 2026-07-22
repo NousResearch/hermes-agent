@@ -6,9 +6,12 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -106,6 +109,20 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
+
+        # Increment retrieval_count for returned facts (fixes #17899)
+        if results:
+            try:
+                ids = [r["fact_id"] for r in results]
+                placeholders = ",".join("?" * len(ids))
+                self.store._conn.execute(
+                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                    ids,
+                )
+                self.store._conn.commit()
+            except Exception:
+                logger.debug("Failed to increment retrieval_count", exc_info=True)
+
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)

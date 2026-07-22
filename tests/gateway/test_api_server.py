@@ -4308,6 +4308,7 @@ class TestModelRoutesAgentCreation:
 
 
 # ---------------------------------------------------------------------------
+
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------
 
@@ -4431,3 +4432,212 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+# delegate_task SSE completion — redacted result projection
+# ---------------------------------------------------------------------------
+
+
+class TestDelegateTaskSSECompletion:
+    """Verify that delegate_task completion events use the redacted projection."""
+
+    @pytest.mark.asyncio
+    async def test_delegate_task_result_includes_safe_metadata(self, adapter):
+        """completion event carries redacted metadata, not raw summary."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                if ts_cb:
+                    ts_cb("call_delegate_1", "delegate_task", {
+                        "tasks": [{"goal": "research trends"}]
+                    })
+                if tc_cb:
+                    # Simulate a realistic delegate_task result with a
+                    # summary that should be redacted.
+                    tc_cb("call_delegate_1", "delegate_task", {
+                        "tasks": [{"goal": "research trends"}]
+                    }, _json.dumps({
+                        "subagent_id": "child-abcd",
+                        "model": "hermes-agent",
+                        "status": "completed",
+                        "duration_seconds": 2.1,
+                        "input_tokens": 800,
+                        "output_tokens": 90,
+                        "total_tokens": 890,
+                        "granted_toolsets": ["web", "search", "skills"],
+                        "missing_toolsets": [],
+                        "exit_reason": "stop_sequence",
+                        "summary": "SECRET RESEARCH RESULTS — should be redacted",
+                        "file_path": "/tmp/secret-summary-12345.md",
+                        "error": "should not appear",
+                    }))
+                if cb:
+                    await asyncio.sleep(0.01)
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "research"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            # Extract the completed delegate_task event.
+            lines = body.splitlines()
+            completed_payload = None
+            for i, line in enumerate(lines):
+                if line.strip() != "event: hermes.tool.progress":
+                    continue
+                for follow in lines[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        try:
+                            p = _json.loads(follow[len("data: "):])
+                        except _json.JSONDecodeError:
+                            break
+                        if p.get("tool") == "delegate_task" and p.get("status") == "completed":
+                            completed_payload = p
+                        break
+
+            assert completed_payload is not None, "delegate_task completed event not found"
+            result = completed_payload.get("result", {})
+            assert isinstance(result, dict), f"result should be dict, got {type(result)}"
+            # Safe keys present.
+            assert result.get("subagent_id") == "child-abcd"
+            assert result.get("model") == "hermes-agent"
+            assert result.get("status") == "completed"
+            assert result.get("duration_seconds") == 2.1
+            assert result.get("granted_toolsets") == ["web", "search", "skills"]
+            # Redacted — summary and error must not appear.
+            assert "summary" not in result
+            assert "error" not in result
+            assert "file_path" not in result
+
+    @pytest.mark.asyncio
+    async def test_delegate_task_non_delegate_no_result(self, adapter):
+        """Non-delegate_task tools should not receive result metadata."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                if ts_cb:
+                    ts_cb("call_term_1", "terminal", {"command": "ls"})
+                if tc_cb:
+                    tc_cb("call_term_1", "terminal", {"command": "ls"}, "file1\nfile2")
+                if cb:
+                    await asyncio.sleep(0.01)
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "ls"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            lines = body.splitlines()
+            for i, line in enumerate(lines):
+                if line.strip() != "event: hermes.tool.progress":
+                    continue
+                for follow in lines[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        try:
+                            p = _json.loads(follow[len("data: "):])
+                        except _json.JSONDecodeError:
+                            break
+                        if p.get("tool") == "terminal" and p.get("status") == "completed":
+                            # Non-delegate_task should NOT have result.
+                            assert "result" not in p, (
+                                f"terminal tool should not have result: {p}"
+                            )
+                        break
+
+    @pytest.mark.asyncio
+    async def test_delegate_task_result_drops_summary_for_size(self, adapter):
+        """Oversized payloads fall back to minimal projection."""
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                if ts_cb:
+                    ts_cb("call_del_1", "delegate_task", {"tasks": [{"goal": "big"}]})
+                if tc_cb:
+                    # Large granted_toolsets list to trigger size guard.
+                    tc_cb("call_del_1", "delegate_task", {"tasks": [{"goal": "big"}]},
+                          _json.dumps({
+                              "subagent_id": "child-xyz",
+                              "status": "completed",
+                              "exit_reason": "stop",
+                              "granted_toolsets": [
+                                  f"toolset-{i:03d}" for i in range(300)
+                              ],
+                          }))
+                if cb:
+                    await asyncio.sleep(0.01)
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "delegate"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            lines = body.splitlines()
+            for i, line in enumerate(lines):
+                if line.strip() != "event: hermes.tool.progress":
+                    continue
+                for follow in lines[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        try:
+                            p = _json.loads(follow[len("data: "):])
+                        except _json.JSONDecodeError:
+                            break
+                        if p.get("tool") == "delegate_task" and p.get("status") == "completed":
+                            result = p.get("result", {})
+                            # Size guard kicked in — only minimal keys survive.
+                            assert "subagent_id" in result
+                            assert "granted_toolsets" not in result
+                        break
+

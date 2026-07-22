@@ -454,6 +454,12 @@ class HonchoClientConfig:
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
+    # Shared sessions: optional list of additional Honcho session IDs whose
+    # context is merged into recall. Use this to make canonical / hydrated
+    # content (e.g. governance docs, knowledge corpora ingested by separate
+    # tooling) available to dialogue recall without changing per-thread
+    # session isolation. Default empty (no behavior change).
+    shared_sessions: list[str] = field(default_factory=list)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
     # True when Honcho was explicitly configured for this host (hosts.hermes
@@ -728,6 +734,7 @@ class HonchoClientConfig:
                 host_block.get("observation") or raw.get("observation"),
             ),
             session_strategy=session_strategy,
+shared_sessions=raw.get("sharedSessions") or host_block.get("sharedSessions") or [],
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,

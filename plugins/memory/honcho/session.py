@@ -139,6 +139,11 @@ class HonchoSessionManager:
         self._dialectic_max_input_chars: int = (
             config.dialectic_max_input_chars if config else 10000
         )
+        # Shared sessions: optional Honcho sessions whose context is merged
+        # into recall (cross-session retrieval for canonical / hydrated corpora).
+        self._shared_sessions: list[str] = list(
+            getattr(config, "shared_sessions", []) or []
+        )
 
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
@@ -1046,6 +1051,32 @@ class HonchoSessionManager:
                     {"role": getattr(m, "peer_id", "unknown"), "content": (m.content or "")[:500]}
                     for m in recent
                 ]
+
+            # Shared sessions: merge canonical / hydrated corpus context.
+            # Each shared session contributes its summary and recent messages
+            # to the recall payload under a labelled key so consumers can
+            # distinguish active-session content from shared content.
+            if self._shared_sessions:
+                shared = []
+                for shared_sid in self._shared_sessions:
+                    try:
+                        shared_session = self.honcho.session(shared_sid)
+                        shared_ctx = shared_session.context(summary=True)
+                        entry = {"session_id": shared_sid}
+                        if getattr(shared_ctx, "summary", None):
+                            entry["summary"] = shared_ctx.summary.content
+                        if getattr(shared_ctx, "messages", None):
+                            entry["recent_messages"] = [
+                                {"role": getattr(m, "peer_id", "unknown"),
+                                 "content": (m.content or "")[:500]}
+                                for m in shared_ctx.messages[-5:]
+                            ]
+                        if len(entry) > 1:
+                            shared.append(entry)
+                    except Exception as e:
+                        logger.debug("Shared session context fetch failed for %s: %s", shared_sid, e)
+                if shared:
+                    result["shared_context"] = shared
 
             return result
         except Exception as e:

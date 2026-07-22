@@ -1498,6 +1498,22 @@ class HonchoMemoryProvider(MemoryProvider):
                         for m in msgs[-5:]  # last 5 for brevity
                     )
                     parts.append(f"## Recent messages\n{msg_str}")
+                if ctx.get("shared_context"):
+                    shared_parts = []
+                    for s in ctx["shared_context"]:
+                        section = [f"### Shared session: {s.get('session_id', 'unknown')}"]
+                        if s.get("summary"):
+                            section.append(f"Summary: {s['summary'][:500]}")
+                        if s.get("recent_messages"):
+                            msgs = s["recent_messages"]
+                            section.append("Messages:")
+                            section.extend(
+                                f"  [{m['role']}] {m['content'][:200]}"
+                                for m in msgs[-3:]
+                            )
+                        shared_parts.append("\n".join(section))
+                    if shared_parts:
+                        parts.append("## Shared canonical context\n" + "\n\n".join(shared_parts))
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":

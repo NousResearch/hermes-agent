@@ -409,3 +409,32 @@ Presets:
   }
 }
 ```
+
+### Shared sessions: merging canonical content into recall
+
+When canonical knowledge lives in dedicated Honcho sessions populated by
+separate tooling (hydration pipelines, governance corpora, knowledge bases
+ingested out-of-band), the default per-thread session isolation hides that
+content from dialogue recall. Set `sharedSessions` to a list of session IDs
+to merge their context into the recall payload, in addition to the per-thread
+session resolved by `sessionStrategy` / `gateway_session_key`.
+
+```jsonc
+{
+  "workspace": "hermes",
+  "peerName": "user",
+  "aiPeer": "hermes",
+  "sessionStrategy": "per-directory",
+  "sharedSessions": ["governance-canonical", "knowledge-base-2026"]
+}
+```
+
+Each shared session contributes its `summary` (if Honcho has built one) and
+last 5 messages. Results land under the `shared_context` key returned by
+`get_session_context`. The `honcho_context` tool renders them under a
+`## Shared canonical context` section so consumers can distinguish active-session
+content from shared content.
+
+Each shared-session lookup is isolated in try/except: a failed fetch logs at
+debug level and falls through; other shared sessions still contribute. Default
+is an empty list — no behavior change for users who do not opt in.

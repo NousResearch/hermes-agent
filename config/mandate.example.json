@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "wallet_address": "0x0000000000000000000000000000000000000000",
+  "signed_at": "2026-07-07T12:00:00+00:00",
+  "expires_at": null,
+  "signature": "REPLACE_WITH_HMAC_SHA256_HEX"
+}

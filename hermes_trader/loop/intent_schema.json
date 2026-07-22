@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/schemas/trade_intent.schema.json",
+  "title": "TradeIntent",
+  "description": "Structured trade recommendation from the reasoning layer",
+  "type": "object",
+  "required": ["action", "chain", "token_address", "size_usd", "confidence"],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["buy", "sell", "hold", "rebalance", "watch"]
+    },
+    "chain": { "type": "string", "minLength": 1 },
+    "token_address": { "type": "string" },
+    "size_usd": { "type": "number", "minimum": 0 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "reasoning": { "type": "string" },
+    "stop_loss_pct": { "type": ["number", "null"], "minimum": 0 },
+    "take_profit_pct": { "type": ["number", "null"], "minimum": 0 },
+    "strategy_tag": { "type": "string" },
+    "pool_liquidity_usd": { "type": ["number", "null"], "minimum": 0 },
+    "slippage_bps": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}

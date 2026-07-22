@@ -3831,8 +3831,30 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
             )
 
 
+def _supervised_gateway_restart_available() -> bool:
+    """True when a service manager (launchd/systemd/s6) owns the gateway.
+
+    When the gateway is supervised, the desktop backend (``hermes serve``)
+    must NOT spawn its own ``hermes gateway restart`` child. That child runs
+    ``gateway run --replace``, which SIGTERMs the supervised instance; the
+    supervisor's KeepAlive then respawns it, producing a restart/flap loop.
+    Delegating the restart to the supervisor avoids the double-supervisor fight.
+    """
+    try:
+        from hermes_cli.service_manager import detect_service_manager
+    except Exception:
+        return False
+    try:
+        kind = detect_service_manager()
+    except Exception:
+        return False
+    # "none" means no usable init system — the dashboard itself owns the
+    # gateway, so a local restart child is correct there.
+    return kind in ("launchd", "systemd", "s6")
+
+
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
-    """Spawn ``hermes gateway restart``, reusing an in-flight restart.
+    """Restart the gateway, delegating to the supervisor when one is present.
 
     Multiple dashboard paths can request a restart in quick succession
     (restart button double-click, or a stale cached frontend firing its own
@@ -3840,8 +3862,59 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     concurrent ``hermes gateway restart`` children race each other on the
     manual kill-and-start path, so reuse the live one instead.
 
+    When the gateway is supervised by a service manager (launchd/systemd/s6),
+    delegate the restart to the supervisor instead of spawning a ``hermes
+    gateway restart`` child under ``hermes serve``. That child would otherwise
+    SIGTERM the supervised instance and trigger a KeepAlive flap loop. We still
+    record a synthetic Popen-like handle so callers that poll the previous child
+    behave, but no gateway child is left under ``hermes serve``.
+
     Returns ``(proc, reused)``.
     """
+    if _supervised_gateway_restart_available():
+        try:
+            # Delegate to the platform-native restart (drain-aware on macOS,
+            # systemctl on Linux, s6 in containers). This is the only correct
+            # restart path when the gateway is supervised — it never spawns a
+            # hermes-serve child.
+            from hermes_cli.service_manager import detect_service_manager
+            kind = detect_service_manager()
+            if kind == "launchd":
+                from hermes_cli.gateway import launchd_restart
+                launchd_restart()
+            elif kind == "systemd":
+                from hermes_cli.gateway import systemd_restart
+                systemd_restart()
+            elif kind == "s6":
+                from hermes_cli.service_manager import S6ServiceManager
+                S6ServiceManager().restart("")
+            else:  # pragma: no cover - guarded by _supervised_gateway_restart_available
+                raise RuntimeError(f"unsupported service manager: {kind}")
+            _log.info(
+                "Gateway restart delegated to %s service manager; "
+                "desktop backend did NOT spawn its own gateway child.",
+                kind,
+            )
+
+            # Synthesize a completed, non-gateway handle (typed loosely as Any)
+            # so callers that inspect _ACTION_PROCS don't see a stray hermes-serve
+            # gateway child and the return type stays satisfied.
+            class _SupervisorRestartHandle:
+                pid = 0
+                returncode = 0
+
+                def poll(self) -> Optional[int]:
+                    return 0
+
+            handle: Any = _SupervisorRestartHandle()
+            handle.args = ["launchctl", "kickstart", "-k", "gui/*/ai.hermes.gateway"]
+            return handle, False
+        except Exception as exc:
+            _log.warning(
+                "Service-manager gateway restart delegation failed (%s) — "
+                "falling back to local restart",
+                exc,
+            )
     subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:

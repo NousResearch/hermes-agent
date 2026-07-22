@@ -4,6 +4,7 @@ import asyncio
 import os
 import json
 import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -3531,6 +3532,10 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
         ws._ACTION_PROCS.pop("gateway-restart", None)
+        # Force the local (non-supervised) restart path these tests exercise.
+        # On hosts where a service manager owns the gateway, _spawn_gateway_restart
+        # delegates to it instead of spawning a `hermes gateway restart` child.
+        monkeypatch.setattr(ws, "_supervised_gateway_restart_available", lambda: False)
         restart_calls = []
 
         class FakeRestartProc:
@@ -3604,6 +3609,8 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
         ws._ACTION_PROCS.pop("gateway-restart", None)
+        # Force the local (non-supervised) restart path this test exercises.
+        monkeypatch.setattr(ws, "_supervised_gateway_restart_available", lambda: False)
 
         def fail_spawn_action(subcommand, name):
             assert subcommand == ["gateway", "restart"]
@@ -3664,6 +3671,8 @@ class TestWebServerEndpoints:
             }
 
         monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        # Force the local (non-supervised) restart path this test exercises.
+        monkeypatch.setattr(ws, "_supervised_gateway_restart_available", lambda: False)
 
         class FakeRunningProc:
             pid = 5151
@@ -3693,6 +3702,81 @@ class TestWebServerEndpoints:
         assert applied_data["needs_restart"] is False
         assert applied_data["restart_started"] is True
         assert applied_data["restart_pid"] == 5151
+
+    def test_gateway_restart_delegates_to_supervisor_when_supervised(
+        self, monkeypatch
+    ):
+        """When a service manager owns the gateway, _spawn_gateway_restart must
+        delegate to it and NOT spawn a `hermes gateway restart` child under the
+        dashboard/serve process (that child would SIGTERM the supervised
+        instance and trigger a KeepAlive flap loop)."""
+        import hermes_cli.web_server as ws
+
+        delegated = {}
+        monkeypatch.setattr(
+            ws, "_supervised_gateway_restart_available", lambda: True
+        )
+
+        def fake_launchd_restart():
+            delegated["launchd_restart"] = True
+
+        def fail_spawn_action(subcommand, name):
+            raise AssertionError(
+                "must not spawn a hermes gateway restart child when supervised"
+            )
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+        # Patch the delegated restart call inside _spawn_gateway_restart.
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setattr(gw, "launchd_restart", fake_launchd_restart)
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+        proc, reused = ws._spawn_gateway_restart(None)
+
+        assert delegated.get("launchd_restart") is True, (
+            "expected delegation to the service manager restart"
+        )
+        # The returned handle must be a synthetic non-gateway object, not a
+        # subprocess.Popen spawned under the serve process.
+        assert not isinstance(proc, subprocess.Popen)
+        assert reused is False
+
+    def test_gateway_restart_falls_back_to_local_when_supervisor_fails(
+        self, monkeypatch
+    ):
+        """If the service-manager delegation raises, _spawn_gateway_restart must
+        fall back to spawning a local `hermes gateway restart` child rather than
+        silently dropping the restart request."""
+        import hermes_cli.web_server as ws
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setattr(
+            ws, "_supervised_gateway_restart_available", lambda: True
+        )
+        monkeypatch.setattr(
+            gw, "launchd_restart", lambda: (_ for _ in ()).throw(RuntimeError("kickstart failed"))
+        )
+
+        spawned = []
+        monkeypatch.setattr(
+            ws,
+            "_spawn_hermes_action",
+            lambda subcommand, name: spawned.append((subcommand, name)) or _FakeLocalProc(),
+        )
+
+        class _FakeLocalProc:
+            pid = 9999
+
+            def poll(self):
+                return 0
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+        proc, reused = ws._spawn_gateway_restart(None)
+
+        assert spawned == [(["gateway", "restart"], "gateway-restart")], (
+            "expected fallback to local gateway restart child"
+        )
 
     def test_telegram_onboarding_apply_requires_ready_pairing(self, monkeypatch):
         import hermes_cli.web_server as ws

@@ -211,6 +211,29 @@ FEISHU_REQUIRE_MENTION=false
 
 如需按群控制，在 `group_rules` 条目中设置 `require_mention`——参见下方[按群访问控制](#per-group-access-control)。
 
+### 忽略 @所有人
+
+默认情况下，飞书的 `@所有人`（`@everyone`）会被视为提及了机器人，因此只要有人使用 `@所有人`，机器人就会在群中响应。如果你希望机器人**仅**响应明确的 `@bot` 提及（而非 `@所有人`），请将 `ignore_at_all` 设为 `true`：
+
+```yaml
+# config.yaml
+feishu:
+  ignore_at_all: true
+```
+
+或通过环境变量：
+
+```bash
+FEISHU_IGNORE_AT_ALL=true
+```
+
+当 `ignore_at_all` 为 `true` 时：
+
+- `@所有人` / `@everyone` 消息**不会**被视为提及了机器人。
+- 直接 `@bot` 提及仍然正常工作。
+- 私信不受影响（私信始终绕过提及门控）。
+- 群组策略（`open` / `allowlist` / `disabled`）仍然独立生效。
+
 ### 机器人身份
 
 Hermes 在启动时自动检测机器人的 `open_id` 和显示名称。仅当自动检测无法访问飞书 API，或你的应用使用租户范围用户 ID 时，才需要手动设置：

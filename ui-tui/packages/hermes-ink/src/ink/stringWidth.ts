@@ -226,13 +226,18 @@ function isZeroWidth(codePoint: number): boolean {
   }
 
   // Thai/Lao combining marks
-  // Note: U+0E32 (SARA AA), U+0E33 (SARA AM), U+0EB2, U+0EB3 are spacing vowels (width 1), not combining marks
+  // U+0E32 (SARA AA), U+0E33 (SARA AM), U+0EB2, U+0EB3 are SpacingMark characters
+  // that render within the same terminal cell as the preceding base consonant.
+  // They are zero-width in terminal cursor terms, even though eastAsianWidth
+  // reports them as Narrow (1). Intl.Segmenter sometimes splits them into their
+  // own cluster; marking them zero-width causes flushBuffer to merge them back
+  // into the preceding grapheme cluster so the cell char includes the vowel sign.
   if (
     codePoint === 0x0e31 || // Thai MAI HAN-AKAT
-    (codePoint >= 0x0e34 && codePoint <= 0x0e3a) || // Thai vowel signs (skip U+0E32, U+0E33)
+    (codePoint >= 0x0e32 && codePoint <= 0x0e3a) || // Thai vowel signs (including SARA AA/AM)
     (codePoint >= 0x0e47 && codePoint <= 0x0e4e) || // Thai vowel signs and marks
     codePoint === 0x0eb1 || // Lao MAI KAN
-    (codePoint >= 0x0eb4 && codePoint <= 0x0ebc) || // Lao vowel signs (skip U+0EB2, U+0EB3)
+    (codePoint >= 0x0eb2 && codePoint <= 0x0ebc) || // Lao vowel signs (including SARA AA/AM)
     (codePoint >= 0x0ec8 && codePoint <= 0x0ecd) // Lao tone marks
   ) {
     return true

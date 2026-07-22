@@ -3871,19 +3871,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
-            # If an earlier compaction handoff is in the protected head
-            # (common after resume / in-place compaction), do not carry it
-            # forward verbatim. It has already been rehydrated into
-            # _previous_summary above and _generate_summary() will emit the
-            # updated replacement below. Keeping both makes repeated
-            # compactions accumulate old summaries and prevents the live prompt
-            # from actually shrinking.
-            if (
-                summary_idx is not None
-                and i == summary_idx
-                and self._is_context_summary_content(messages[i].get("content"))
-            ):
-                continue
+            # An earlier compaction handoff in the protected head (common
+            # after resume / in-place compaction) must not be carried forward
+            # verbatim — it is already rehydrated into _previous_summary and
+            # _generate_summary() emits the updated replacement below.
+            # _strip_context_summary_handoff_message() handles both shapes:
+            # standalone handoffs strip to None (dropped), merged handoffs
+            # unwrap to their genuine prior-tail content (preserved). Do NOT
+            # short-circuit on summary_idx here: a merged handoff carries real
+            # user content that a blanket skip would silently delete.
             msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")

@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.base import BaseEnvironment
+from tools.environments.execution_helpers import _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,

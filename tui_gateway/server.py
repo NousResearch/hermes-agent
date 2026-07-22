@@ -9610,6 +9610,66 @@ def _open_owned_spawn_tree_snapshot(path: Path, session_dir: Path):
             os.close(fd)
 
 
+def _spawn_tree_file_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _remove_exact_spawn_tree_file(path: Path, expected: os.stat_result) -> bool:
+    """Quarantine and remove only the exact file identity we created."""
+    quarantine = path.with_name(
+        f".{path.name}.hermes-delete-{uuid.uuid4().hex}"
+    )
+    try:
+        current = path.lstat()
+        current_attributes = int(getattr(current, "st_file_attributes", 0))
+        if (
+            current_attributes & 0x400
+            or not stat_module.S_ISREG(current.st_mode)
+            or _spawn_tree_file_identity(expected)
+            != _spawn_tree_file_identity(current)
+        ):
+            return False
+        os.replace(path, quarantine)
+        moved = quarantine.lstat()
+        attributes = int(getattr(moved, "st_file_attributes", 0))
+        if (
+            attributes & 0x400
+            or not stat_module.S_ISREG(moved.st_mode)
+            or not os.path.samestat(current, moved)
+        ):
+            # A replacement won the boundary after the identity check. Keep it
+            # at the quarantine name for operator recovery.
+            return False
+        try:
+            quarantine.unlink()
+        except OSError:
+            # Preserve the exact object when the filesystem refuses deletion.
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def _publish_spawn_tree_temp(source: Path, destination: Path) -> bool:
+    """Publish without replacement; return whether the source name moved."""
+    if os.name == "nt":
+        # Windows rename is no-replace. Moving avoids a transient second hard
+        # link, which Windows scanners can keep busy after publication.
+        os.rename(source, destination)
+        return True
+    os.link(source, destination, follow_symlinks=False)
+    return False
+
+
 def _append_spawn_tree_index(session_dir, entry: dict) -> None:
     try:
         with _open_owned_spawn_tree_index(session_dir, append=True) as f:
@@ -9665,6 +9725,9 @@ def _(rid, params: dict) -> dict:
     ts = datetime.utcfromtimestamp(float(finished_at)).strftime("%Y%m%dT%H%M%S%f")
     fname = f"{ts}-{uuid.uuid4().hex[:8]}.json"
     temp_path = None
+    temp_identity = None
+    cleanup_identity = None
+    published_path = None
     try:
         d = _spawn_tree_session_dir(session_id or "default")
         path = d / fname
@@ -9676,21 +9739,52 @@ def _(rid, params: dict) -> dict:
             "label": label,
             "subagents": subagents,
         }
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-        )
-        os.replace(temp_path, path)
-        # The temporary name is unowned as soon as replace succeeds.  Do not
-        # let finally unlink a human file recreated at that former pathname.
-        temp_path = None
+        with temp_path.open("x", encoding="utf-8") as temp_file:
+            temp_identity = os.fstat(temp_file.fileno())
+            temp_file.write(json.dumps(payload, ensure_ascii=False))
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_identity = os.fstat(temp_file.fileno())
+            cleanup_identity = temp_identity
+
+        # Publication is atomic and fails when the destination name already
+        # exists. Unlike os.replace(), it cannot overwrite a human file that
+        # appears after the collision check.
+        source_moved = _publish_spawn_tree_temp(temp_path, path)
+        published_path = path
+        if source_moved:
+            temp_path = None
+        published_identity = path.lstat()
+        if (
+            not stat_module.S_ISREG(published_identity.st_mode)
+            or not os.path.samestat(temp_identity, published_identity)
+            or published_identity.st_mode != temp_identity.st_mode
+            or published_identity.st_size != temp_identity.st_size
+            or published_identity.st_mtime_ns != temp_identity.st_mtime_ns
+        ):
+            raise OSError("spawn-tree snapshot identity changed during publication")
+        cleanup_identity = published_identity
+
+        if temp_path is not None:
+            _remove_exact_spawn_tree_file(temp_path, cleanup_identity)
+            if not os.path.lexists(temp_path):
+                temp_path = None
+        final_identity = path.lstat()
+        if (
+            not stat_module.S_ISREG(final_identity.st_mode)
+            or final_identity.st_nlink != 1
+            or not os.path.samestat(temp_identity, final_identity)
+        ):
+            raise OSError("spawn-tree snapshot ownership could not be finalized")
+        cleanup_identity = final_identity
+        published_path = None
     except OSError as exc:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
     finally:
-        try:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if published_path is not None and cleanup_identity is not None:
+            _remove_exact_spawn_tree_file(published_path, cleanup_identity)
+        if temp_path is not None and cleanup_identity is not None:
+            _remove_exact_spawn_tree_file(temp_path, cleanup_identity)
 
     _append_spawn_tree_index(
         d,
@@ -9726,6 +9820,7 @@ def _(rid, params: dict) -> dict:
         expected_session = session_id
 
     entries: list[dict] = []
+    seen_snapshots: set[str] = set()
     for d in roots:
         indexed = _read_spawn_tree_index(d)
         if indexed:
@@ -9762,12 +9857,19 @@ def _(rid, params: dict) -> dict:
                 validated = dict(entry)
                 validated["path"] = str(snapshot)
                 entries.append(validated)
-            continue
+                seen_snapshots.add(os.path.normcase(str(snapshot)))
 
-        # Fallback for legacy (pre-index) sessions: full scan.  O(N) reads
-        # but only runs once per session until the next save writes the index.
+        # Scan names on every list so a transient index-append failure cannot
+        # permanently hide a successfully published snapshot. Indexed files
+        # are skipped without opening; only missing entries pay the JSON read.
         for p in d.glob("*.json"):
             try:
+                candidate = _owned_spawn_tree_snapshot(p, d)
+                if candidate is None:
+                    continue
+                snapshot_key = os.path.normcase(str(candidate))
+                if snapshot_key in seen_snapshots:
+                    continue
                 with _open_owned_spawn_tree_snapshot(p, d) as (
                     snapshot,
                     snapshot_stat,
@@ -9807,6 +9909,7 @@ def _(rid, params: dict) -> dict:
                         "count": len(subagents),
                     }
                 )
+                seen_snapshots.add(snapshot_key)
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
 

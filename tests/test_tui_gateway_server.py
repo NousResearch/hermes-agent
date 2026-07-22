@@ -11573,7 +11573,11 @@ def test_spawn_tree_list_rejects_index_path_outside_owned_session(tmp_path):
             "r2", {"session_id": "session-1"}
         )
 
-        assert listed["result"]["entries"] == []
+        # The hostile index entry is rejected, while the safe directory scan
+        # still recovers the genuine snapshot omitted by that index.
+        assert [entry["path"] for entry in listed["result"]["entries"]] == [
+            saved["result"]["path"]
+        ]
         assert outside.read_text() == '{"private": true}'
     finally:
         reset_hermes_home_override(token)
@@ -11804,17 +11808,22 @@ def test_spawn_tree_reads_legacy_owned_history_without_claiming_retention(tmp_pa
 def test_spawn_tree_save_does_not_unlink_recreated_temp_name(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     token = set_hermes_home_override(home)
-    original_replace = server.os.replace
+    original_publish = server._publish_spawn_tree_temp
     recreated = None
 
-    def replace_then_recreate(source, destination):
+    def publish_then_recreate(source, destination):
         nonlocal recreated
-        original_replace(source, destination)
+        source_moved = original_publish(source, destination)
         recreated = Path(source)
+        if not source_moved:
+            recreated.unlink()
         recreated.write_text("human replacement", encoding="utf-8")
+        return source_moved
 
     try:
-        monkeypatch.setattr(server.os, "replace", replace_then_recreate)
+        monkeypatch.setattr(
+            server, "_publish_spawn_tree_temp", publish_then_recreate
+        )
         saved = server._methods["spawn_tree.save"](
             "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
         )
@@ -11822,5 +11831,141 @@ def test_spawn_tree_save_does_not_unlink_recreated_temp_name(tmp_path, monkeypat
         assert "result" in saved
         assert recreated is not None
         assert recreated.read_text(encoding="utf-8") == "human replacement"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_publish_never_replaces_existing_destination(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    original_publish = server._publish_spawn_tree_temp
+    collided = None
+
+    def create_destination_before_publish(source, destination):
+        nonlocal collided
+        collided = Path(destination)
+        collided.write_text("human destination", encoding="utf-8")
+        return original_publish(source, destination)
+
+    try:
+        monkeypatch.setattr(
+            server,
+            "_publish_spawn_tree_temp",
+            create_destination_before_publish,
+        )
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+
+        assert "error" in saved
+        assert collided is not None
+        assert collided.read_text(encoding="utf-8") == "human destination"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_publish_preserves_destination_replacement_after_link(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    original_publish = server._publish_spawn_tree_temp
+    destination = None
+
+    def replace_destination_after_publish(source, target):
+        nonlocal destination
+        source_moved = original_publish(source, target)
+        destination = Path(target)
+        destination.unlink()
+        destination.write_text("human replacement", encoding="utf-8")
+        return source_moved
+
+    try:
+        monkeypatch.setattr(
+            server,
+            "_publish_spawn_tree_temp",
+            replace_destination_after_publish,
+        )
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+
+        assert "error" in saved
+        assert destination is not None
+        preserved = [destination] if destination.exists() else []
+        preserved.extend(
+            destination.parent.glob(f".{destination.name}.hermes-delete-*")
+        )
+        assert any(
+            path.read_text(encoding="utf-8") == "human replacement"
+            for path in preserved
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_failure_cleanup_preserves_temp_replacement(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    temp_path = None
+
+    def replace_temp_then_fail(source, destination):
+        nonlocal temp_path
+        temp_path = Path(source)
+        temp_path.unlink()
+        temp_path.write_text("human temp replacement", encoding="utf-8")
+        raise OSError("simulated publication failure")
+
+    try:
+        monkeypatch.setattr(
+            server, "_publish_spawn_tree_temp", replace_temp_then_fail
+        )
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+
+        assert "error" in saved
+        assert temp_path is not None
+        preserved = [temp_path] if temp_path.exists() else []
+        preserved.extend(
+            temp_path.parent.glob(f".{temp_path.name}.hermes-delete-*")
+        )
+        assert any(
+            path.read_text(encoding="utf-8") == "human temp replacement"
+            for path in preserved
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_list_scans_for_snapshot_missing_from_valid_index(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        first = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        session_dir = Path(first["result"]["path"]).parent
+        index = session_dir / server._SPAWN_TREE_INDEX
+        first_index_entry = index.read_text(encoding="utf-8")
+        second = server._methods["spawn_tree.save"](
+            "r2", {"session_id": "session-1", "subagents": [{"id": "b"}]}
+        )
+        # Simulate a transient append failure: the index remains valid but is
+        # missing the second successfully published snapshot.
+        index.write_text(first_index_entry, encoding="utf-8")
+
+        listed = server._methods["spawn_tree.list"](
+            "r3", {"session_id": "session-1"}
+        )
+
+        assert {entry["path"] for entry in listed["result"]["entries"]} == {
+            first["result"]["path"],
+            second["result"]["path"],
+        }
     finally:
         reset_hermes_home_override(token)

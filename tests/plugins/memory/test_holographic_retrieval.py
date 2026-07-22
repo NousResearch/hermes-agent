@@ -127,3 +127,112 @@ def test_prefetch_stopword_only_query_empty(retriever_with_facts):
     results = retriever_with_facts.search("the and of")
     # Either zero results or it errored-gracefully to [] — both are fine
     assert isinstance(results, list)
+
+
+# ---------------------------------------------------------------------------
+# LIKE fallback — CJK sub-string matching and LIKE metacharacter escaping
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def retriever_with_cjk_facts(tmp_path):
+    """MemoryStore seeded with CJK facts for LIKE-fallback tests."""
+    db_path = tmp_path / "test_cjk.db"
+    store = MemoryStore(str(db_path))
+    store.add_fact(
+        content="香港腾讯云服务器配置记录",
+        category="infra",
+        tags="香港,腾讯,cloud",
+    )
+    store.add_fact(
+        content="sing-box 代理节点部署在东京",
+        category="infra",
+        tags="sing-box,proxy",
+    )
+    store.add_fact(
+        content="数据库连接池最大100，最小10",
+        category="db",
+        tags="mysql,池",
+    )
+    store.add_fact(
+        content="IP地址 43.132.88.99 属于香港机房",
+        category="infra",
+        tags="ip,香港",
+    )
+    retriever = FactRetriever(store=store)
+    yield retriever
+    store.close()
+
+
+def test_cjk_substring_in_content(retriever_with_cjk_facts):
+    """Searching a CJK sub-string should match via LIKE fallback.
+
+    FTS5's unicode61 tokenizer indexes ``"香港腾讯云服务器配置记录"``
+    as a single token, so searching ``"香港"`` returns zero FTS5 hits.
+    The LIKE fallback catches it.
+    """
+    results = retriever_with_cjk_facts.search("香港")
+    assert len(results) >= 1
+    # Should find both facts containing "香港"
+    contents = [r["content"] for r in results]
+    assert any("香港腾讯云" in c for c in contents)
+    assert any("43.132" in c for c in contents)
+
+
+def test_cjk_substring_in_tags(retriever_with_cjk_facts):
+    """LIKE fallback scans tags column too, not just content."""
+    results = retriever_with_cjk_facts.search("腾讯")
+    assert len(results) >= 1
+    contents = [r["content"] for r in results]
+    assert any("香港腾讯云" in c for c in contents)
+
+
+def test_like_fallback_merges_with_fts5_dedup(retriever_with_cjk_facts):
+    """LIKE results that FTS5 already returned are de-duplicated."""
+    # "sing-box" contains a hyphen — FTS5 sanitizer strips it and
+    # matches via "sing" OR "box". LIKE also matches the sub-string.
+    # The merge should not produce duplicates.
+    results = retriever_with_cjk_facts.search("sing-box")
+    fact_ids = [r["fact_id"] for r in results]
+    assert len(fact_ids) == len(set(fact_ids)), "duplicate fact_ids in results"
+
+
+def test_literal_percent_is_escaped(retriever_with_cjk_facts):
+    """User input containing % must be treated as a literal, not wildcard."""
+    # Insert a fact containing a literal % sign
+    retriever_with_cjk_facts.store.add_fact(
+        content="磁盘使用率 95%，需要扩容",
+        category="ops",
+    )
+    # Searching "95%" should match the fact with literal "95%"
+    results = retriever_with_cjk_facts.search("95%")
+    assert len(results) >= 1
+    assert any("95%" in r["content"] for r in results)
+    # Should NOT match every fact (which a wildcard % would do)
+    assert len(results) <= 2  # at most the fact(s) with "95%"
+
+
+def test_literal_underscore_is_escaped(retriever_with_cjk_facts):
+    """User input containing _ must be treated as a literal, not wildcard."""
+    # Insert a fact with literal underscores
+    retriever_with_cjk_facts.store.add_fact(
+        content="环境变量 DATABASE_URL 需要更新",
+        category="config",
+    )
+    # Searching "DATABASE_URL" should match, _ should not act as wildcard
+    results = retriever_with_cjk_facts.search("DATABASE_URL")
+    assert len(results) >= 1
+    assert any("DATABASE_URL" in r["content"] for r in results)
+
+
+def test_numeric_fragment_matches(retriever_with_cjk_facts):
+    """Numeric IP fragments should match via LIKE fallback."""
+    results = retriever_with_cjk_facts.search("43.132")
+    assert len(results) >= 1
+    assert any("43.132" in r["content"] for r in results)
+
+
+def test_existing_english_search_unaffected(retriever_with_cjk_facts):
+    """Well-formed English queries still work (FTS5 path unaffected)."""
+    results = retriever_with_cjk_facts.search("sing-box")
+    assert len(results) >= 1
+    assert any("sing-box" in r["content"] for r in results)

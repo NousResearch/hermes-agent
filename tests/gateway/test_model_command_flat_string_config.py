@@ -145,7 +145,11 @@ async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path,
     cfg_path = _setup_isolated_home(
         tmp_path,
         monkeypatch,
-        {"default": "old-model", "provider": "openai-codex"},
+        {
+            "default": "old-model",
+            "provider": "openai-codex",
+            "context_length": 1_048_576,
+        },
     )
 
     result = await _make_runner()._handle_model_command(
@@ -156,6 +160,7 @@ async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path,
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
+    assert "context_length" not in written["model"]
 
 
 @pytest.mark.asyncio

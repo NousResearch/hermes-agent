@@ -25,20 +25,24 @@
     in
     {
       devShells.default = pkgs.mkShell {
-        packages =
-          with pkgs;
-          [
-            (pkgs.runCommand "hermes" { } ''
-              mkdir -p $out/bin
-              install -Dm755 ${../hermes} $out/bin/hermes
-            '')
-            (pkgs.runCommand "dev-sandbox" { } ''
-              mkdir -p $out/bin
-              install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
-            '')
-            uv
-          ]
-          ++ self'.packages.default.passthru.devDeps;
+        packages = with pkgs; [
+          (pkgs.runCommand "hermes" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../hermes} $out/bin/hermes
+          '')
+          (pkgs.runCommand "dev-sandbox" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+          '')
+          uv
+          # Headless Wayland compositor for E2E tests (test:e2e:visual).
+          # cage renders a single client with no window management, so
+          # the Electron window opens at a fixed size without tiling.
+          # libglvnd provides libEGL.so.1 that cage needs on NixOS.
+          cage
+          libglvnd
+        ]
+        ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
           ${combinedNonNpm}
           ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}

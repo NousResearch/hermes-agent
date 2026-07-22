@@ -100,6 +100,27 @@ describe('ClarifyTool settled view', () => {
     expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
   })
 
+  it('marks the shell selectable so choice/question text can be copied', () => {
+    // Body + button rules set user-select:none; data-selectable-text opts back in.
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          { question: 'Pick one long option?', choices: ['alpha with detail', 'beta'] },
+          {
+            question: 'Pick one long option?',
+            choices_offered: ['alpha with detail', 'beta'],
+            user_response: 'alpha with detail'
+          },
+          'clarify-selectable'
+        )}
+      />
+    )
+
+    const shell = document.querySelector('[data-slot="clarify-inline"]')
+    expect(shell).toBeTruthy()
+    expect(shell?.getAttribute('data-selectable-text')).toBe('true')
+  })
+
   it('labels an empty response as Skipped', () => {
     renderClarify(
       <ClarifyTool

@@ -41,6 +41,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
@@ -177,6 +178,104 @@ def _load_config() -> dict:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Acceptance addendum (definition-of-done propagation)
+#
+# Reviewers judge decomposed child cards against a board charter the
+# implementing worker never sees: the child body is the worker's entire
+# context (see _SYSTEM_PROMPT), so acceptance criteria that live only in
+# reviewer-side files produce rejects the worker could not have avoided.
+# These helpers resolve the board's definition-of-done source and append
+# a bounded extract to every child body the decomposer authors.
+# ---------------------------------------------------------------------------
+
+_ACCEPTANCE_HEADER = "## Definition of done (auto-injected from board review charter)"
+_ACCEPTANCE_MAX_CHARS = 3500
+# Charter sections whose headings match these keywords are the ones that
+# encode acceptance criteria (mirrors the reviewer-side section parser).
+_ACCEPTANCE_SECTION_KEYWORDS = ("always verify", "automatic fail")
+
+
+def _acceptance_source_paths(board_slug: str) -> list[Path]:
+    """Candidate definition-of-done files for ``board_slug``, in precedence order.
+
+    1. ``<board_dir>/ACCEPTANCE.md`` — per-board override.
+    2. ``<kanban_home>/kanban/charters/DEFAULT-REVIEW.md`` — the shared
+       review charter, when the deployment has one.
+    """
+    paths: list[Path] = []
+    try:
+        if board_slug:
+            paths.append(kb.board_dir(board_slug) / "ACCEPTANCE.md")
+        paths.append(kb.kanban_home() / "kanban" / "charters" / "DEFAULT-REVIEW.md")
+    except Exception:  # pragma: no cover - path resolution never raises today
+        pass
+    return paths
+
+
+def _extract_acceptance_sections(text: str) -> str:
+    """Return the acceptance-bearing sections of a charter document.
+
+    Keeps ``## ...`` sections whose heading matches
+    ``_ACCEPTANCE_SECTION_KEYWORDS``; when none match (the file is not a
+    structured charter), the whole text is used. Output is capped at
+    ``_ACCEPTANCE_MAX_CHARS`` so a long charter cannot bloat card bodies.
+    """
+    lines = text.splitlines()
+    kept: list[str] = []
+    keeping = False
+    for line in lines:
+        if line.startswith("## "):
+            heading = line.lower()
+            keeping = any(k in heading for k in _ACCEPTANCE_SECTION_KEYWORDS)
+        if keeping:
+            kept.append(line)
+    extract = "\n".join(kept).strip() if kept else text.strip()
+    if len(extract) > _ACCEPTANCE_MAX_CHARS:
+        extract = extract[:_ACCEPTANCE_MAX_CHARS].rstrip() + "\n[truncated]"
+    return extract
+
+
+def _acceptance_addendum(kanban_cfg: dict, board_slug: str) -> Optional[str]:
+    """Build the definition-of-done addendum for decomposed child bodies.
+
+    Returns ``None`` when the feature is disabled
+    (``kanban.decompose_acceptance_addendum: false``) or no source file
+    exists — decomposition proceeds exactly as before in that case.
+    """
+    if not bool(kanban_cfg.get("decompose_acceptance_addendum", True)):
+        return None
+    for path in _acceptance_source_paths(board_slug):
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        extract = _extract_acceptance_sections(text)
+        if not extract:
+            continue
+        return (
+            f"{_ACCEPTANCE_HEADER}\n"
+            f"(source: {path})\n\n"
+            f"{extract}"
+        )
+    return None
+
+
+def _append_addendum(body: str, addendum: Optional[str]) -> str:
+    # A bodyless card stays bodyless: an addendum with no spec above it
+    # would flip downstream "has a body?" checks while telling the worker
+    # nothing about the task itself.
+    if not body or not addendum:
+        return body
+    # Idempotency guard: never stack a second copy (e.g. a re-decomposed
+    # card whose body already carries the addendum).
+    if _ACCEPTANCE_HEADER in body:
+        return body
+    return f"{body}\n\n{addendum}"
+
+
 def _resolve_orchestrator_profile(cfg: dict) -> str:
     """Resolve which profile owns the root/orchestration task after fan-out.
 
@@ -295,6 +394,7 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    acceptance = _acceptance_addendum(kanban_cfg, kb.get_current_board())
     roster, valid_names = _build_roster()
 
     try:
@@ -350,6 +450,8 @@ def decompose_task(
         new_body = parsed.get("body")
         title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
         body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
+        if body_val is not None:
+            body_val = _append_addendum(body_val.strip(), acceptance)
         assignee_val = None
         if not task.assignee:
             assignee_val = _normalize_assignee_choice(
@@ -424,7 +526,7 @@ def decompose_task(
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
         children.append({
             "title": title.strip()[:200],
-            "body": body.strip(),
+            "body": _append_addendum(body.strip(), acceptance),
             "assignee": chosen,
             "parents": clean_parents,
         })

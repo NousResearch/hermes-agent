@@ -4959,3 +4959,186 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Link forensics + inversion detection + supersede (lane-churn fixes)
+# ---------------------------------------------------------------------------
+
+def _event_kinds(conn, tid):
+    return [e.kind for e in kb.list_events(conn, tid)]
+
+
+def _events_of_kind(conn, tid, kind):
+    return [e for e in kb.list_events(conn, tid) if e.kind == kind]
+
+
+def test_create_task_with_parents_emits_linked_events(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        b = kb.create_task(conn, title="b", parents=[a])
+        linked = _events_of_kind(conn, b, "linked")
+        assert len(linked) == 1
+        payload = linked[0].payload
+        assert payload == {"parent": a, "child": b, "via": "create_task"}
+
+
+def test_decompose_root_as_child_emits_linked_events(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn, root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "c1", "body": "b1", "assignee": None, "parents": []},
+                {"title": "c2", "body": "b2", "assignee": None, "parents": [0]},
+            ],
+            author="test",
+        )
+        linked = _events_of_kind(conn, root, "linked")
+        via_root = [
+            e.payload for e in linked
+            if (e.payload or {}).get("via") == "decompose_root_as_child"
+        ]
+        assert {p["parent"] for p in via_root} == set(child_ids)
+        assert all(p["child"] == root for p in via_root)
+
+
+def test_dependency_wait_with_live_children_flags_inversion(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root")
+        child = kb.create_task(conn, title="child", parents=[root])
+        assert kb.get_task(conn, child).status == "todo"
+        ok = kb.block_task(
+            conn, root, reason="waiting for downstream", kind="dependency",
+        )
+        assert ok
+        inversion = _events_of_kind(conn, root, "dependency_inversion_suspected")
+        assert len(inversion) == 1
+        payload = inversion[0].payload
+        assert payload["starved_children"] == [child]
+
+
+def test_dependency_wait_without_children_does_not_flag(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        leaf = kb.create_task(conn, title="leaf", parents=[parent])
+        # Promote the leaf by finishing the parent, then claim+park it.
+        kb.complete_task(conn, parent, result="done")
+        assert kb.get_task(conn, leaf).status == "ready"
+        ok = kb.block_task(
+            conn, leaf, reason="waiting on other lane", kind="dependency",
+        )
+        assert ok
+        assert _events_of_kind(conn, leaf, "dependency_inversion_suspected") == []
+
+
+def test_supersede_archives_owned_parked_cards(kanban_home):
+    with kb.connect() as conn:
+        old = kb.create_task(
+            conn, title="stale plan",
+            created_by="worker:orchestrator:t_root",
+        )
+        new = kb.create_task(conn, title="replacement plan")
+        superseded, skipped = kb.supersede_tasks(
+            conn, [old], new_task_id=new, actor="orchestrator",
+        )
+        assert superseded == [old]
+        assert skipped == []
+        assert kb.get_task(conn, old).status == "archived"
+        sup = _events_of_kind(conn, old, "superseded")
+        assert len(sup) == 1
+        assert sup[0].payload["by"] == new
+        comments = kb.list_comments(conn, old)
+        assert any("Superseded by" in c.body for c in comments)
+
+
+def test_supersede_skips_unowned_running_done_and_missing(kanban_home):
+    with kb.connect() as conn:
+        unowned = kb.create_task(conn, title="not yours", created_by="worker:other:t_z")
+        done = kb.create_task(conn, title="finished", created_by="worker:orchestrator:t_root")
+        kb.complete_task(conn, done, result="ok")
+        new = kb.create_task(conn, title="replacement")
+        superseded, skipped = kb.supersede_tasks(
+            conn, [unowned, done, "t_nonexistent0"],
+            new_task_id=new, actor="orchestrator",
+        )
+        assert superseded == []
+        assert set(skipped) == {unowned, done, "t_nonexistent0"}
+        assert kb.get_task(conn, unowned).status != "archived"
+        assert kb.get_task(conn, done).status == "done"
+
+
+def test_supersede_never_retires_self_or_replacement(kanban_home):
+    with kb.connect() as conn:
+        caller = kb.create_task(conn, title="caller", created_by="worker:orchestrator:t_r")
+        new = kb.create_task(conn, title="replacement")
+        superseded, skipped = kb.supersede_tasks(
+            conn, [caller, new], new_task_id=new,
+            actor="orchestrator", caller_task_id=caller,
+        )
+        assert superseded == []
+        assert set(skipped) == {caller, new}
+
+
+def test_supersede_trusts_children_of_caller_task(kanban_home):
+    with kb.connect() as conn:
+        caller = kb.create_task(conn, title="caller root")
+        old = kb.create_task(
+            conn, title="child card", parents=[caller],
+            created_by="dashboard:human",
+        )
+        new = kb.create_task(conn, title="replacement")
+        superseded, skipped = kb.supersede_tasks(
+            conn, [old], new_task_id=new,
+            actor="orchestrator", caller_task_id=caller,
+        )
+        assert superseded == [old]
+        assert skipped == []
+
+
+def test_create_task_duplicate_parent_ids_emit_one_linked_event(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        b = kb.create_task(conn, title="b", parents=[a, a])
+        linked = _events_of_kind(conn, b, "linked")
+        assert len(linked) == 1
+        rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_links WHERE child_id = ?", (b,),
+        ).fetchone()
+        assert rows["n"] == 1
+
+
+def test_supersede_running_card_gets_no_false_provenance(kanban_home):
+    with kb.connect() as conn:
+        running = kb.create_task(
+            conn, title="claimed mid-flight",
+            created_by="worker:orchestrator:t_root",
+        )
+        assert kb.claim_task(conn, running, claimer="w1") is not None
+        assert kb.get_task(conn, running).status == "running"
+        new = kb.create_task(conn, title="replacement")
+        superseded, skipped = kb.supersede_tasks(
+            conn, [running], new_task_id=new, actor="orchestrator",
+        )
+        assert superseded == []
+        assert skipped == [running]
+        # The false-audit-trail regression: a card that was NOT archived
+        # must carry neither the event nor the comment.
+        assert _events_of_kind(conn, running, "superseded") == []
+        assert not any(
+            "Superseded by" in c.body for c in kb.list_comments(conn, running)
+        )
+
+
+def test_supersede_with_no_actor_identity_cannot_use_created_by_trust(kanban_home):
+    with kb.connect() as conn:
+        old = kb.create_task(
+            conn, title="stale", created_by="worker:orchestrator:t_root",
+        )
+        new = kb.create_task(conn, title="replacement")
+        superseded, skipped = kb.supersede_tasks(
+            conn, [old], new_task_id=new, actor=None,
+        )
+        assert superseded == []
+        assert skipped == [old]

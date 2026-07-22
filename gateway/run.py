@@ -3056,6 +3056,37 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _sanitize_reply_snippet(text: str | None, max_len: int = 500) -> str:
+    """Sanitize reply-to text for injection into the agent prompt.
+
+    Strips Markdown formatting so the agent receives clean plaintext
+    rather than raw table delimiters, emphasis markers, or other syntax
+    that would be confusing when truncated mid-structure (issue #69060).
+    Truncates at a word boundary with an ellipsis when the text is long.
+    """
+    import re
+
+    from gateway.platforms.helpers import strip_markdown
+
+    if not text:
+        return ""
+    # Strip Markdown table rows (separator lines like |---|---|)
+    text = re.sub(r"^\|[-| :]+\|\s*$", "", text, flags=re.MULTILINE)
+    # Clean up table cell pipes: "| val 1 | val 2 |" → "val 1 val 2"
+    text = re.sub(r"(?:^|\s)\|", " ", text, flags=re.MULTILINE)
+    text = re.sub(r"\|(?:\s|$)", " ", text)
+    plain = strip_markdown(text)
+    # Collapse runs of whitespace / newlines into single spaces
+    plain = " ".join(plain.split())
+    if len(plain) <= max_len:
+        return plain
+    # Truncate at the last space before max_len to avoid cutting words
+    truncated = plain[:max_len].rsplit(" ", 1)[0]
+    if not truncated:
+        truncated = plain[:max_len]
+    return truncated + "…"
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -11838,7 +11869,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            reply_snippet = _sanitize_reply_snippet(event.reply_to_text)
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

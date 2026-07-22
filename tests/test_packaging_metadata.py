@@ -267,6 +267,43 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
 
+def test_every_mcp_catalog_manifest_ships_in_both_wheel_and_sdist():
+    """Regression test for the bug class behind #39859.
+
+    optional-mcps/ is a bare data directory like locales/, but it is nested
+    (optional-mcps/<name>/manifest.yaml) and setuptools data-files flattens
+    every glob match into its single target dir — a shared glob would collapse
+    all manifests into one colliding path. Each catalog entry therefore needs
+    its OWN data-files target, which is easy to forget when adding an entry:
+    the repo checkout keeps working while packaged installs silently drop the
+    new entry from `hermes mcp catalog` (list_catalog() iterates the packaged
+    dir). Enforce one exact data-files entry per on-disk manifest.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+
+    on_disk = sorted((REPO_ROOT / "optional-mcps").glob("*/manifest.yaml"))
+    assert on_disk, "expected optional-mcps/<name>/manifest.yaml manifests on disk"
+
+    problems = []
+    for manifest in on_disk:
+        name = manifest.parent.name
+        target = f"optional-mcps/{name}"
+        expected = [f"optional-mcps/{name}/manifest.yaml"]
+        if data_files.get(target) != expected:
+            problems.append(
+                f"pyproject [tool.setuptools.data-files] must declare "
+                f'"{target}" = {expected} so the wheel ships this catalog entry'
+            )
+    assert not problems, "\n".join(problems)
+
+    # Sdist channel: MANIFEST.in grafts the whole directory.
+    manifest_in = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest_in, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships the catalog"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #

@@ -49,7 +49,10 @@ class TestUploadPasteRs:
     """Test paste.rs upload path."""
 
     def test_upload_paste_rs_success(self):
-        from hermes_cli.debug import _upload_paste_rs
+        from hermes_cli.debug import (
+            _PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES,
+            _upload_paste_rs,
+        )
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b"https://paste.rs/abc123\n"
@@ -60,6 +63,22 @@ class TestUploadPasteRs:
             url = _upload_paste_rs("hello world")
 
         assert url == "https://paste.rs/abc123"
+        mock_resp.read.assert_called_once_with(_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES + 1)
+
+    def test_upload_paste_rs_rejects_oversized_response(self):
+        from hermes_cli.debug import (
+            _PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES,
+            _upload_paste_rs,
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"x" * (_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES + 1)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen", return_value=mock_resp):
+            with pytest.raises(ValueError, match="paste\\.rs response exceeded"):
+                _upload_paste_rs("hello world")
 
     def test_upload_paste_rs_bad_response(self):
         from hermes_cli.debug import _upload_paste_rs
@@ -88,7 +107,10 @@ class TestUploadDpasteCom:
     """Test dpaste.com fallback upload path."""
 
     def test_upload_dpaste_com_success(self):
-        from hermes_cli.debug import _upload_dpaste_com
+        from hermes_cli.debug import (
+            _PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES,
+            _upload_dpaste_com,
+        )
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b"https://dpaste.com/ABCDEFG\n"
@@ -99,6 +121,22 @@ class TestUploadDpasteCom:
             url = _upload_dpaste_com("hello world", expiry_days=7)
 
         assert url == "https://dpaste.com/ABCDEFG"
+        mock_resp.read.assert_called_once_with(_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES + 1)
+
+    def test_upload_dpaste_com_rejects_oversized_response(self):
+        from hermes_cli.debug import (
+            _PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES,
+            _upload_dpaste_com,
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"x" * (_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES + 1)
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen", return_value=mock_resp):
+            with pytest.raises(ValueError, match="dpaste\\.com response exceeded"):
+                _upload_dpaste_com("hello world", expiry_days=7)
 
 
 class TestUploadToPastebin:

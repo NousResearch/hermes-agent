@@ -6,7 +6,54 @@ process, which imports ``run_agent`` directly rather than going through the
 gateway.  See #68178.
 """
 
+from types import SimpleNamespace
+
 import pytest
+
+
+class TestCodeSkewFinalization:
+    def test_code_skew_returns_a_finalized_result_without_entering_the_agent_loop(self, monkeypatch):
+        """A detected code skew must return the restart-required result cleanly."""
+        from agent import conversation_loop
+
+        turn_context = SimpleNamespace(
+            user_message="hello",
+            original_user_message="hello",
+            messages=[],
+            conversation_history=[],
+            active_system_prompt="",
+            effective_task_id="task",
+            turn_id="turn",
+            current_turn_user_idx=0,
+            should_review_memory=False,
+            plugin_user_context=None,
+            ext_prefetch_cache=None,
+        )
+        monkeypatch.setattr(
+            conversation_loop,
+            "build_turn_context",
+            lambda *_args, **_kwargs: turn_context,
+        )
+        monkeypatch.setattr(
+            conversation_loop,
+            "finalize_turn",
+            lambda _agent, **kwargs: kwargs,
+            raising=False,
+        )
+
+        agent = SimpleNamespace(
+            api_mode="",
+            max_iterations=1,
+            iteration_budget=SimpleNamespace(remaining=1),
+            _budget_grace_call=False,
+            _check_code_skew_before_turn=lambda: "boot revision differs from source revision",
+        )
+
+        result = conversation_loop.run_conversation(agent, "hello")
+
+        assert result["failed"] is True
+        assert result["_turn_exit_reason"] == "code_skew_detected"
+        assert "please restart the application" in result["final_response"].lower()
 
 
 class TestAgentCodeSkewCaching:

@@ -20,6 +20,10 @@ API_PATH = (
     Path(__file__).resolve().parents[2]
     / "skills/productivity/google-workspace/scripts/google_api.py"
 )
+SETUP_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "skills/productivity/google-workspace/scripts/setup.py"
+)
 
 
 @pytest.fixture
@@ -51,6 +55,19 @@ def api_module(monkeypatch, tmp_path):
     module._gws_binary = lambda: "/usr/bin/gws"
     # Bypass authentication check — no real token file in CI.
     module._ensure_authenticated = lambda: None
+    return module
+
+
+@pytest.fixture
+def setup_script_module(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    spec = importlib.util.spec_from_file_location("gws_setup_test", SETUP_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
     return module
 
 
@@ -484,3 +501,113 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+def test_api_tasks_create_uses_gws_insert(api_module, capsys):
+    captured = {}
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        captured["parts"] = parts
+        captured["params"] = params
+        captured["body"] = body
+        return {"id": "task-1", "title": "Follow up", "status": "needsAction"}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        tasklist_id="list-1",
+        title="Follow up",
+        notes="Call Alice",
+        due="2026-03-01",
+        parent="parent-1",
+        previous="prev-1",
+        func=api_module.tasks_create,
+    )
+
+    api_module.tasks_create(args)
+
+    assert captured["parts"] == ["tasks", "tasks", "insert"]
+    assert captured["params"] == {"tasklist": "list-1", "parent": "parent-1", "previous": "prev-1"}
+    assert captured["body"] == {
+        "title": "Follow up",
+        "notes": "Call Alice",
+        "due": "2026-03-01T00:00:00.000Z",
+    }
+    result = json.loads(capsys.readouterr().out)
+    assert result["operationStatus"] == "created"
+    assert result["id"] == "task-1"
+
+
+def test_api_tasks_move_uses_gws_move(api_module, capsys):
+    captured = {}
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        captured["parts"] = parts
+        captured["params"] = params
+        captured["body"] = body
+        return {"id": "task-1", "title": "Moved", "status": "needsAction", "position": "0002"}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        tasklist_id="list-1",
+        task_id="task-1",
+        parent="parent-1",
+        previous="prev-1",
+        func=api_module.tasks_move,
+    )
+
+    api_module.tasks_move(args)
+
+    assert captured["parts"] == ["tasks", "tasks", "move"]
+    assert captured["params"] == {"tasklist": "list-1", "task": "task-1", "parent": "parent-1", "previous": "prev-1"}
+    assert captured["body"] is None
+    result = json.loads(capsys.readouterr().out)
+    assert result["operationStatus"] == "moved"
+    assert result["position"] == "0002"
+
+
+def test_api_tasks_update_list_uses_gws_patch(api_module, capsys):
+    captured = {}
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        captured["parts"] = parts
+        captured["params"] = params
+        captured["body"] = body
+        return {"id": "list-1", "title": "Work Projects"}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        tasklist_id="list-1",
+        title="Work Projects",
+        func=api_module.tasks_list_update,
+    )
+
+    api_module.tasks_list_update(args)
+
+    assert captured["parts"] == ["tasks", "tasklists", "patch"]
+    assert captured["params"] == {"tasklist": "list-1"}
+    assert captured["body"] == {"title": "Work Projects"}
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "updated"
+    assert result["title"] == "Work Projects"
+
+
+def test_api_tasks_due_normalizes_date_and_naive_datetime(api_module):
+    assert api_module._tasks_due("2026-03-01") == "2026-03-01T00:00:00.000Z"
+    assert api_module._tasks_due("2026-03-01T12:30:00") == "2026-03-01T12:30:00.000Z"
+    assert api_module._tasks_due("2026-03-01T12:30:00Z") == "2026-03-01T12:30:00.000Z"
+
+
+def test_setup_tasks_service_scope_is_selectable(setup_script_module):
+    scopes, services = setup_script_module._scopes_for_services("tasks")
+    assert scopes == ["https://www.googleapis.com/auth/tasks"]
+    assert services == ["tasks"]
+
+
+def test_setup_requested_scope_metadata_limits_missing_scope_warning(setup_script_module):
+    payload = {
+        "scopes": ["https://www.googleapis.com/auth/tasks"],
+        "hermes_requested_scopes": ["https://www.googleapis.com/auth/tasks"],
+    }
+    assert setup_script_module._missing_scopes_from_payload(payload) == []
+
+    payload["scopes"] = []
+    assert setup_script_module._missing_scopes_from_payload(payload) == []

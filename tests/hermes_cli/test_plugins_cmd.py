@@ -390,6 +390,21 @@ class TestReadManifest:
         result = _read_manifest(tmp_path)
         assert result == {}
 
+    def test_non_mapping_top_level_returns_empty_and_logs(self, tmp_path, caplog):
+        """A plugin.yaml whose top level is a list/scalar (not a mapping) must
+        return {} and warn — not a non-dict that explodes on manifest.get(...)
+        mid-scan and aborts plugin discovery. (#14086)"""
+        (tmp_path / "plugin.yaml").write_text("- just\n- a\n- list\n")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
+            result = _read_manifest(tmp_path)
+        assert result == {}
+        assert any("must be a mapping" in r.message for r in caplog.records)
+
+    def test_scalar_top_level_returns_empty(self, tmp_path):
+        (tmp_path / "plugin.yaml").write_text("just-a-string\n")
+        result = _read_manifest(tmp_path)
+        assert result == {}
+
 
 # ── cmd_install tests ─────────────────────────────────────────────────────────
 

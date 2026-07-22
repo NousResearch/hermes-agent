@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.copilot_acp_client import CopilotACPClient, _format_messages_as_prompt
@@ -133,6 +134,123 @@ class FormatMessagesAsPromptTests(unittest.TestCase):
         self.assertEqual(transcript, "User:\nhi")
         self.assertNotIn("<tool_call>", transcript)
         self.assertNotIn("read_file", transcript)
+
+    def test_multiple_tool_calls_on_one_assistant_turn(self) -> None:
+        prompt = _format_messages_as_prompt(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"a"}',
+                            },
+                        },
+                        {
+                            "id": "c2",
+                            "type": "function",
+                            "function": {
+                                "name": "search_files",
+                                "arguments": '{"query":"b"}',
+                            },
+                        },
+                    ],
+                }
+            ]
+        )
+        transcript = self._transcript_section(prompt)
+        self.assertEqual(transcript.count("<tool_call>"), 2)
+        self.assertLess(transcript.index('"c1"'), transcript.index('"c2"'))
+        first = self._first_tool_call_payload(prompt)
+        self.assertEqual(first["id"], "c1")
+        self.assertEqual(first["function"]["name"], "read_file")
+        self.assertIsInstance(first["function"]["arguments"], str)
+        self.assertEqual(json.loads(first["function"]["arguments"]), {"path": "a"})
+        second_start = transcript.index("</tool_call>") + len("</tool_call>")
+        second_block_start = transcript.index("<tool_call>", second_start) + len(
+            "<tool_call>"
+        )
+        second_block_end = transcript.index("</tool_call>", second_block_start)
+        second = json.loads(transcript[second_block_start:second_block_end])
+        self.assertEqual(second["id"], "c2")
+        self.assertEqual(second["function"]["name"], "search_files")
+        self.assertIsInstance(second["function"]["arguments"], str)
+        self.assertEqual(json.loads(second["function"]["arguments"]), {"query": "b"})
+
+    def test_nameless_tool_call_skipped_without_dropping_content(self) -> None:
+        prompt = _format_messages_as_prompt(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Still here.",
+                    "tool_calls": [
+                        {"id": "bad", "type": "function", "function": {"arguments": "{}"}},
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"x"}',
+                            },
+                        },
+                    ],
+                }
+            ]
+        )
+        transcript = self._transcript_section(prompt)
+        self.assertIn("Still here.", transcript)
+        self.assertEqual(transcript.count("<tool_call>"), 1)
+        payload = self._first_tool_call_payload(prompt)
+        self.assertEqual(payload["id"], "c1")
+        self.assertEqual(payload["function"]["name"], "read_file")
+
+    def test_flat_shape_tool_call_arguments_are_preserved(self) -> None:
+        prompt = _format_messages_as_prompt(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "flat1",
+                            "name": "read_file",
+                            "arguments": {"path": "z"},
+                        }
+                    ],
+                }
+            ]
+        )
+        payload = self._first_tool_call_payload(prompt)
+        self.assertEqual(payload["id"], "flat1")
+        self.assertEqual(payload["function"]["name"], "read_file")
+        self.assertIsInstance(payload["function"]["arguments"], str)
+        self.assertEqual(json.loads(payload["function"]["arguments"]), {"path": "z"})
+
+    def test_object_shape_tool_call_arguments_are_preserved(self) -> None:
+        prompt = _format_messages_as_prompt(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        SimpleNamespace(
+                            id="obj1",
+                            name="read_file",
+                            arguments={"path": "z"},
+                        )
+                    ],
+                }
+            ]
+        )
+        payload = self._first_tool_call_payload(prompt)
+        self.assertEqual(payload["id"], "obj1")
+        self.assertEqual(payload["function"]["name"], "read_file")
+        self.assertIsInstance(payload["function"]["arguments"], str)
+        self.assertEqual(json.loads(payload["function"]["arguments"]), {"path": "z"})
 
 
 class _FakeProcess:

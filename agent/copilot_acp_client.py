@@ -281,6 +281,8 @@ def _normalize_tool_call_payload(tool_call: Any) -> dict[str, Any] | None:
         return None
     call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None) or ""
     arguments = getattr(fn, "arguments", None) if fn is not None else None
+    if arguments is None:
+        arguments = getattr(tool_call, "arguments", None)
     return {
         "id": str(call_id),
         "type": getattr(tool_call, "type", None) or "function",

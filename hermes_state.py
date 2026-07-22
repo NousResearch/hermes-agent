@@ -1137,6 +1137,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._apply_read_pragmas()
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1157,6 +1158,7 @@ class SessionDB:
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
+                self._apply_read_pragmas()
                 self._init_schema()
 
             try:
@@ -1626,6 +1628,22 @@ class SessionDB:
                         logger.debug(
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
+
+    def _apply_read_pragmas(self):
+        """Apply connection-level PRAGMAs for performance.
+
+        These are connection-level settings — every new connection must
+        re-apply them.  The defaults (2 MB page cache, no mmap, file-backed
+        temp, fsync on every write) are tuned for embedded use; state.db
+        is 2+ GB and runs on resource-constrained VMs.
+        """
+        try:
+            self._conn.execute("PRAGMA cache_size=-64000")       # 64 MB page cache
+            self._conn.execute("PRAGMA mmap_size=2147483648")     # 2 GB mmap (address space, not RAM)
+            self._conn.execute("PRAGMA temp_store=MEMORY")        # temp tables/storage in memory
+            self._conn.execute("PRAGMA synchronous=OFF")          # skip fsync for write latency
+        except sqlite3.OperationalError as exc:
+            logger.debug("connection PRAGMAs not fully applied (read-only?): %s", exc)
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.

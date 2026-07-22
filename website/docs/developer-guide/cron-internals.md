@@ -267,6 +267,25 @@ By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
+### Failure Escalation
+
+When a cron agent's task fails at the content level — a skill is not found, a tool keeps erroring, or the agent cannot complete the task — but the agent process itself succeeds, the agent can signal this by starting its response with `[FAILURE: reason]` (e.g., `[FAILURE: skill not found]`).
+
+The scheduler will:
+
+1. Mark the run as **failed** (even though the agent process succeeded).
+2. Deliver the agent's full response to the original target channel as usual.
+3. Optionally route a copy to a configured **escalation channel** for operator visibility.
+
+To enable escalation delivery, set `cron.failure_escalation_channel` in `config.yaml`:
+
+```yaml
+cron:
+  failure_escalation_channel: "discord:channel:123456789"
+```
+
+The marker must appear at the **start of the first line** — a `[FAILURE]` mention mid-sentence is ignored to avoid false positives. This is symmetric with `[SILENT]`: both are prefix-only markers that control post-run behavior.
+
 ### Session Isolation
 
 Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.

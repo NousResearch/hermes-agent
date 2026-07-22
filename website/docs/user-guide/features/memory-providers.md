@@ -634,6 +634,33 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### Memra
+
+EU-native persistent memory with hybrid semantic + lexical (BM25) recall, typed memories, supersede chains with audit trails, and staleness signals on every result. Cloud or fully-local via the same plugin.
+
+| | |
+|---|---|
+| **Best for** | EU/privacy-focused teams and agents that need auditable memory hygiene (supersede, trust states, tombstoned deletes) |
+| **Requires** | `pip install hermes-memra` + [Memra API key](https://usememra.com) (free tier) — or fully local via `pip install memra-local`, no cloud account |
+| **Data storage** | Memra Cloud (Hetzner, Helsinki — EU) or local SQLite (memra-local) |
+| **Cost** | Free tier / flat monthly plans (no per-token metering) |
+
+**Tools:** `memra_search` (hybrid semantic + lexical recall), `memra_remember` (store or supersede a fact), `memra_profile` (user/project profile context)
+
+**Setup:**
+```bash
+pip install hermes-memra
+echo "MEMRA_API_KEY=memra_live_your-key" >> ~/.hermes/.env
+hermes config set memory.provider memra
+```
+
+**Key features:**
+- Curated-by-default capture (`capture_mode`) — stores what matters instead of every turn
+- Pre-compression rescue: context about to be discarded by window compression is shipped to Memra and compressed server-side
+- Supersede-aware writes: correcting a fact retires the old version (with an audit chain) instead of leaving both in recall
+- Fully-local mode (`mode: local`) against [memra-local](https://pypi.org/project/memra-local/) — same tools, zero external calls
+- Circuit breaker on all network calls — a Memra outage never blocks the agent loop
+
 ---
 
 ## Provider Comparison
@@ -649,6 +676,7 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Memra** | Cloud (EU)/Local | Free/Paid | 3 | `hermes-memra` | Memory hygiene: supersede chains + staleness signals, EU-native |
 
 ## Profile Isolation
 

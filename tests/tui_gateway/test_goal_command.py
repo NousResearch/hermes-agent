@@ -182,6 +182,38 @@ def test_goal_requires_session(server):
     assert r["error"]["code"] == 4001
 
 
+def test_goal_set_updates_cmux_workspace_title(server, session, monkeypatch):
+    sid, _, s = session
+    s["session_key"] = "tui-goal-session-cmux-title"
+    config = {
+        "cmux": {
+            "auto_rename_workspace_on_goal": True,
+            "goal_title_prefix": "Goal: ",
+            "goal_title_max_chars": 60,
+        }
+    }
+    monkeypatch.setattr(server, "_load_cfg", lambda: config)
+    calls = []
+
+    def _rename(goal, *, config=None):
+        calls.append((goal, config))
+        return "Goal: Improve cmux workspace titles"
+
+    monkeypatch.setattr(server, "rename_cmux_workspace_for_goal", _rename)
+
+    r = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="Improve cmux workspace titles",
+        session_id=sid,
+    )
+
+    assert r["result"]["type"] == "send"
+    assert r["result"]["message"] == "Improve cmux workspace titles"
+    assert calls == [("Improve cmux workspace titles", config)]
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 

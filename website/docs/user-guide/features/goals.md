@@ -181,6 +181,14 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+cmux:
+  # When Hermes runs inside cmux, setting /goal <text> renames the current
+  # workspace to a compact title derived from the goal, e.g.
+  # "Goal: Fix failing CLI tests". Outside cmux this is ignored.
+  auto_rename_workspace_on_goal: true
+  goal_title_prefix: "Goal: "
+  goal_title_max_chars: 60
 ```
 
 ### Choosing the judge model

@@ -599,6 +599,24 @@ class TestStripThinkBlocks:
         assert "<function_calls>" not in result
         assert "after" in result
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "before <tool_call>{x}</function_call> after",
+                "before <tool_call>{x}after",
+            ),
+            (
+                "before <function_calls>{x}</tool_calls> after",
+                "before <function_calls>{x}after",
+            ),
+        ],
+    )
+    def test_mismatched_generic_tool_tags_preserve_opener_and_payload(
+        self, agent, text, expected
+    ):
+        assert agent._strip_think_blocks(text) == expected
+
     def test_gemma_function_name_block_stripped(self, agent):
         """Gemma-style: <function name="read"><parameter>...</parameter></function>."""
         text = (

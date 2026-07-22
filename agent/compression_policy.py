@@ -66,6 +66,13 @@ def should_compress_mid_turn(agent: Any, prompt_tokens: int) -> bool:
     if compressor is None:
         return False
     tokens = max(0, int(prompt_tokens or 0))
+    # Preserve the historical compressor contract when deferred timing is not
+    # enabled.  ContextCompressor.should_compress() is the authority for the
+    # normal threshold (and tests/plugins may intentionally customize that
+    # decision); the extra emergency-threshold gate exists only for deferred
+    # mode.
+    if not getattr(agent, "compression_defer_until_turn_end", False):
+        return bool(compressor.should_compress(tokens))
     if tokens < mid_turn_threshold_tokens(agent):
         return False
     return bool(compressor.should_compress(tokens))

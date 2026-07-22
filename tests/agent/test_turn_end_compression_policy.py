@@ -32,6 +32,12 @@ def test_historical_mode_still_compresses_at_soft_threshold_mid_turn():
     assert should_compress_mid_turn(agent, 80) is True
 
 
+def test_historical_mode_delegates_threshold_decision_to_compressor():
+    agent = _agent(deferred=False)
+    agent.context_compressor.should_compress = lambda _tokens: True
+    assert should_compress_mid_turn(agent, 1) is True
+
+
 def test_deferred_mode_does_not_interrupt_between_soft_and_emergency_thresholds():
     agent = _agent(deferred=True)
     assert mid_turn_threshold_tokens(agent) == 92

@@ -2483,6 +2483,48 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Hybrid per-message skill retrieval (issue #34823).
+        # BM25 lexical layer always runs when enabled — no config required,
+        # no API calls, ~1 ms per turn.
+        # Dense embedding layer activates only when ``embedding_model`` is set.
+        "semantic_search": {
+            # Master switch. When true, the top-k most relevant skills (by
+            # BM25 + optional dense re-ranking) are shown with full descriptions;
+            # all other skills are listed by name only. When false, the full
+            # index is injected on every turn (legacy behaviour).
+            # BM25-only is safe and zero-cost so enabled=True is the default.
+            "enabled": True,
+
+            # Number of skills shown with full "name: description" per turn.
+            # All remaining skills are shown as names only (agent can still
+            # call skill_view(name) on any of them). Increase if you have a
+            # large skill set and find that relevant skills are missed.
+            "top_k": 5,
+
+            # Dense embedding model. Leave empty for BM25-only (recommended
+            # unless you have a large skill library and a local/cheap embedding
+            # endpoint).  When set, embeddings are built in the background and
+            # the dense layer is added to the hybrid search automatically.
+            # Examples:
+            #   text-embedding-3-small   (OpenAI)
+            #   nomic-embed-text         (Ollama / local)
+            #   mxbai-embed-large        (Ollama / local)
+            "embedding_model": "",
+
+            # Provider for embedding calls.  Uses the same resolution chain as
+            # other auxiliary tasks (vision, compression, web_extract).
+            # "auto" = best available configured provider.
+            "embedding_provider": "auto",
+
+            # Direct OpenAI-compatible base URL for local embedding models
+            # (e.g. "http://localhost:11434/v1" for Ollama).
+            # Takes precedence over embedding_provider when non-empty.
+            "embedding_base_url": "",
+
+            # API key for embedding_base_url.
+            # Falls back to OPENAI_API_KEY when empty.
+            "embedding_api_key": "",
+        },
     },
 
     # Curator — background skill maintenance.

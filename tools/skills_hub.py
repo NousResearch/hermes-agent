@@ -3655,6 +3655,14 @@ def install_from_quarantine(
         content_hash(install_dir),
     )
 
+    # Invalidate the semantic skill index so the installed skill becomes
+    # searchable on the next session build.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([safe_skill_name])
+    except Exception:
+        pass  # index is best-effort; never block install
+
     return install_dir
 
 
@@ -3684,6 +3692,13 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+
+    # Invalidate the semantic skill index so the removed skill is dropped.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([skill_name])
+    except Exception:
+        pass  # index is best-effort; never block uninstall
 
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 

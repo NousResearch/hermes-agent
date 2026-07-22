@@ -707,6 +707,14 @@ def sync_skills(quiet: bool = False) -> dict:
     _write_manifest(manifest)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)
 
+    # Full index invalidation: bundled skills may have changed.
+    # The next session build will re-embed all stale entries.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate()
+    except Exception:
+        pass  # index is best-effort; never block sync
+
     return {
         "copied": copied,
         "updated": updated,

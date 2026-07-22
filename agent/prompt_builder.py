@@ -1498,62 +1498,25 @@ def _current_session_platform_hint() -> str:
         return ""
 
 
-def build_skills_system_prompt(
+def _gather_skills_by_category(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
-    compact_categories: "frozenset[str] | None" = None,
-) -> str:
-    """Build a compact skill index for the system prompt.
-
-    Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
-      2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
-         mtime/size manifest — survives process restarts
-
-    Falls back to a full filesystem scan when both layers miss.
-
-    External skill directories (``skills.external_dirs`` in config.yaml) are
-    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
-    are read-only — they appear in the index but new skills are always created
-    in the local dir.  Local skills take precedence when names collide.
-
-    ``compact_categories`` (e.g. from the coding posture — see
-    agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
-    """
+) -> tuple[dict[str, list[tuple[str, str]]], dict[str, str]]:
+    """Scan and return all available skills grouped by category, and category descriptions."""
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists() and not external_dirs:
-        return ""
+    skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    category_descriptions: dict[str, str] = {}
 
-    # ── Layer 1: in-process LRU cache ─────────────────────────────────
-    # Include the resolved platform so per-platform disabled-skill lists
-    # produce distinct cache entries (gateway serves multiple platforms).
+    if not skills_dir.exists() and not external_dirs:
+        return skills_by_category, category_descriptions
+
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
-    cache_key = (
-        str(skills_dir),
-        tuple(str(d) for d in external_dirs),
-        tuple(sorted(str(t) for t in (available_tools or set()))),
-        tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint,
-        tuple(sorted(disabled)),
-        tuple(sorted(compact_categories or ())),
-    )
-    with _SKILLS_PROMPT_CACHE_LOCK:
-        cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None:
-            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
-            return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
-
-    skills_by_category: dict[str, list[tuple[str, str]]] = {}
-    category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1625,9 +1588,6 @@ def build_skills_system_prompt(
         )
 
     # ── External skill directories ─────────────────────────────────────
-    # Scan external dirs directly (no snapshot caching — they're read-only
-    # and typically small).  Local skills already in skills_by_category take
-    # precedence: we track seen names and skip duplicates from external dirs.
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
@@ -1675,31 +1635,163 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
-    # Posture-driven category demotion (e.g. non-coding skills while pairing
-    # on code). Demoted categories stay in the index as a single names-only
-    # line — descriptions are dropped to cut noise, but every skill name
-    # remains visible so memory-anchored recall ("load <name>") keeps working.
-    # NEVER remove entries entirely: agent-created skills are the model's
-    # project memory, and models don't reach for skills_list to rediscover
-    # what the index stops showing them. Match on the top-level category
-    # segment so nested categories ("social-media/twitter") are demoted with
-    # their parent.
-    demoted = frozenset(
-        cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
-    )
+    return skills_by_category, category_descriptions
 
-    hidden_note = ""
-    if demoted:
-        hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
+
+def build_retrieved_skills_context(
+    query_text: str,
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+    compact_categories: "frozenset[str] | None" = None,
+) -> str:
+    """Run semantic retrieval on the query_text and format the top-k most relevant skills with full descriptions.
+
+    Returns a formatted markdown block of retrieved skills with full descriptions,
+    or an empty string if no skills are found or if query_text is empty.
+    """
+    if not query_text or not query_text.strip():
+        return ""
+
+    try:
+        from hermes_cli.config import load_config as _load_config
+        _cfg = _load_config()
+        _ss = (_cfg.get("skills") or {}).get("semantic_search") or {}
+        if not _ss.get("enabled", True):
+            return ""
+        _top_k = max(1, int(_ss.get("top_k", 5)))
+    except Exception:
+        return ""
+
+    skills_by_category, _ = _gather_skills_by_category(available_tools, available_toolsets)
+    if not skills_by_category:
+        return ""
+
+    _all_skills = [
+        {"name": name, "description": desc}
+        for cat_skills in skills_by_category.values()
+        for name, desc in cat_skills
+    ]
+
+    try:
+        from agent.skill_retrieval import retrieve_skills
+        featured_names = retrieve_skills(
+            query_text,
+            _all_skills,
+            top_k=_top_k,
+            embedding_cfg=_ss if _ss.get("embedding_model") else None,
         )
+    except Exception as e:
+        logger.debug("Semantic skill retrieval error: %s", e)
+        featured_names = {s["name"] for s in _all_skills[:_top_k]}
+
+    if not featured_names:
+        return ""
+
+    # Build the formatted block
+    lines = []
+    lines.append("### Retrieved Relevant Skills (full details)")
+    lines.append("The following skills were retrieved as highly relevant to the current turn:")
+    for name in sorted(featured_names):
+        desc = ""
+        for s in _all_skills:
+            if s["name"] == name:
+                desc = s["description"]
+                break
+        if desc:
+            lines.append(f"- **{name}**: {desc}")
+        else:
+            lines.append(f"- **{name}**")
+
+    return "\n".join(lines)
+
+
+def build_skills_system_prompt(
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+    compact_categories: "frozenset[str] | None" = None,
+) -> str:
+    """Build a compact skill index for the system prompt.
+
+    Two-layer cache:
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, platform, disabled, compact, semantic_search)
+      2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
+         mtime/size manifest — survives process restarts
+
+    Falls back to a full filesystem scan when both layers miss.
+
+    External skill directories (``skills.external_dirs`` in config.yaml) are
+    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
+    are read-only — they appear in the index but new skills are always created
+    in the local dir.  Local skills take precedence when names collide.
+
+    ``compact_categories`` (e.g. from the coding posture — see
+    agent/coding_context.py) demotes whole categories to a names-only line in
+    the rendered index. Nothing is ever hidden: every skill name stays
+    visible and loadable via ``skill_view`` / ``skills_list``; only the
+    descriptions are dropped, and a footer note explains the demotion.
+    """
+    skills_dir = get_skills_dir()
+    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+
+    # ── Layer 1: in-process LRU cache ─────────────────────────────────
+    # Include the resolved platform and semantic_search state.
+    try:
+        from hermes_cli.config import load_config as _load_config
+        _cfg = _load_config()
+        _ss = (_cfg.get("skills") or {}).get("semantic_search") or {}
+        _semantic_enabled = _ss.get("enabled", True)
+    except Exception:
+        _semantic_enabled = True
+
+    _platform_hint = _current_session_platform_hint()
+    disabled = get_disabled_skill_names(_platform_hint or None)
+    cache_key = (
+        str(skills_dir),
+        tuple(str(d) for d in external_dirs),
+        tuple(sorted(str(t) for t in (available_tools or set()))),
+        tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        _platform_hint,
+        tuple(sorted(disabled)),
+        tuple(sorted(compact_categories or ())),
+        _semantic_enabled,
+    )
+    with _SKILLS_PROMPT_CACHE_LOCK:
+        cached = _SKILLS_PROMPT_CACHE.get(cache_key)
+        if cached is not None:
+            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+            return cached
+
+    skills_by_category, category_descriptions = _gather_skills_by_category(
+        available_tools, available_toolsets
+    )
 
     if not skills_by_category:
         result = ""
     else:
+        # If semantic search is enabled, demote all categories to names-only.
+        # This keeps the system prompt byte-stable while full description content
+        # is injected dynamically per-message.
+        if _semantic_enabled:
+            demoted = frozenset(skills_by_category.keys())
+            hidden_note = (
+                "\n(Only skill names are listed in the system prompt to optimize caching. "
+                "The full descriptions of the most relevant skills for your current turn "
+                "are injected in the message below; you can also call skill_view(name) "
+                "to read any skill.)"
+            )
+        else:
+            demoted = frozenset(
+                cat for cat in skills_by_category
+                if cat.split("/", 1)[0] in (compact_categories or frozenset())
+            )
+            hidden_note = ""
+            if demoted:
+                hidden_note = (
+                    "\n(Categories marked [names only] are outside the current coding "
+                    "context, so their descriptions are omitted — the skills work "
+                    "normally and load with skill_view(name) as usual.)"
+                )
+
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category

@@ -339,6 +339,7 @@ export const ar: Translations = {
       providers: 'المزوّدون',
       providerAccounts: 'الحسابات',
       providerApiKeys: 'مفاتيح الواجهة البرمجية',
+      providerCustomEndpoints: 'النقاط الطرفية المخصصة',
       gateway: 'البوابة',
       apiKeys: 'الأدوات والمفاتيح',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -581,6 +582,11 @@ export const ar: Translations = {
         resumeDisplay: 'عرض سجل الجلسات المستأنفة',
         busyInputMode: 'سلوك الإدخال أثناء عمل الوكيل'
       },
+      desktop: {
+        repoScanEnabled: 'الاكتشاف التلقائي للمستودعات',
+        repoScanRoots: 'جذور اكتشاف المستودعات',
+        repoScanExcludePaths: 'مسارات المستودعات المستبعدة'
+      },
       agent: {
         maxTurns: 'الحد الأقصى لخطوات الوكيل',
         imageInputMode: 'مرفقات الصور',
@@ -644,13 +650,22 @@ export const ar: Translations = {
         edge: { voice: 'صوت Microsoft Edge' },
         openai: { model: 'نموذج OpenAI الصوتي', voice: 'صوت OpenAI' },
         elevenlabs: { voiceId: 'صوت ElevenLabs', modelId: 'نموذج ElevenLabs' },
-        xai: { voiceId: 'صوت xAI Grok', language: 'لغة xAI' },
+        xai: {
+          voiceId: 'صوت xAI Grok',
+          language: 'لغة xAI',
+          speed: 'سرعة تشغيل xAI',
+          autoSpeechTags: 'وسوم الكلام التلقائية في xAI',
+          optimizeStreamingLatency: 'تحسين مهلة البث في xAI',
+          sampleRate: 'معدل أخذ العينات في xAI',
+          bitRate: 'معدل البت في xAI'
+        },
         minimax: { model: 'نموذج MiniMax الصوتي', voiceId: 'صوت MiniMax' },
         mistral: { model: 'نموذج Mistral الصوتي', voiceId: 'صوت Mistral' },
         gemini: { model: 'نموذج Gemini الصوتي', voice: 'صوت Gemini' },
         neutts: { model: 'نموذج NeuTTS', device: 'جهاز NeuTTS' },
         kittentts: { model: 'نموذج KittenTTS', voice: 'صوت KittenTTS' },
-        piper: { voice: 'صوت Piper' }
+        piper: { voice: 'صوت Piper' },
+        deepinfra: { model: 'نموذج DeepInfra الصوتي', voice: 'صوت DeepInfra' }
       },
       memory: {
         memoryEnabled: 'الذاكرة المستمرة',
@@ -758,6 +773,11 @@ export const ar: Translations = {
         modalImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Modal.',
         daytonaImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Daytona.'
       },
+      desktop: {
+        repoScanEnabled: 'يفحص المجلدات المحلية بحثًا عن مستودعات Git لعرضها ضمن المشاريع.',
+        repoScanRoots: 'المجلدات التي سيجري فحصها. اتركها فارغة لفحص مجلد المنزل.',
+        repoScanExcludePaths: 'المجلدات التي سيُتخطى فحصها مع جميع المجلدات المتفرعة منها.'
+      },
       codeExecution: { mode: 'مدى تقييد تنفيذ الشيفرة بالمشروع الحالي.' },
       fileReadMaxChars: 'أقصى عدد من المحارف التي يقرأها هرمس في عملية قراءة ملف واحدة.',
       approvals: {
@@ -778,7 +798,12 @@ export const ar: Translations = {
         provider: 'المزوّد المستخدم لتحويل النص إلى كلام.',
         xai: {
           voiceId: 'معرّف صوت xAI، مثل eve، أو معرّف صوت مخصص.',
-          language: 'رمز لغة النطق، مثل en.'
+          language: 'رمز لغة النطق، مثل en.',
+          speed: 'سرعة التشغيل؛ أقل من واحد أبطأ، وواحد طبيعية، وأكثر من واحد أسرع.',
+          autoSpeechTags: 'يسمح لنموذج بإضافة وسوم صوتية تعبيرية إلى النص قبل توليد الكلام.',
+          optimizeStreamingLatency: 'موازنة المهلة والجودة؛ الصفر لأفضل جودة والاثنان لأقل مهلة.',
+          sampleRate: 'معدل أخذ عينات الصوت بالهرتز؛ الأعلى أجود لكنه ينتج ملفات أكبر.',
+          bitRate: 'معدل بت الصوت، ويُستخدم فقط مع ترميز إم بي ثري.'
         },
         neutts: { device: 'جهاز الاستنتاج المحلي لـ NeuTTS.' }
       },
@@ -933,6 +958,7 @@ export const ar: Translations = {
     config: {
       none: 'لا شيء',
       noneParen: '(لا شيء)',
+      builtinOnly: 'المضمّن فقط',
       notSet: 'غير مضبوط',
       commaSeparated: 'قيم مفصولة بفواصل',
       loading: 'جارٍ تحميل إعدادات هرمس...',
@@ -941,7 +967,9 @@ export const ar: Translations = {
       failedLoad: 'فشل تحميل الإعدادات',
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'استُوردت الإعدادات',
-      invalidJson: 'بيانات JSON غير صالحة'
+      invalidJson: 'بيانات JSON غير صالحة',
+      keepAwakeTitle: 'إبقاء الحاسوب مستيقظًا',
+      keepAwakeDesc: 'يمنع هذا الجهاز من السكون لتستمر المهام الطويلة أو الليلية، مع السماح بخفوت الشاشة.'
     },
     credentials: {
       pasteKey: 'لصق المفتاح',
@@ -956,6 +984,7 @@ export const ar: Translations = {
     envActions: {
       actionsFor: label => `إجراءات ${label}`,
       credentialActions: 'إجراءات بيانات الاعتماد',
+      manageInKeys: 'الإدارة ضمن مفاتيح الواجهة البرمجية',
       docs: 'التوثيق',
       hideValue: 'إخفاء القيمة',
       revealValue: 'إظهار القيمة',
@@ -1058,7 +1087,42 @@ export const ar: Translations = {
       signOutFailed: 'فشل تسجيل الخروج',
       testFailed: 'فشل اختبار البوابة البعيدة',
       applyFailed: 'تعذر تطبيق إعدادات البوابة',
-      saveFailed: 'تعذر حفظ إعدادات البوابة'
+      saveFailed: 'تعذر حفظ إعدادات البوابة',
+      sshTitle: 'الاتصال عبر SSH',
+      sshDesc:
+        'يُشغَّل هرمس على الجهاز البعيد عبر SSH ويُنشأ نفق إلى هذا التطبيق، فلا تحتاج إلى تشغيل خدمة أو كشف منفذ بنفسك. يلزم وصول يعمل بمفتاح SSH إلى المضيف.',
+      sshTrustHint: 'يُوثق أول مفتاح مضيف يظهر ويُثبّت، وأي تغيير لاحق يوقف الاتصال احترازيًا.',
+      sshHostTitle: 'المضيف',
+      sshHostDesc: 'اكتب user@host أو اسم مضيف معرّفًا في ملف إعداد SSH.',
+      sshHostPick: 'اختر مضيفًا…',
+      sshHostPickTitle: 'المضيف',
+      sshHostPickDesc: 'اسم مضيف من ملف إعداد SSH، أو خيار مخصص للكتابة يدويًا.',
+      sshHostCustom: 'مخصص، إدخال يدوي…',
+      sshUserTitle: 'المستخدم',
+      sshUserDesc: 'اتركه فارغًا لاستخدام ملف إعداد SSH أو مستخدمك الحالي.',
+      sshUserPlaceholder: 'من ملف إعداد SSH',
+      sshPortTitle: 'المنفذ',
+      sshPortDesc: 'اتركه فارغًا لاستخدام المنفذ 22 أو المنفذ المحدد في إعداد SSH.',
+      sshKeyTitle: 'ملف الهوية',
+      sshKeyDesc: 'مسار المفتاح الخاص. اتركه فارغًا لاستخدام وكيل SSH أو ملف الإعداد.',
+      sshHermesPathTitle: 'مسار هرمس، اختياري',
+      sshHermesPathDesc: 'المسار الكامل لأمر هرمس على الجهاز البعيد. اتركه فارغًا للاكتشاف التلقائي.',
+      sshHermesPathPlaceholder: 'اكتشاف تلقائي',
+      sshTestConnection: 'اختبار SSH',
+      sshConnect: 'اتصال',
+      sshButtonsHint: 'يسري الحفظ عند التشغيل التالي، أما الاتصال فيعيد الربط الآن.',
+      sshReachable: (host, platform) => `يمكن الوصول إلى ${host} على ${platform}، وقد عُثر على هرمس`,
+      sshIncompleteHost: 'أدخل مضيف SSH قبل الاتصال.',
+      sshErrUnreachable: 'تعذر الوصول إلى المضيف عبر SSH. تحقق من المضيف والمنفذ والشبكة.',
+      sshErrAuth:
+        'فشلت مصادقة SSH. حمّل مفتاحك في وكيل SSH أو حدد ملف هوية في إعداد SSH، لأن هرمس يشغّل الاتصال دون تفاعل.',
+      sshErrHostKey:
+        'تغير مفتاح المضيف منذ آخر اتصال. تحقق من أن التغيير متوقع، ثم احذف المفتاح القديم وأعد الاتصال.',
+      sshErrNotInstalled: 'هرمس غير مثبت على الجهاز البعيد. ثبّته هناك أو حدد مسار أمر هرمس.',
+      sshErrPlatform: 'نظام الجهاز البعيد غير مدعوم. يدعم اتصال سطح المكتب لينكس وماك وويندوز.',
+      sshErrTimeout: 'انتهت مهلة اتصال SSH. قد يكون المضيف غير متاح أو في وضع السكون.',
+      sshErrUpdateRequired: 'حدّث هرمس على الجهاز البعيد قبل الاتصال من تطبيق سطح المكتب.',
+      sshErrUnknown: 'فشل اتصال SSH.'
     },
     keys: {
       loading: 'جارٍ تحميل مفاتيح الواجهة البرمجية وبيانات الاعتماد...',
@@ -1485,11 +1549,22 @@ export const ar: Translations = {
       noProviderOptions: 'لا تتطلب مجموعة الأدوات هذه خيارات مزوّد؛ فعّلها وستعمل مع إعدادك الحالي.',
       noProviders: 'لا يتوفر مزوّدون لمجموعة الأدوات هذه حاليًا.',
       ready: 'جاهز',
+      needsSignIn: 'يحتاج تسجيل الدخول',
+      needsSetup: 'يحتاج إعدادًا',
       nousIncluded: 'مضمّن مع اشتراك Nous؛ سجّل الدخول إلى بوابة Nous لتفعيله.',
+      nousAuthNeededTitle: 'تسجيل الدخول إلى بوابة Nous',
+      nousAuthNeededMessage: provider => `حُفظ ${provider} لكنه لن يعمل قبل تسجيل الدخول إلى بوابة Nous.`,
+      nousAuthSignIn: 'تسجيل الدخول',
+      nousAuthDoneTitle: 'اتصلت بوابة Nous',
+      nousAuthDoneMessage: 'أصبحت الواجهات الخلفية المتاحة في اشتراكك نشطة.',
+      nousAuthFailed: 'لم يكتمل تسجيل الدخول إلى بوابة Nous',
       noApiKeyRequired: 'لا يلزم مفتاح واجهة برمجية.',
       postSetupHint: step =>
         `تتطلب هذه الواجهة تثبيتًا لمرة واحدة (${step}). تعمل على هذا الجهاز وقد تستغرق بضع دقائق.`,
+      postSetupInstalledHint: 'مثبّت. أعد تشغيل الإعداد فقط إذا وجدت مشكلة.',
       postSetupRun: 'تشغيل الإعداد',
+      postSetupRerun: 'إعادة تشغيل الإعداد',
+      postSetupInstalled: 'مثبّت',
       postSetupRunning: 'جارٍ التثبيت…',
       postSetupStarting: 'جارٍ البدء…',
       postSetupCompleteTitle: 'اكتمل الإعداد',
@@ -1497,6 +1572,16 @@ export const ar: Translations = {
       postSetupErrorTitle: 'اكتمل الإعداد مع أخطاء',
       postSetupErrorMessage: step => `راجع سجل ${step}.`,
       postSetupFailed: step => `فشل تشغيل إعداد ${step}`,
+      webSearchActive: backend => `البحث: ${backend}`,
+      webExtractActive: backend => `الاستخراج: ${backend}`,
+      webCapabilityUnset: 'غير محدد',
+      webUseForSearch: 'استخدامه للبحث',
+      webUseForExtract: 'استخدامه للاستخراج',
+      webUsedForSearch: 'واجهة البحث الخلفية',
+      webUsedForExtract: 'واجهة الاستخراج الخلفية',
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `أصبح ${provider} مسؤولًا عن ${capability === 'search' ? 'بحث الويب' : 'استخراج الويب'}.`,
+      failedSelectCapability: provider => `فشل ضبط ${provider}`,
       loadingModels: 'جارٍ تحميل كتالوج النماذج...',
       modelSectionTitle: 'النموذج',
       modelCount: count =>
@@ -1507,6 +1592,19 @@ export const ar: Translations = {
       modelSelectedTitle: 'اختير النموذج',
       modelSelectedMessage: model => `يسري ${model} على الجلسات الجديدة.`,
       failedSelectModel: model => `فشل اختيار ${model}`,
+      terminalBackend: {
+        sectionTitle: 'واجهة التنفيذ الخلفية',
+        loading: 'جارٍ فحص واجهات التنفيذ الخلفية…',
+        failedLoad: 'تعذر تحميل واجهات الطرفية الخلفية',
+        ready: 'جاهزة',
+        needsSetup: 'تحتاج إعدادًا',
+        unavailable: 'غير متاحة',
+        inUse: 'قيد الاستخدام',
+        selectedTitle: 'اختيرت الواجهة الخلفية',
+        selectedMessage: backend => `ستعمل أوامر الطرفية عبر ${backend} في الجلسات الجديدة.`,
+        failedSelect: backend => `فشل اختيار ${backend}`,
+        needsSetupHint: 'يمكن اختيارها الآن، لكن الأوامر ستفشل حتى يكتمل إعدادها.'
+      },
       providerNames: {
         'Nous Subscription': 'Nous Subscription',
         'Firecrawl Self-Hosted': 'Firecrawl Self-Hosted',
@@ -1751,6 +1849,8 @@ export const ar: Translations = {
     noDescription: 'لا يوجد وصف.',
     configured: 'مضبوطة',
     needsKeys: 'تحتاج مفاتيح',
+    visionModelHint: 'تستخدم الرؤية إعداد النموذج المساعد؛ ويُختار النموذج القادر على فهم الصور هناك لا داخل كل مزوّد.',
+    visionModelLink: 'اختيار نموذج الرؤية من الإعدادات ثم النماذج',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} من مجموعات الأدوات مفعّلة`,
     toolCount: count =>
       count === 1 ? 'أداة واحدة' : count === 2 ? 'أداتان' : count <= 10 ? `${count} أدوات` : `${count} أداة`,
@@ -2040,6 +2140,7 @@ export const ar: Translations = {
     ageSeconds: seconds => `قبل ${seconds} ث`,
     ageMinutes: minutes => `قبل ${minutes} د`,
     ageHours: hours => `قبل ${hours} س`,
+    ageDays: days => `قبل ${days} ي`,
     durationSeconds: seconds => `${seconds} ث`,
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} توكن`
@@ -3198,6 +3299,8 @@ export const ar: Translations = {
     promptPlaceholder: 'لخّص محادثات سلاك غير المقروءة وأرسل أهم 5 منها بالبريد...',
     frequencyLabel: 'التكرار',
     deliverLabel: 'التسليم إلى',
+    modelLabel: 'النموذج',
+    modelDefault: 'الافتراضي، النموذج العام',
     customScheduleLabel: 'جدول مخصص',
     customPlaceholder: '0 9 * * * أو weekdays at 9am',
     customHint: 'تعبير زمني أو عبارة طبيعية مثل «كل ساعة» أو «أيام العمل عند التاسعة صباحًا».',
@@ -3466,6 +3569,7 @@ export const ar: Translations = {
     urlHintPre: 'أدرج الرابط كاملًا، مثل ',
     attach: 'إرفاق',
     queued: count => `${count} في الانتظار`,
+    queuedPaused: count => `${count} في الانتظار، متوقفة`,
     queueStuckTitle: 'الرسالة المنتظرة لم تُرسَل',
     queueStuckBody: 'تعذّر إرسال دورة منتظرة مرارًا. لا تزال في قائمة الانتظار — حاول إرسالها مجددًا.',
     attachmentOnly: 'دورة مرفقات فقط',
@@ -3478,6 +3582,8 @@ export const ar: Translations = {
     queueSendNext: 'التالية',
     queueSend: 'إرسال',
     queueDelete: 'حذف',
+    queueResume: 'استئناف',
+    queueResumeTip: 'أوقفها أمر الإيقاف؛ استأنف إرسال الدورات المنتظرة',
     previewUnavailable: 'المعاينة غير متاحة',
     previewLabel: label => `معاينة ${label}`,
     couldNotPreview: label => `تعذرت معاينة ${label}`,
@@ -3938,6 +4044,12 @@ export const ar: Translations = {
       desktopVersion: version => `هرمس لسطح المكتب ${version}`,
       backendVersion: version => `الواجهة الخلفية ${version}`,
       clientLabel: version => `العميل ${version}`,
+      connectionSsh: host => `اتصال SSH: ${host}`,
+      connectionRemote: host => `بعيد: ${host}`,
+      connectionCloud: host => `سحابي: ${host}`,
+      connectionCloudTooltip: host => `متصل بسحابة هرمس عند ${host}، انقر للإدارة`,
+      connectionSshTooltip: host => `متصل عبر SSH بالمضيف ${host}، انقر للإدارة`,
+      connectionRemoteTooltip: host => `متصل بواجهة خلفية بعيدة عند ${host}، انقر للإدارة`,
       backendLabel: version => `الواجهة الخلفية ${version}`,
       commit: sha => `الإيداع ${sha}`,
       branch: branch => `الفرع ${branch}`,

@@ -6363,6 +6363,12 @@ class DispatchResult:
     promoted: int = 0
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
+    receipts: list[dict[str, Any]] = field(default_factory=list)
+    """JSON-safe receipts for workers actually spawned this tick.
+
+    The same payload is persisted as a ``dispatch_receipt`` task event. A
+    dry-run never creates receipts because no worker was launched.
+    """
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
@@ -7783,6 +7789,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    assignee_filter: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7817,6 +7824,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            assignee_filter=assignee_filter,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7833,6 +7841,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            assignee_filter=assignee_filter,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -7853,6 +7862,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    assignee_filter: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7926,11 +7936,17 @@ def _dispatch_once_locked(
             ).fetchone()[0]
         )
 
-    ready_rows = conn.execute(
+    _assignee_filter = (assignee_filter or "").strip() or None
+    ready_sql = (
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    )
+    ready_params: list[Any] = []
+    if _assignee_filter:
+        ready_sql += "AND assignee = ? "
+        ready_params.append(_assignee_filter)
+    ready_sql += "ORDER BY priority DESC, created_at ASC"
+    ready_rows = conn.execute(ready_sql, ready_params).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -8143,6 +8159,25 @@ def _dispatch_once_locked(
             # counter is cleared only on successful completion (see
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            receipt = {
+                "task_id": claimed.id,
+                "assignee": claimed.assignee or "",
+                "workspace": str(workspace),
+                "worker_pid": int(pid) if pid else None,
+                "status": "running",
+            }
+            result.receipts.append(receipt)
+            try:
+                with write_txn(conn):
+                    _append_event(conn, claimed.id, "dispatch_receipt", receipt)
+            except Exception:
+                # The worker is already live. Never route a receipt-audit
+                # failure through spawn-failure recovery, which would release
+                # the claim and allow a duplicate worker on the next tick.
+                _log.exception(
+                    "kanban dispatch: worker %s started but receipt event could not be persisted",
+                    claimed.id,
+                )
             spawned += 1
             # Track the new in-flight count for this profile so later
             # iterations in this same tick respect the per-profile cap
@@ -8168,11 +8203,16 @@ def _dispatch_once_locked(
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
-    review_rows = conn.execute(
+    review_sql = (
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    )
+    review_params: list[Any] = []
+    if _assignee_filter:
+        review_sql += "AND assignee = ? "
+        review_params.append(_assignee_filter)
+    review_sql += "ORDER BY priority DESC, created_at ASC"
+    review_rows = conn.execute(review_sql, review_params).fetchall()
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -8231,6 +8271,23 @@ def _dispatch_once_locked(
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            receipt = {
+                "task_id": claimed.id,
+                "assignee": claimed.assignee or "",
+                "workspace": str(workspace),
+                "worker_pid": int(pid) if pid else None,
+                "status": "running",
+                "review": True,
+            }
+            result.receipts.append(receipt)
+            try:
+                with write_txn(conn):
+                    _append_event(conn, claimed.id, "dispatch_receipt", receipt)
+            except Exception:
+                _log.exception(
+                    "kanban dispatch: review worker %s started but receipt event could not be persisted",
+                    claimed.id,
+                )
             spawned += 1
         except Exception as exc:
             auto = _record_spawn_failure(

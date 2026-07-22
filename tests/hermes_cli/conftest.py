@@ -5,6 +5,30 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_worker_exit_registry():
+    """Isolate process-level dispatcher exit caches between Kanban tests."""
+    from hermes_cli import kanban_db as _kb
+
+    saved_exits = dict(_kb._recent_worker_exits)
+    saved_rl = getattr(_kb.detect_crashed_workers, "_last_rate_limited", None)
+    saved_ab = getattr(_kb.detect_crashed_workers, "_last_auto_blocked", None)
+    _kb._recent_worker_exits.clear()
+    _kb.detect_crashed_workers._last_rate_limited = []  # type: ignore[attr-defined]
+    _kb.detect_crashed_workers._last_auto_blocked = []  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        _kb._recent_worker_exits.clear()
+        _kb._recent_worker_exits.update(saved_exits)
+        _kb.detect_crashed_workers._last_rate_limited = (  # type: ignore[attr-defined]
+            saved_rl if saved_rl is not None else []
+        )
+        _kb.detect_crashed_workers._last_auto_blocked = (  # type: ignore[attr-defined]
+            saved_ab if saved_ab is not None else []
+        )
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

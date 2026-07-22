@@ -661,8 +661,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_disp.add_argument("--dry-run", action="store_true",
                         help="Don't actually spawn processes; just print what would happen")
+    p_disp.add_argument("--run", action="store_true",
+                        help="Actually spawn eligible workers. Without this, dispatch prints a preview only.")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument("--assignee", default=None,
+                        help="Only preview/run tasks assigned to this worker profile/lane")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -2323,18 +2327,26 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    explicit_run = bool(getattr(args, "run", False))
+    preview_only = bool(getattr(args, "dry_run", False) or not explicit_run)
+    assignee_filter = (getattr(args, "assignee", None) or "").strip() or None
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
-            dry_run=args.dry_run,
+            dry_run=preview_only,
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            assignee_filter=assignee_filter,
         )
     if getattr(args, "json", False):
         print(json.dumps({
+            "mode": "run" if explicit_run and not getattr(args, "dry_run", False) else "preview",
+            "preview_only": preview_only,
+            "explicit_run_required": preview_only,
+            "assignee_filter": assignee_filter,
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,
@@ -2345,6 +2357,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "workspace": ws}
                 for (tid, who, ws) in res.spawned
             ],
+            "receipts": res.receipts,
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [
@@ -2354,6 +2367,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0
+    if preview_only:
+        print("Dispatch preview only — no workers were spawned.")
+        print("Run `hermes kanban dispatch --run` to actually start eligible workers.")
+    else:
+        print("Dispatch run complete.")
+    if assignee_filter:
+        print(f"Assignee filter: {assignee_filter}")
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
     if res.crashed:
@@ -2370,8 +2390,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
-        tag = " (dry)" if args.dry_run else ""
+        tag = " (preview)" if preview_only else ""
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+    if res.receipts:
+        print("Receipts:")
+        for receipt in res.receipts:
+            pid = receipt.get("worker_pid") or "-"
+            print(
+                f"  - {receipt.get('task_id')}  pid={pid}  "
+                f"assignee={receipt.get('assignee') or '-'}  "
+                f"workspace={receipt.get('workspace') or '-'}"
+            )
     if res.auto_assigned_default:
         print(
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "

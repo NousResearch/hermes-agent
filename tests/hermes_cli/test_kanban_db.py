@@ -1651,6 +1651,47 @@ def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
         # Dry run must NOT mutate status.
         assert kb.get_task(conn, t1).status == "ready"
         assert kb.get_task(conn, t2).status == "ready"
+        assert [e.kind for e in kb.list_events(conn, t1)] == ["created"]
+    assert res.receipts == []
+
+
+def test_dispatch_assignee_filter_limits_preview_scope(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        alice = kb.create_task(conn, title="a", assignee="alice")
+        bob = kb.create_task(conn, title="b", assignee="bob")
+        res = kb.dispatch_once(conn, dry_run=True, assignee_filter="alice")
+    assert [s[0] for s in res.spawned] == [alice]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, alice).status == "ready"
+        assert kb.get_task(conn, bob).status == "ready"
+
+
+def test_dispatch_assignee_filter_limits_real_run_and_receipts(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+        return 2_000_000_000
+
+    with kb.connect() as conn:
+        alice = kb.create_task(conn, title="a", assignee="alice")
+        bob = kb.create_task(conn, title="b", assignee="bob")
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            assignee_filter="alice",
+        )
+        alice_task = kb.get_task(conn, alice)
+        bob_task = kb.get_task(conn, bob)
+
+    assert spawns == [alice]
+    assert [receipt["task_id"] for receipt in res.receipts] == [alice]
+    assert alice_task.status == "running"
+    assert bob_task.status == "ready"
 
 
 def test_dispatch_skips_unassigned(kanban_home):
@@ -1711,9 +1752,11 @@ def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
 
 def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
+    fake_pid = 2_000_000_000
 
     def fake_spawn(task, workspace):
         spawns.append((task.id, task.assignee, workspace))
+        return fake_pid
 
     with kb.connect() as conn:
         p = kb.create_task(conn, title="p", assignee="alice")
@@ -1728,6 +1771,51 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
     # c is now running
     with kb.connect() as conn:
         assert kb.get_task(conn, c).status == "running"
+        events = kb.list_events(conn, c)
+    assert res.receipts == [
+        {
+            "task_id": c,
+            "assignee": "bob",
+            "workspace": spawns[0][2],
+            "worker_pid": fake_pid,
+            "status": "running",
+        }
+    ]
+    receipt_events = [e for e in events if e.kind == "dispatch_receipt"]
+    assert len(receipt_events) == 1
+    assert receipt_events[0].payload == res.receipts[0]
+
+
+def test_dispatch_receipt_event_failure_does_not_release_spawned_worker(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    fake_pid = 2_000_000_000
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="receipt audit", assignee="alice")
+        original_append_event = kb._append_event
+
+        def fail_only_receipt(conn_arg, event_task_id, kind, payload=None, **kwargs):
+            if kind == "dispatch_receipt":
+                raise RuntimeError("receipt event storage unavailable")
+            return original_append_event(
+                conn_arg, event_task_id, kind, payload, **kwargs
+            )
+
+        monkeypatch.setattr(kb, "_append_event", fail_only_receipt)
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: fake_pid,
+        )
+        task = kb.get_task(conn, task_id)
+        event_kinds = [event.kind for event in kb.list_events(conn, task_id)]
+
+    assert task.status == "running"
+    assert task.worker_pid == fake_pid
+    assert [spawned[0] for spawned in res.spawned] == [task_id]
+    assert [receipt["task_id"] for receipt in res.receipts] == [task_id]
+    assert "dispatch_receipt" not in event_kinds
+    assert task_id not in res.auto_blocked
 
 
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
@@ -3908,6 +3996,19 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t).status == "review"
 
 
+def test_dispatch_assignee_filter_limits_review_preview_scope(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        alice = kb.create_task(conn, title="review a", assignee="alice")
+        bob = kb.create_task(conn, title="review b", assignee="bob")
+        _set_task_status(conn, alice, "review")
+        _set_task_status(conn, bob, "review")
+        res = kb.dispatch_once(conn, dry_run=True, assignee_filter="bob")
+
+    assert [spawned[0] for spawned in res.spawned] == [bob]
+
+
 def test_dispatch_review_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
@@ -3922,9 +4023,21 @@ def test_dispatch_review_spawns_with_correct_skills(
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
+        events = kb.list_events(conn, t)
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
     assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert res.receipts == [
+        {
+            "task_id": t,
+            "assignee": "alice",
+            "workspace": res.spawned[0][2],
+            "worker_pid": 42,
+            "status": "running",
+            "review": True,
+        }
+    ]
+    assert [event.payload for event in events if event.kind == "dispatch_receipt"] == res.receipts
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):

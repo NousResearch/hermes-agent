@@ -8,6 +8,7 @@ operator footgun that only manifests in long-running setups.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -23,10 +24,32 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    def is_hermes_module(name):
+        return (
+            name.startswith("hermes_cli")
+            or name.startswith("hermes_state")
+            or name == "hermes_constants"
+        )
+
+    # These tests need a fresh import after HERMES_HOME changes, but removing
+    # shared modules without restoring them leaves later collected test files
+    # holding an older module object than ``import hermes_cli.kanban_db``
+    # returns. Snapshot and restore the exact objects to keep cross-file runs
+    # deterministic.
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if is_hermes_module(name)
+    }
+    for name in list(saved_modules):
+        sys.modules.pop(name, None)
+    try:
+        yield test_home
+    finally:
+        for name in list(sys.modules):
+            if is_hermes_module(name):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):
@@ -69,6 +92,132 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     )
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
+
+
+def test_dispatch_parser_exposes_explicit_run_and_optional_assignee_scope():
+    from hermes_cli import kanban as kb_cli
+
+    parser = argparse.ArgumentParser()
+    kb_cli.build_parser(parser.add_subparsers(dest="command"))
+
+    preview = parser.parse_args(["kanban", "dispatch"])
+    assert preview.run is False
+    assert preview.assignee is None
+
+    scoped_run = parser.parse_args(
+        ["kanban", "dispatch", "--run", "--assignee", "alice"]
+    )
+    assert scoped_run.run is True
+    assert scoped_run.assignee == "alice"
+
+
+def test_cli_dispatch_defaults_to_preview_until_explicit_run(
+    isolated_kanban_home, monkeypatch, capsys
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+    captured = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kanban_db.DispatchResult(spawned=[("t_preview", "alice", "")])
+
+    monkeypatch.setattr(kanban_db, "dispatch_once", fake_dispatch_once)
+
+    args = argparse.Namespace(
+        dry_run=False, run=False, max=None, assignee=None, failure_limit=2, json=False
+    )
+    kb_cli._cmd_dispatch(args)
+
+    assert captured["dry_run"] is True
+    out = capsys.readouterr().out
+    assert "Dispatch preview only" in out
+    assert "--run" in out
+    assert "t_preview" in out
+    assert "(preview)" in out
+
+
+def test_cli_dispatch_run_passes_explicit_scope_and_emits_json_receipt(
+    isolated_kanban_home, monkeypatch, capsys
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+    captured = {}
+    receipt = {
+        "task_id": "t_run",
+        "assignee": "alice",
+        "workspace": "/tmp/work",
+        "worker_pid": 1234,
+        "status": "running",
+    }
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kanban_db.DispatchResult(
+            spawned=[("t_run", "alice", "/tmp/work")], receipts=[receipt]
+        )
+
+    monkeypatch.setattr(kanban_db, "dispatch_once", fake_dispatch_once)
+
+    args = argparse.Namespace(
+        dry_run=False, run=True, max=None, assignee="alice", failure_limit=2, json=True
+    )
+    kb_cli._cmd_dispatch(args)
+
+    assert captured["dry_run"] is False
+    assert captured["assignee_filter"] == "alice"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "run"
+    assert payload["preview_only"] is False
+    assert payload["assignee_filter"] == "alice"
+    assert payload["receipts"] == [receipt]
+
+
+def test_cli_dispatch_run_prints_non_json_spawn_receipt(
+    isolated_kanban_home, monkeypatch, capsys
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+    receipt = {
+        "task_id": "t_run",
+        "assignee": "alice",
+        "workspace": "/tmp/work",
+        "worker_pid": 1234,
+        "status": "running",
+    }
+
+    def fake_dispatch_once(conn, **kwargs):
+        result = kanban_db.DispatchResult(
+            spawned=[("t_run", "alice", "/tmp/work")]
+        )
+        setattr(result, "receipts", [receipt])
+        return result
+
+    monkeypatch.setattr(kanban_db, "dispatch_once", fake_dispatch_once)
+
+    args = argparse.Namespace(
+        dry_run=False,
+        run=True,
+        max=None,
+        assignee=None,
+        failure_limit=2,
+        json=False,
+    )
+    kb_cli._cmd_dispatch(args)
+
+    out = capsys.readouterr().out
+    assert "Dispatch run complete." in out
+    assert "Receipts:" in out
+    assert "t_run" in out
+    assert "pid=1234" in out
+    assert "assignee=alice" in out
+    assert "workspace=/tmp/work" in out
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):

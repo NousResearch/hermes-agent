@@ -984,7 +984,7 @@ class S6ServiceManager:
         tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
-        tmp_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             (tmp_dir / "type").write_text("longrun\n")
@@ -1000,7 +1000,7 @@ class S6ServiceManager:
 
             # Persistent log rotation (OQ8-C).
             log_subdir = tmp_dir / "log"
-            log_subdir.mkdir()
+            log_subdir.mkdir(exist_ok=True)
             log_run = log_subdir / "run"
             log_run.write_text(self._render_log_run(profile))
             log_run.chmod(0o755)

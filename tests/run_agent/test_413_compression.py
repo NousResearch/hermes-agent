@@ -1079,6 +1079,73 @@ class TestPreflightCompression:
         assert result["final_response"] == "After marginal preflight"
         assert mock_compress.call_count == 1
 
+    @pytest.mark.parametrize(
+        "rows_removed",
+        [pytest.param(0, id="no-op"), pytest.param(1, id="marginal")],
+    )
+    def test_provider_overflow_recovers_after_blocked_turn_start_preflight(
+        self, agent, rows_removed
+    ):
+        """The proactive retry block must not consume provider-overflow recovery."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 130_000
+
+        big_history = []
+        for i in range(20):
+            big_history.append(
+                {"role": "user", "content": f"Message {i} padded text"}
+            )
+            big_history.append(
+                {"role": "assistant", "content": f"Response {i} padded text"}
+            )
+
+        agent.client.chat.completions.create.side_effect = [
+            _make_413_error(),
+            _mock_response(content="Recovered after overflow", finish_reason="stop"),
+        ]
+
+        compress_calls = 0
+
+        def _compress(messages, *_args, **_kwargs):
+            nonlocal compress_calls
+            compress_calls += 1
+            if compress_calls == 1:
+                kept = messages[:-rows_removed] if rows_removed else messages
+                return kept, agent._cached_system_prompt
+            return (
+                [{"role": "user", "content": "hello"}],
+                "compressed after provider overflow",
+            )
+
+        with (
+            patch(
+                "agent.turn_context.estimate_request_tokens_rough",
+                return_value=144_669,
+            ),
+            patch(
+                "agent.conversation_loop.estimate_request_tokens_rough",
+                return_value=144_669,
+            ),
+            patch(
+                "agent.conversation_loop.estimate_messages_tokens_rough",
+                return_value=144_669,
+            ),
+            patch.object(
+                agent, "_compress_context", side_effect=_compress
+            ) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "hello", conversation_history=big_history
+            )
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after overflow"
+        assert mock_compress.call_count == 2
+
 
 class TestToolResultPreflightCompression:
     """Compression should trigger when tool results push context past the threshold."""

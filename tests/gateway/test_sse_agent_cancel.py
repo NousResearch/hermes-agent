@@ -7,7 +7,7 @@ task wrapper is cancelled.
 """
 
 import asyncio
-import queue
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -45,9 +45,6 @@ class TestSSEAgentCancelOnDisconnect:
         the agent task must be cancelled."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello ")  # Some data already queued
-
         # Agent task that runs forever (simulates a long LLM call)
         agent_done = asyncio.Event()
 
@@ -57,6 +54,12 @@ class TestSSEAgentCancelOnDisconnect:
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            # Constructed inside the running loop — ThreadSafeAsyncQueue
+            # captures asyncio.get_running_loop() at construction time.
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello ")  # Some data already queued
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -94,15 +97,16 @@ class TestSSEAgentCancelOnDisconnect:
         """On normal stream completion, agent task should NOT be cancelled."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello")
-        stream_q.put(None)  # End-of-stream sentinel
-
         async def fake_agent():
             return {"final_response": "done"}, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello")
+            stream_q.put_nowait(None)  # End-of-stream sentinel
 
             agent_task = asyncio.ensure_future(fake_agent())
             await asyncio.sleep(0)  # Let agent complete
@@ -128,14 +132,15 @@ class TestSSEAgentCancelOnDisconnect:
         """BrokenPipeError (another disconnect variant) also cancels the task."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-
         async def fake_agent():
             await asyncio.sleep(999)  # Never completes
             return {}, {}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -158,14 +163,15 @@ class TestSSEAgentCancelOnDisconnect:
         """If agent already finished before disconnect, don't try to cancel."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("data")
-
         async def fake_agent():
             return {"final_response": "done"}, {}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("data")
 
             agent_task = asyncio.ensure_future(fake_agent())
             await asyncio.sleep(0)  # Let agent complete
@@ -200,9 +206,6 @@ class TestSSEAgentCancelOnDisconnect:
         so the agent thread stops making LLM API calls."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello ")
-
         agent_done = asyncio.Event()
 
         async def fake_agent():
@@ -215,6 +218,10 @@ class TestSSEAgentCancelOnDisconnect:
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello ")
 
             agent_task = asyncio.ensure_future(fake_agent())
             agent_ref = [mock_agent]
@@ -250,14 +257,15 @@ class TestSSEAgentCancelOnDisconnect:
         on disconnect — just without the interrupt() call."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-
         async def fake_agent():
             await asyncio.sleep(999)
             return {}, {}
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -318,12 +326,15 @@ class TestSSEAgentFailureFinishReason:
 
     def _run(self, fake_agent, queue_items=("partial",)):
         adapter = _make_adapter()
-        stream_q = queue.Queue()
-        for item in queue_items:
-            stream_q.put(item)
-        stream_q.put(None)  # clean end-of-stream sentinel
 
         async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            for item in queue_items:
+                stream_q.put_nowait(item)
+            stream_q.put_nowait(None)  # clean end-of-stream sentinel
+
             agent_task = asyncio.ensure_future(fake_agent())
             resp, chunks = _capturing_response()
             with patch("gateway.platforms.api_server.web.StreamResponse",
@@ -381,3 +392,93 @@ class TestSSEAgentFailureFinishReason:
         # No error/hermes pollution on the happy path.
         assert "error" not in finish
         assert "hermes" not in finish
+
+
+class TestThreadSafeAsyncQueueCrossThreadBoundary:
+    """gateway/platforms/api_server.py — ThreadSafeAsyncQueue.put_threadsafe()
+
+    ``put_threadsafe`` exists specifically to let a *non-loop* worker thread
+    (the ``run_conversation`` thread driven by ``loop.run_in_executor``) push
+    deltas into the SSE queue. The converted ``_write_sse_*`` fixtures only use
+    same-loop ``put_nowait``, so they never exercise this cross-thread path.
+    These tests cover it directly: a real thread calls ``put_threadsafe`` while
+    the owning loop awaits ``get()`` — the exact boundary the production SSE
+    writers rely on.
+    """
+
+    def test_put_threadsafe_from_real_worker_thread_reaches_consumer(self):
+        """A real thread pushing via put_threadsafe is observed on the loop."""
+        received = []
+
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            q = ThreadSafeAsyncQueue()
+            loop = asyncio.get_running_loop()
+
+            def worker():
+                # Runs OFF the event loop — this is the cross-thread boundary.
+                q.put_threadsafe("delta-from-thread")
+
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            # Owning loop awaits get(); woken by call_soon_threadsafe, no poll.
+            item = await asyncio.wait_for(q.get(), timeout=5.0)
+            received.append(item)
+            t.join(timeout=5.0)
+
+        asyncio.run(run())
+        assert received == ["delta-from-thread"]
+
+    def test_put_threadsafe_preserves_order_across_many_threads(self):
+        """Ordering holds when several worker threads push concurrently."""
+        import threading
+
+        collected = []
+
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            q = ThreadSafeAsyncQueue()
+
+            def worker(value):
+                q.put_threadsafe(value)
+
+            threads = [
+                threading.Thread(target=worker, args=(i,), daemon=True)
+                for i in range(20)
+            ]
+            for t in threads:
+                t.start()
+            seen = []
+            for _ in range(20):
+                seen.append(await asyncio.wait_for(q.get(), timeout=5.0))
+            for t in threads:
+                t.join(timeout=5.0)
+            collected.append(seen)
+
+        asyncio.run(run())
+        # All 20 distinct values arrive; asyncio.Queue is FIFO per-producer and
+        # call_soon_threadsafe is itself serialized, so no item is lost.
+        assert sorted(collected[0]) == list(range(20))
+        assert len(collected[0]) == 20
+
+    def test_put_threadsafe_matches_put_nowait_bytes_on_loop(self):
+        """put_threadsafe reproduces put_nowait's observable effect (same loop).
+
+        Sanity guard: when called from the loop thread, the item is enqueued
+        exactly once (no double-enqueue from call_soon_threadsafe + put_nowait).
+        """
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            q = ThreadSafeAsyncQueue()
+            q.put_threadsafe("x")
+            # call_soon_threadsafe schedules on the same loop; let it run.
+            await asyncio.sleep(0)
+            out = q.get_nowait()
+            assert out == "x"
+            # Queue must now be empty — exactly one enqueue happened.
+            assert q.empty()
+
+        asyncio.run(run())

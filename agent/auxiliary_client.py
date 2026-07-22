@@ -6500,13 +6500,25 @@ _ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-oauth", "minimax-cn
 def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
     """Detect if an endpoint expects Anthropic-format content blocks.
 
-    Returns True for known Anthropic-compatible providers (MiniMax) and
+    Returns True for known Anthropic-compatible providers (MiniMax) **when
+    their base URL actually points at the /anthropic endpoint**, and for
     any endpoint whose URL contains ``/anthropic`` in the path.
+
+    #69287: MiniMax-M3 vision requires Chat Completions (/v1), not the
+    Anthropic endpoint.  When a minimax-cn user configures a /v1 base URL
+    (via ``MINIMAX_CN_BASE_URL`` or ``auxiliary.vision.base_url``), the
+    image blocks must use OpenAI format, not Anthropic format.  So we
+    check the URL, not just the provider name — a minimax provider with a
+    /v1 URL uses OpenAI-format image blocks.
     """
-    if provider in _ANTHROPIC_COMPAT_PROVIDERS:
-        return True
     url_lower = (base_url or "").lower()
-    return "/anthropic" in url_lower
+    if "/anthropic" in url_lower:
+        return True
+    # For known Anthropic-compatible providers, only return True when no
+    # explicit base URL override is set (the default /anthropic URL).
+    if provider in _ANTHROPIC_COMPAT_PROVIDERS and not base_url:
+        return True
+    return False
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:

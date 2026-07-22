@@ -27,6 +27,7 @@ class FakeClient:
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
+        self.profile_calls = []
         self.ingest_calls = []
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
@@ -46,6 +47,7 @@ class FakeClient:
         return self.search_results
 
     def get_profile(self, query=None, *, container_tag=None):
+        self.profile_calls.append({"query": query, "container_tag": container_tag})
         return self.profile_response
 
     def forget_memory(self, memory_id, *, container_tag=None):
@@ -151,6 +153,37 @@ def test_prefetch_skips_profile_between_frequency(provider):
     result = provider.prefetch("what am I working on?")
     assert "Relevant Memories" in result
     assert "User Profile (Persistent)" not in result
+
+
+def test_prefetch_respects_recall_frequency(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"recall_frequency": 3}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    p._client.profile_response = {
+        "static": [],
+        "dynamic": [],
+        "search_results": [{"memory": "Working on Hermes memory quota warnings", "similarity": 0.9}],
+    }
+
+    p.on_turn_start(1, "first turn")
+    first = p.prefetch("first turn")
+    p.on_turn_start(2, "second turn")
+    second = p.prefetch("second turn")
+    p.on_turn_start(3, "third turn")
+    third = p.prefetch("third turn")
+
+    assert "Working on Hermes memory quota warnings" in first
+    assert second == ""
+    assert "Working on Hermes memory quota warnings" in third
+    assert len(p._client.profile_calls) == 2
+
+
+def test_prefetch_skips_trivial_messages(provider):
+    provider.on_turn_start(1, "thanks")
+    assert provider.prefetch("thanks") == ""
+    assert provider._client.profile_calls == []
 
 
 def test_sync_turn_buffers_short_messages(provider):

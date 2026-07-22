@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CONTAINER_TAG = "hermes"
 _DEFAULT_MAX_RECALL_RESULTS = 10
 _DEFAULT_PROFILE_FREQUENCY = 50
+_DEFAULT_RECALL_FREQUENCY = 1
 _DEFAULT_CAPTURE_MODE = "all"
 _DEFAULT_SEARCH_MODE = "hybrid"
 _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
@@ -61,6 +62,7 @@ def _default_config() -> dict:
         "auto_capture": True,
         "max_recall_results": _DEFAULT_MAX_RECALL_RESULTS,
         "profile_frequency": _DEFAULT_PROFILE_FREQUENCY,
+        "recall_frequency": _DEFAULT_RECALL_FREQUENCY,
         "capture_mode": _DEFAULT_CAPTURE_MODE,
         "search_mode": _DEFAULT_SEARCH_MODE,
         "entity_context": _DEFAULT_ENTITY_CONTEXT,
@@ -134,6 +136,10 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         config["profile_frequency"] = max(1, min(500, int(config.get("profile_frequency", _DEFAULT_PROFILE_FREQUENCY))))
     except Exception:
         config["profile_frequency"] = _DEFAULT_PROFILE_FREQUENCY
+    try:
+        config["recall_frequency"] = max(1, min(500, int(config.get("recall_frequency", _DEFAULT_RECALL_FREQUENCY))))
+    except Exception:
+        config["recall_frequency"] = _DEFAULT_RECALL_FREQUENCY
     config["capture_mode"] = "everything" if config.get("capture_mode") == "everything" else "all"
     raw_search_mode = str(config.get("search_mode", _DEFAULT_SEARCH_MODE)).strip().lower()
     config["search_mode"] = raw_search_mode if raw_search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
@@ -545,6 +551,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._auto_capture = True
         self._max_recall_results = _DEFAULT_MAX_RECALL_RESULTS
         self._profile_frequency = _DEFAULT_PROFILE_FREQUENCY
+        self._recall_frequency = _DEFAULT_RECALL_FREQUENCY
         self._capture_mode = _DEFAULT_CAPTURE_MODE
         self._search_mode = _DEFAULT_SEARCH_MODE
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
@@ -660,6 +667,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._auto_capture = self._config["auto_capture"]
         self._max_recall_results = self._config["max_recall_results"]
         self._profile_frequency = self._config["profile_frequency"]
+        self._recall_frequency = self._config["recall_frequency"]
         self._capture_mode = self._config["capture_mode"]
         self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
@@ -713,6 +721,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._active or not self._auto_recall or not self._client or not query.strip():
+            return ""
+        if _is_trivial_message(query):
+            return ""
+        if self._turn_count > 1 and (self._turn_count % self._recall_frequency != 0):
             return ""
         try:
             profile = self._client.get_profile(query=query[:200])

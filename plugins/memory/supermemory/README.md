@@ -52,6 +52,7 @@ Config file: `$HERMES_HOME/supermemory.json`
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
 | `max_recall_results` | `10` | Max recalled items to format into context |
 | `profile_frequency` | `50` | Include profile facts on first turn and every N turns |
+| `recall_frequency` | `1` | Run automatic Supermemory recall on first turn and every Nth turn. Raise this to reduce search/profile quota calls. |
 | `capture_mode` | `all` | Skip tiny or trivial turns by default |
 | `search_mode` | `hybrid` | Search mode: `hybrid` (profile + memories), `memories` (memories only), `documents` (documents only) |
 | `entity_context` | built-in default | Extraction guidance passed to Supermemory |

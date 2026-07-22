@@ -826,6 +826,17 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # Dynamic memory-provider tools (e.g. Honcho's honcho_* set) are
+            # injected by the active MemoryManager at AIAgent init time, not by
+            # any static toolset definition. The review fork inherits the same
+            # provider configuration, so whitelist those tool names too without
+            # widening beyond the parent's live memory tool surface.
+            _memory_manager = getattr(agent, "_memory_manager", None)
+            if _memory_manager is not None:
+                try:
+                    review_whitelist.update(_memory_manager.get_all_tool_names())
+                except Exception:
+                    pass
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(

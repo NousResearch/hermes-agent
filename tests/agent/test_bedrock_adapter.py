@@ -347,6 +347,40 @@ class TestConvertMessagesToConverse:
         assert len(image_blocks) == 1
         assert image_blocks[0]["image"]["format"] == "png"
 
+    def test_image_url_with_null_url_does_not_crash(self):
+        """A null ``url`` inside an image_url part must not abort conversion.
+
+        ``url.startswith`` on a ``None``/non-string url raised
+        ``AttributeError`` and dropped the entire message. The Gemini and
+        Codex converters already tolerate this shape.
+        """
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": None}},
+        ])
+        # The text block survives; the unusable image is skipped, not fatal.
+        assert any(b.get("text") == "look" for b in blocks)
+
+    def test_image_url_with_non_string_url_does_not_crash(self):
+        """A non-string url (e.g. int) is also tolerated."""
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "image_url", "image_url": {"url": 123}},
+        ])
+        assert isinstance(blocks, list)
+
+    def test_image_url_bare_string_data_url_converted(self):
+        """A bare-string data: image_url (no wrapping dict) is converted."""
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "image_url",
+             "image_url": "data:image/png;base64,iVBORw0KGgo="},
+        ])
+        image_blocks = [b for b in blocks if "image" in b]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "png"
+
     def test_multiple_system_messages_merged(self):
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [

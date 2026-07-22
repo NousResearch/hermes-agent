@@ -27,6 +27,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -109,6 +110,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Post IDs we have reacted to (👀 on start, swapped for ✅/❌ on
+        # completion). Only populated when reactions are enabled and the bot is
+        # directly addressed — mirrors the Slack adapter.
+        self._reacting_message_ids: set = set()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -241,6 +247,31 @@ class MattermostAdapter(BasePlatformAdapter):
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
+
+    async def _api_delete(self, path: str) -> bool:
+        """DELETE /api/v4/{path}. Returns True on a 2xx response."""
+        import aiohttp
+        # Path-traversal guard — mirrors _api_get/_api_post/_api_put (d836b2bac).
+        # WebSocket-derived ids (post_id, channel_id, emoji names) are
+        # interpolated into this bearer-token-authenticated path, so a crafted
+        # '..' payload could redirect the authed request to another endpoint.
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return False
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url, headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return False
+                return True
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return False
 
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
@@ -390,6 +421,100 @@ class MattermostAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Optional overrides
     # ------------------------------------------------------------------
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a post via ``DELETE /api/v4/posts/{id}``.
+
+        The base class returns ``False`` (no deletion API); Mattermost supports
+        deletion, so the stream consumer's fresh-final cleanup and ephemeral
+        TTL paths can remove preview posts. ``chat_id`` is unused — Mattermost
+        deletes by post id alone — but kept for signature parity with the base.
+        """
+        if not message_id:
+            return False
+        return await self._api_delete(f"posts/{message_id}")
+
+    @staticmethod
+    def _normalize_emoji(emoji: str) -> str:
+        """Strip Slack-style surrounding colons from an emoji name.
+
+        Mattermost's reactions API expects a bare ``emoji_name`` (e.g.
+        ``thumbsup``), while callers may pass ``:thumbsup:``.
+        """
+        return (emoji or "").strip().strip(":")
+
+    async def _add_reaction(self, post_id: str, emoji: str) -> bool:
+        """Add an emoji reaction to a post. Returns True on success.
+
+        Mirrors the Slack adapter's ``_add_reaction`` style (best-effort, debug
+        logging on failure). Uses ``POST /api/v4/reactions`` with the bot user
+        id, post id, and a colon-stripped emoji name.
+        """
+        name = self._normalize_emoji(emoji)
+        if not post_id or not name:
+            return False
+        data = await self._api_post(
+            "reactions",
+            {
+                "user_id": self._bot_user_id,
+                "post_id": post_id,
+                "emoji_name": name,
+            },
+        )
+        return bool(data)
+
+    async def _remove_reaction(self, post_id: str, emoji: str) -> bool:
+        """Remove an emoji reaction from a post. Returns True on success.
+
+        Uses ``DELETE /api/v4/users/{user_id}/posts/{post_id}/reactions/{name}``.
+        """
+        name = self._normalize_emoji(emoji)
+        if not post_id or not name:
+            return False
+        return await self._api_delete(
+            f"users/{self._bot_user_id}/posts/{post_id}/reactions/{name}"
+        )
+
+    def _reactions_enabled(self) -> bool:
+        """Whether processing-lifecycle reactions are enabled.
+
+        Configured via ``config.yaml`` ``mattermost.reactions`` (default on),
+        bridged to the internal ``MATTERMOST_REACTIONS`` env var by
+        ``_apply_yaml_config`` — the same pattern as ``mattermost.require_mention``.
+        Set ``mattermost.reactions: false`` to disable the 👀/✅/❌ progress
+        reactions entirely.
+        """
+        return os.getenv("MATTERMOST_REACTIONS", "true").lower() not in {"false", "0", "no"}
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress 👀 reaction when message processing begins.
+
+        Mirrors the Slack adapter: only reacts to posts we registered in
+        ``_reacting_message_ids`` (DMs / @mentions when reactions are enabled),
+        so casual listen-all channel chatter is not annotated.
+        """
+        if not self._reactions_enabled():
+            return
+        post_id = getattr(event, "message_id", None)
+        if not post_id or post_id not in self._reacting_message_ids:
+            return
+        await self._add_reaction(post_id, "eyes")
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Swap the in-progress 👀 reaction for a final ✅ / ❌ reaction."""
+        if not self._reactions_enabled():
+            return
+        post_id = getattr(event, "message_id", None)
+        if not post_id or post_id not in self._reacting_message_ids:
+            return
+        self._reacting_message_ids.discard(post_id)
+        await self._remove_reaction(post_id, "eyes")
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(post_id, "white_check_mark")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(post_id, "x")
 
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
@@ -810,6 +935,11 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
+        is_dm = channel_type_raw == "D"
+        # Tracks whether the bot was directly addressed (DM or @mention) — used
+        # to decide whether to annotate the post with progress reactions.
+        has_mention = False
+
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
@@ -963,6 +1093,12 @@ class MattermostAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
         )
 
+        # Register this post for progress reactions only when the bot is
+        # directly addressed (DM or @mention) and reactions are enabled —
+        # reacting to every listen-all message would be noisy. Mirrors Slack.
+        if (is_dm or has_mention) and self._reactions_enabled():
+            self._reacting_message_ids.add(post_id)
+
         await self.handle_message(msg_event)
 
 
@@ -1041,7 +1177,19 @@ async def _standalone_send(
             # 1. Upload media (if any) and collect file_ids.
             file_ids: List[str] = []
             for media in media_files:
-                file_path = media.get("path") if isinstance(media, dict) else media
+                # Accept every shape callers use: the canonical
+                # ``(path, is_voice)`` tuple produced by
+                # ``BasePlatformAdapter.extract_media`` /
+                # ``filter_media_delivery_paths`` (what cron and the
+                # send_message tool pass), a ``{"path": ...}`` dict, or a bare
+                # path string. Previously a tuple fell into the ``else`` branch
+                # whole and ``os.path.exists`` raised on it, dropping the file.
+                if isinstance(media, (tuple, list)):
+                    file_path = media[0] if media else None
+                elif isinstance(media, dict):
+                    file_path = media.get("path")
+                else:
+                    file_path = media
                 if not file_path or not os.path.exists(file_path):
                     continue
                 form = aiohttp.FormData()
@@ -1202,6 +1350,11 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    # reactions: 👀/✅/❌ progress annotations on handled messages (default on).
+    # Behavioral toggle → config.yaml per AGENTS.md; the adapter reads the
+    # bridged MATTERMOST_REACTIONS env only as the internal mechanism.
+    if "reactions" in mattermost_cfg and not os.getenv("MATTERMOST_REACTIONS"):
+        os.environ["MATTERMOST_REACTIONS"] = str(mattermost_cfg["reactions"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):
@@ -1262,7 +1415,7 @@ def register(ctx) -> None:
         # hermes_cli/setup.py::_setup_mattermost function.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of
-        # ``config.yaml`` ``mattermost:`` keys (require_mention,
+        # ``config.yaml`` ``mattermost:`` keys (require_mention, reactions,
         # free_response_channels, allowed_channels) into ``MATTERMOST_*``
         # env vars that the adapter reads via ``os.getenv()``.  Replaces
         # the hardcoded block that used to live in ``gateway/config.py``.

@@ -5077,6 +5077,9 @@ _PLATFORMS = [
                 "password": False,
                 "help": "off = flat channel messages, thread = replies nest under your message.",
             },
+            # Progress reactions (👀/✅/❌) are a behavioral toggle, configured via
+            # config.yaml `mattermost.reactions` (not a .env setup prompt) per
+            # AGENTS.md — bridged to the internal MATTERMOST_REACTIONS env var.
         ],
     },
     # WhatsApp moved to plugins/platforms/whatsapp/ — setup metadata discovered

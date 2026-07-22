@@ -212,6 +212,33 @@ Set it in your `~/.hermes/.env`:
 MATTERMOST_REPLY_MODE=thread
 ```
 
+## Sending messages, discovery, and targeting
+
+The `send_message` tool can post to Mattermost channels proactively (not just
+reply to the triggering message):
+
+- **Discovery** — `send_message(action="list")` enumerates the channels the bot
+  is a member of (public, private, and DMs), discovered via the Mattermost REST
+  API (`users/me/teams` → `users/me/teams/{team}/channels`). These targets are
+  cached in the channel directory and refreshed periodically.
+- **Targeting** — a target can be a human-friendly **channel name** (resolved
+  from the directory) **or** a raw **26-character channel ID**
+  (e.g. `mattermost:abcdefghijklmnopqrstuvwxyz`). To post into a specific
+  thread, append the thread-root post ID:
+  `mattermost:<channel_id>:<root_post_id>`.
+
+Hermes can also **delete** its own posts (e.g. to clean up streaming preview
+posts). By default Hermes also annotates messages it is directly handling (DMs
+and `@mentions`) with **emoji reactions**: 👀 while it is working, then ✅ on
+success or ❌ on failure. This is a behavioral toggle, so it lives in
+`config.yaml` (bridged to an internal env var like the other `mattermost.*`
+settings):
+
+```yaml
+mattermost:
+  reactions: false   # turn off the 👀/✅/❌ progress reactions (default: true)
+```
+
 ## Mention Behavior
 
 By default, the bot only responds in channels when `@mentioned`. You can change this:

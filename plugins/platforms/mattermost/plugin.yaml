@@ -47,3 +47,6 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  # Progress reactions (👀/✅/❌) are a behavioral toggle set via config.yaml
+  # `mattermost.reactions` (bridged to the internal MATTERMOST_REACTIONS env
+  # var by _apply_yaml_config), not a .env setup prompt — per AGENTS.md.

@@ -3962,7 +3962,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for event_id, entry in list(resolved.items()):
                 if entry[0]() is None:
                     resolved.pop(event_id, None)
-        resolved[id(event)] = (weakref.ref(event), session_key, payload_fingerprint)
+        resolved[id(event)] = (weakref.ref(event), session_key, payload_fingerprint, "issued")
         return True
 
     @staticmethod
@@ -3981,6 +3981,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return self._ingress_payload_fingerprint(event) == entry[2]
         except Exception:
             return False
+
+    def _consume_guarded_ingress_resolution(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> bool:
+        """Spend one guarded resolution immediately before core side effects.
+
+        A resolver-issued event can be transferred into queues and rebuilt by
+        trusted core code, but it cannot drive two terminal runner/busy-path
+        dispatches.  Unguarded events intentionally retain their historical
+        semantics and use the registry only as an exactly-once hook marker.
+        """
+        if not getattr(event, "required_dispatch_gate", None):
+            return True
+        resolved = getattr(self, "_ingress_resolved_events", {})
+        entry = resolved.get(id(event))
+        if not (
+            entry
+            and entry[0]() is event
+            and entry[1] == session_key
+            and self._has_ingress_resolution(event, session_key)
+            and entry[3] == "issued"
+        ):
+            logger.warning("Dropping guarded ingress after duplicate or invalid consumption")
+            return False
+        resolved[id(event)] = (entry[0], entry[1], entry[2], "consumed")
+        return True
 
     @staticmethod
     def _ingress_resolution_lane(event: MessageEvent, session_key: str) -> tuple[Any, ...]:
@@ -4119,6 +4147,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         switches to a strict, isolated fail-closed contract: exactly one
         declared gate owner must return ``{"action": "approve", "gate": ...}``.
         """
+        if self._has_ingress_resolution(event, session_key):
+            return event
+
         gate = getattr(event, "required_dispatch_gate", None)
         if not gate:
             # Preserve the established internal-event bypass.  A required
@@ -5192,6 +5223,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
             return
+        if getattr(queued_event, "required_dispatch_gate", None):
+            # The busy path may queue an event after consuming it to decide
+            # that queueing (rather than steering/interrupting) is safe. A
+            # pending slot owns a fresh child resolution, never the already
+            # consumed parent, even when the payload itself is unchanged.
+            queued_event = self._rebind_ingress_event(
+                [queued_event], dataclasses.replace(queued_event), session_key
+            )
+            if queued_event is None:
+                return
         queued_events = getattr(self, "_queued_events", None)
         if queued_events is None:
             queued_events = {}
@@ -5200,6 +5241,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+
+    def _merge_pending_ingress_event(
+        self,
+        adapter: Any,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        merge_text: bool = False,
+    ) -> Optional[MessageEvent]:
+        """Merge a pending event while preserving a guarded resolution.
+
+        GatewayRunner has several busy-path fallbacks which are reached after
+        a cold adapter handoff races with a newly-running agent.  They must use
+        the same core-issued reconstruction operation as BasePlatformAdapter,
+        otherwise a merged guarded event would defensively invoke its hook a
+        second time when it drains.
+        """
+        if adapter is None or not hasattr(adapter, "_pending_messages"):
+            return None
+        return merge_pending_message_event(
+            adapter._pending_messages,
+            session_key,
+            event,
+            merge_text=merge_text,
+            rebind=self._rebind_ingress_event,
+        )
 
     def _promote_queued_event(
         self,
@@ -6140,8 +6207,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             or bool(getattr(event, "media_urls", None))
         ):
             # Preserve photo-burst / media-merge semantics for the head slot.
-            merge_pending_message_event(
-                adapter._pending_messages,
+            self._merge_pending_ingress_event(
+                adapter,
                 session_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
@@ -6159,6 +6226,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._enqueue_fifo(session_key, event, adapter)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        if not self._consume_guarded_ingress_resolution(event, session_key):
+            return True
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -10605,6 +10674,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._queue_startup_restore_event(event)
             return None
 
+        if not self._consume_guarded_ingress_resolution(event, ingress_session_key):
+            return None
+
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
@@ -11172,7 +11244,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    self._merge_pending_ingress_event(adapter, _quick_key, event)
                 return None
 
             _telegram_followup_grace = float(
@@ -11196,11 +11268,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if self._busy_input_mode == "queue":
                         self._enqueue_fifo(_quick_key, event, adapter)
                     else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
+                        self._merge_pending_ingress_event(
+                            adapter, _quick_key, event, merge_text=True
                         )
                 return None
 
@@ -11216,11 +11285,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # agent starts.
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
+                    self._merge_pending_ingress_event(
+                        adapter, _quick_key, event, merge_text=True
                     )
                 return None
             if self._draining:
@@ -22515,7 +22581,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     adapter = self._adapter_for_source(source)
                     if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                        self._merge_pending_ingress_event(
+                            adapter, session_key, pending_event
+                        )
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}

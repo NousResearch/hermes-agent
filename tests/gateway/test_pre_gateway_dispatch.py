@@ -298,6 +298,133 @@ async def test_guarded_reconstruction_keeps_the_one_core_issued_resolution(monke
 
 
 @pytest.mark.asyncio
+async def test_guarded_busy_merge_does_not_resolve_a_third_time(monkeypatch):
+    """Gateway's own busy fallback rebinds a guarded merged pending event."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    approvals = 0
+
+    def approve(**_kwargs):
+        nonlocal approvals
+        approvals += 1
+        return {"action": "approve", "gate": "line-group-context"}
+
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook(
+        "pre_gateway_dispatch",
+        approve,
+        gate_owner="line-group-context",
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    adapter._pending_messages = {}
+    first = _make_event("first")
+    second = _make_event("second")
+    for index, event in enumerate((first, second), start=1):
+        event.required_dispatch_gate = "line-group-context"
+        event.platform_event_id = f"signed-event-{index}"
+        event.platform_event_timestamp_ms = 1_784_678_400_000 + index
+    session_key = runner._session_key_for_source(first.source)
+    first_resolved = await runner._resolve_gateway_ingress(first, session_key)
+    second_resolved = await runner._resolve_gateway_ingress(second, session_key)
+    assert first_resolved is not None and second_resolved is not None
+    adapter._pending_messages[session_key] = first_resolved
+
+    merged = runner._merge_pending_ingress_event(
+        adapter, session_key, second_resolved, merge_text=True
+    )
+    assert merged is not None
+    assert merged.text == "first\nsecond"
+
+    async def capture(*_args):
+        return "ok"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    assert await runner._handle_message(merged) == "ok"
+    assert approvals == 2
+
+
+@pytest.mark.asyncio
+async def test_guarded_resolution_is_consumed_before_a_second_runner_dispatch(monkeypatch):
+    """The same core-issued guarded event cannot invoke the agent twice."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook(
+        "pre_gateway_dispatch",
+        lambda **_kwargs: {"action": "approve", "gate": "line-group-context"},
+        gate_owner="line-group-context",
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    event = _make_event("guarded")
+    event.required_dispatch_gate = "line-group-context"
+    event.platform_event_id = "signed-event-id"
+    event.platform_event_timestamp_ms = 1_784_678_400_000
+    session_key = runner._session_key_for_source(event.source)
+    resolved = await runner._resolve_gateway_ingress(event, session_key)
+    assert resolved is not None
+    dispatches = 0
+
+    async def capture(*_args):
+        nonlocal dispatches
+        dispatches += 1
+        return "ok"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    assert await runner._handle_message(resolved) == "ok"
+    assert await runner._handle_message(resolved) is None
+    assert dispatches == 1
+
+
+@pytest.mark.asyncio
+async def test_guarded_busy_queue_transfers_a_fresh_dispatchable_child(monkeypatch):
+    """Queueing a consumed busy event transfers—not reuses—its approval."""
+    _clear_auth_env(monkeypatch)
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook(
+        "pre_gateway_dispatch",
+        lambda **_kwargs: {"action": "approve", "gate": "line-group-context"},
+        gate_owner="line-group-context",
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    adapter._pending_messages = {}
+    event = _make_event("queued")
+    event.required_dispatch_gate = "line-group-context"
+    event.platform_event_id = "signed-event-id"
+    event.platform_event_timestamp_ms = 1_784_678_400_000
+    session_key = runner._session_key_for_source(event.source)
+    resolved = await runner._resolve_gateway_ingress(event, session_key)
+    assert resolved is not None
+    assert runner._consume_guarded_ingress_resolution(resolved, session_key)
+
+    runner._enqueue_fifo(session_key, resolved, adapter)
+
+    queued = adapter._pending_messages[session_key]
+    assert queued is not resolved
+    assert runner._consume_guarded_ingress_resolution(queued, session_key)
+    assert not runner._consume_guarded_ingress_resolution(queued, session_key)
+
+
+@pytest.mark.asyncio
 async def test_hook_exception_does_not_break_dispatch(monkeypatch):
     """A raising plugin hook does not break the gateway."""
     _clear_auth_env(monkeypatch)

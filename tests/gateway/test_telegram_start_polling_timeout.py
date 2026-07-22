@@ -8,9 +8,10 @@ httpx connection pool — it neither returns nor raises. Unbounded, that wedges:
 2. the heartbeat loop (sees the recovery task as alive-but-wedged and skips),
 3. the fatal-error escalation (never reached).
 
-The fix wraps every ``start_polling()`` await in ``asyncio.wait_for`` with
-``_UPDATER_START_TIMEOUT`` so a hung call raises and feeds the existing retry
-ladder. These tests patch the timeout down to keep the suite fast.
+The fix wraps every ``start_polling()`` await in the wall-deadline helper with
+``_UPDATER_START_TIMEOUT`` so a cancellation-shielded hung call still raises and
+feeds the existing retry ladder. These tests patch the timeout down to keep the
+suite fast.
 """
 import asyncio
 import sys
@@ -138,20 +139,34 @@ async def test_start_polling_success_path_unaffected(monkeypatch):
 
 
 def test_every_start_polling_call_site_is_time_bounded():
-    """Bug-class contract: every `updater.start_polling(` await in the adapter
-    must be wrapped in asyncio.wait_for. A new unbounded call site reintroduces
-    the #59614 wedge."""
+    """Every updater.start_polling call must use the wall-deadline helper."""
     import inspect
     import re
 
     src = inspect.getsource(tg_adapter)
-    # Find each start_polling( call and check an enclosing wait_for within the
-    # preceding 6 lines (the wrapper always sits directly above).
     lines = src.splitlines()
     unbounded = []
     for i, line in enumerate(lines):
         if re.search(r"updater\.start_polling\(", line) and "def " not in line:
-            window = "\n".join(lines[max(0, i - 6):i + 1])
-            if "wait_for" not in window:
+            window = "\n".join(lines[max(0, i - 8):i + 1])
+            if "_await_with_thread_deadline" not in window:
                 unbounded.append((i + 1, line.strip()))
     assert not unbounded, f"unbounded start_polling() call sites: {unbounded}"
+
+
+@pytest.mark.asyncio
+async def test_initial_connect_requires_get_updates_progress(monkeypatch):
+    """Cold connect must not claim success before real getUpdates I/O."""
+    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 0.05)
+    a = _bare_adapter()
+    app = MagicMock()
+    app.updater = AsyncMock()
+    app.updater.start_polling = AsyncMock(return_value=None)
+    a._app = app
+
+    with pytest.raises(OSError, match="getUpdates made no progress"):
+        await a._start_polling_resilient(
+            drop_pending_updates=True,
+            error_callback=None,
+            require_progress=True,
+        )

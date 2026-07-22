@@ -772,6 +772,16 @@ def load_cli_config() -> Dict[str, Any]:
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
 
+    # Session-search index knobs (hermes_state reads the env carriers).
+    sessions_config = defaults.get("sessions", {})
+    if isinstance(sessions_config, dict):
+        if "cjk_fts" in sessions_config:
+            os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
+        if "search_slow_ms" in sessions_config:
+            os.environ["HERMES_SEARCH_SLOW_MS"] = str(
+                sessions_config["search_slow_ms"]
+            )
+
     return defaults
 
 # Load configuration at module startup

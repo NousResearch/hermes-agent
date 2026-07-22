@@ -5195,6 +5195,7 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
+            text = redact_sensitive_text(text, force=True)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             if not prepended_break and not getattr(
                 self, "_current_streamed_assistant_text", ""

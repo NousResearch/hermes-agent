@@ -62,6 +62,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.redact import redact_sensitive_text
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -5485,9 +5486,13 @@ def run_conversation(
                     truncated_response_parts = []
                     length_continue_retries = 0
                 
-                final_response = agent._strip_think_blocks(final_response).strip()
+                final_response = redact_sensitive_text(
+                    agent._strip_think_blocks(final_response).strip(),
+                    force=True,
+                )
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                final_msg["content"] = final_response
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a
@@ -5571,12 +5576,17 @@ def run_conversation(
                 # default continuation cost.
                 _verify_nudge2 = None
                 _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
+                _is_subagent_report = getattr(agent, "_delegate_depth", 0) > 0
                 _attempt = getattr(agent, "_pre_verify_nudges", 0)
                 try:
                     from agent.verify_hooks import max_verify_nudges
                     from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
 
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                    if (
+                        (_edited or _is_subagent_report)
+                        and has_hook("pre_verify")
+                        and _attempt < max_verify_nudges()
+                    ):
                         # Posture is fixed for the session — resolve once + cache.
                         coding = getattr(agent, "_resolved_is_coding", None)
                         if coding is None:

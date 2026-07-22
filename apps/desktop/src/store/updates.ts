@@ -17,7 +17,18 @@ import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
-import { $connection } from '@/store/session'
+import {
+  $activeSessionStoredId,
+  $awaitingResponse,
+  $busy,
+  $connection,
+  $selectedStoredSessionId
+} from '@/store/session'
+import {
+  armUpdateContinuation,
+  clearUpdateContinuation,
+  continuationSessionId
+} from '@/store/update-continuation'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 export interface UpdateApplyState {
@@ -373,8 +384,25 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   dismissNotification(UPDATE_TOAST_ID)
   $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: 'Starting update…' })
 
+  const continuationId = continuationSessionId({
+    activeStoredSessionId: $activeSessionStoredId.get(),
+    awaitingResponse: $awaitingResponse.get(),
+    busy: $busy.get(),
+    selectedStoredSessionId: $selectedStoredSessionId.get()
+  })
+
+  if (continuationId) {
+    armUpdateContinuation(continuationId)
+  } else {
+    clearUpdateContinuation()
+  }
+
   try {
     const result = await bridge.apply(opts)
+
+    if (!result?.handedOff) {
+      clearUpdateContinuation()
+    }
 
     // CLI install with no staged updater: not an error — the user just runs
     // `hermes update` themselves. Land on a dedicated manual state so the
@@ -459,6 +487,7 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
     return result
   } catch (error) {
+    clearUpdateContinuation()
     const message = error instanceof Error ? error.message : String(error)
     $updateApply.set({ ...$updateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
 

@@ -1,11 +1,14 @@
 import { useStore } from '@nanostores/react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { message } from '@tauri-apps/plugin-dialog'
 import { useEffect } from 'react'
 
 import Failure from './routes/failure'
 import Progress from './routes/progress'
 import Success from './routes/success'
 import Welcome from './routes/welcome'
-import { $bootstrap, $route, initialize } from './store'
+import { $bootstrap, $mode, $route, initialize } from './store'
+import { shouldBlockUpdateClose } from './update-close-guard'
 
 /*
  * App shell — Hermes Setup.
@@ -21,6 +24,46 @@ export default function App() {
 
   useEffect(() => {
     void initialize()
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let noticeOpen = false
+    let unlisten: () => void = () => undefined
+
+    void getCurrentWindow()
+      .onCloseRequested(event => {
+        const state = $bootstrap.get()
+
+        if (!shouldBlockUpdateClose($mode.get(), state.status)) {
+          return
+        }
+
+        event.preventDefault()
+
+        if (!noticeOpen) {
+          noticeOpen = true
+          void message('Hermes is still updating and will restart automatically. Keep this window open.', {
+            kind: 'info',
+            title: 'Update in progress'
+          }).finally(() => {
+            noticeOpen = false
+          })
+        }
+      })
+      .then(stop => {
+        if (disposed) {
+          stop()
+        } else {
+          unlisten = stop
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      disposed = true
+      unlisten()
+    }
   }, [])
 
   return (

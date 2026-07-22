@@ -580,10 +580,32 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert reset_calls[0][-3:] == ["reset", "--hard", "origin/main"]
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
+
+
+def test_cmd_update_rebases_local_patch_stack_when_preservation_is_enabled(
+    monkeypatch, tmp_path, capsys
+):
+    """A managed local fix must survive the update that it launches."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_preserve_local_update_commits",
+        lambda *args: True,
+    )
+
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert any(call[-2:] == ["rebase", "origin/main"] for call in recorded)
+    assert not any("reset" in call and "--hard" in call for call in recorded)
+    assert "Preserving local commits" in capsys.readouterr().out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):

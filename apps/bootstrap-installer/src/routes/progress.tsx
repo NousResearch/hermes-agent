@@ -160,10 +160,13 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
           <ChevronRight className={clsx('transition-transform', showLogs && 'rotate-90')} size={12} />
         </button>
 
-        {bootstrap.status === 'running' && (
+        {bootstrap.status === 'running' && !isUpdate && (
           <Button onClick={() => void cancelInstall()} size="sm" variant="outline">
             Cancel
           </Button>
+        )}
+        {bootstrap.status === 'running' && isUpdate && (
+          <span className="text-xs text-muted-foreground">Keep this window open — Hermes restarts automatically.</span>
         )}
       </div>
     </div>

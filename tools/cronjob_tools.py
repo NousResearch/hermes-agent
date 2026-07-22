@@ -525,40 +525,109 @@ def _validate_cron_base_url(
     )
 
 
+def _is_cron_script_absolute(raw: str) -> bool:
+    """Detect absolute paths in a cross-platform way.
+
+    Covers POSIX (`/foo`), Windows drive-letter (`C:\\foo`, `D:/foo`),
+    Windows UNC (`\\\\server\\share\\...`), and home-relative (`~/foo`).
+
+    Why not just ``pathlib.Path.is_absolute()``? Because on Windows
+    ``Path("/usr/local/bin/x.py").is_absolute()`` returns ``False`` —
+    ``Path`` is parameterized to the running OS, so a POSIX-shaped
+    string is treated as relative even though it absolutely is not for
+    our purposes (cron scripts are written by humans on either OS and
+    pasted across machines). We therefore OR the cross-platform
+    ``PurePosixPath`` check with the local ``Path`` check, plus an
+    explicit ``~`` and drive-letter fallback.
+    """
+    if not raw:
+        return False
+    if raw.startswith("~"):
+        return True
+    # Drive letter (Windows): "C:", "D:\\", etc. Catch this before the
+    # Path() calls so we don't rely on platform-specific behaviour.
+    if len(raw) >= 2 and raw[1] == ":":
+        return True
+    # Plain POSIX root ("/foo") — works regardless of host OS.
+    if raw.startswith("/"):
+        return True
+    # UNC paths (Windows) — start with two backslashes.
+    if raw.startswith("\\\\"):
+        return True
+    # Fall back to pathlib for any shape we didn't cover above
+    # (e.g. a user-supplied path with weird whitespace). On the host's
+    # native OS this catches the local absolute form.
+    try:
+        return Path(raw).is_absolute()
+    except (OSError, ValueError):
+        # Path() raises ValueError on malformed input and OSError on
+        # some Windows device paths; either way, treat as relative rather
+        # than raising out of the validator.
+        return False
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    Scripts must be relative paths that resolve within ``HERMES_HOME/scripts/``.
+    Absolute paths and ``~``-expansion are rejected to prevent arbitrary
+    script execution via prompt injection (#59599).
 
-    Returns an error string if blocked, else None (valid).
+    On rejection we return a multi-line, actionable error that explains:
+
+      * WHY the path was rejected (security / policy rationale),
+      * HOW to fix it (relative path from the scripts directory, or move
+        the script under ``HERMES_HOME/scripts/``),
+      * HOW to verify the file exists (``ls -la`` on POSIX, ``dir`` on
+        Windows).
+
+    We deliberately do NOT block on the file missing at create time —
+    the runtime ``_run_job_script`` already surfaces a clear "not found"
+    error on first fire, and the previous behaviour intentionally
+    allowed scheduling a job whose script is written later (e.g. a
+    brand-new install, or a CI step that drops the script into
+    ``~/.hermes/scripts/`` post-scheduling).
+
+    Returns an error string if blocked, else ``None`` (valid).
     """
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from hermes_constants import get_hermes_home
+    from hermes_constants import display_hermes_home, get_hermes_home
 
     raw = script.strip()
-
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
-        return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
-            f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
-        )
-
-    # Validate containment after resolution
-    from tools.path_security import validate_within_dir
-
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_display = f"{display_hermes_home()}/scripts"
+
+    # --- 1. Reject absolute paths and ~ expansion at the API boundary. ---
+    # Only relative paths within ~/.hermes/scripts/ are allowed.
+    if _is_cron_script_absolute(raw):
+        list_cmd = "dir" if sys.platform == "win32" else "ls -la"
+        return (
+            f"Script path must be relative to {scripts_display}/ "
+            f"(got absolute or home-relative path: {raw!r}).\n"
+            f"Why: cron scripts run unattended and absolute paths let a "
+            f"prompt-injected job execute any file on the system.\n"
+            f"How to fix:\n"
+            f"  - Move or symlink the script under {scripts_display}/ "
+            f"and pass just the filename, e.g. --script foo.py\n"
+            f"  - Or pass a relative path WITHIN {scripts_display}/ "
+            f"(subdirectories like monitors/check.py are allowed)\n"
+            f"  - Verify it's there first with: {list_cmd} {scripts_display}"
+        )
+
+    # --- 2. Validate containment after resolution. ---
+    from tools.path_security import validate_within_dir
+
     containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
     if containment_error:
         return (
-            f"Script path escapes the scripts directory via traversal: {raw!r}"
+            f"Script path escapes the scripts directory via traversal: {raw!r}.\n"
+            f"Why: paths that climb out of {scripts_display}/ with '..' "
+            f"are blocked for the same reason absolute paths are.\n"
+            f"How to fix: keep the script under {scripts_display}/ "
+            f"and use a path relative to that directory."
         )
 
     return None

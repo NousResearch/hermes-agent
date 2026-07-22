@@ -310,6 +310,51 @@ def test_runner_auth_gets_group_chat_allowlist_context(monkeypatch):
     assert seen_sources[0].chat_id == "-222"
 
 
+def test_config_allow_from_does_not_mask_group_env_allowlist(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "333")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+
+    adapter = _make_adapter(allow_from=["111"])
+    msg = _make_message(from_user_id=333, chat_id=-100, chat_type="supergroup")
+    msg.chat.is_forum = True
+    msg.is_topic_message = True
+    msg.message_thread_id = 7
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_config_allow_from_still_blocks_group_sender_without_group_allowlist(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
+
+    adapter = _make_adapter(allow_from=["111"])
+    msg = _make_message(from_user_id=333, chat_id=-100, chat_type="supergroup")
+
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_config_group_allowed_users_alias_authorizes_group_sender(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+
+    adapter = _make_adapter(allow_from=["111"], group_allowed_users=["333"])
+    msg = _make_message(from_user_id=333, chat_id=-100, chat_type="group")
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_config_allowed_users_alias_authorizes_dm_sender(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+
+    adapter = _make_adapter(allowed_users=["333"])
+    allowed = _make_message(from_user_id=333, chat_id=333, chat_type="private")
+    blocked = _make_message(from_user_id=444, chat_id=444, chat_type="private")
+
+    assert adapter._is_user_authorized_from_message(allowed) is True
+    assert adapter._is_user_authorized_from_message(blocked) is False
+
+
 def test_removed_dm_user_blocked_before_pairing_when_allowlist_exists(monkeypatch):
     """A user removed from TELEGRAM_ALLOWED_USERS should be blocked at intake."""
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "222")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import socket
 from typing import Iterable, Optional
@@ -24,6 +25,8 @@ _TELEGRAM_API_HOST = "api.telegram.org"
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
+
+_DOH_JSON_MAX_BYTES = 1_048_576  # DoH A-record JSON is tiny; 1 MiB is defensive.
 
 _DOH_PROVIDERS: list[dict] = [
     {
@@ -171,11 +174,14 @@ async def _query_doh_provider(
 ) -> list[str]:
     """Query one DoH provider and return A-record IPs."""
     try:
-        resp = await client.get(
-            provider["url"], params=provider["params"], headers=provider["headers"]
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        async with client.stream(
+            "GET",
+            provider["url"],
+            params=provider["params"],
+            headers=provider["headers"],
+        ) as resp:
+            resp.raise_for_status()
+            data = await _read_doh_json_response(resp)
         ips: list[str] = []
         for answer in data.get("Answer", []):
             if answer.get("type") != 1:  # A record
@@ -190,6 +196,25 @@ async def _query_doh_provider(
     except Exception as exc:
         logger.debug("DoH query to %s failed: %s", provider["url"], exc)
         return []
+
+
+async def _read_doh_json_response(
+    resp: httpx.Response,
+    *,
+    max_bytes: int = _DOH_JSON_MAX_BYTES,
+) -> dict:
+    """Read a small DoH JSON response without buffering unbounded bodies."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"DoH JSON response exceeds {max_bytes} bytes")
+        chunks.append(chunk)
+    if not chunks:
+        return {}
+    data = json.loads(b"".join(chunks).decode("utf-8"))
+    return data if isinstance(data, dict) else {}
 
 
 async def discover_fallback_ips() -> list[str]:

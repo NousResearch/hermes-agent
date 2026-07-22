@@ -988,6 +988,26 @@ class TestOrphanedBranchPruning:
         ]
         assert "main" not in orphaned
 
+    def test_production_pruner_preserves_branch_with_remote_tracking_ref(self, git_repo):
+        """A remote-tracked generated branch is not local junk."""
+        import cli
+
+        subprocess.run(
+            ["git", "branch", "pr-remote", "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/pr-remote", "refs/heads/pr-remote"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+
+        cli._prune_orphaned_branches(str(git_repo))
+
+        assert subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/pr-remote"],
+            cwd=git_repo,
+        ).returncode == 0
+
 
 class TestSystemPromptInjection:
     """Test that the agent gets worktree context in its system prompt."""
@@ -1094,6 +1114,20 @@ class TestWorktreeLockReaping:
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "dirty worktree must survive even past the 72h tier"
 
+    def test_exit_cleanup_preserves_dirty_worktree(self, git_repo):
+        """Exit cleanup must not discard uncommitted user-authored changes."""
+        import cli
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+        dirty = Path(info["path"]) / "uncommitted.txt"
+        dirty.write_text("keep me")
+
+        cli._cleanup_worktree(info)
+
+        assert Path(info["path"]).exists()
+        assert dirty.exists()
+
     def test_recent_worktree_untouched(self, git_repo):
         import cli
         wt = self._mk(cli, git_repo, "hermes-fresh", pid=None, age_h=1)
@@ -1137,10 +1171,10 @@ class TestWorktreeLockPredicate:
         p = self._mk_locked(git_repo, "hermes-dead", "hermes pid=999999")
         assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
 
-    def test_foreign_lock_reason_returns_dead(self, git_repo):
+    def test_foreign_lock_reason_returns_unknown(self, git_repo):
         import cli
         p = self._mk_locked(git_repo, "hermes-foreign", "some other tool")
-        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "unknown"
 
     def test_bad_repo_root_fails_safe_to_live(self, tmp_path):
         import cli

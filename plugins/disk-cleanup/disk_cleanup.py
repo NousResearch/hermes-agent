@@ -10,7 +10,7 @@ Rules:
   - test files    → delete immediately at task end (age >= 0)
   - temp files    → delete after 7 days
   - cron-output   → delete after 14 days
-  - empty dirs    → always delete (under HERMES_HOME)
+  - empty dirs    → delete only inside explicitly marked Hermes-owned roots
   - research      → keep 10 newest, prompt for older (deep only)
   - chrome-profile→ prompt after 14 days (deep only)
   - >500 MB files → prompt always (deep only)
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,15 +69,36 @@ def is_safe_path(path: Path) -> bool:
 
     Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
     """
-    hermes_home = get_hermes_home()
     try:
-        path.resolve().relative_to(hermes_home)
+        candidate = Path(path)
+        hermes_home = Path(get_hermes_home()).resolve()
+        resolved = candidate.resolve()
+    except (TypeError, ValueError, OSError):
+        return False
+
+    try:
+        resolved.relative_to(hermes_home)
         return True
     except (ValueError, OSError):
         pass
-    # Allow /tmp/hermes-* explicitly
-    parts = path.parts
-    if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
+
+    # Allow the explicitly temporary POSIX-style ``/tmp/hermes-*`` scope.
+    # On Windows, ``Path('/tmp/...').resolve()`` becomes ``C:\\tmp\\...``;
+    # retain that compatibility while rejecting an explicit drive path such
+    # as ``C:\\tmp\\hermes-user``.  The latter is not the approved temporary
+    # namespace and could otherwise be mistaken for it by ``parts`` alone.
+    if os.name == "nt" and candidate.anchor not in {"", "\\", "/"}:
+        return False
+    parts = resolved.parts
+    if (
+        len(parts) >= 3
+        and (
+            parts[0] in {"/", "\\"}
+            or (os.name == "nt" and candidate.anchor in {"\\", "/"})
+        )
+        and parts[1].casefold() == "tmp"
+        and parts[2].casefold().startswith("hermes-")
+    ):
         return True
     return False
 
@@ -110,12 +132,17 @@ def load_tracked() -> List[Dict[str, Any]]:
         return []
 
     try:
-        return json.loads(tf.read_text())
+        data = json.loads(tf.read_text())
+        if not isinstance(data, list):
+            raise ValueError("tracked.json must contain a list")
+        return data
     except (json.JSONDecodeError, ValueError):
         bak = tf.with_suffix(".json.bak")
         if bak.exists():
             try:
                 data = json.loads(bak.read_text())
+                if not isinstance(data, list):
+                    raise ValueError("tracked.json backup must contain a list")
                 _log("WARN: tracked.json corrupted — restored from .bak")
                 return data
             except Exception:
@@ -155,6 +182,25 @@ _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     "site-packages", "__pycache__",
 })
 
+# Empty-directory pruning is limited to roots that this plugin explicitly
+# owns.  An arbitrary empty directory under HERMES_HOME may be a user's
+# project output or a control-plane staging area; emptiness is not ownership
+# evidence.  Keep persistent Singularity/cache subtrees out of the sweep even
+# when they live below the opt-in scratch root.
+_EMPTY_DIR_OWNED_TOP_LEVEL = frozenset({
+    "scratch", "tmp", "temp", "artifacts", "downloads",
+})
+_EMPTY_DIR_SWEEP_PROTECTED_NAMES = frozenset({"hermes-overlays", ".apptainer"})
+_EMPTY_DIR_OWNERSHIP_MARKER = ".hermes-managed"
+
+_MANAGED_ARTIFACT_RETENTION_DAYS = {
+    "hook_outputs": 14,
+    "spawn-trees": 30,
+}
+_MANAGED_ARTIFACT_SKIP_NAMES = frozenset({
+    ".hermes-managed", ".in-progress", ".active", ".lock",
+})
+
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(),
 # regardless of what the stored category says.  This is a defense-in-depth
@@ -186,6 +232,108 @@ def _is_protected_cron_path(p: Path) -> bool:
             _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
     resolved = str(p.resolve())
     return resolved in _PROTECTED_CRON_PATHS
+
+
+def _is_owned_empty_dir_root(path: Path) -> bool:
+    """Return whether *path* carries explicit ownership evidence.
+
+    Names such as ``scratch`` and ``tmp`` are common in user projects and
+    cannot authorize deletion by themselves.  The creator of a disposable
+    Hermes root must leave a regular ``.hermes-managed`` marker containing
+    the expected root name.  Missing, symlinked, or malformed markers fail
+    closed and keep the entire subtree untouched.
+    """
+    if path.name not in _EMPTY_DIR_OWNED_TOP_LEVEL:
+        return False
+    marker = path / _EMPTY_DIR_OWNERSHIP_MARKER
+    try:
+        owned = (
+            marker.is_file()
+            and not marker.is_symlink()
+            and marker.read_text(encoding="utf-8").strip() == path.name
+        )
+        if not owned:
+            return False
+        # A lock/active marker is evidence that this namespace may still be
+        # live.  Treat malformed or inaccessible markers as active too.
+        return not _has_active_maintenance_marker(path)
+    except (OSError, UnicodeError):
+        return False
+
+
+def _has_active_maintenance_marker(path: Path) -> bool:
+    """Return whether *path* has a live or unverifiable maintenance marker."""
+    for name in (".in-progress", ".active", ".lock"):
+        marker = path / name
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        # A symlink or any existing marker is intentionally conservative:
+        # stale ownership cannot be inferred from its name or contents.
+        return True
+    return False
+
+
+def _validated_tracked_item(item: Any):
+    """Return validated tracking fields, or ``None`` for untrusted evidence."""
+    if not isinstance(item, dict):
+        return None
+    path_value = item.get("path")
+    category = item.get("category")
+    timestamp = item.get("timestamp")
+    size = item.get("size")
+    if (
+        not isinstance(path_value, str)
+        or not path_value
+        or category not in ALLOWED_CATEGORIES
+        or not isinstance(timestamp, str)
+        or not timestamp
+        or not isinstance(size, (int, float))
+        or isinstance(size, bool)
+        or (isinstance(size, float) and not size.is_integer())
+    ):
+        return None
+    try:
+        path = Path(path_value)
+        parsed_timestamp = datetime.fromisoformat(timestamp)
+        if parsed_timestamp.tzinfo is None:
+            parsed_timestamp = parsed_timestamp.replace(tzinfo=timezone.utc)
+        parsed_size = int(size)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+    if parsed_size < 0:
+        return None
+    return path, category, parsed_timestamp, parsed_size
+
+
+def _managed_marker_matches(path: Path, expected: str) -> bool:
+    """Return true only for a regular, readable ownership marker."""
+    marker = path / _EMPTY_DIR_OWNERSHIP_MARKER
+    try:
+        return (
+            marker.is_file()
+            and not marker.is_symlink()
+            and marker.read_text(encoding="utf-8").strip() == expected
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def _remove_path(path: Path) -> Optional[str]:
+    """Remove one regular file or directory, returning an error if unsure."""
+    try:
+        if path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        else:
+            return "not a regular file or directory"
+    except OSError as exc:
+        return str(exc)
+    return None
 
 
 def fmt_size(n: float) -> str:
@@ -220,7 +368,10 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     tracked = load_tracked()
 
     # Deduplicate
-    if any(item["path"] == str(path) for item in tracked):
+    if any(
+        isinstance(item, dict) and item.get("path") == str(path)
+        for item in tracked
+    ):
         return False
 
     tracked.append({
@@ -262,12 +413,15 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     prompt: List[Dict] = []
 
     for item in tracked:
-        p = Path(item["path"])
-        if not p.exists():
+        validated = _validated_tracked_item(item)
+        if validated is None:
+            # A malformed record is not deletion authorization.  Omit it
+            # from the preview rather than aborting the whole report.
             continue
-        age = (now - datetime.fromisoformat(item["timestamp"])).days
-        cat = item["category"]
-        size = item["size"]
+        p, cat, timestamp, size = validated
+        if not p.exists() or not is_safe_path(p):
+            continue
+        age = (now - timestamp).days
 
         # Re-validate stale "cron-output" entries (fixes #37721).
         if cat == "cron-output":
@@ -300,25 +454,49 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
 def quick() -> Dict[str, Any]:
     """Safe deterministic cleanup — no prompts.
 
-    Returns: ``{"deleted": N, "empty_dirs": N, "freed": bytes,
-               "errors": [str, ...]}``.
+    Returns: ``{"deleted": N, "artifacts": N, "empty_dirs": N,
+               "freed": bytes, "errors": [str, ...]}``.
     """
     tracked = load_tracked()
     now = datetime.now(timezone.utc)
     deleted = 0
     freed = 0
-    new_tracked: List[Dict] = []
+    new_tracked: List[Any] = []
     errors: List[str] = []
+    artifacts = 0
 
     for item in tracked:
-        p = Path(item["path"])
-        cat = item["category"]
+        validated = _validated_tracked_item(item)
+        if validated is None:
+            # Preserve malformed records and continue.  Hand-edited or
+            # partially-written tracking state is never proof of ownership.
+            errors.append(f"invalid tracked record: {item!r}")
+            new_tracked.append(item)
+            continue
+        p, cat, timestamp, size = validated
 
-        if not p.exists():
+        try:
+            p.stat()
+        except FileNotFoundError:
             _log(f"STALE: {p} (removed from tracking)")
             continue
+        except (OSError, ValueError) as exc:
+            _log(f"ERROR inspecting {p}: {exc}")
+            errors.append(f"{p}: {exc}")
+            new_tracked.append(item)
+            continue
 
-        age = (now - datetime.fromisoformat(item["timestamp"])).days
+        # tracked.json is durable state, not proof that the current target is
+        # still owned by Hermes.  A stale or hand-edited record must never make
+        # quick() delete a path outside the active HERMES_HOME (or approved
+        # /tmp/hermes-* scope).
+        if not is_safe_path(p):
+            _log(f"SKIP unsafe tracked path: {p}")
+            errors.append(f"{p}: unsafe path")
+            new_tracked.append(item)
+            continue
+
+        age = (now - timestamp).days
 
         # ---- stale-state migration (fixes #37721) ----
         # Old tracked.json entries may carry a "cron-output" category for
@@ -349,26 +527,64 @@ def quick() -> Dict[str, Any]:
         )
 
         if should_delete:
-            try:
-                if p.is_file():
-                    p.unlink()
-                elif p.is_dir():
-                    shutil.rmtree(p)
-                freed += item["size"]
+            error = _remove_path(p)
+            if error is None:
+                freed += size
                 deleted += 1
-                _log(f"DELETED: {p} ({cat}, {fmt_size(item['size'])})")
-            except OSError as e:
-                _log(f"ERROR deleting {p}: {e}")
-                errors.append(f"{p}: {e}")
+                _log(f"DELETED: {p} ({cat}, {fmt_size(size)})")
+            else:
+                _log(f"ERROR deleting {p}: {error}")
+                errors.append(f"{p}: {error}")
                 new_tracked.append(item)
         else:
             new_tracked.append(item)
+
+    # Prune artifact files only inside explicitly marked session directories.
+    # The marker is the durable ownership proof; directory names alone are not.
+    hermes_home = get_hermes_home()
+    for root_name, retention_days in _MANAGED_ARTIFACT_RETENTION_DAYS.items():
+        artifact_root = hermes_home / root_name
+        try:
+            if artifact_root.is_symlink() or not artifact_root.is_dir():
+                continue
+            session_dirs = [
+                p for p in artifact_root.iterdir()
+                if p.is_dir() and not p.is_symlink()
+            ]
+        except OSError:
+            continue
+        for session_dir in session_dirs:
+            try:
+                if (
+                    not _managed_marker_matches(session_dir, root_name)
+                    or _has_active_maintenance_marker(session_dir)
+                ):
+                    continue
+                for artifact in session_dir.iterdir():
+                    if (
+                        artifact.name in _MANAGED_ARTIFACT_SKIP_NAMES
+                        or artifact.is_symlink()
+                        or not artifact.is_file()
+                    ):
+                        continue
+                    try:
+                        age_seconds = now.timestamp() - artifact.stat().st_mtime
+                        if age_seconds <= retention_days * 24 * 60 * 60:
+                            continue
+                        size = artifact.stat().st_size
+                        artifact.unlink()
+                        artifacts += 1
+                        freed += size
+                        _log(f"DELETED: {artifact} (managed artifact retention)")
+                    except OSError as exc:
+                        errors.append(f"{artifact}: {exc}")
+            except OSError as exc:
+                errors.append(f"{session_dir}: {exc}")
 
     # Remove empty dirs under HERMES_HOME, but never recurse into known
     # durable state trees.  Some installs place the Hermes checkout, venv,
     # and desktop build under HERMES_HOME; a full rglob over that tree can
     # stall the gateway event loop for minutes.
-    hermes_home = get_hermes_home()
     empty_removed = 0
     sweep_stack: List[Tuple[Path, bool]] = []
     try:
@@ -376,8 +592,7 @@ def quick() -> Dict[str, Any]:
             if (
                 top.is_dir()
                 and not top.is_symlink()
-                and top.name not in _EMPTY_DIR_PROTECTED_TOP_LEVEL
-                and top.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
+                and _is_owned_empty_dir_root(top)
             ):
                 sweep_stack.append((top, False))
     except OSError:
@@ -402,6 +617,7 @@ def quick() -> Dict[str, Any]:
                     child.is_dir()
                     and not child.is_symlink()
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
+                    and child.name not in _EMPTY_DIR_SWEEP_PROTECTED_NAMES
                 ):
                     sweep_stack.append((child, False))
         except OSError:
@@ -414,6 +630,7 @@ def quick() -> Dict[str, Any]:
     )
     return {
         "deleted": deleted,
+        "artifacts": artifacts,
         "empty_dirs": empty_removed,
         "freed": freed,
         "errors": errors,
@@ -446,17 +663,23 @@ def deep(
     research, chrome, large = [], [], []
 
     for item in tracked:
-        p = Path(item["path"])
-        if not p.exists():
+        validated = _validated_tracked_item(item)
+        if validated is None:
             continue
-        age = (now - datetime.fromisoformat(item["timestamp"])).days
-        cat = item["category"]
+        p, cat, timestamp, size = validated
+        try:
+            p.stat()
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        if not is_safe_path(p) or _is_protected_cron_path(p):
+            continue
+        age = (now - timestamp).days
 
         if cat == "research" and age > 30:
             research.append(item)
         elif cat == "chrome-profile" and age > 14:
             chrome.append(item)
-        elif item["size"] > 500 * 1024 * 1024:
+        elif size > 500 * 1024 * 1024:
             large.append(item)
 
     research.sort(key=lambda x: x["timestamp"], reverse=True)
@@ -468,21 +691,23 @@ def deep(
     for group in (old_research, chrome, large):
         for item in group:
             if confirm(item):
-                try:
-                    p = Path(item["path"])
-                    if p.is_file():
-                        p.unlink()
-                    elif p.is_dir():
-                        shutil.rmtree(p)
+                validated = _validated_tracked_item(item)
+                if validated is None:
+                    continue
+                p, _cat, _timestamp, size = validated
+                if not is_safe_path(p) or _is_protected_cron_path(p):
+                    continue
+                error = _remove_path(p)
+                if error is None:
                     to_remove.append(item)
-                    freed += item["size"]
+                    freed += size
                     count += 1
                     _log(
                         f"DELETED: {p} ({item['category']}, "
-                        f"{fmt_size(item['size'])})"
+                        f"{fmt_size(size)})"
                     )
-                except OSError as e:
-                    _log(f"ERROR deleting {item['path']}: {e}")
+                else:
+                    _log(f"ERROR deleting {p}: {error}")
 
     if to_remove:
         remove_paths = {i["path"] for i in to_remove}

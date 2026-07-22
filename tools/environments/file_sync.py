@@ -21,7 +21,13 @@ import time
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows — file locking skipped
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:  # pragma: no cover - unsupported platform
+        msvcrt = None
+else:
+    msvcrt = None
 from pathlib import Path
 from typing import Callable
 
@@ -324,17 +330,39 @@ class FileSyncManager:
 
     def _sync_back_locked(self, lock_path: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""
-        if fcntl is None:
-            # Windows: no flock — run without serialization
-            self._sync_back_impl()
+        if fcntl is not None:
+            lock_fd = open(lock_path, "a+b")
+            try:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+                self._sync_back_impl()
+            finally:
+                try:
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+                lock_fd.close()
             return
-        lock_fd = open(lock_path, "w", encoding="utf-8")
+
+        if msvcrt is None:  # pragma: no cover - unsupported platform
+            raise OSError("no supported file-lock primitive")
+
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "a+b")
+        locked = False
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_fd.seek(0, os.SEEK_END)
+            if lock_fd.tell() == 0:
+                lock_fd.write(b"0")
+                lock_fd.flush()
+            lock_fd.seek(0)
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+            locked = True
             self._sync_back_impl()
         finally:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                if locked:
+                    lock_fd.seek(0)
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
             except (OSError, IOError):
                 pass
             lock_fd.close()

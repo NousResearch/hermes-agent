@@ -3,6 +3,19 @@
 import tools.terminal_tool as terminal_tool
 
 
+def test_cleanup_does_not_remove_unproven_scratch_directory(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    orphan = scratch / "hermes-unknown"
+    orphan.mkdir(parents=True)
+    (orphan / "user-data.txt").write_text("keep")
+    monkeypatch.setenv("TERMINAL_SCRATCH_DIR", str(scratch))
+
+    terminal_tool.cleanup_all_environments()
+
+    assert orphan.exists()
+    assert (orphan / "user-data.txt").exists()
+
+
 def setup_function():
     terminal_tool._reset_cached_sudo_passwords()
 

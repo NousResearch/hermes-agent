@@ -200,6 +200,25 @@ class SpillIfOversizedTests(unittest.TestCase):
             import shutil
             shutil.rmtree(test_home, ignore_errors=True)
 
+    def test_old_spill_files_are_pruned_without_touching_recent_files(self):
+        old = Path(self.tmpdir) / "sess" / "old.txt"
+        recent = Path(self.tmpdir) / "sess" / "recent.txt"
+        old.parent.mkdir()
+        (old.parent / ".hermes-managed").write_text("hook_outputs\n")
+        old.write_text("old")
+        recent.write_text("recent")
+        old_time = os.path.getmtime(old) - (8 * 24 * 60 * 60)
+        os.utime(old, (old_time, old_time))
+
+        hos.prune_spill_files(
+            self.tmpdir,
+            retention_seconds=7 * 24 * 60 * 60,
+            max_files_per_session=100,
+        )
+
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2363,6 +2363,49 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
 
 
+def test_archive_task_cleans_managed_scratch_dir(kanban_home):
+    """Archiving a task must not leave its ephemeral workspace behind."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="archive scratch")
+        task = kb.get_task(conn, task_id)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, ws)
+        assert kb.archive_task(conn, task_id)
+
+    assert not ws.exists()
+
+
+def test_delete_task_cleans_managed_scratch_dir_before_row_disappears(kanban_home):
+    """Hard deletion must clean scratch storage even though the task row is gone."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="delete scratch")
+        task = kb.get_task(conn, task_id)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, ws)
+        assert kb.delete_task(conn, task_id)
+        assert kb.get_task(conn, task_id) is None
+
+    assert not ws.exists()
+
+
+def test_failure_path_cleans_managed_scratch_dir(kanban_home):
+    """A failed retry must release its disposable workspace for the next run."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="failed scratch")
+        task = kb.get_task(conn, task_id)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, ws)
+        kb._record_task_failure(
+            conn,
+            task_id,
+            "worker failed",
+            outcome="crashed",
+            failure_limit=5,
+        )
+
+    assert not ws.exists()
+
+
 def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     """Completion artifacts from scratch workspaces survive workspace cleanup."""
     with kb.connect() as conn:

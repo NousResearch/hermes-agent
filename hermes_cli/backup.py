@@ -15,15 +15,95 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+# Backup creation and retention are shared by CLI, gateway, and migration
+# processes.  Keep a small in-process lock for threads and a byte-range lock for
+# separate processes; both are deliberately stdlib-only so backup safety does
+# not depend on an optional package being installed.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:  # pragma: no cover - unsupported Python platform
+        msvcrt = None
+else:
+    msvcrt = None
+
+_BACKUP_LOCKS: dict[str, threading.RLock] = {}
+_BACKUP_LOCKS_GUARD = threading.Lock()
+_BACKUP_LOCK_FILENAME = ".maintenance.lock"
+
+
+@contextmanager
+def _backup_maintenance_lock(root: Path) -> Iterator[None]:
+    """Serialize backup publication and family-specific pruning.
+
+    The lock file is intentionally inside the managed backup/snapshot root and
+    is excluded from full archives.  Lock acquisition errors propagate so a
+    caller can fail closed rather than pruning without ownership of the
+    maintenance operation.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    key = str(root.resolve())
+    with _BACKUP_LOCKS_GUARD:
+        thread_lock = _BACKUP_LOCKS.setdefault(key, threading.RLock())
+
+    with thread_lock:
+        lock_path = root / _BACKUP_LOCK_FILENAME
+        lock_file = open(lock_path, "a+b")
+        locked = False
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                locked = True
+            elif msvcrt is not None:
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                locked = True
+            else:  # pragma: no cover - a platform without either primitive
+                raise OSError("no supported inter-process file-lock primitive")
+            yield
+        finally:
+            if locked:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    elif msvcrt is not None:
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                finally:
+                    lock_file.close()
+            else:
+                lock_file.close()
+
+
+def _unique_archive_path(backup_dir: Path, prefix: str) -> Path:
+    """Return a deterministic unused archive path for one backup family."""
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S-%f")
+    candidate = backup_dir / f"{prefix}{stamp}.zip"
+    suffix = 1
+    while candidate.exists():
+        candidate = backup_dir / f"{prefix}{stamp}-{suffix}.zip"
+        suffix += 1
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -852,10 +932,20 @@ def create_quick_snapshot(
         )
         return True
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    snap_id = f"{ts}-{label}" if label else ts
-    snap_dir = root / snap_id
-    snap_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    base_id = f"{ts}-{label}" if label else ts
+    with _backup_maintenance_lock(root):
+        snap_id = base_id
+        suffix = 1
+        while True:
+            snap_dir = root / snap_id
+            try:
+                snap_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                snap_id = f"{base_id}-{suffix}"
+                suffix += 1
+        (snap_dir / ".in-progress").touch()
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
 
@@ -929,11 +1019,13 @@ def create_quick_snapshot(
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    (snap_dir / ".in-progress").unlink(missing_ok=True)
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    with _backup_maintenance_lock(root):
+        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id
@@ -1159,7 +1251,10 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
         return 0
 
     dirs = sorted(
-        (d for d in root.iterdir() if d.is_dir()),
+        (
+            d for d in root.iterdir()
+            if d.is_dir() and not (d / ".in-progress").exists()
+        ),
         key=lambda d: d.name,
         reverse=True,
     )
@@ -1180,7 +1275,9 @@ def prune_quick_snapshots(
     hermes_home: Optional[Path] = None,
 ) -> int:
     """Manually prune quick snapshots. Returns count deleted."""
-    return _prune_quick_snapshots(_quick_snapshot_root(hermes_home), keep=keep)
+    root = _quick_snapshot_root(hermes_home)
+    with _backup_maintenance_lock(root):
+        return _prune_quick_snapshots(root, keep=keep)
 
 
 def run_quick_backup(args) -> None:
@@ -1232,53 +1329,70 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     if not files_to_add:
         return None
 
-    sqlite_snapshot_failed = False
+    temp_path: Optional[Path] = None
+    written_members = 0
     try:
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        # Publish through a sibling temporary file.  The destination is never
+        # opened until the complete archive has passed integrity checks, so a
+        # failed/crashed write cannot destroy an older recovery point.
+        with tempfile.NamedTemporaryFile(
+            suffix=".zip", delete=False, dir=str(out_path.parent)
+        ) as tmp:
+            temp_path = Path(tmp.name)
+
+        with zipfile.ZipFile(
+            temp_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as zf:
             for abs_path, rel_path in files_to_add:
-                try:
-                    if abs_path.suffix == ".db":
-                        # Stage the snapshot alongside the output zip so that the
-                        # temp file lives on the same filesystem.  The system
-                        # default (/tmp) may be a small tmpfs that cannot hold
-                        # large databases, causing silent backup incompleteness.
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".db", delete=False, dir=str(out_path.parent)
-                        ) as tmp:
-                            tmp_db = Path(tmp.name)
-                        try:
-                            if not _safe_copy_db(abs_path, tmp_db):
-                                logger.warning(
-                                    "Full-zip backup aborted: SQLite snapshot failed for %s",
-                                    rel_path,
-                                )
-                                sqlite_snapshot_failed = True
-                                break
-                            zf.write(tmp_db, arcname=str(rel_path))
-                        finally:
-                            tmp_db.unlink(missing_ok=True)
-                    else:
-                        zf.write(abs_path, arcname=str(rel_path))
-                except (PermissionError, OSError, ValueError) as exc:
-                    logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
-                    continue
-    except OSError as exc:
+                if abs_path.suffix == ".db":
+                    # Stage the snapshot alongside the output zip so that the
+                    # temp file lives on the same filesystem.  The system
+                    # default (/tmp) may be a small tmpfs that cannot hold
+                    # large databases, causing silent backup incompleteness.
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".db", delete=False, dir=str(out_path.parent)
+                    ) as tmp_db_file:
+                        tmp_db = Path(tmp_db_file.name)
+                    try:
+                        if not _safe_copy_db(abs_path, tmp_db):
+                            logger.warning(
+                                "Full-zip backup aborted: SQLite snapshot failed for %s",
+                                rel_path,
+                            )
+                            return None
+                        zf.write(tmp_db, arcname=rel_path.as_posix())
+                        written_members += 1
+                    finally:
+                        tmp_db.unlink(missing_ok=True)
+                else:
+                    zf.write(abs_path, arcname=rel_path.as_posix())
+                    written_members += 1
+
+        if not written_members:
+            logger.warning("Full-zip backup aborted: no files could be written")
+            return None
+
+        # Re-open the closed archive before publication.  testzip() catches
+        # corrupt member data and namelist() ensures a non-empty archive.
+        with zipfile.ZipFile(temp_path, "r") as zf:
+            if not zf.namelist() or zf.testzip() is not None:
+                logger.warning("Full-zip backup aborted: archive integrity check failed")
+                return None
+
+        with open(temp_path, "r+b") as archive_file:
+            os.fsync(archive_file.fileno())
+        os.replace(temp_path, out_path)
+        temp_path = None
+        return out_path
+    except (PermissionError, OSError, ValueError, zipfile.BadZipFile) as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
-        # Best-effort cleanup of partial file
-        try:
-            out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         return None
-
-    if sqlite_snapshot_failed:
-        try:
-            out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return None
-
-    return out_path
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1357,15 +1471,17 @@ def create_pre_update_backup(
         logger.warning("Could not create pre-update backup dir %s: %s", backup_dir, exc)
         return None
 
-    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-    out_path = backup_dir / f"{_PRE_UPDATE_PREFIX}{stamp}.zip"
-
-    result = _write_full_zip_backup(out_path, hermes_root)
-    if result is None:
+    try:
+        with _backup_maintenance_lock(backup_dir):
+            out_path = _unique_archive_path(backup_dir, _PRE_UPDATE_PREFIX)
+            result = _write_full_zip_backup(out_path, hermes_root)
+            if result is None:
+                return None
+            _prune_pre_update_backups(backup_dir, keep=keep)
+            return out_path
+    except OSError as exc:
+        logger.warning("Could not publish pre-update backup: %s", exc)
         return None
-
-    _prune_pre_update_backups(backup_dir, keep=keep)
-    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -1382,7 +1498,7 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
     """
-    keep = max(keep, 0)
+    keep = max(keep, 1)
     if not backup_dir.exists():
         return 0
 
@@ -1434,12 +1550,14 @@ def create_pre_migration_backup(
         logger.warning("Could not create pre-migration backup dir %s: %s", backup_dir, exc)
         return None
 
-    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-    out_path = backup_dir / f"{_PRE_MIGRATION_PREFIX}{stamp}.zip"
-
-    result = _write_full_zip_backup(out_path, hermes_root)
-    if result is None:
+    try:
+        with _backup_maintenance_lock(backup_dir):
+            out_path = _unique_archive_path(backup_dir, _PRE_MIGRATION_PREFIX)
+            result = _write_full_zip_backup(out_path, hermes_root)
+            if result is None:
+                return None
+            _prune_pre_migration_backups(backup_dir, keep=keep)
+            return out_path
+    except OSError as exc:
+        logger.warning("Could not publish pre-migration backup: %s", exc)
         return None
-
-    _prune_pre_migration_backups(backup_dir, keep=keep)
-    return out_path

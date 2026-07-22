@@ -4918,6 +4918,42 @@ def _is_managed_scratch_path(p: Path) -> bool:
     return is_managed
 
 
+def _remove_managed_scratch_workspace(
+    task_id: str,
+    workspace_kind: Optional[str],
+    workspace_path: Optional[str],
+) -> None:
+    """Remove one scratch workspace after proving its ownership.
+
+    This helper deliberately accepts a captured kind/path instead of looking
+    the task up in SQLite.  Delete paths remove the row before their post-
+    commit cleanup runs, while completion/archive paths still use the normal
+    row-backed wrapper.  An absent or ambiguous path is retained.
+    """
+    if workspace_kind != "scratch" or not workspace_path:
+        return
+    wp = Path(workspace_path).expanduser()
+    if not wp.is_dir() and not wp.is_symlink():
+        return
+    if not _is_managed_scratch_path(wp):
+        _log.warning(
+            "Refusing to remove out-of-scratch workspace for task %s: %s "
+            "(workspace_kind='scratch' but path is outside any "
+            "kanban-managed workspaces root)",
+            task_id,
+            wp,
+        )
+        return
+    try:
+        if wp.is_symlink():
+            wp.unlink()
+        else:
+            shutil.rmtree(wp)
+        _log.debug("Removed scratch workspace: %s", wp)
+    except OSError as exc:
+        _log.warning("Could not remove scratch workspace for task %s: %s", task_id, exc)
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
 
@@ -4958,24 +4994,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
                 task_id, path,
             )
             return
-        import shutil
-        wp = Path(path)
-        if wp.is_dir():
-            # Containment guard (#28818): a board's ``default_workdir`` can
-            # pair ``workspace_kind='scratch'`` with a user-supplied path
-            # pointing at a real source tree. Without this check, task
-            # completion would unconditionally ``shutil.rmtree`` that path
-            # and silently delete the user's source data.
-            if _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
-                _log.debug("Removed scratch workspace: %s", wp)
-            else:
-                _log.warning(
-                    "Refusing to remove out-of-scratch workspace for task %s: %s "
-                    "(workspace_kind='scratch' but path is outside any "
-                    "kanban-managed workspaces root)",
-                    task_id, wp,
-                )
+        _remove_managed_scratch_workspace(task_id, kind, path)
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)
@@ -5896,6 +5915,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
     recompute_ready(conn)
+    # Archived scratch tasks are terminal even when they never reached the
+    # normal completion path.  Clean only the captured managed workspace; the
+    # containment guard preserves user paths and ambiguous state.
+    _cleanup_workspace(conn, task_id)
     return True
 
 
@@ -5906,13 +5929,15 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     tasks must be explicitly archived first so accidental data loss requires a
     second deliberate action.
     """
+    workspace: tuple[Optional[str], Optional[str]] | None = None
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?",
+            "SELECT status, workspace_kind, workspace_path FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        workspace = (row["workspace_kind"], row["workspace_path"])
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -5922,7 +5947,10 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        return cur.rowcount == 1
+        deleted = cur.rowcount == 1
+    if deleted and workspace is not None:
+        _remove_managed_scratch_workspace(task_id, *workspace)
+    return deleted
 
 
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -5935,7 +5963,15 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
+    workspace: tuple[Optional[str], Optional[str]] | None = None
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        workspace = (row["workspace_kind"], row["workspace_path"])
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
@@ -5944,6 +5980,8 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+    if workspace is not None:
+        _remove_managed_scratch_workspace(task_id, *workspace)
     recompute_ready(conn)
     return True
 
@@ -6489,8 +6527,21 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
+    except (AttributeError, OSError, ValueError):
+        # Windows does not expose the POSIX wait-status helpers, but tests and
+        # cross-platform supervisors can still hand us a POSIX-style raw
+        # status captured by a worker host. Decode the conventional layout
+        # without treating an unknown status as a successful exit.
+        if raw >= 0:
+            signal = raw & 0x7F
+            if signal == 0:
+                code = (raw >> 8) & 0xFF
+                if code == 0:
+                    return ("clean_exit", 0)
+                if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code)
+                return ("nonzero_exit", code)
+            return ("signaled", signal)
     return ("unknown", None)
 
 
@@ -7514,6 +7565,11 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    # All recorded failures are terminal for this worker attempt.  Remove the
+    # disposable workspace now so retries materialize a clean, bounded path;
+    # the containment guard keeps persistent or ambiguous paths untouched.
+    if outcome in {"spawn_failed", "crashed", "timed_out"}:
+        _cleanup_workspace(conn, task_id)
     return blocked
 
 

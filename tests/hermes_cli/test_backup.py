@@ -1467,6 +1467,26 @@ class TestQuickSnapshot:
         assert snap_dir.is_dir()
         assert (snap_dir / "manifest.json").exists()
 
+    def test_same_timestamp_snapshots_get_distinct_directories(self, hermes_home, monkeypatch):
+        """Concurrent snapshot callers must not share a destination directory."""
+        import hermes_cli.backup as backup_mod
+        from datetime import datetime as RealDateTime
+
+        fixed = RealDateTime(2026, 7, 21, 20, 0, 0)
+
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz)
+
+        monkeypatch.setattr(backup_mod, "datetime", FrozenDateTime)
+        first = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        second = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+
+        assert first != second
+        assert (hermes_home / "state-snapshots" / first / "manifest.json").exists()
+        assert (hermes_home / "state-snapshots" / second / "manifest.json").exists()
+
     def test_label_in_id(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(label="before-upgrade", hermes_home=hermes_home)
@@ -2030,6 +2050,21 @@ class TestPreUpdateBackup:
         assert result is None
         assert not out_zip.exists()
 
+    def test_failed_regular_file_write_does_not_publish_empty_archive(self, hermes_home, monkeypatch):
+        """A full safety archive must fail closed if every regular file write fails."""
+        import hermes_cli.backup as backup_mod
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("forced archive write failure")
+
+        monkeypatch.setattr(backup_mod.zipfile.ZipFile, "write", fail_write)
+        out = hermes_home / "backups" / "pre-migration-failed.zip"
+        out.parent.mkdir()
+        result = backup_mod._write_full_zip_backup(out, hermes_home)
+
+        assert result is None
+        assert not out.exists()
+
     @pytest.fixture
     def hermes_home(self, tmp_path):
         root = tmp_path / ".hermes"
@@ -2045,6 +2080,27 @@ class TestPreUpdateBackup:
         assert out.parent == hermes_home / "backups"
         assert out.name.startswith("pre-update-")
         assert out.suffix == ".zip"
+
+    def test_same_timestamp_creations_get_distinct_archives(self, hermes_home, monkeypatch):
+        """Backup names must not collide when multiple updates start in one second."""
+        import hermes_cli.backup as backup_mod
+        from datetime import datetime as RealDateTime
+
+        fixed = RealDateTime(2026, 7, 21, 20, 0, 0)
+
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz)
+
+        monkeypatch.setattr(backup_mod, "datetime", FrozenDateTime)
+        first = backup_mod.create_pre_update_backup(hermes_home=hermes_home)
+        second = backup_mod.create_pre_update_backup(hermes_home=hermes_home)
+
+        assert first is not None and second is not None
+        assert first != second
+        assert first.exists() and second.exists()
+        assert len(list((hermes_home / "backups").glob("pre-update-*.zip"))) == 2
 
     def test_backup_contents_match_full_backup(self, hermes_home):
         """Pre-update backup should include the same user data that
@@ -2377,6 +2433,27 @@ class TestPreMigrationBackup:
         assert out.name.startswith("pre-migration-")
         assert out.suffix == ".zip"
 
+    def test_same_timestamp_creations_get_distinct_archives(self, hermes_home, monkeypatch):
+        """Migration backups must not overwrite one another in one second."""
+        import hermes_cli.backup as backup_mod
+        from datetime import datetime as RealDateTime
+
+        fixed = RealDateTime(2026, 7, 21, 20, 0, 0)
+
+        class FrozenDateTime(RealDateTime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.replace(tzinfo=tz)
+
+        monkeypatch.setattr(backup_mod, "datetime", FrozenDateTime)
+        first = backup_mod.create_pre_migration_backup(hermes_home=hermes_home)
+        second = backup_mod.create_pre_migration_backup(hermes_home=hermes_home)
+
+        assert first is not None and second is not None
+        assert first != second
+        assert first.exists() and second.exists()
+        assert len(list((hermes_home / "backups").glob("pre-migration-*.zip"))) == 2
+
     def test_backup_uses_shared_exclusion_rules(self, hermes_home):
         """Pre-migration backup reuses the same exclusion rules as
         ``hermes backup`` / ``create_pre_update_backup`` — no drift."""
@@ -2449,6 +2526,16 @@ class TestPreMigrationBackup:
             _t.sleep(1.05)
         # Update backup must still be there
         assert update_backup.exists(), "pre-migration rotation wrongly pruned the pre-update backup"
+
+    def test_keep_zero_preserves_fresh_backup(self, hermes_home):
+        """A successful migration must always leave one recovery point."""
+        from hermes_cli.backup import create_pre_migration_backup
+
+        out = create_pre_migration_backup(hermes_home=hermes_home, keep=0)
+
+        assert out is not None
+        assert out.exists()
+        assert list((hermes_home / "backups").glob("pre-migration-*.zip")) == [out]
 
 
 # ---------------------------------------------------------------------------

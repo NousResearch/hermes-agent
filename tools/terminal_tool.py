@@ -1759,8 +1759,20 @@ def is_persistent_env(task_id: str) -> bool:
 
 
 def cleanup_all_environments():
-    """Clean up ALL active environments. Use with caution."""
-    task_ids = list(_active_environments.keys())
+    """Clean up tracked active environments without guessing at disk ownership.
+
+    Filesystem paths under the shared scratch root do not carry enough durable
+    identity to prove that a ``hermes-*`` directory belongs to this process,
+    profile, or session.  Leave those paths to backend-specific reapers and
+    explicit ownership-aware cleanup rather than recursively deleting user or
+    persistent overlay data here.
+    """
+    # Snapshot under the registry lock.  Environment creation/teardown can
+    # happen on worker threads while shutdown or an interrupted turn is
+    # sweeping the registry; iterating the live dict would race with those
+    # mutations and leave resources behind.
+    with _env_lock:
+        task_ids = list(_active_environments.keys())
     cleaned = 0
     
     for task_id in task_ids:
@@ -1769,16 +1781,6 @@ def cleanup_all_environments():
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
-    
-    # Also clean any orphaned directories
-    scratch_dir = _get_scratch_dir()
-    import glob
-    for path in glob.glob(str(scratch_dir / "hermes-*")):
-        try:
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info("Removed orphaned: %s", path)
-        except OSError as e:
-            logger.debug("Failed to remove orphaned path %s: %s", path, e)
     
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
@@ -1856,13 +1858,14 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
 def _atexit_cleanup():
     """Stop cleanup thread and shut down all remaining sandboxes on exit."""
     _stop_cleanup_thread()
-    if _active_environments:
-        count = len(_active_environments)
+    with _env_lock:
+        envs_to_wait = list(_active_environments.values())
+    if envs_to_wait:
+        count = len(envs_to_wait)
         logger.info("Shutting down %d remaining sandbox(es)...", count)
         # Snapshot the env objects BEFORE cleanup_all_environments empties
         # the dict; we need them to wait on docker cleanup threads after the
         # registry has been cleared.
-        envs_to_wait = list(_active_environments.values())
         cleanup_all_environments()
         # Block briefly so docker stop/rm actually completes before the
         # interpreter exits. Issue #20561 — without this join, the daemon

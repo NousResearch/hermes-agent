@@ -1660,11 +1660,24 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
     # Lock the worktree so other processes (and `git worktree remove`) can see
     # it is actively in use.  Fail-soft: a lock failure never blocks the session.
     try:
+        lock_reason = f"hermes pid={os.getpid()}"
+        try:
+            from gateway.status import get_process_start_time
+            process_start = get_process_start_time(os.getpid())
+            if process_start is not None:
+                lock_reason += f" start={process_start}"
+        except Exception:
+            process_start = None
         subprocess.run(
-            ["git", "worktree", "lock", "--reason", f"hermes pid={os.getpid()}", str(wt_path)],
+            ["git", "worktree", "lock", "--reason", lock_reason, str(wt_path)],
             capture_output=True, text=True, timeout=10, cwd=repo_root,
         )
-        logger.debug("Worktree locked: %s (pid=%s)", wt_path, os.getpid())
+        logger.debug(
+            "Worktree locked: %s (pid=%s, start=%s)",
+            wt_path,
+            os.getpid(),
+            process_start,
+        )
     except Exception as e:
         logger.debug("git worktree lock failed (non-fatal): %s", e)
 
@@ -1687,8 +1700,8 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
 
     ``git log HEAD --not --remotes`` compares against remote-tracking refs under
     ``refs/remotes/*``. If a repo has no remote-tracking refs yet, there is no
-    usable remote baseline to compare against, so treat it as having no
-    "unpushed" commits.
+    usable remote baseline to prove the commits are pushed, so fail safe and
+    preserve the worktree.
     """
     import subprocess
 
@@ -1700,7 +1713,7 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         if remote_refs.returncode != 0:
             return True
         if not remote_refs.stdout.strip():
-            return False
+            return True
 
         result = subprocess.run(
             ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
@@ -1745,8 +1758,9 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     pruner tell the two apart:
 
     - ``"live"``  — locked and the owning pid is still running (skip it).
-    - ``"dead"``  — locked but the owning pid is gone, or the reason isn't a
-                    parseable hermes lock (safe to unlock + reap).
+    - ``"dead"``  — locked and the owning pid is gone (safe to unlock + reap).
+    - ``"unknown"`` — lock ownership or process identity cannot be proven;
+                      preserve it rather than treating uncertainty as stale.
     - ``None``    — not locked at all.
 
     Fails SAFE toward ``"live"``: if git can't be queried at all we cannot
@@ -1779,30 +1793,36 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
             reason = line[len("locked"):].strip()
             m = re.search(r"hermes pid=(\d+)", reason)
             if not m:
-                # Locked by something we don't recognize as a hermes session
-                # (or lock reason unavailable). Treat as dead — a foreign lock
-                # on a hermes -w worktree is almost certainly a leftover, and
-                # the age/dirty/unpushed gates already ran before we got here.
-                return "dead"
+                # A foreign or malformed lock is not evidence of abandonment.
+                return "unknown"
             pid = int(m.group(1))
             if pid == os.getpid():
                 return "live"
             try:
-                from gateway.status import _pid_exists
-                return "live" if _pid_exists(pid) else "dead"
+                from gateway.status import _pid_exists, get_process_start_time
+                if not _pid_exists(pid):
+                    return "dead"
+                expected_match = re.search(r"(?:^|\s)start=(\d+)(?:\s|$)", reason)
+                if expected_match is None:
+                    # Legacy PID-only locks cannot exclude PID reuse while the
+                    # number is live, so preserve them conservatively.
+                    return "unknown"
+                actual_start = get_process_start_time(pid)
+                if actual_start is None or actual_start != int(expected_match.group(1)):
+                    return "unknown"
+                return "live"
             except Exception:
                 # Can't determine liveness — fail safe toward keeping it.
-                return "live"
+                return "unknown"
     return None
 
 
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     """Remove a worktree and its branch on exit.
 
-    Preserves the worktree only if it has unpushed commits (real work
-    that hasn't been pushed to any remote).  Uncommitted changes alone
-    (untracked files, test artifacts) are not enough to keep it — agent
-    work lives in commits/PRs, not the working tree.
+    Preserves the worktree when either its commits are unpushed or its working
+    tree is dirty.  Exit cleanup must not infer that uncommitted files are
+    disposable: status uncertainty is itself a reason to preserve the tree.
     """
     global _active_worktree
     info = info or _active_worktree
@@ -1819,15 +1839,15 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         return
 
     has_unpushed = _worktree_has_unpushed_commits(wt_path, timeout=10)
+    is_dirty = _worktree_is_dirty(wt_path, timeout=10)
 
-    if has_unpushed:
-        print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+    if has_unpushed or is_dirty:
+        reason = "unpushed commits" if has_unpushed else "uncommitted changes"
+        print(f"\n\033[33m⚠ Worktree has {reason}, keeping: {wt_path}\033[0m")
         print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
-    # Remove worktree (even if working tree is dirty — uncommitted
-    # changes without unpushed commits are just artifacts)
     # Unlock first so `git worktree remove` isn't blocked by the lock we
     # placed at creation time.  Fail-soft — never block cleanup.
     try:
@@ -1839,14 +1859,25 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         logger.debug("git worktree unlock failed (non-fatal): %s", e)
 
     try:
-        subprocess.run(
+        remove_result = subprocess.run(
             ["git", "worktree", "remove", wt_path, "--force"],
             capture_output=True, text=True, timeout=15, cwd=repo_root,
         )
+        if remove_result.returncode != 0:
+            logger.debug(
+                "Failed to remove worktree %s: %s",
+                wt_path,
+                remove_result.stderr.strip(),
+            )
+            _active_worktree = None
+            return
     except Exception as e:
         logger.debug("Failed to remove worktree: %s", e)
+        _active_worktree = None
+        return
 
-    # Delete the branch
+    # Delete the branch only after git confirmed that the worktree was removed;
+    # otherwise its commits could become unreachable while the files remain.
     try:
         subprocess.run(
             ["git", "branch", "-D", branch],
@@ -1943,8 +1974,9 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     Age-based tiers (aggressive cleanup keeps ``.worktrees/`` from growing
     unbounded):
     - Under max_age_hours (24h): skip — session may still be active.
-    - 24h–72h: remove if no unpushed commits.
-    - Over 72h: force remove regardless (nothing should sit this long).
+    - 24h–72h: remove only if clean and has no unpushed commits.
+    - Over 72h: remove only if clean and has no unpushed commits; age never
+                overrides evidence of user-authored work.
 
     Lock handling (orthogonal to age): ``hermes -w`` locks each worktree with
     reason ``hermes pid=<pid>`` so a concurrent hermes process leaves an in-use
@@ -1992,11 +2024,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # scratch trees that actually cause .worktrees/ bloat).
         if _worktree_has_unpushed_commits(str(entry), timeout=5):
             continue  # Has unpushed commits or can't check — skip
-        if not force:
-            # 24h–72h tier is conservative: unpushed check above is enough.
-            pass
-        elif _worktree_is_dirty(str(entry), timeout=5):
-            continue  # >72h but dirty — preserve uncommitted work
+        if _worktree_is_dirty(str(entry), timeout=5):
+            continue  # Preserve uncommitted work at every age tier
 
         # Respect git-native session locks. A lock owned by a still-running
         # hermes process means the worktree is actively in use — never touch
@@ -2004,7 +2033,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # unlock it so `git worktree remove --force` (single -f) can reap it,
         # otherwise dead-locked worktrees pile up indefinitely.
         lock_state = _worktree_lock_is_live(repo_root, str(entry), timeout=5)
-        if lock_state == "live":
+        if lock_state in {"live", "unknown"}:
             logger.debug("Skipping live-locked worktree: %s", entry.name)
             continue
         if lock_state == "dead":
@@ -2049,11 +2078,11 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 
 
 def _prune_orphaned_branches(repo_root: str) -> None:
-    """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree.
+    """Delete proven-merged local generated branches with no worktree.
 
     These are auto-generated by ``hermes -w`` sessions and PR review
-    workflows respectively.  Once their worktree is gone they serve no
-    purpose and just accumulate.
+    workflows respectively.  A name alone is not ownership evidence: remote
+    tracking, unmerged commits, and any failed Git query preserve the branch.
     """
     import subprocess
 
@@ -2075,6 +2104,8 @@ def _prune_orphaned_branches(repo_root: str) -> None:
             ["git", "worktree", "list", "--porcelain"],
             capture_output=True, text=True, timeout=10, cwd=repo_root,
         )
+        if wt_result.returncode != 0:
+            return
         for line in wt_result.stdout.split("\n"):
             if line.startswith("branch refs/heads/"):
                 active_branches.add(line.split("branch refs/heads/", 1)[-1].strip())
@@ -2088,10 +2119,12 @@ def _prune_orphaned_branches(repo_root: str) -> None:
             capture_output=True, text=True, timeout=5, cwd=repo_root,
         )
         current = head_result.stdout.strip()
+        if head_result.returncode != 0:
+            return
         if current:
             active_branches.add(current)
     except Exception:
-        pass
+        return
     active_branches.add("main")
 
     orphaned = [
@@ -2103,18 +2136,59 @@ def _prune_orphaned_branches(repo_root: str) -> None:
     if not orphaned:
         return
 
-    # Delete in batches
-    for i in range(0, len(orphaned), 50):
-        batch = orphaned[i:i + 50]
-        try:
-            subprocess.run(
-                ["git", "branch", "-D"] + batch,
-                capture_output=True, text=True, timeout=30, cwd=repo_root,
-            )
-        except Exception as e:
-            logger.debug("Failed to prune orphaned branches: %s", e)
+    # Read all remote refs once. A corresponding remote branch is active
+    # ownership evidence even when the local branch's upstream config is stale.
+    try:
+        remote_result = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        if remote_result.returncode != 0:
+            return
+        remote_refs = {
+            ref.strip().split("/", 1)[1]
+            for ref in remote_result.stdout.splitlines()
+            if "/" in ref.strip()
+        }
+    except Exception:
+        return
 
-    logger.debug("Pruned %d orphaned branches", len(orphaned))
+    base = current or "main"
+    for branch in orphaned:
+        try:
+            upstream_result = subprocess.run(
+                [
+                    "git", "for-each-ref", "--format=%(upstream:short)",
+                    f"refs/heads/{branch}",
+                ],
+                capture_output=True, text=True, timeout=10, cwd=repo_root,
+            )
+            if upstream_result.returncode != 0 or upstream_result.stdout.strip():
+                continue
+            if branch in remote_refs:
+                continue
+
+            merged_result = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", branch, base],
+                capture_output=True, text=True, timeout=10, cwd=repo_root,
+            )
+            if merged_result.returncode != 0:
+                continue
+
+            delete_result = subprocess.run(
+                ["git", "branch", "-d", branch],
+                capture_output=True, text=True, timeout=10, cwd=repo_root,
+            )
+            if delete_result.returncode != 0:
+                logger.debug(
+                    "Failed to prune generated branch %s: %s",
+                    branch,
+                    delete_result.stderr.strip(),
+                )
+        except Exception as e:
+            logger.debug("Failed to inspect generated branch %s: %s", branch, e)
+
+    logger.debug("Inspected %d orphaned branch candidates", len(orphaned))
 
 # ============================================================================
 # ASCII Art & Branding

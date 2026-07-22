@@ -1,6 +1,7 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import socket
 import struct
 import time
 import wave
@@ -72,6 +73,10 @@ def mock_sd(monkeypatch):
 # detect_audio_environment — WSL / SSH / Docker detection
 # ============================================================================
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="Unix-domain PulseAudio sockets are unavailable on this host",
+)
 class TestPulseSocketReachable:
     def test_no_env_no_socket(self, monkeypatch):
         monkeypatch.delenv("PULSE_SERVER", raising=False)
@@ -970,6 +975,19 @@ class TestCleanupTempRecordings:
         deleted = cleanup_temp_recordings(max_age_seconds=3600)
         assert deleted == 0
         assert other_file.exists()
+
+    def test_old_termux_aac_files_deleted(self, temp_voice_dir):
+        old_file = temp_voice_dir / "recording_20240101_000000.aac"
+        old_file.write_bytes(b"partial-aac")
+        old_mtime = time.time() - 7200
+        os.utime(str(old_file), (old_mtime, old_mtime))
+
+        from tools.voice_mode import cleanup_temp_recordings
+
+        deleted = cleanup_temp_recordings(max_age_seconds=3600)
+
+        assert deleted == 1
+        assert not old_file.exists()
 
 
 # ============================================================================

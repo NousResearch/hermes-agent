@@ -93,7 +93,11 @@ echo "▶ pre-compiling bytecode cache"
 echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \
-  HOME="$HOME" \
+  HOME="${HOME:-/tmp}" \
+  USERPROFILE="${USERPROFILE:-${HOME:-/tmp}}" \
+  LOCALAPPDATA="${LOCALAPPDATA:-${HOME:-/tmp}/AppData/Local}" \
+  PYTHONIOENCODING=utf-8 \
+  PYTHONUTF8=1 \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \

@@ -6433,6 +6433,31 @@ class AIAgent:
                     moa_config=moa_config,
                 )
             finally:
+                # Some terminal exits return directly from the conversation
+                # loop (provider failures, cancellation, truncation, and
+                # backend-specific fast paths) instead of reaching the shared
+                # turn finalizer.  Keep teardown at this outer lifecycle
+                # boundary as a fail-safe, idempotent second chance.  The
+                # terminal cleanup implementation only acts on its tracked
+                # environments and never guesses at scratch ownership.
+                cleanup_resources = getattr(self, "_cleanup_task_resources", None)
+                if callable(cleanup_resources):
+                    cleanup_task_id = (
+                        task_id
+                        or getattr(self, "_current_task_id", None)
+                        or getattr(self, "session_id", None)
+                        or ""
+                    )
+                    try:
+                        cleanup_resources(cleanup_task_id)
+                    except Exception:
+                        # Cleanup must never replace the turn result or mask
+                        # the original provider/cancellation exception.
+                        logger.debug(
+                            "terminal lifecycle cleanup failed for task %s",
+                            cleanup_task_id,
+                            exc_info=True,
+                        )
                 reset_accounting_context(acct_token)
                 reset_conversation_context(token)
 

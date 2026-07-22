@@ -9367,6 +9367,12 @@ def _spawn_tree_session_dir(session_id: str):
     )
     d = _spawn_trees_root() / safe
     d.mkdir(parents=True, exist_ok=True)
+    marker = d / ".hermes-managed"
+    if not marker.exists():
+        try:
+            marker.write_text("spawn-trees\n", encoding="utf-8")
+        except FileExistsError:
+            pass
     return d
 
 
@@ -9418,10 +9424,11 @@ def _(rid, params: dict) -> dict:
     started_at = params.get("started_at")
     finished_at = params.get("finished_at") or time.time()
     label = str(params.get("label") or "")
-    ts = datetime.utcfromtimestamp(float(finished_at)).strftime("%Y%m%dT%H%M%S")
-    fname = f"{ts}.json"
+    ts = datetime.utcfromtimestamp(float(finished_at)).strftime("%Y%m%dT%H%M%S%f")
+    fname = f"{ts}-{uuid.uuid4().hex[:8]}.json"
     d = _spawn_tree_session_dir(session_id or "default")
     path = d / fname
+    temp_path = d / f".{fname}.{uuid.uuid4().hex}.tmp"
     try:
         payload = {
             "session_id": session_id,
@@ -9430,9 +9437,17 @@ def _(rid, params: dict) -> dict:
             "label": label,
             "subagents": subagents,
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        os.replace(temp_path, path)
     except OSError as exc:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     _append_spawn_tree_index(
         d,

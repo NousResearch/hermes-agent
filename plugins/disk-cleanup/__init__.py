@@ -43,6 +43,7 @@ _lock = threading.Lock()
 # Tool-call result shapes we can parse
 _WRITE_FILE_PATH_KEY = "path"
 _TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+)")
+_WINDOWS_PATH_REGEX = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/][^\s'\"`]+)")
 
 
 # ---------------------------------------------------------------------------
@@ -73,16 +74,18 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     """Best-effort auto-track. Never raises."""
     try:
         p = Path(path_str).expanduser()
+        if not p.exists():
+            return
+        category = dg.guess_category(p)
+        if category is None:
+            return
+        newly = dg.track(str(p), category, silent=True)
+        if newly:
+            _record_track(task_id, session_id, p, category)
     except Exception:
+        # Hook inspection is advisory; malformed paths or unavailable state
+        # must never interrupt the agent loop.
         return
-    if not p.exists():
-        return
-    category = dg.guess_category(p)
-    if category is None:
-        return
-    newly = dg.track(str(p), category, silent=True)
-    if newly:
-        _record_track(task_id, session_id, p, category)
 
 
 def _extract_paths_from_write_file(args: Dict[str, Any]) -> Set[str]:
@@ -107,10 +110,12 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
     paths: Set[str] = set()
     cmd = args.get("command") or ""
     if isinstance(cmd, str) and cmd:
+        for match in _WINDOWS_PATH_REGEX.finditer(cmd):
+            paths.add(match.group(1))
         # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`
         try:
             for tok in shlex.split(cmd, posix=True):
-                if tok.startswith(("/", "~")):
+                if tok.startswith(("/", "~")) or _WINDOWS_PATH_REGEX.match(tok):
                     paths.add(tok)
         except ValueError:
             pass
@@ -118,6 +123,8 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
     if isinstance(result, str) and len(result) < 4096:
         for match in _TERMINAL_PATH_REGEX.findall(result):
             paths.add(match)
+        for match in _WINDOWS_PATH_REGEX.finditer(result):
+            paths.add(match.group(1))
     return paths
 
 

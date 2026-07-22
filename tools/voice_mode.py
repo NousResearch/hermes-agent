@@ -1204,7 +1204,11 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     now = time.time()
 
     for entry in os.scandir(_TEMP_DIR):
-        if entry.is_file() and entry.name.startswith("recording_") and entry.name.endswith(".wav"):
+        if (
+            entry.is_file()
+            and entry.name.startswith("recording_")
+            and entry.name.endswith((".wav", ".aac"))
+        ):
             try:
                 age = now - entry.stat().st_mtime
                 if age > max_age_seconds:

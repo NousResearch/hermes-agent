@@ -14,7 +14,9 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -408,10 +410,211 @@ class TestTrackForgetQuick:
         dg = _load_lib()
         managed_empty = _isolate_env / "scratch" / "nested" / "empty"
         managed_empty.mkdir(parents=True)
+        (_isolate_env / "scratch" / ".hermes-managed").write_text("scratch\n")
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 2
+        assert not managed_empty.exists()
+        assert (_isolate_env / "scratch").exists()
+
+        # A second pass must be a no-op: the ownership marker keeps the
+        # managed root, and no removed directory is rediscovered.
+        second = dg.quick()
+        assert second["deleted"] == 0
+        assert second["empty_dirs"] == 0
+        assert second["errors"] == []
+
+    def test_quick_preserves_unmarked_empty_owned_name(self, _isolate_env):
+        """A familiar root name is not ownership evidence by itself."""
+        dg = _load_lib()
+        unowned_empty = _isolate_env / "scratch" / "nested" / "empty"
+        unowned_empty.mkdir(parents=True)
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 0
+        assert unowned_empty.exists()
+
+    def test_quick_preserves_malformed_empty_root_marker(self, _isolate_env):
+        """A foreign marker must not opt a root into recursive deletion."""
+        dg = _load_lib()
+        root = _isolate_env / "tmp"
+        unowned_empty = root / "nested" / "empty"
+        unowned_empty.mkdir(parents=True)
+        (root / ".hermes-managed").write_text("not-tmp\n")
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 0
+        assert unowned_empty.exists()
+
+    def test_quick_preserves_marked_root_with_live_lock(self, _isolate_env):
+        """Ownership evidence does not override a live/ambiguous lock."""
+        dg = _load_lib()
+        root = _isolate_env / "scratch"
+        nested = root / "nested" / "empty"
+        nested.mkdir(parents=True)
+        (root / ".hermes-managed").write_text("scratch\n")
+        (root / ".lock").write_text("active\n")
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 0
+        assert nested.exists()
+
+    def test_quick_preserves_malformed_record_and_continues(self, _isolate_env):
+        """A malformed record cannot abort cleanup or authorize deletion."""
+        dg = _load_lib()
+        valid = _isolate_env / "test_valid.py"
+        valid.write_text("keep only until the sweep")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([
+            {"path": str(_isolate_env / "test_malformed.py"), "category": "test"},
+            {
+                "path": str(valid),
+                "category": "test",
+                "timestamp": "2025-01-01T00:00:00+00:00",
+                "size": valid.stat().st_size,
+            },
+        ]))
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 1
+        assert not valid.exists()
+        saved = json.loads(tracked_file.read_text())
+        assert len(saved) == 1
+        assert saved[0]["path"].endswith("test_malformed.py")
+
+    def test_quick_preserves_unverifiable_delete_and_reports_error(
+        self, _isolate_env, monkeypatch
+    ):
+        """An inspection/delete error never counts as successful cleanup."""
+        dg = _load_lib()
+        locked = _isolate_env / "test_locked.py"
+        locked.write_text("keep")
+        dg.track(str(locked), "test", silent=True)
+
+        original_is_file = Path.is_file
+
+        def fail_for_locked(path):
+            if path == locked:
+                raise OSError("simulated live lock")
+            return original_is_file(path)
+
+        monkeypatch.setattr(Path, "is_file", fail_for_locked)
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert summary["errors"]
+        assert locked.exists()
+        assert any(item["path"] == str(locked) for item in dg.load_tracked())
+
+    def test_quick_prunes_only_marked_stale_hook_output(self, _isolate_env):
+        """Hook spill files are owned only after the managed marker exists."""
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-1"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        stale = session_dir / "old.txt"
+        stale.write_text("stale")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 1
+        assert not stale.exists()
+
+    def test_quick_preserves_unmarked_stale_hook_output(self, _isolate_env):
+        """Unknown files below an artifact-looking root are never junk by name."""
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-unknown"
+        session_dir.mkdir(parents=True)
+        stale = session_dir / "old.txt"
+        stale.write_text("keep")
+        old = time.time() - (30 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 0
+        assert stale.exists()
+
+    def test_quick_preserves_stale_artifact_when_session_is_locked(self, _isolate_env):
+        """A managed session lock suppresses artifact retention cleanup."""
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-locked"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        (session_dir / ".lock").write_text("active\n")
+        stale = session_dir / "old.txt"
+        stale.write_text("keep")
+        old = time.time() - (30 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 0
+        assert stale.exists()
+
+    def test_quick_prunes_stale_marked_spawn_tree_snapshots(self, _isolate_env):
+        """Spawn-tree history is bounded without deleting unowned sessions."""
+        dg = _load_lib()
+        session_dir = _isolate_env / "spawn-trees" / "session-1"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("spawn-trees\n")
+        stale = session_dir / "20240101T000000.json"
+        stale.write_text("{}")
+        old = time.time() - (31 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 1
+        assert not stale.exists()
+
+    def test_quick_preserves_empty_unowned_top_level_dir(self, _isolate_env):
+        """An empty directory is not deletion evidence merely because it is under HERMES_HOME."""
+        dg = _load_lib()
+        unowned = _isolate_env / "project-output"
+        unowned.mkdir()
 
         dg.quick()
 
-        assert not (_isolate_env / "scratch").exists()
+        assert unowned.exists()
+
+    def test_quick_preserves_tracked_path_outside_hermes_home(self, _isolate_env, tmp_path):
+        """A stale tracking record cannot authorize deleting an external path."""
+        dg = _load_lib()
+        outside = tmp_path / "external-test.py"
+        outside.write_text("keep")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(outside),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": outside.stat().st_size,
+        }]))
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert outside.exists()
+
+    def test_path_traversal_cannot_escape_tmp_hermes_scope(self, _isolate_env):
+        dg = _load_lib()
+
+        assert dg.is_safe_path(Path("/tmp/hermes-owned/../outside")) is False
+
+    def test_explicit_windows_drive_tmp_is_not_approved_scope(self, _isolate_env):
+        dg = _load_lib()
+        if os.name == "nt":
+            assert dg.is_safe_path(Path(r"C:\tmp\hermes-user\artifact")) is False
 
 
 class TestStatus:
@@ -494,6 +697,16 @@ class TestPostToolCallHook:
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert any(Path(i["path"]) == p.resolve() for i in data)
+
+    def test_terminal_command_extracts_windows_drive_paths(self):
+        pi = _load_plugin_init()
+
+        paths = pi._extract_paths_from_terminal(
+            {"command": r"type C:\Users\edson\test_created.py"},
+            r"created C:\Users\edson\test_created.py",
+        )
+
+        assert any(path.replace("\\", "/") == "C:/Users/edson/test_created.py" for path in paths)
 
     def test_ignores_unrelated_tool(self, _isolate_env):
         pi = _load_plugin_init()

@@ -11454,3 +11454,30 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_spawn_tree_save_marks_session_and_does_not_overwrite_same_second(tmp_path):
+    """Generated spawn snapshots are owned and collision-resistant."""
+    token = set_hermes_home_override(tmp_path / ".hermes")
+    try:
+        finished_at = 1_800_000_000.25
+        save = server._methods["spawn_tree.save"]
+        first = save(
+            "r1",
+            {"session_id": "session-1", "finished_at": finished_at,
+             "subagents": [{"id": "a"}]},
+        )
+        second = save(
+            "r2",
+            {"session_id": "session-1", "finished_at": finished_at,
+             "subagents": [{"id": "b"}]},
+        )
+
+        first_path = Path(first["result"]["path"])
+        second_path = Path(second["result"]["path"])
+        assert first_path != second_path
+        assert (first_path.parent / ".hermes-managed").read_text() == "spawn-trees\n"
+        assert json.loads(first_path.read_text())["subagents"][0]["id"] == "a"
+        assert json.loads(second_path.read_text())["subagents"][0]["id"] == "b"
+    finally:
+        reset_hermes_home_override(token)

@@ -323,6 +323,7 @@ export async function launchDesktop(
 export interface MockBackendFixture {
   app: ElectronApplication
   page: Page
+  mock: Awaited<ReturnType<typeof startMockServer>>
   mockUrl: string
   sandbox: Sandbox
   cleanup: () => Promise<void>
@@ -351,6 +352,7 @@ export async function setupMockBackend(options: { language?: string } = {}): Pro
   return {
     app,
     page,
+    mock,
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {

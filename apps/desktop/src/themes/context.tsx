@@ -353,7 +353,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
-  const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
+
+  const activeTheme = useMemo(
+    () => deriveTheme(themeName, resolvedMode),
+    // deriveTheme resolves its seed through the merged registry, so the theme
+    // stores are its reactivity too — an in-place palette edit of the ACTIVE
+    // skin (live theme authoring) must repaint, not just a name switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themeName, resolvedMode, userThemes, backendThemes, registryVersion]
+  )
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
   const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])

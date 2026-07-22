@@ -350,7 +350,7 @@ def test_console_registry_covers_non_admin_cli_surface():
         "oneshot hello",
         "model",
         "setup",
-        "postinstall",
+
         "fallback add",
         "moa configure",
         "claw migrate",

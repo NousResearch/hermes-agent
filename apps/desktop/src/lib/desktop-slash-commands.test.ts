@@ -81,6 +81,66 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/browser')?.args).toBe(true)
   })
 
+  it('routes /compress through the session-compression action', () => {
+    // /compress must be an action (session.compress RPC), not exec: the slash
+    // worker route times out on large sessions (#44456).
+    expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
+    expect(resolveDesktopCommand('/compress')?.args).toBe(true)
+    expect(isDesktopSlashCommand('/compress')).toBe(true)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/compress')).toBeNull()
+    // /compact is an alias — executes but stays out of the popover.
+    expect(resolveDesktopCommand('/compact')?.surface).toEqual({ kind: 'action', action: 'compress' })
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+  })
+
+  it('routes only stateless session commands through dedicated gateway RPCs', () => {
+    const expected = {
+      '/save': 'session.save',
+      '/status': 'session.status'
+    } as const
+
+    for (const [name, rpcName] of Object.entries(expected)) {
+      const surface = resolveDesktopCommand(name)?.surface
+      expect(surface?.kind).toBe('rpc')
+
+      if (surface?.kind !== 'rpc') {
+        continue
+      }
+
+      expect(surface.rpc).toBe(rpcName)
+      expect(surface.buildParams({ arg: 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
+        session_id: 's-1'
+      })
+    }
+  })
+
+  it('keeps commands with richer CLI semantics on the slash worker', () => {
+    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    const execNames = [
+      '/background',
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
   it('routes /journey (and aliases) to the memory graph overlay action', () => {
     expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
     expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })

@@ -1,4 +1,4 @@
-"""Tests for the session-search slow-query log (patch search-slow-query-log)."""
+"""Tests for the session-search slow-query log (salvaged from PR #65544)."""
 
 import logging
 
@@ -34,11 +34,24 @@ def test_no_log_under_threshold(db, monkeypatch, caplog):
     assert not [r for r in caplog.records if "slow session search" in r.getMessage()]
 
 
-def test_path_attribution(db, monkeypatch):
-    monkeypatch.setenv("HERMES_FTS_V2_READ", "0")
+def test_path_attribution(db):
+    # Without the cjk tokenizer loaded, routing matches the pre-cjk shape.
     assert db._describe_search_path("graphiti OR neo4j") == "fts5"
     assert db._describe_search_path("우선순위 캘린더") == "trigram"
     assert db._describe_search_path("일본 MCP") == "like_scan"
+
+
+def test_path_attribution_cjk_available(db):
+    # With the bigram index available, CJK queries (including 2-char terms)
+    # route to fts_cjk; lone 1-char CJK runs keep the LIKE route.
+    db._fts_cjk_available = True
+    try:
+        assert db._describe_search_path("일본 MCP") == "fts_cjk"
+        assert db._describe_search_path("우선순위 캘린더") == "fts_cjk"
+        assert db._describe_search_path("가 alone") == "like_scan"
+        assert db._describe_search_path("graphiti OR neo4j") == "fts5"
+    finally:
+        db._fts_cjk_available = False
 
 
 def test_results_unchanged_by_wrapper(db, monkeypatch):

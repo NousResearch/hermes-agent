@@ -245,6 +245,25 @@ test('offline and refused connections remain retryable ordinary transport errors
   }
 })
 
+test('a permanently unresolved hostname is not retried', async () => {
+  let attempts = 0
+  const error = Object.assign(new Error('getaddrinfo ENOTFOUND invalid.example'), { code: 'ENOTFOUND' })
+
+  await assert.rejects(
+    () =>
+      resolveRemoteConnectionWithRetry(
+        async () => {
+          attempts += 1
+          throw error
+        },
+        { maxAttempts: 5, sleep: async () => undefined }
+      ),
+    rejected => rejected === error
+  )
+
+  assert.equal(attempts, 1)
+})
+
 test('ordinary connection retries are bounded', async () => {
   let attempts = 0
   const timeout = new Error('Timed out connecting to Hermes backend after 8000ms')

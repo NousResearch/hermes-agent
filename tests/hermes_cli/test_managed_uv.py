@@ -219,7 +219,7 @@ class TestUpdateManagedUv:
             assert mock_run.call_count == 2
             assert mock_run.call_args_list[0][0][0] == [str(tmp_path / "bin" / "uv"), "self", "update"]
 
-    def test_self_update_failure_non_fatal(self, tmp_path):
+    def test_self_update_failure_non_fatal(self, tmp_path, capsys):
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
@@ -228,6 +228,21 @@ class TestUpdateManagedUv:
             result = update_managed_uv()
             # Still returns the path — failure is non-fatal
             assert result == str(tmp_path / "bin" / "uv")
+        # Failure now surfaces actionable proxy guidance instead of staying silent.
+        out = capsys.readouterr().out
+        assert "self-update failed" in out
+        assert "hermes update --proxy" in out
+
+    def test_self_update_failure_reports_configured_proxy(self, tmp_path, capsys, monkeypatch):
+        _make_executable(tmp_path / "bin" / "uv")
+        monkeypatch.setenv("HERMES_UPDATE_PROXY", "http://corp.proxy:8080")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="nope")
+            from hermes_cli.managed_uv import update_managed_uv
+            update_managed_uv()
+        out = capsys.readouterr().out
+        assert "A proxy is configured" in out
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +268,71 @@ class TestInstallUvInternals:
             mock_windows.assert_called_once()
             call_env = mock_windows.call_args[0][0]
             assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
+
+
+class TestInstallUvProxy:
+    def test_installer_proxy_prefers_explicit_update_proxy(self):
+        from hermes_cli.managed_uv import _installer_proxy
+
+        env = {
+            "HERMES_UPDATE_PROXY": " http://explicit.proxy:8080 ",
+            "HTTPS_PROXY": "http://https.proxy:8080",
+            "ALL_PROXY": "http://all.proxy:8080",
+        }
+
+        assert _installer_proxy(env) == "http://explicit.proxy:8080"
+
+    def test_installer_proxy_prefers_https_before_all_proxy(self):
+        from hermes_cli.managed_uv import _installer_proxy
+
+        env = {
+            "HTTPS_PROXY": "http://https.proxy:8080",
+            "ALL_PROXY": "http://all.proxy:8080",
+        }
+
+        assert _installer_proxy(env) == "http://https.proxy:8080"
+
+    def test_posix_curl_gets_explicit_proxy(self, tmp_path):
+        from hermes_cli.managed_uv import _install_uv_posix
+
+        env = {"HERMES_UPDATE_PROXY": "http://corp.proxy:8080"}
+        with patch("hermes_cli.managed_uv.tempfile.NamedTemporaryFile") as mock_tmp, \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv.os.unlink"):
+            mock_tmp.return_value.__enter__.return_value.name = str(tmp_path / "install.sh")
+
+            _install_uv_posix(env)
+
+        curl_cmd = mock_run.call_args_list[0][0][0]
+        assert curl_cmd[:3] == ["curl", "--proxy", "http://corp.proxy:8080"]
+
+    def test_windows_installer_uses_proxy_aware_powershell_script(self):
+        from hermes_cli.managed_uv import _install_uv_windows
+
+        env = {"HERMES_UPDATE_PROXY": "http://corp.proxy:8080"}
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            _install_uv_windows(env)
+
+        cmd = mock_run.call_args[0][0]
+        script = cmd[-1]
+        assert "$env:HERMES_UPDATE_PROXY" in script
+        assert "$params['Proxy'] = $proxy" in script
+        assert mock_run.call_args.kwargs["env"] == env
+
+    def test_proxy_guidance_without_proxy_points_to_update_flag(self, capsys):
+        from hermes_cli.managed_uv import _print_installer_proxy_guidance
+
+        _print_installer_proxy_guidance({})
+
+        out = capsys.readouterr().out
+        assert "hermes update --proxy http://proxy-host:port" in out
+        assert "HTTPS_PROXY/HTTP_PROXY" in out
+
+    def test_proxy_guidance_with_proxy_asks_to_verify_proxy(self, capsys):
+        from hermes_cli.managed_uv import _print_installer_proxy_guidance
+
+        _print_installer_proxy_guidance({"HTTPS_PROXY": "http://corp.proxy:8080"})
+
+        out = capsys.readouterr().out
+        assert "A proxy is configured" in out
+        assert "Verify the proxy URL" in out

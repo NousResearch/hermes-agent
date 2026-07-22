@@ -51,6 +51,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
     )
     update_parser.add_argument(
+        "--proxy",
+        metavar="URL",
+        default=None,
+        help="HTTP(S) proxy URL to use for update network calls, including managed uv bootstrap.",
+    )
+    update_parser.add_argument(
         "--branch",
         default=None,
         metavar="NAME",

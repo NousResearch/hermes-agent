@@ -486,6 +486,57 @@ _SLACK_PROXY_HOSTS = (
     "wss-primary.slack.com",
 )
 
+_SLACK_PROFILE_IDENTITY_FIELDS = ("username", "icon_url", "icon_emoji")
+
+
+def _resolve_slack_sender_profile(metadata: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the profile whose optional Slack identity should be used."""
+    if isinstance(metadata, dict):
+        profile = str(metadata.get("profile") or "").strip()
+        if profile:
+            return profile
+
+    profile = os.getenv("HERMES_PROFILE", "").strip()
+    if profile:
+        return profile
+
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if hermes_home:
+        try:
+            home_path = _Path(hermes_home)
+            if home_path.parent.name == "profiles" and home_path.name:
+                return home_path.name
+        except (OSError, ValueError):
+            pass
+
+    return "default"
+
+
+def resolve_slack_profile_identity(
+    config_extra: Optional[Dict[str, Any]],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return safe, configured Slack identity fields for this delivery.
+
+    Invalid configuration is deliberately ignored: profile presentation must
+    never prevent a message from reaching Slack.
+    """
+    if not isinstance(config_extra, dict):
+        return {}
+    identities = config_extra.get("profile_identities")
+    if not isinstance(identities, dict):
+        return {}
+
+    identity = identities.get(_resolve_slack_sender_profile(metadata))
+    if not isinstance(identity, dict):
+        return {}
+
+    return {
+        key: value
+        for key in _SLACK_PROFILE_IDENTITY_FIELDS
+        if (value := str(identity.get(key) or "").strip())
+    }
+
 
 def _resolve_slack_proxy_url() -> Optional[str]:
     """Resolve a proxy URL that Slack SDK clients can safely use."""
@@ -1823,6 +1874,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                kwargs.update(self._profile_identity_kwargs(metadata))
                 if blocks and i == 0:
                     kwargs["blocks"] = blocks
                 if thread_ts:
@@ -1877,6 +1929,12 @@ class SlackAdapter(BasePlatformAdapter):
                 await self.stop_typing(chat_id, metadata=metadata)
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    def _profile_identity_kwargs(
+        self, metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, str]:
+        """Resolve optional per-message Slack profile presentation."""
+        return resolve_slack_profile_identity(self.config.extra, metadata)
 
     async def send_private_notice(
         self,
@@ -4639,6 +4697,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
                 "blocks": sanitize_blocks(blocks),
             }
+            kwargs.update(self._profile_identity_kwargs(metadata))
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
@@ -4719,6 +4778,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "text": f"{title or 'Confirm'}: {body[:100]}",
                 "blocks": sanitize_blocks(blocks),
             }
+            kwargs.update(self._profile_identity_kwargs(metadata))
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
@@ -6286,6 +6346,9 @@ async def _standalone_send(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
         ) as session:
             payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+            payload.update(
+                resolve_slack_profile_identity(getattr(pconfig, "extra", None))
+            )
             if thread_id:
                 payload["thread_ts"] = thread_id
             async with session.post(
@@ -6433,8 +6496,9 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     existing env-driven model and owns the YAML→env translation here, next to
     the adapter that consumes it. Env vars take precedence over YAML — every
     assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
-    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    survive a config.yaml update. ``profile_identities`` is message behavior,
+    not a secret, so it is returned for ``PlatformConfig.extra`` instead of
+    being flattened into environment variables.
     """
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
@@ -6454,7 +6518,14 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    identities = slack_cfg.get("profile_identities")
+    if not isinstance(identities, dict):
+        return None
+    return {
+        "profile_identities": {
+            str(profile): identity for profile, identity in identities.items()
+        }
+    }
 
 
 def _is_connected(config) -> bool:

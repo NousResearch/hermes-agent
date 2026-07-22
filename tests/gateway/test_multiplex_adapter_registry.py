@@ -149,6 +149,44 @@ class TestProfileMessageHandler:
         await handler(_Evt())
         assert seen["profile"] == "writer"
 
+    @pytest.mark.asyncio
+    async def test_multiplexed_profile_reaches_slack_delivery_identity(self):
+        """The profile stamped by multiplexing must survive outbound metadata."""
+        from unittest.mock import MagicMock
+
+        from plugins.platforms.slack.adapter import SlackAdapter
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        adapter = SlackAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="xoxb-fake",
+                extra={
+                    "profile_identities": {
+                        "coder": {"username": "Coder"},
+                    }
+                },
+            )
+        )
+        adapter._app = MagicMock()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "1"})
+
+        class _Source:
+            platform = Platform.SLACK
+            profile = "coder"
+            chat_id = "C123"
+            chat_type = "group"
+            thread_id = None
+            message_id = "171.111"
+            scope_id = "T123"
+
+        metadata = runner._thread_metadata_for_source(_Source())
+        await adapter.send("C123", "profile response", metadata=metadata)
+
+        kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
+        assert metadata["profile"] == "coder"
+        assert kwargs["username"] == "Coder"
+
 
 class _SecondaryRecoveryAdapter:
     platform = Platform.DISCORD

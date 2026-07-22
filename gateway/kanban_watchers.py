@@ -1226,6 +1226,36 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
+                # Re-read the kanban dispatch knobs live each tick (same policy
+                # as auto_decompose below) so edits to default_assignee, caps,
+                # and failure_limit apply on the next tick without a gateway
+                # restart. These are otherwise captured once at watcher startup;
+                # reassigning them here updates the closure vars that
+                # _tick_once_for_board reads. Invalid values keep the prior
+                # in-memory value.
+                _lk = (_load_config() or {})
+                _lk = _lk.get("kanban", {}) if isinstance(_lk, dict) else {}
+                if "default_assignee" in _lk:
+                    default_assignee = (_lk.get("default_assignee") or "").strip() or None
+                try:
+                    _v = _lk.get("max_in_progress", None)
+                    max_in_progress = int(_v) if _v is not None and int(_v) >= 1 else None
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    _v = _lk.get("max_in_progress_per_profile", None)
+                    max_in_progress_per_profile = int(_v) if _v is not None and int(_v) >= 1 else None
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    _v = int(_lk.get("failure_limit", failure_limit))
+                    failure_limit = _v if _v >= 1 else failure_limit
+                except (TypeError, ValueError):
+                    pass
+            except Exception:
+                logger.exception("kanban dispatcher: live kanban-config re-read failed; keeping prior values")
+
+            try:
                 # Re-read the auto-decompose toggle live each tick so a user
                 # flipping kanban.auto_decompose=false to STOP runaway fan-out
                 # takes effect on the next tick, not on gateway restart (#49638).

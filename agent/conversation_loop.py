@@ -1410,16 +1410,15 @@ def run_conversation(
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
-                # CopilotACPClient communicates via subprocess stdio and
-                # returns a plain SimpleNamespace — not an iterable
-                # stream.  Mirror the ACP exclusion used for Responses
-                # API upgrade (lines ~1083-1085).
-                elif (
-                    agent.provider in {"copilot-acp"}
-                    or str(agent.base_url or "").lower().startswith("acp://copilot")
-                    or str(agent.base_url or "").lower().startswith("acp+tcp://")
-                ):
+                # TCP ACP transports still return non-iterable completions.
+                # Local CopilotACPClient now yields live session/update deltas.
+                elif str(agent.base_url or "").lower().startswith("acp+tcp://"):
                     _use_streaming = False
+                elif agent.provider in {"cursor"} or str(agent.base_url or "").lower().startswith(
+                    "cursor://"
+                ):
+                    # Cursor Agent SDK shim streams when possible; keep enabled.
+                    pass
                 # MoA streams only when a display/TTS consumer is present to
                 # receive the deltas. MoAChatCompletions.create() honors
                 # stream=True (runs the references, then returns the aggregator's
@@ -3363,8 +3362,11 @@ def run_conversation(
                     # etc.) is throttling OpenRouter, so always fall back to a
                     # different model regardless of pool state.
                     _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    # Hard quota/billing walls won't recover by rotating keys on
+                    # the same Copilot/GitHub account — prefer fallback immediately.
                     pool_may_recover = (
-                        False if _is_upstream
+                        False
+                        if _is_upstream or classified.reason == FailoverReason.billing
                         else _ra()._pool_may_recover_from_rate_limit(
                             agent._credential_pool,
                         )
@@ -4301,18 +4303,37 @@ def run_conversation(
 
                 # For rate limits, respect the Retry-After header if present
                 _retry_after = None
+                _has_pending_fallback = agent._fallback_index < len(agent._fallback_chain)
+                # Prefer fallback over a long sleep when the pool can't help or
+                # this is a hard quota/billing wall (Copilot "quota exceeded").
+                if _has_pending_fallback and (
+                    classified.reason == FailoverReason.billing
+                    or (
+                        is_rate_limited
+                        and not _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                        )
+                    )
+                ):
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
                 if is_rate_limited:
                     _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
                     if _resp_headers and hasattr(_resp_headers, "get"):
                         _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
                         if _ra_raw:
                             try:
-                                # Cap at 10 minutes. Anthropic Tier 1 input-token
-                                # buckets reset in ~171s, so a 120s cap caused us to
-                                # retry before the actual reset window and re-trip the
-                                # limit. 600s covers all realistic provider reset
-                                # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
+                                # Cap at 10 minutes when no fallback is available.
+                                # Anthropic Tier 1 input-token buckets reset in ~171s
+                                # (#26293). When a fallback chain exists, cap much
+                                # lower so we don't park for 600s before switching.
+                                _ra_cap = 30.0 if _has_pending_fallback else 600.0
+                                _retry_after = min(float(_ra_raw), _ra_cap)
                             except (TypeError, ValueError):
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)

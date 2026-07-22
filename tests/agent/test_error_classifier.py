@@ -466,6 +466,24 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 
+    def test_429_quota_exceeded_without_transient_is_billing(self):
+        """Copilot-style HTTP 429 'quota exceeded' with no reset hint → billing."""
+        e = MockAPIError("HTTP 429: quota exceeded", status_code=429)
+        result = classify_api_error(e, provider="copilot")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_quota_with_reset_hint_stays_rate_limit(self):
+        """Quota message that includes a reset/retry signal stays rate_limit."""
+        e = MockAPIError(
+            "quota exceeded, please retry after the window resets",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="copilot")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

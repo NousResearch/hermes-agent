@@ -1785,64 +1785,47 @@ def _make_acp_agent(provider="copilot-acp", base_url="acp://copilot"):
 
 
 class TestCopilotACPStreamingDecision:
-    """Verify that copilot-acp routes to the non-streaming path.
+    """Verify streaming decision for ACP / Cursor runtimes.
 
-    CopilotACPClient communicates via subprocess stdio and returns a plain
-    SimpleNamespace — not an iterable stream.  The streaming decision logic
-    must detect ACP runtimes and route to _interruptible_api_call instead.
+    Local CopilotACPClient and CursorAgentClient now yield live deltas, so
+    ``copilot-acp`` / ``acp://copilot`` / ``cursor://`` keep streaming enabled.
+    TCP ACP transports still force non-streaming.
     """
 
     @patch("run_agent.get_tool_definitions", return_value=[])
     @patch("run_agent.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
-    def test_provider_name_triggers_non_streaming(
+    def test_provider_name_allows_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools
     ):
-        """provider='copilot-acp' → non-streaming path."""
+        """provider='copilot-acp' → streaming allowed (client yields deltas)."""
         mock_acp_cls.return_value = MagicMock()
         agent = _make_acp_agent(provider="copilot-acp", base_url="acp://copilot")
 
-        with (
-            patch.object(agent, "_interruptible_api_call",
-                         return_value=_valid_acp_response()) as mock_non_stream,
-            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
-        ):
-            # Verify the decision logic correctly disables streaming
-            _use_streaming = True
-            if getattr(agent, "_disable_streaming", False):
-                _use_streaming = False
-            elif (
-                agent.provider == "copilot-acp"
-                or str(agent.base_url or "").lower().startswith("acp://copilot")
-                or str(agent.base_url or "").lower().startswith("acp+tcp://")
-            ):
-                _use_streaming = False
+        _use_streaming = True
+        if getattr(agent, "_disable_streaming", False):
+            _use_streaming = False
+        elif str(agent.base_url or "").lower().startswith("acp+tcp://"):
+            _use_streaming = False
 
-            assert _use_streaming is False
-            # Call the non-streaming path as the loop would
-            response = mock_non_stream({})
-            mock_stream.assert_not_called()
+        assert _use_streaming is True
 
     @patch("run_agent.get_tool_definitions", return_value=[])
     @patch("run_agent.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
-    def test_acp_base_url_triggers_non_streaming(
+    def test_acp_base_url_allows_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools
     ):
-        """base_url='acp://copilot' → non-streaming even without provider name."""
+        """base_url='acp://copilot' → streaming allowed."""
         mock_acp_cls.return_value = MagicMock()
         agent = _make_acp_agent(provider="custom", base_url="acp://copilot")
         agent.provider = "custom"
 
         _use_streaming = True
-        if (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
-            or str(agent.base_url or "").lower().startswith("acp+tcp://")
-        ):
+        if str(agent.base_url or "").lower().startswith("acp+tcp://"):
             _use_streaming = False
 
-        assert _use_streaming is False
+        assert _use_streaming is True
 
     @patch("run_agent.get_tool_definitions", return_value=[])
     @patch("run_agent.check_toolset_requirements", return_value={})
@@ -1856,11 +1839,7 @@ class TestCopilotACPStreamingDecision:
         agent.provider = "custom"
 
         _use_streaming = True
-        if (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
-            or str(agent.base_url or "").lower().startswith("acp+tcp://")
-        ):
+        if str(agent.base_url or "").lower().startswith("acp+tcp://"):
             _use_streaming = False
 
         assert _use_streaming is False
@@ -1883,11 +1862,7 @@ class TestCopilotACPStreamingDecision:
         _use_streaming = True
         if getattr(agent, "_disable_streaming", False):
             _use_streaming = False
-        elif (
-            agent.provider == "copilot-acp"
-            or str(agent.base_url or "").lower().startswith("acp://copilot")
-            or str(agent.base_url or "").lower().startswith("acp+tcp://")
-        ):
+        elif str(agent.base_url or "").lower().startswith("acp+tcp://"):
             _use_streaming = False
 
         assert _use_streaming is True

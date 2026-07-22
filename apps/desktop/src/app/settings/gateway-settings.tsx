@@ -534,6 +534,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
       acceptSavedConfig(saved)
 
+      // Clear any stale identity-provider cookie for this gateway before
+      // opening the login window — otherwise a lapsed remote/cloud session
+      // (the same connected-but-expired shape the boot-failure recovery
+      // screen's dedicated reauth button already guards against) can bounce
+      // this sign-in attempt straight back into the broken session.
+      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
+
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
       if (seq !== signingSeq.current) {

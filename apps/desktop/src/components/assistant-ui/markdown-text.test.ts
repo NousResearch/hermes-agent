@@ -202,6 +202,22 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
 
+  it('escapes lone tildes in prose ranges without touching strikethrough syntax', () => {
+    const output = preprocessMarkdown('Ranges: 1~10,11~20 and ~~deleted~~ text.')
+
+    expect(output).toContain('1\\~10,11\\~20')
+    expect(output).toContain('~~deleted~~')
+  })
+
+  it('does not escape lone tildes inside inline or fenced code', () => {
+    const input = ['Use `1~10` as a literal.', '', '```txt', '1~10,11~20', '```'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('`1~10`')
+    expect(output).toContain(['```txt', '1~10,11~20', '```'].join('\n'))
+  })
+
   it('handles a fenced block larger than V8 spread-argument limit', () => {
     // A single huge code block (e.g. a logged minified bundle) used to throw
     // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.

@@ -73,6 +73,9 @@ def _get_exa_client() -> Any:
 
     client = Exa(api_key=api_key)
     client.headers["x-exa-integration"] = "hermes-agent"
+    client.headers["User-Agent"] = (
+        "Hermes-Agent/1.0 (+https://github.com/NousResearch/hermes-agent)"
+    )
     _wt._exa_client = client
     return client
 

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
-import { getElevenLabsVoices, getHermesConfigSchema, getMemoryStatus, saveHermesConfig } from '@/hermes'
+import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
@@ -76,10 +76,6 @@ export function ConfigSettings({
   const schema = schemaResponse?.fields ?? null
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
-  // Discovered memory providers (bundled + user-installed + pip), so the
-  // memory.provider dropdown reflects what the backend actually serves rather
-  // than a hardcoded subset. null until the first fetch resolves.
-  const [memoryProviderOptions, setMemoryProviderOptions] = useState<string[] | null>(null)
   const saveVersionRef = useRef(0)
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
@@ -124,27 +120,6 @@ export function ConfigSettings({
         if (!cancelled) {
           setElevenLabsVoiceOptions(null)
           setElevenLabsVoiceLabels({})
-        }
-      })
-
-    return () => void (cancelled = true)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-
-    getMemoryStatus()
-      .then(result => {
-        if (cancelled) {
-          return
-        }
-
-        // Empty sentinel first (built-in only), then every discovered plugin.
-        setMemoryProviderOptions(['', ...result.providers.map(provider => provider.name)])
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMemoryProviderOptions(null)
         }
       })
 
@@ -333,9 +308,7 @@ export function ConfigSettings({
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'
                     ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                    : key === 'memory.provider'
-                      ? enumOptionsFor(key, getNested(config, key), config, memoryProviderOptions ?? undefined)
-                      : enumOptionsFor(key, getNested(config, key), config)
+                    : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}

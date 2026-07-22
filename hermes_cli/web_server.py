@@ -1136,28 +1136,59 @@ def _custom_provider_options(
     return names
 
 
-def _schema_with_voice_provider_options() -> Dict[str, Dict[str, Any]]:
-    """Return CONFIG_SCHEMA with per-request voice provider options merged.
+def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
+    """Discovered memory providers for a per-request schema merge.
 
-    Computed at request time (not import time) so options reflect the
-    CURRENT config.yaml — including providers added after the server
-    started, and the profile-scoped config when the request carries a
-    ``profile`` param. The module-level ``CONFIG_SCHEMA`` is never mutated;
-    entries that change are shallow-copied onto a copied mapping.
+    Reuses the cheap directory scan of :func:`_memory_provider_options` and
+    additionally preserves the currently-configured provider, so a value
+    selected in config but not (yet) discoverable — e.g. a plugin removed from
+    disk — never silently vanishes from the dropdown.
+    """
+    options = _memory_provider_options()
+    current = _normalize_memory_provider_name(
+        cfg.get("memory", {}).get("provider") if isinstance(cfg.get("memory"), dict) else None
+    )
+    if current and current not in options:
+        options = [*options, current]
+    return options
+
+
+def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
+    """Return CONFIG_SCHEMA with per-request discovery-driven options merged.
+
+    Some ``*.provider`` selects have options that are discovered at runtime
+    (voice backends via the tts/stt registries + config.yaml command
+    providers; memory providers via a plugin-dir scan). The module-level
+    ``_SCHEMA_OVERRIDES`` freezes those lists at import time, so a provider
+    installed after the server started never appears. This recomputes them at
+    request time — reflecting the CURRENT config.yaml, the profile-scoped
+    config when the request carries a ``profile`` param, and mid-session
+    plugin installs — for every surface that reads the schema (desktop, CLI,
+    dashboard), with no extra frontend round-trips.
+
+    The module-level ``CONFIG_SCHEMA`` is never mutated; entries that change
+    are shallow-copied onto a copied mapping.
     """
     try:
         cfg = load_config()
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
     overlay: Dict[str, Dict[str, Any]] = {}
-    for kind in ("tts", "stt"):
-        key = f"{kind}.provider"
+
+    def _merge(key: str, merged: List[str]) -> None:
         entry = CONFIG_SCHEMA.get(key)
         if not isinstance(entry, dict) or not isinstance(entry.get("options"), list):
-            continue
-        merged = _custom_provider_options(kind, list(entry["options"]), cfg)
+            return
         if merged != entry["options"]:
             overlay[key] = {**entry, "options": merged}
+
+    for kind in ("tts", "stt"):
+        entry = CONFIG_SCHEMA.get(f"{kind}.provider")
+        if isinstance(entry, dict) and isinstance(entry.get("options"), list):
+            _merge(f"{kind}.provider", _custom_provider_options(kind, list(entry["options"]), cfg))
+
+    _merge("memory.provider", _memory_provider_schema_options(cfg))
+
     if not overlay:
         return CONFIG_SCHEMA
     fields = dict(CONFIG_SCHEMA)
@@ -6187,11 +6218,11 @@ async def get_defaults():
 
 @app.get("/api/config/schema")
 async def get_schema(profile: Optional[str] = None):
-    # Voice provider options are merged per-request so user-declared
-    # command providers (tts.providers.* / stt.providers.*) added after
-    # server start still show up, scoped to the requested profile's config.
+    # Discovery-driven provider options (voice command providers + memory
+    # provider plugins) are merged per-request so providers added after server
+    # start still show up, scoped to the requested profile's config.
     with _config_profile_scope(profile):
-        fields = _schema_with_voice_provider_options()
+        fields = _schema_with_dynamic_provider_options()
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 

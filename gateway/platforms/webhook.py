@@ -337,14 +337,94 @@ class WebhookAdapter(BasePlatformAdapter):
         to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
         delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
+        deliver_raw = delivery.get("deliver", "log")
 
+        # Multi-target: comma-separated values (e.g. "feishu,photon")
+        # are split and each delivered independently via _deliver_multi.
+        deliver_targets = [t.strip() for t in deliver_raw.split(",") if t.strip()]
+        if len(deliver_targets) > 1:
+            return await self._deliver_multi(deliver_targets, content, delivery, chat_id)
+
+        # Single-target: fall through to the original delivery path.
+        return await self._deliver_single(deliver_raw, content, delivery, chat_id)
+
+    async def _deliver_multi(
+        self,
+        targets: List[str],
+        content: str,
+        delivery: dict,
+        chat_id: str,
+    ) -> SendResult:
+        """Deliver to multiple platform targets (comma-separated fan-out).
+
+        Each target is a ``platform`` or ``platform:chat_id`` (optionally
+        ``platform:chat_id:thread_id``) string.  Bare platform names fall
+        back to the platform's home channel.  Inline chat_id overrides the
+        home channel for that specific target — enabling e.g.
+        ``"photon:+86123,photon:+86456,feishu:oc_xxx"`` to fan out to
+        two Photon numbers and one Feishu group simultaneously.
+
+        Failures in one target don't block others — we report partial
+        success as long as at least one delivery succeeds.
+        """
+        results = []
+        for target in targets:
+            # Parse "platform[:chat_id][:thread_id]"
+            parts = target.split(":")
+            platform_name = parts[0].strip()
+            single_delivery = {"deliver": platform_name, "payload": delivery.get("payload")}
+            # Inline chat_id — overrides home channel for this target
+            if len(parts) > 1 and parts[1].strip():
+                single_delivery["_inline_chat_id"] = parts[1].strip()
+            # Inline thread_id — for Telegram forum topics etc.
+            if len(parts) > 2 and parts[2].strip():
+                single_delivery["_inline_thread_id"] = parts[2].strip()
+            result = await self._deliver_single(platform_name, content, single_delivery, chat_id)
+            results.append((target, result))
+        # Success if at least one delivery succeeded; collect errors from failures
+        any_success = any(r.success for _, r in results)
+        errors = [f"{t}: {r.error}" for t, r in results if not r.success and r.error]
+        return SendResult(
+            success=any_success,
+            error="; ".join(errors) if errors else None,
+        )
+
+    async def _deliver_single(
+        self,
+        deliver_type: str,
+        content: str,
+        delivery: dict,
+        chat_id: str,
+    ) -> SendResult:
+        """Deliver to a single platform target.
+
+        Extracted from send() to enable both single-target and multi-target
+        delivery paths to share the same routing logic.
+
+        Supports ``platform:chat_id`` format in ``deliver_type`` — the
+        inline chat_id overrides the home channel / deliver_extra lookup.
+        Also honors ``_inline_chat_id`` / ``_inline_thread_id`` already
+        present in ``delivery`` (set by ``_deliver_multi`` for multi-target).
+        """
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
 
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
+
+        # Parse platform:chat_id[:thread_id] format (e.g. "feishu:oc_xxx")
+        # This handles both single-target direct calls and the multi-target
+        # path when deliver_type arrives with an inline chat_id.
+        inline_chat_id = delivery.get("_inline_chat_id", "")
+        inline_thread_id = delivery.get("_inline_thread_id", "")
+        if ":" in deliver_type and not inline_chat_id:
+            parts = deliver_type.split(":")
+            deliver_type = parts[0].strip()
+            if len(parts) > 1 and parts[1].strip():
+                inline_chat_id = parts[1].strip()
+            if len(parts) > 2 and parts[2].strip():
+                inline_thread_id = parts[2].strip()
 
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
@@ -356,8 +436,15 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         if self.gateway_runner and _is_known_platform:
+            # inline_chat_id / inline_thread_id already parsed above (lines
+            # 347-353) from both the deliver_type "platform:chat_id" format and
+            # the _inline_* keys set by _deliver_multi. Do NOT re-read delivery
+            # here — that would overwrite the parsed target and silently fall
+            # back to deliver_extra / home channel (see PR #54373 review).
             return await self._deliver_cross_platform(
-                deliver_type, content, delivery
+                deliver_type, content, delivery,
+                chat_id_override=inline_chat_id,
+                thread_id_override=inline_thread_id,
             )
 
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
@@ -1203,11 +1290,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Fall through to the cross-platform dispatcher, which validates the
-        # target name and routes via the gateway runner.
-        return await self._deliver_cross_platform(
-            deliver_type, content, delivery
-        )
+        # Single target: route through _deliver_single so the
+        # "platform:chat_id" parser (lines 342-353) applies uniformly —
+        # _direct_deliver is reached directly by deliver_only routes, which
+        # would otherwise forward the raw "platform:chat_id" string to
+        # _deliver_cross_platform and fail (see PR #54373 review).
+        return await self._deliver_single(deliver_type, content, delivery, "")
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict
@@ -1285,9 +1373,15 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def _deliver_cross_platform(
-        self, platform_name: str, content: str, delivery: dict
+        self, platform_name: str, content: str, delivery: dict,
+        chat_id_override: str = "", thread_id_override: str = "",
     ) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
+        """Route response to another platform (telegram, discord, etc.).
+
+        ``chat_id_override`` and ``thread_id_override`` take precedence over
+        ``deliver_extra`` and the home channel — used by ``platform:chat_id``
+        targets in multi-delivery to route to specific recipients.
+        """
         if not self.gateway_runner:
             return SendResult(
                 success=False,
@@ -1319,9 +1413,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 error=f"Platform {platform_name} not connected",
             )
 
-        # Use home channel if no specific chat_id in deliver_extra
-        extra = delivery.get("deliver_extra", {})
-        chat_id = extra.get("chat_id", "")
+        # Inline override (platform:chat_id) → deliver_extra → home channel
+        chat_id = chat_id_override
+        if not chat_id:
+            extra = delivery.get("deliver_extra", {})
+            chat_id = extra.get("chat_id", "")
         if not chat_id:
             home = self.gateway_runner.config.get_home_channel(target_platform)
             if home:
@@ -1332,9 +1428,12 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
+        # Inline thread_id override → deliver_extra → None
         metadata = None
-        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+        thread_id = thread_id_override
+        if not thread_id:
+            extra = delivery.get("deliver_extra", {})
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}
 

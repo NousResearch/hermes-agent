@@ -31,14 +31,21 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
 
   return (
     <div className="relative">
-      <div className={cn('overflow-y-auto', expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]', className)} ref={innerRef}>
+      <div
+        className={cn(
+          'expandable-block-scroll overflow-y-auto',
+          expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]',
+          className
+        )}
+        ref={innerRef}
+      >
         {children}
       </div>
       {overflowing && (
         <button
           aria-expanded={expanded}
           aria-label={expanded ? 'Collapse' : 'Expand'}
-          className="absolute inset-x-0 bottom-0 flex h-7 cursor-pointer items-end justify-center bg-linear-to-t from-(--ui-chat-surface-background) to-transparent pb-1 text-muted-foreground/70 transition-colors hover:text-foreground"
+          className="absolute inset-x-0 bottom-0 flex h-7 cursor-pointer items-end justify-center pb-1 text-muted-foreground/70 transition-colors hover:text-foreground"
           onClick={() => setExpanded(v => !v)}
           type="button"
         >

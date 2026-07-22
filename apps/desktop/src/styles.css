@@ -1287,6 +1287,22 @@ text-* variant utilities. */ .btn-arc {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
+.expandable-block-scroll {
+  animation: scrollEdge both step-end;
+  animation-timeline: scroll(self);
+}
+
+@keyframes scrollEdge {
+  0% {
+    -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 0%) 100%);
+    mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 0%) 100%);
+  }
+  100%{
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);

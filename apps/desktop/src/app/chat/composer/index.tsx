@@ -337,6 +337,14 @@ export function ChatBar({
   )
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // If composingRef is stuck true from a dropped compositionend (e.g. IME
+    // state transition, OS-level input feature edge case), cross-check the
+    // native event — when the browser says this input event is NOT part of
+    // a composition, our ref is stale and we must self-heal.
+    if (composingRef.current && !(event.nativeEvent as InputEvent).isComposing) {
+      composingRef.current = false
+    }
+
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
     // the finalized text (see onCompositionEnd).
@@ -398,6 +406,14 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // If composingRef is stuck true from a dropped compositionend (e.g. IME
+    // state transition, OS-level input feature edge case), cross-check the
+    // native event — when the browser says this key event is NOT part of
+    // a composition, our ref is stale and we must self-heal.
+    if (composingRef.current && !event.nativeEvent.isComposing) {
+      composingRef.current = false
+    }
+
     // IME composition: Enter confirms composed text, not a message submission.
     // We check both composingRef (set by compositionstart/compositionend, robust
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
@@ -761,7 +777,18 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          // Self-heal a stale composingRef from a dropped compositionend.
+          // input/keydown handlers also recover (see handleEditorInput /
+          // handleEditorKeyDown), but a direct Send click fires blur then
+          // submit without passing through either handler — the form
+          // onSubmit guard would block a stuck ref permanently.
+          if (composingRef.current) {
+            composingRef.current = false
+          }
+
+          window.setTimeout(closeTrigger, 80)
+        }}
         onCompositionEnd={event => {
           composingRef.current = false
 

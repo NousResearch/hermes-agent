@@ -1,0 +1,390 @@
+# Hermes static-message catalog -- Tamil (ta)
+#
+# Only user-facing static messages from the CLI approval prompt and a handful
+# of gateway slash-command replies live here. Agent-generated output, log
+# lines, error tracebacks, tool outputs, and slash-command descriptions stay
+# in English and are NOT translated -- see agent/i18n.py for scope rationale.
+#
+# Keys are dotted paths; nesting below is purely for readability. Values may
+# contain {placeholder} tokens for str.format substitution. When adding a
+# new key, add it to EVERY locale file (en/zh/ja/de/es/fr/tr/uk) in the same commit --
+# tests/agent/test_i18n.py asserts catalog parity.
+
+approval:
+  # CLI approval prompt -- shown when a dangerous command needs user review.
+  dangerous_header: "⚠️  ஆபத்தான கட்டளை: {description}"
+  choose_long:     "      [o]ஒருமுறை  |  [s]அமர்வு  |  [a]எப்போதும்  |  [d]மறு"
+  choose_short:    "      [o]ஒருமுறை  |  [s]அமர்வு  |  [d]மறு"
+  prompt_long:     "      தேர்வு [o/s/a/D]: "
+  prompt_short:    "      தேர்வு [o/s/D]: "
+  timeout:         "      ⏱ காலக்கெடு - கட்டளை மறுக்கப்படுகிறது"
+  allowed_once:    "      ✓ ஒரு முறை அனுமதிக்கப்படுகிறது"
+  allowed_session: "      ✓ இந்த அமர்வுக்கு அனுமதிக்கப்பட்டது"
+  allowed_always:  "      ✓ நிரந்தர அனுமதிப் பட்டியலில் சேர்க்கப்பட்டது"
+  denied:          "      ✗ மறுக்கப்பட்டது"
+  cancelled:       "      ✗ ரத்து செய்யப்பட்டது"
+  blocklist_message: "இந்த கட்டளை நிபந்தனையற்ற தடுப்புப்பட்டியலில் உள்ளது எனவே அங்கீகரிக்க முடியாது."
+
+gateway:
+  # Messenger replies to slash commands and implicit state changes.
+  approval_expired: "⚠️ ஒப்புதல் காலாவதியானது (முகவர் இனி காத்திருக்கவில்லை). மீண்டும் முயற்சிக்க முகவரிடம் கேட்கவும்."
+  draining:         "⏳ மறுதொடக்கம் செய்வதற்கு முன் {count} செயலில் உள்ள முகவர்(கள்) நிறுத்தப்படுகிறார்கள்..."
+  goal_cleared:     "✓ இலக்கு நீக்கப்பட்டது."
+  no_active_goal:   "செயலில் உள்ள இலக்கு எதுவும் இல்லை."
+  config_read_failed: "⚠️ config.yaml ஐப் படிக்க முடியவில்லை: {error}"
+  config_save_failed: "⚠️ அமைப்பைச் சேமிக்க முடியவில்லை: {error}"
+
+  # /model command output -- shown after a model switch or when listing models.
+  # Provider names, model IDs, capability strings, and cost figures are NOT
+  # translated -- they're identifiers/values, not prose. Only the labels
+  # ("Provider:", "Context:", etc.) and the help/footer lines are localized.
+  model:
+    error_prefix:           "பிழை: {error}"
+    switched:               "மாடல் `{model}`க்கு மாறியது"
+    provider_label:         "வழங்குபவர்: {provider}"
+    context_label:          "சூழல்: {tokens} டோக்கன்கள்"
+    max_output_label:       "அதிகபட்ச வெளியீடு: {tokens} டோக்கன்கள்"
+    cost_label:             "செலவு: {cost}"
+    capabilities_label:     "திறன்கள்: {capabilities}"
+    prompt_caching_enabled: "உடனடி கேச்சிங்: இயக்கப்பட்டது"
+    warning_prefix:         "எச்சரிக்கை: {warning}"
+    saved_global:           "config.yaml இல் சேமிக்கப்பட்டது (`--global`)"
+    session_only_hint:      "_(அமர்வு மட்டும் — நிலைத்திருக்க `--global` என்பதைச் சேர்க்கவும்)_"
+    current_label:          "நடப்பு: {provider} இல் `{model}`"
+    current_tag:            " (தற்போதைய)"
+    more_models_suffix:     " (+{count} மேலும்)"
+    usage_switch_model:     "`/model <name>` — மாடல் மாற்றம்"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — சேவை வழங்குநரை மாற்றுதல்"
+    usage_persist:          "`/model <name> --global` — நிலைத்திருக்கச் செய்ய"
+
+  agents:
+    header:                "🤖 **செயலில் உள்ள முகவர்கள் & பணிகள்**"
+    active_agents:         "**செயலில் உள்ள முகவர்கள்:** {count}"
+    this_chat:             " · இந்த அரட்டை"
+    more:                  "... மேலும் {count}"
+    running_processes:     "**இயங்கும் பின்னணிச் செயல்முறைகள்:** {count}"
+    async_jobs:            "**கேட்வே ஒத்திசைவற்ற பணிகள்:** {count}"
+    none:                  "செயலில் உள்ள முகவர்களோ அல்லது இயங்கும் பணிகளோ இல்லை."
+    state_starting:        "தொடங்குகிறது"
+    state_running:         "இயங்குகிறது"
+
+  approve:
+    no_pending:            "அங்கீகரிக்க எந்த கட்டளையும் நிலுவையில் இல்லை."
+    once_singular:         "✅ கட்டளை அங்கீகரிக்கப்பட்டது. முகவர் மீண்டும் தொடங்குகிறார்..."
+    once_plural:           "✅ கட்டளைகள் அங்கீகரிக்கப்பட்டன ({count} கட்டளைகள்). முகவர் மீண்டும் தொடங்குகிறார்..."
+    session_singular:      "✅ கட்டளை அங்கீகரிக்கப்பட்டது (இந்த அமர்வுக்கான முறை அங்கீகரிக்கப்பட்டது). முகவர் மீண்டும் தொடங்குகிறார்..."
+    session_plural:        "✅ கட்டளைகள் அங்கீகரிக்கப்பட்டன (இந்த அமர்வுக்கான முறை அங்கீகரிக்கப்பட்டது) ({count} கட்டளைகள்). முகவர் மீண்டும் தொடங்குகிறார்..."
+    always_singular:       "✅ கட்டளை அங்கீகரிக்கப்பட்டது (முறை நிரந்தரமாக அங்கீகரிக்கப்பட்டது). முகவர் மீண்டும் தொடங்குகிறார்..."
+    always_plural:         "✅ கட்டளைகள் அங்கீகரிக்கப்பட்டன (முறை நிரந்தரமாக அங்கீகரிக்கப்பட்டது) ({count} கட்டளைகள்). முகவர் மீண்டும் தொடங்குகிறார்..."
+
+  background:
+    usage:                 "பயன்பாடு: /background <prompt>\nஉதாரணம்: /background Summarize the top HN stories today\n\nபணிக்குறிப்பை ஒரு தனி அமர்வில் இயக்கும். நீங்கள் தொடர்ந்து உரையாடலாம் — பணி முடிந்ததும் அதற்கான முடிவு இங்கே தோன்றும்."
+    started:               "🔄 பின்னணிப் பணி தொடங்கப்பட்டது: \"{preview}\"\nபணி ID: {task_id}\nநீங்கள் தொடர்ந்து உரையாடலாம் — முடிவுகள் முடிந்ததும் தோன்றும்."
+
+  branch:
+    db_unavailable:        "அமர்வு தரவுத்தளம் கிடைக்கவில்லை."
+    no_conversation:       "கிளைக்க உரையாடல் இல்லை — முதலில் ஒரு செய்தியை அனுப்பவும்."
+    create_failed:         "கிளையை உருவாக்க முடியவில்லை: {error}"
+    switch_failed:         "கிளை உருவாக்கப்பட்டது ஆனால் அதற்கு மாற முடியவில்லை."
+    branched_one:          "⑂ **{title}**-க்குக் கிளையாக்கப்பட்டது ({count} செய்தி நகலெடுக்கப்பட்டது)\nஅசல்: `{parent}`\nகிளை: `{new}`\nஅசலுக்குத் திரும்ப `/resume` கட்டளையைப் பயன்படுத்தவும்."
+    branched_many:         "⑂ **{title}**-க்குக் கிளையாக்கப்பட்டது ({count} செய்திகள் நகலெடுக்கப்பட்டன)\nஅசல்: `{parent}`\nகிளை: `{new}`\nஅசலுக்குத் திரும்ப `/resume` கட்டளையைப் பயன்படுத்தவும்."
+
+  commands:
+    usage:                 "பயன்பாடு: `/commands [பக்கம்]`"
+    skill_header:          "⚡ **திறன் கட்டளைகள்**:"
+    default_desc:          "திறன் கட்டளை"
+    none:                  "கட்டளைகள் எதுவும் கிடைக்கவில்லை."
+    header:                "📚 **கட்டளைகள்** ({total} மொத்தம், பக்கம் {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← முந்தைய"
+    nav_next:              "அடுத்தது → `/commands {page}`"
+    out_of_range:          "_(கோரிய பக்கம் {requested} வரம்பிற்கு வெளியே உள்ளது, பக்கம் {page} காட்டப்படுகிறது.)_"
+
+  compress:
+    not_enough:            "சுருக்க போதுமான உரையாடல் இல்லை (குறைந்தது 4 செய்திகள் தேவை)."
+    no_provider:           "எந்த வழங்குநரும் உள்ளமைக்கப்படவில்லை -- சுருக்க முடியாது."
+    nothing_to_do:         "இன்னும் சுருக்க எதுவும் இல்லை (உரை முழுவதுமாகப் பாதுகாக்கப்பட்ட சூழலில் உள்ளது)."
+    focus_line:            "கவணம்: \"{topic}\""
+    summary_failed:        "⚠️ சுருக்கத்தை உருவாக்குவதில் தோல்வி ஏற்பட்டது ({error}). {count} முந்தைய செய்திகள் நீக்கப்பட்டு, அவற்றுக்குப் பதிலாக இடநிரப்பி சேர்க்கப்பட்டுள்ளது; முந்தைய சூழலை இனி மீட்டெடுக்க முடியாது. உங்கள் auxiliary.compression மாதிரி அமைப்புகளைச் சரிபார்க்கவும்."
+    aborted:               "⚠️ சுருக்கம் நிறுத்தப்பட்டது ({error}). எந்தச் செய்திகளும் நீக்கப்படவில்லை — உரையாடல் மாற்றமின்றி உள்ளது. மீண்டும் முயற்சிக்க /compress கட்டளையையும், புதிய அமர்வைத் தொடங்க /reset கட்டளையையும் இயக்கவும், அல்லது auxiliary.compression மாதிரி அமைப்பைச் சரிபார்க்கவும்."
+    aux_failed:            "ℹ️ அமைக்கப்பட்ட சுருக்க மாதிரி `{model}` தோல்வியடைந்தது ({error}). உங்கள் முதன்மை மாதிரியைப் பயன்படுத்தி மீட்டெடுக்கப்பட்டது — சூழல் அப்படியே உள்ளது — இருப்பினும் config.yaml இல் உள்ள `auxiliary.compression.model`-ஐ நீங்கள் சரிபார்க்க விரும்பலாம்."
+    failed:                "சுருக்கம் தோல்வியடைந்தது: {error}"
+
+  debug:
+    upload_failed:         "✗ பிழைத்திருத்த அறிக்கையைப் பதிவேற்றுவதில் தோல்வி: {error}"
+    header:                "**பிழைத்திருத்த அறிக்கை பதிவேற்றப்பட்டது:**"
+    auto_delete:           "⏱ சேமிப்புகள் (Pastes) 6 மணிநேரத்தில் தானாக நீக்கப்படும்."
+    full_logs_hint:        "முழுப் பதிவுப் பதிவேற்றங்களுக்கு, CLI இலிருந்து `hermes debug share` ஐப் பயன்படுத்தவும்."
+    share_hint:            "ஆதரவுக்காக ஹெர்ம்ஸ் குழுவுடன் இந்த இணைப்புகளைப் பகிரவும்."
+
+  deny:
+    stale:                 "❌ கட்டளை மறுக்கப்பட்டது (அனுமதி காலாவதியாகிவிட்டது)."
+    no_pending:            "மறுக்க எந்த கட்டளையும் நிலுவையில் இல்லை."
+    denied_singular:       "❌ கட்டளை மறுக்கப்பட்டது."
+    denied_plural:         "❌ கட்டளைகள் மறுக்கப்பட்டன ({count} கட்டளைகள்)."
+
+  fast:
+    not_supported:         "⚡ /fast என்பது முன்னுரிமை செயலாக்கத்தை ஆதரிக்கும் OpenAI மாடல்களுக்கு மட்டுமே கிடைக்கும்."
+    status:                "⚡ முன்னுரிமைச் செயலாக்கம்\n\nதற்போதைய நிலை: `{mode}`\n\n_பயன்பாடு:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ அறியப்படாத அளபுரு: `{arg}`\n\n**செல்லுபடியாகும் விருப்பங்கள்:** normal, fast, status"
+    saved:                 "⚡ ✓ முன்னுரிமைச் செயலாக்கம்: **{label}** (அமைப்பில் சேமிக்கப்பட்டது)\n_(அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+    session_only:          "⚡ ✓ முன்னுரிமைச் செயலாக்கம்: **{label}** (இந்த அமர்வுக்கு மட்டும்)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 இயக்கநேர அடிக்குறிப்பு: **{state}**\nபுலங்கள்: `{fields}`\nதளமேடை: `{platform}`"
+    usage:                 "பயன்பாடு: `/footer [on|off|status]`"
+    saved:                 "📎 இயக்கநேர அடிக்குறிப்பு: **{state}**{example}\n_(உலகளவில் சேமிக்கப்பட்டது — அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+    example_line:          "\nஉதாரணம்: `{preview}`"
+    state_on:              "ஆன்"
+    state_off:             "ஆஃப்"
+
+  goal:
+    unavailable:           "இந்த அமர்வில் இலக்குகள் கிடைக்கவில்லை."
+    no_goal_set:           "இலக்கு எதுவும் நிர்ணயிக்கப்படவில்லை."
+    paused:                "⏸ இலக்கு இடைநிறுத்தப்பட்டது: {goal}"
+    no_resume:             "மீண்டும் தொடங்க இலக்கு இல்லை."
+    resumed:               "▶ இலக்கு மீண்டும் தொடங்கப்பட்டது: {goal}\nதொடர ஏதேனும் செய்தியை அனுப்பவும் அல்லது காத்திருக்கவும் — அடுத்த சுற்றில் நான் அடுத்த படியை எடுப்பேன்."
+    invalid:               "தவறான இலக்கு: {error}"
+    set:                   "⊙ இலக்கு நிர்ணயிக்கப்பட்டது ({budget}-சுற்று பட்ஜெட்): {goal}\nஇலக்கு முடியும் வரை, அல்லது நீங்கள் இடைநிறுத்தும்/நீக்கும் வரை, அல்லது பட்ஜெட் தீரும் வரை நான் தொடர்ந்து பணியாற்றுவேன்.\nகட்டுப்பாடுகள்: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **ஹெர்ம்ஸ் கட்டளைகள் (Hermes Commands)**\n"
+    skill_header:          "\n⚡ **திறன் கட்டளைகள்** ({count} செயலில் உள்ளன):"
+    more_use_commands:     "\n... மேலும் {count}. முழுமையான பக்கவரிசைப் பட்டியலுக்கு `/commands` ஐப் பயன்படுத்தவும்."
+
+  insights:
+    invalid_days:          "தவறான --days மதிப்பு: {value}"
+    error:                 "நுண்ணறிவுகளை உருவாக்குவதில் பிழை: {error}"
+
+  kanban:
+    error_prefix:          "⚠ கான்பன் பிழை: {error}"
+    subscribed_suffix:     "(சந்தா செலுத்தப்பட்டது — {task_id} முடியும் போது அல்லது தடைபடும் போது உங்களுக்கு அறிவிக்கப்படும்)"
+    truncated_suffix:      "… (துண்டிக்கப்பட்டது; முழு வெளியீட்டிற்கு உங்கள் முனையத்தில் `hermes kanban …` ஐப் பயன்படுத்தவும்)"
+    no_output:             "(வெளியீடு இல்லை)"
+
+  personality:
+    none_configured:       "`{path}/config.yaml` இல் எந்த ஆளுமைகளும் உள்ளமைக்கப்படவில்லை"
+    header:                "🎭 **கிடைக்கக்கூடிய ஆளுமைகள்**\n"
+    none_option:           "• `none` — (ஆளுமை மேலடுக்கு இல்லை)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nபயன்பாடு: `/personality <name>`"
+    save_failed:           "⚠️ ஆளுமை மாற்றத்தைச் சேமிக்க முடியவில்லை: {error}"
+    cleared:               "🎭 ஆளுமை நீக்கப்பட்டது — அடிப்படை முகவர் நடத்தை பயன்படுத்தப்படுகிறது.\n_(அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+    set_to:                "🎭 ஆளுமை **{name}** என அமைக்கப்பட்டது\n_(அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+    unknown:               "அறியப்படாத ஆளுமை: `{name}`\n\nகிடைக்கக்கூடியவை: {available}"
+
+  profile:
+    header:                "👤 **சுயவிவரம்:** `{profile}`"
+    home:                  "📂 **முகப்பு:** `{home}`"
+
+  reasoning:
+    level_default:             "நடுத்தரம் (இயல்புநிலை)"
+    level_disabled:            "எதுவும் இல்லை (முடக்கப்பட்டது)"
+    scope_session:             "அமர்வு மேலெழுதுதல்"
+    scope_global:              "உலகளாவிய கட்டமைப்பு"
+    status:                    "🧠 **தர்க்க அமைப்புகள் (Reasoning Settings)**\n\n**முயற்சி:** `{level}`\n**வரம்பு:** {scope}\n**காட்சி:** {display}\n\n_பயன்பாடு:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "ஆன் ✓"
+    display_off:               "ஆஃப்"
+    display_set_on:            "🧠 ✓ தர்க்கக் காட்சி: **ஆன் (ON)**\n**{platform}** இல் ஒவ்வொரு பதிலுக்கும் முன்பு மாதிரியின் சிந்தனை காட்டப்படும்."
+    display_set_off:           "🧠 ✓ தர்க்கக் காட்சி: **{platform}** க்கு **ஆஃப் (OFF)**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` ஆதரிக்கப்படவில்லை. உலகளாவிய இயல்புநிலையை மாற்ற `/reasoning <level> --global` ஐப் பயன்படுத்தவும்."
+    reset_done:                "🧠 ✓ அமர்வு தர்க்க மேலெழுதுதல் நீக்கப்பட்டது; உலகளாவிய கட்டமைப்பிற்குத் திரும்புகிறது."
+    unknown_arg:               "⚠️ அறியப்படாத அளபுரு: `{arg}`\n\n**செல்லுபடியாகும் நிலைகள்:** none, minimal, low, medium, high, xhigh\n**காட்சி:** show, hide\n**நிலைத்திருக்க:** இந்த அமர்வுக்கு அப்பால் சேமிக்க `--global` ஐச் சேர்க்கவும்"
+    set_global:                "🧠 ✓ தர்க்க முயற்சி `{effort}` என அமைக்கப்பட்டது (அமைப்பில் சேமிக்கப்பட்டது)\n_(அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+    set_global_save_failed:    "🧠 ✓ தர்க்க முயற்சி `{effort}` என அமைக்கப்பட்டது (அமர்வு மட்டும் — அமைப்பைச் சேமிக்க முடியவில்லை)\n_(அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+    set_session:               "🧠 ✓ தர்க்க முயற்சி `{effort}` என அமைக்கப்பட்டது (அமர்வு மட்டும் — நிலைத்திருக்க `--global` ஐச் சேர்க்கவும்)\n_(அடுத்த செய்தியில் நடைமுறைக்கு வரும்)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp ரத்துசெய்யப்பட்டது. MCP கருவிகள் மாறவில்லை."
+    always_followup:       "ℹ️ எதிர்கால `/reload-mcp` அழைப்புகள் உறுதிப்படுத்தல் இல்லாமல் இயங்கும். config.yaml இல் `approvals.mcp_reload_confirm: true` மூலம் மீண்டும் இயக்கவும்."
+    confirm_prompt:        "⚠️ **/reload-mcp ஐ உறுதிப்படுத்தவும்**\n\nMCP சேவையகங்களை மீண்டும் ஏற்றுவது இந்த அமர்வுக்கான கருவித் தொகுப்பை மீண்டும் உருவாக்குகிறது மற்றும் **வழங்குநரின் ப்ராம்ப்ட் கேச்சை (prompt cache) செல்லாததாக்குகிறது** — அடுத்த செய்தி முழு உள்ளீட்டு டோக்கன்களையும் மீண்டும் அனுப்பும். நீண்ட சூழல் அல்லது அதிக தர்க்க மாதிரிகளில் இது விலை உயர்ந்ததாக இருக்கும்.\n\nதேர்வு செய்யவும்:\n• **ஒருமுறை அனுமதி** — இப்போது மீண்டும் ஏற்றவும்\n• **என்றும் அனுமதி** — இப்போது மீண்டும் ஏற்றவும் மற்றும் இந்த வரியை நிரந்தரமாக மறைக்கவும்\n• **ரத்துசெய்** — MCP கருவிகளை மாற்றாமல் விடவும்\n\n_உரை மாற்று: `/approve`, `/always`, அல்லது `/cancel` என பதிலளிக்கவும்._"
+    header:                "🔄 **MCP சேவையகங்கள் மீண்டும் ஏற்றப்பட்டன**\n"
+    reconnected:           "♻️ மீண்டும் இணைக்கப்பட்டது: {names}"
+    added:                 "➕ சேர்க்கப்பட்டது: {names}"
+    removed:               "➖ அகற்றப்பட்டது: {names}"
+    none_connected:        "MCP சேவையகங்கள் எதுவும் இணைக்கப்படவில்லை."
+    tools_available:       "\n🔧 {servers} சேவையகத்திலிருந்து {tools} கருவி(கள்) கிடைக்கின்றன"
+    failed:                "❌ MCP மீண்டும் ஏற்றுதல் தோல்வியடைந்தது: {error}"
+
+  reload_skills:
+    header:                "🔄 **திறன்கள் மீண்டும் ஏற்றப்பட்டன**\n"
+    no_new:                "புதிய திறன்கள் எதுவும் கண்டறியப்படவில்லை."
+    total:                 "\n📚 {count} திறன்(கள்) கிடைக்கின்றன"
+    added_header:          "➕ **சேர்க்கப்பட்ட திறன்கள்:**"
+    removed_header:        "➖ **அகற்றப்பட்ட திறன்கள்:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ திறன்களை மீண்டும் ஏற்ற முடியவில்லை: {error}"
+
+  reset:
+    header_default:        "✨ அமர்வு மீட்டமைக்கப்பட்டது! புதிய தொடக்கம்."
+    header_new:            "✨ புதிய அமர்வு தொடங்கியது!"
+    header_titled:         "✨ புதிய அமர்வு தொடங்கியது: {title}"
+    title_rejected:        "\n⚠️ தலைப்பு நிராகரிக்கப்பட்டது: {error}"
+    title_error_untitled:  "\n⚠️ {error} — அமர்வு தலைப்பில்லாமல் தொடங்கியது."
+    title_empty_untitled:  "\n⚠️ சுத்தம் செய்த பிறகு தலைப்பு காலியாக உள்ளது — அமர்வு தலைப்பில்லாமல் தொடங்கியது."
+    tip:                   "\n✦ உதவிக்குறிப்பு: {tip}"
+
+  restart:
+    in_progress:           "⏳ கேட்வே மறுதொடக்கம் ஏற்கனவே செயல்பாட்டில் உள்ளது..."
+    restarting:            "♻ கேட்வே மறுதொடக்கம் செய்யப்படுகிறது. 60 வினாடிகளுக்குள் உங்களுக்கு அறிவிக்கப்படாவிட்டால், முனையத்திலிருந்து `hermes gateway restart` மூலம் மறுதொடக்கம் செய்யவும்."
+
+  resume:
+    db_unavailable:        "அமர்வு தரவுத்தளம் கிடைக்கவில்லை."
+    parse_error:           "⚠️ `/resume` அளபுருக்களைப் பாகுபடுத்த முடியவில்லை: {error}.\nஇடைவெளிகளைக் கொண்ட தலைப்புகளைச் சுற்றி மேற்கோள்களைப் பயன்படுத்தவும், உதாரணத்திற்கு: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "இந்த மேட்ரிக்ஸ் (Matrix) அறைக்கு பெயரிடப்பட்ட அமர்வுகள் எதுவும் இல்லை.\nதற்போதைய அறை அமர்வுக்கு பெயரிட `/title My Session` ஐப் பயன்படுத்தவும், அனைத்து மேட்ரிக்ஸ் அமர்வுகளையும் பட்டியலிட `/resume --all` ஐப் பயன்படுத்தவும், அல்லது அறை எல்லைகளைத் தாண்டிச் செல்ல `/resume --cross-room <session name>` ஐப் பயன்படுத்தவும்."
+    matrix_blocked_no_origin: "⚠️ மேட்ரிக்ஸ் `/resume` தடுக்கப்பட்டது: இந்த பெயரிடப்பட்ட அமர்வுக்கு பதிவு செய்யப்பட்ட அறை ஆதாரம் இல்லை, எனவே ஹெர்ம்ஸ் இயல்பாக தற்போதைய அறைக்குள் அதை மீண்டும் தொடங்காது. நீங்கள் வேண்டுமென்றே அறை எல்லைகளைத் தாண்ட விரும்பினால் `/resume --cross-room {name}` ஐப் பயன்படுத்தவும்."
+    matrix_blocked_other_room: "⚠️ மேட்ரிக்ஸ் `/resume` தடுக்கப்பட்டது: அந்த அமர்வு வேறு மேட்ரிக்ஸ் அறைக்குச் ({room}) சொந்தமானது. நீங்கள் வேண்டுமென்றே அதை இங்கே மீண்டும் தொடங்க விரும்பினால் `/resume --cross-room {name}` ஐப் பயன்படுத்தவும்."
+    matrix_cross_room_success: "⚠️ அறை கடந்த மறுதொடக்கம்: மேட்ரிக்ஸ் அறை **{room}** க்குள் **{title}** மீண்டும் தொடங்கப்பட்டது.\nஇந்த அறையில் எதிர்கால செய்திகள் `/reset` அல்லது மற்றொரு `/resume` வரை அந்த உரையாடலைப் பயன்படுத்தும்.{msg_part}"
+    no_named_sessions:     "பெயரிடப்பட்ட அமர்வுகள் எதுவும் காணப்படவில்லை.\nஉங்கள் தற்போதைய அமர்வுக்கு பெயரிட `/title My Session` ஐப் பயன்படுத்தவும், பின்னர் அதற்குத் திரும்ப `/resume My Session` ஐப் பயன்படுத்தவும்."
+    list_header:           "📋 **பெயரிடப்பட்ட அமர்வுகள்**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nபயன்பாடு: `/resume <session name>`"
+    list_footer_numbered:  "\nபயன்பாடு: `/resume <session name>` அல்லது `/resume <number>` (எ.கா. மிகவும் சமீபத்தியதற்கு `/resume 1`)"
+    list_failed:           "அமர்வுகளைப் பட்டியலிட முடியவில்லை: {error}"
+    out_of_range:          "மறுதொடக்கம் குறியீடு {index} வரம்பிற்கு வெளியே உள்ளது.\nகிடைக்கக்கூடிய அமர்வுகளைக் காண வாதங்கள் இல்லாமல் `/resume` ஐப் பயன்படுத்தவும்."
+    not_found:             "'{name}' உடன் பொருந்தும் அமர்வு எதுவும் கிடைக்கவில்லை.\nகிடைக்கக்கூடிய அமர்வுகளைக் காண வாதங்கள் இல்லாமல் `/resume` ஐப் பயன்படுத்தவும்."
+    already_on:            "📌 ஏற்கனவே **{name}** அமர்வில் உள்ளது."
+    switch_failed:         "அமர்வு மாற்ற முடியவில்லை."
+    resumed_one:           "↻ **{title}** அமர்வு மீண்டும் தொடங்கப்பட்டது ({count} செய்தி). உரையாடல் மீட்டெடுக்கப்பட்டது."
+    resumed_many:          "↻ **{title}** அமர்வு மீண்டும் தொடங்கப்பட்டது ({count} செய்திகள்). உரையாடல் மீட்டெடுக்கப்பட்டது."
+    resumed_no_count:      "↻ **{title}** அமர்வு மீண்டும் தொடங்கப்பட்டது. உரையாடல் மீட்டெடுக்கப்பட்டது."
+
+  retry:
+    no_previous:           "மீண்டும் முயற்சிக்க முந்தைய செய்தி எதுவும் இல்லை."
+
+  rollback:
+    not_enabled:           "செக் பாயிண்ட்கள் இயக்கப்படவில்லை.\nconfig.yaml இல் இதை இயக்கவும்:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "{cwd} க்கான செக் பாயிண்ட்கள் எதுவும் இல்லை."
+    invalid_number:        "தவறான செக் பாயிண்ட் எண். 1-{max} வரை பயன்படுத்தவும்."
+    restored:              "✅ செக் பாயிண்ட் {hash} க்கு மீட்டெடுக்கப்பட்டது: {reason}\nரோல்பேக்கிற்கு முன் ஒரு ஸ்னாப்ஷாட் தானாகவே சேமிக்கப்பட்டது."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "முகப்பு சேனலைச் சேமிக்க முடியவில்லை: {error}"
+    success:               "✅ முகப்பு சேனல் **{name}** (ID: {chat_id}) ஆக அமைக்கப்பட்டது.\nCron பணிகளும், பல்வேறு தளங்களிலிருந்து வரும் செய்திகளும் இங்கு அனுப்பப்படும்."
+
+  status:
+    header:                "📊 **Hermes கேட்வே நிலை**"
+    matrix_scope_header:   "**Matrix வரம்பு:**"
+    matrix_scope_room:     "  அறை: {room}"
+    matrix_scope_room_id:  "  அறை ID: {room_id}"
+    matrix_scope_thread:   "  திரெட் ID: {thread_id}"
+    matrix_scope_mode:     "  அமர்வு வரம்பு: {scope}"
+    matrix_scope_key:      "  அமர்வு விசை: {session_key}"
+    session_id:            "**அமர்வு ID:** `{session_id}`"
+    title:                 "**தலைப்பு:** {title}"
+    created:               "**உருவாக்கப்பட்ட நேரம்:** {timestamp}"
+    last_activity:         "**கடைசி செயல்பாடு:** {timestamp}"
+    model:                 "**மாதிரி:** `{model}`"
+    model_provider:        "**மாதிரி:** `{model}` ({provider})"
+    context:               "**சூழல்:** {used} / {total} ({pct}%)"
+    context_used:          "**சூழல்:** ~{used} டோக்கன்கள்"
+    tokens:                "**மொத்த API டோக்கன்கள் (ஒவ்வொரு அழைப்பிலும் மீண்டும் அனுப்பப்படும்):** {tokens}"
+    agent_running:         "**முகவர் இயங்குகிறாரா:** {state}"
+    state_yes:             "ஆம் ⚡"
+    state_no:              "இல்லை"
+    queued:                "**வரிசையில் உள்ள தொடர்ச்சி பணிகள்:** {count}"
+    platforms:             "**இணைக்கப்பட்ட தளங்கள்:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ நிறுத்தப்பட்டது. முகவர் இன்னும் தொடங்கவில்லை — இந்த அமர்வைத் தொடரலாம்."
+    stopped:               "⚡ நிறுத்தப்பட்டது. இந்த அமர்வைத் தொடரலாம்."
+    no_active:             "நிறுத்துவதற்கு செயலில் உள்ள பணி எதுவும் இல்லை."
+
+  title:
+    db_unavailable:        "அமர்வு தரவுத்தளம் கிடைக்கவில்லை."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ சுத்தப்படுத்திய பிறகு தலைப்பு காலியாக உள்ளது. அச்சிடக்கூடிய எழுத்துகளை பயன்படுத்தவும்."
+    set_to:                "✏️ அமர்வு தலைப்பு அமைக்கப்பட்டது: **{title}**"
+    not_found:             "அமர்வு தரவுத்தளத்தில் காணப்படவில்லை."
+    current_with_title:    "📌 அமர்வு: `{session_id}`\nதலைப்பு: **{title}**"
+    current_no_title:      "📌 அமர்வு: `{session_id}`\nதலைப்பு அமைக்கப்படவில்லை. பயன்பாடு: `/title My Session Name`"
+
+  topic:
+    not_telegram_dm:         "/topic கட்டளை Telegram தனிப்பட்ட உரையாடல்களில் மட்டுமே கிடைக்கும்."
+    no_session_db:           "அமர்வு தரவுத்தளம் கிடைக்கவில்லை."
+    unauthorized:            "இந்த bot இல் /topic பயன்படுத்த உங்களுக்கு அனுமதி இல்லை."
+    restore_needs_topic:     "ஒரு அமர்வை மீட்டெடுக்க, முதலில் ஒரு Telegram topic ஐ உருவாக்கவோ அல்லது திறக்கவோ செய்யுங்கள். பின்னர் அந்த topic இல் `/topic <session-id>` என்பதை அனுப்புங்கள். புதிய topic உருவாக்க, All Messages ஐத் திறந்து ஏதேனும் ஒரு செய்தியை அனுப்புங்கள்."
+    topics_disabled:         "இந்த bot க்காக Telegram topics இன்னும் இயக்கப்படவில்லை.\n\nஇயக்குவது எப்படி:\n1. @BotFather ஐத் திறக்கவும்.\n2. உங்கள் bot ஐத் தேர்ந்தெடுக்கவும்.\n3. Bot Settings → Threads Settings ஐத் திறக்கவும்.\n4. Threaded Mode ஐ இயக்கி, பயனர்கள் புதிய threads உருவாக்க அனுமதிக்கப்பட்டுள்ளார்களா என்பதை உறுதிப்படுத்தவும்.\n\nபின்னர் /topic ஐ மீண்டும் அனுப்புங்கள்."
+    topics_user_disallowed:  "Telegram topics இயக்கப்பட்டுள்ளன, ஆனால் பயனர்கள் topics உருவாக்க அனுமதிக்கப்படவில்லை.\n\n@BotFather → உங்கள் bot → Bot Settings → Threads Settings சென்று 'Disallow users to create new threads' ஐ அணைக்கவும்.\n\nபின்னர் /topic ஐ மீண்டும் அனுப்புங்கள்."
+    enable_failed:           "Telegram topic முறையை இயக்க முடியவில்லை: {error}"
+    bound_status:            "இந்த topic இதனுடன் இணைக்கப்பட்டுள்ளது:\nஅமர்வு: {label}\nID: {session_id}\n\nஇந்த topic ஐ புதிய அமர்வால் மாற்ற /new ஐப் பயன்படுத்தவும்.\nஇணைநிலை பணிகளுக்கு, All Messages ஐத் திறந்து புதிய topic உருவாக்க ஒரு செய்தியை அனுப்புங்கள்."
+    thread_ready:            "Telegram பல-அமர்வு topics இயக்கப்பட்டுள்ளன.\n\nஇந்த topic தனித்த Hermes அமர்வாக பயன்படுத்தப்படும். இந்த topic இன் தற்போதைய அமர்வை மாற்ற /new ஐப் பயன்படுத்தவும். இணைநிலை பணிகளுக்கு, All Messages ஐத் திறந்து புதிய topic உருவாக்க ஒரு செய்தியை அனுப்புங்கள்."
+    untitled_session:        "தலைப்பில்லா அமர்வு"
+
+  undo:
+    nothing:               "செயல்தவிர்க்க எதுவும் இல்லை."
+    removed:               "↩️ {turns} முறை(கள்) ({count} செய்தி(கள்)) செயல்தவிர்க்கப்பட்டது.\nகாப்புப்பிரதி சேமிக்கப்பட்ட இடம்: \"{preview}\"\nஇங்கிருந்து மீண்டும் தொடங்க, மேலுள்ள உரையை நகலெடுத்து/திருத்தி அனுப்புங்கள்."
+    invalid_count:         "தவறான எண்ணிக்கை \"{arg}\" — `/undo` அல்லது `/undo N` ஐப் பயன்படுத்தவும்."
+
+  update:
+    platform_not_messaging:  "✗ /update என்பது செய்தி பரிமாற்ற தளங்களில் மட்டுமே கிடைக்கும். டெர்மினலில் `hermes update` ஐ இயக்கவும்."
+    not_git_repo:            "✗ இது Git repository அல்ல — புதுப்பிக்க முடியாது."
+    hermes_cmd_not_found:    "✗ `hermes` கட்டளையைக் கண்டுபிடிக்க முடியவில்லை. Hermes இயங்கிக்கொண்டிருக்கிறது, ஆனால் update கட்டளையால் PATH அல்லது தற்போதைய Python interpreter மூலம் executable ஐக் கண்டுபிடிக்க முடியவில்லை. டெர்மினலில் `hermes update` ஐ கைமுறையாக இயக்கிப் பார்க்கவும்."
+    start_failed:            "✗ புதுப்பிப்பைத் தொடங்க முடியவில்லை: {error}"
+    starting:                "⚕ Hermes புதுப்பிப்பு தொடங்குகிறது… முன்னேற்றம் இங்கே காட்டப்படும்."
+
+  usage:
+    rate_limits:              "⏱️ **விகித வரம்புகள்:** {state}"
+    header_session:           "📊 **அமர்வு டோக்கன் பயன்பாடு**"
+    label_model:              "மாதிரி: `{model}`"
+    label_input_tokens:       "உள்ளீட்டு டோக்கன்கள்: {count}"
+    label_cache_read:         "கேச் வாசிப்பு டோக்கன்கள்: {count}"
+    label_cache_write:        "கேச் எழுத்து டோக்கன்கள்: {count}"
+    label_output_tokens:      "வெளியீட்டு டோக்கன்கள்: {count}"
+    label_total:              "மொத்தம்: {count}"
+    label_api_calls:          "API அழைப்புகள்: {count}"
+    label_cost:               "செலவு: {prefix}${amount}"
+    label_cost_included:      "செலவு: உட்படுத்தப்பட்டுள்ளது"
+    label_context:            "சூழல்: {used} / {total} ({pct}%)"
+    label_compressions:       "சுருக்கங்களின் எண்ணிக்கை: {count}"
+    header_session_info:      "📊 **அமர்வு தகவல்**"
+    label_messages:           "செய்திகள்: {count}"
+    label_estimated_context:  "மதிப்பிடப்பட்ட சூழல்: ~{count} டோக்கன்கள்"
+    detailed_after_first:     "_(முகவரின் முதல் பதிலுக்குப் பிறகு விரிவான பயன்பாட்டு தகவல் கிடைக்கும்)_"
+    no_data:                  "இந்த அமர்விற்கான பயன்பாட்டு தகவல் இல்லை."
+
+  credits:
+    not_logged_in:            "Nous Portal இல் உள்நுழையவில்லை. உங்கள் கிரெடிட் இருப்பைப் பார்க்கவும், கிரெடிட் சேர்க்கவும் முதலில் உள்நுழையவும்."
+
+  verbose:
+    not_enabled:           "`/verbose` கட்டளை செய்தி தளங்களில் இயக்கப்படவில்லை.\n\n`config.yaml` இல் இதை இயக்கவும்:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ கருவி முன்னேற்றம்: **OFF** — கருவி செயல்பாடுகள் காட்டப்படமாட்டாது."
+    mode_new:              "⚙️ கருவி முன்னேற்றம்: **NEW** — கருவி மாறும்போது மட்டும் காட்டப்படும் (முன்னோட்ட நீளம்: `display.tool_preview_length`, இயல்புநிலை 40)."
+    mode_all:              "⚙️ கருவி முன்னேற்றம்: **ALL** — ஒவ்வொரு கருவி அழைப்பும் காட்டப்படும் (முன்னோட்ட நீளம்: `display.tool_preview_length`, இயல்புநிலை 40)."
+    mode_verbose:          "⚙️ கருவி முன்னேற்றம்: **VERBOSE** — ஒவ்வொரு கருவி அழைப்பும் முழு அளவுருக்களுடன் காட்டப்படும்."
+    saved_suffix:          "_(**{platform}** க்காக சேமிக்கப்பட்டது — அடுத்த செய்தியிலிருந்து அமலாகும்)_"
+    save_failed:           "_(config இல் சேமிக்க முடியவில்லை: {error})_"
+  
+  voice:
+    enabled_voice_only:    "குரல் பயன்முறை (Voice mode) இயக்கப்பட்டது.\nநீங்கள் குரல் செய்திகளை அனுப்பும்போது நான் குரல் மூலம் பதிலளிப்பேன்.\nஅனைத்து செய்திகளுக்கும் குரல் பதில்களைப் பெற `/voice tts` ஐப் பயன்படுத்தவும்."
+    disabled_text:         "குரல் பயன்முறை முடக்கப்பட்டது. உரை வடிவிலான பதில்கள் மட்டும்."
+    tts_enabled:           "Auto-TTS இயக்கப்பட்டது.\nஅனைத்துப் பதில்களிலும் குரல் செய்தி சேர்க்கப்படும்."
+    status_mode:           "குரல் பயன்முறை: {label}"
+    status_channel:        "குரல் சேனல்: #{channel}"
+    status_participants:   "பங்கேற்பாளர்கள்: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (பேசுகிறார்)"
+    enabled_short:         "குரல் பயன்முறை இயக்கப்பட்டது."
+    disabled_short:        "குரல் பயன்முறை முடக்கப்பட்டது."
+    label_off:             "ஆஃப் (உரை மட்டும்)"
+    label_voice_only:      "ஆன் (குரல் செய்திகளுக்குக் குரல் பதில்)"
+    label_all:             "TTS (அனைத்து செய்திகளுக்கும் குரல் பதில்)"
+    help:                  "{toggle}\n\n**/voice எவ்வாறு செயல்படுகிறது**\n• `/voice on` — நீங்கள் குரல் செய்தி அனுப்பும்போது குரல் பதில்\n• `/voice tts` — *ஒவ்வொரு* செய்திக்கும் குரல் பதில்\n• `/voice off` — மீண்டும் உரை வடிவிலான பதில்கள்\n• `/voice status` — தற்போதைய பயன்முறையைக் காட்டு\n• `/voice` (அளபுருக்கள் இல்லை) — ஆன் மற்றும் ஆஃப் இடையே விரைவான மாறுதல்{channels}"
+    help_channels:         "\n\n**நேரடி குரல் சேனல்கள் (Discord)**\n• முதலில் ஒரு குரல் சேனலில் இணையவும், பின்னர் `/voice channel` — நான் இணைந்து, கேட்டு, எனது பதில்களைப் பேசுவேன்\n• `/voice leave` — குரல் சேனலிலிருந்து துண்டிக்கவும்"
+
+  yolo:
+    disabled:                   "⚠️ இந்த அமர்வுக்கு YOLO பயன்முறை **ஆஃப் (OFF)** செய்யப்பட்டுள்ளது — ஆபத்தான கட்டளைகளுக்கு ஒப்புதல் தேவைப்படும்."
+    enabled:                    "⚡ இந்த அமர்வுக்கு YOLO பயன்முறை **ஆன் (ON)** செய்யப்பட்டுள்ளது — அனைத்து கட்டளைகளும் தானாகவே அங்கீகரிக்கப்படும். எச்சரிக்கையுடன் பயன்படுத்தவும்."
+
+  shared:
+    session_db_unavailable:      "அமர்வு தரவுத்தளம் கிடைக்கவில்லை."
+    session_db_unavailable_prefix: "அமர்வு தரவுத்தளம் கிடைக்கவில்லை"
+    session_not_found:           "தரவுத்தளத்தில் அமர்வு காணப்படவில்லை."
+    warn_passthrough:            "⚠️ {error}"

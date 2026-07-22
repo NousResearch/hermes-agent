@@ -298,13 +298,19 @@ export function fmtTokens(n: number): string {
  * overlay so the timeline + list + summary all speak the same dialect.
  */
 export function fmtDuration(seconds: number): string {
+  seconds = Math.max(0, seconds)
+
   if (seconds < 60) {
-    return `${Math.max(0, Math.round(seconds))}s`
+    return `${Math.round(seconds)}s`
   }
 
-  const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds - m * 60)
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.round(seconds % 60)
 
+  if (h > 0) {
+    return s === 0 ? `${h}h ${m}m` : `${h}h ${m}m ${s}s`
+  }
   return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 

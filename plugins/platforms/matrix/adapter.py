@@ -65,6 +65,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from agent.secret_scope import UnscopedSecretError, get_secret
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -642,6 +644,24 @@ def _handle_generated_matrix_recovery_key(mxid: str, recovery_key: str) -> None:
             "from your Matrix client before future restarts.",
             mxid,
         )
+
+
+def _scoped_recovery_key() -> str:
+    """Resolve MATRIX_RECOVERY_KEY honoring the active profile's secret scope.
+
+    Under ``gateway.multiplex_profiles`` the secret scope holds the secondary
+    profile's credentials, while ``os.environ`` may carry the default profile's
+    key — so a bare ``os.getenv`` resolves the wrong key and E2EE verification
+    fails with "Key MAC does not match" (#69090). We read through
+    :func:`get_secret`, which is scope-aware. An *unscoped* read under multiplex
+    (e.g. the default-profile startup loop) raises ``UnscopedSecretError``; in
+    that context ``os.environ`` is that profile's own value, so we fall back to
+    it — mirroring the established Slack app-token pattern (#59739).
+    """
+    try:
+        return (get_secret("MATRIX_RECOVERY_KEY") or "").strip()
+    except UnscopedSecretError:
+        return os.getenv("MATRIX_RECOVERY_KEY", "").strip()
 
 
 def _sanitize_matrix_html(html: str) -> str:
@@ -1400,7 +1420,11 @@ class MatrixAdapter(BasePlatformAdapter):
                             return False
                         logger.warning("Matrix: share_keys() warning during startup: %s", exc)
 
-                    recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+                    # Honor the active profile's secret scope so a secondary
+                    # profile under gateway.multiplex_profiles resolves its own
+                    # recovery key instead of the default profile's (which fails
+                    # E2EE verification with "Key MAC does not match", #69090).
+                    recovery_key = _scoped_recovery_key()
                     if recovery_key:
                         try:
                             await olm.verify_with_recovery_key(recovery_key)
@@ -1698,7 +1722,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 "enabled": bool(self._encryption),
                 "deps_available": _check_e2ee_deps(),
                 "crypto_store_path": str(_CRYPTO_DB_PATH),
-                "recovery_key_configured": bool(os.getenv("MATRIX_RECOVERY_KEY", "").strip()),
+                "recovery_key_configured": bool(
+                    _scoped_recovery_key().strip()
+                ),
             },
             "policy": {
                 "allowed_user_count": len(self._allowed_user_ids),

@@ -6939,6 +6939,22 @@ def _prompt_model_selection(
             desc_lines.append(f"  ── {unavailable_footer} ──")
         description = "\n".join(desc_lines) if desc_lines else None
 
+        # Search haystacks keep pricing labels visible while adding aliases
+        # for brand-less wire ids (e.g. Kimi Coding `k3` ↔ query "kimi").
+        from hermes_cli.model_search import model_search_text
+
+        model_search_labels = []
+        for mid in ordered:
+            label = _label(mid)
+            haystack = model_search_text(mid)
+            # model_search_text always starts with the wire id; only append when
+            # aliases add tokens beyond the bare id already in the label.
+            model_search_labels.append(
+                label if haystack == mid else f"{label} {haystack}"
+            )
+        model_search_labels.append("Enter custom model name")
+        model_search_labels.append("Skip (keep current)")
+
         idx = curses_radiolist(
             "Select default model:",
             choices,
@@ -6946,6 +6962,7 @@ def _prompt_model_selection(
             cancel_returns=-1,
             description=description,
             searchable=True,
+            search_labels=model_search_labels,
         )
         if idx < 0:
             return None

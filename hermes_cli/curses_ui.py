@@ -627,6 +627,7 @@ def curses_radiolist(
     cancel_returns: int | None = None,
     description: str | None = None,
     searchable: bool = False,
+    search_labels: List[str] | None = None,
 ) -> int:
     """Curses single-select radio list. Returns the selected index.
 
@@ -641,6 +642,8 @@ def curses_radiolist(
         searchable: When true, ``/`` opens a type-to-filter prompt. The
             returned value is always the original item index, not a filtered
             row position.
+        search_labels: Optional haystacks for type-to-filter (length must
+            match ``items``). Defaults to the display labels when omitted.
     """
     if cancel_returns is None:
         cancel_returns = selected
@@ -709,7 +712,11 @@ def curses_radiolist(
         fallback=lambda: _radio_numbered_fallback(title, items, selected, cancel_returns),
         cancel_value=cancel_returns,
         searchable=searchable,
-        search_labels=list(items) if searchable else None,
+        search_labels=(
+            list(search_labels)
+            if searchable and search_labels is not None
+            else (list(items) if searchable else None)
+        ),
     )
 
 

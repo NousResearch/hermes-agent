@@ -171,10 +171,14 @@ class TestProviderModelIdsPreferred:
             ):
                 custom_models = provider_model_ids("kimi-coding")
 
-        assert "k3" in coding_models
+        # The live bare wire id ``k3`` folds into the curated public slug
+        # ``kimi-k3`` (picker alias dedup) — one row, curated slug leads.
         assert coding_models[0] == "kimi-k3"
+        assert all(model.lower() != "k3" for model in coding_models)
         assert all(model.lower() != "k3" for model in legacy_models)
         assert all(model.lower() != "k3" for model in custom_models)
+        # Legacy / custom endpoints never advertise the k3 family at all
+        # via live discovery (their curated floor may still carry kimi-k3).
 
     def test_kimi_setup_flow_uses_same_coding_plan_catalog(self):
         """The setup wizard must not carry a stale duplicate Kimi model list."""

@@ -572,14 +572,48 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     return expanded
 
 
+def _normalize_mcp_toolset_name(name: str) -> str:
+    """Strip 'mcp-' prefix if present, return the bare server name."""
+    if name.startswith("mcp-"):
+        return name[4:]
+    return name
+
+
 def _preserve_parent_mcp_toolsets(
-    child_toolsets: List[str], parent_toolsets: set[str]
+    child_toolsets: List[str],
+    parent_toolsets: set[str],
+    requested_mcp: Optional[List[str]] = None,
 ) -> List[str]:
-    """Append any parent MCP toolsets that are missing from a narrowed child."""
+    """Append parent MCP toolsets that are missing from a narrowed child.
+
+    When *requested_mcp* is provided (non-empty list of explicit MCP toolset
+    names), only those toolsets are preserved.  When it is ``None``, all
+    parent MCP toolsets are preserved (backward-compatible default).
+
+    This gives callers granular control: requesting ``toolsets=["web"]``
+    alone strips MCP tools, while ``toolsets=["web", "mcp-obsidian"]``
+    preserves only the explicitly named MCP server.
+
+    Name matching is normalized: ``mcp-obsidian`` matches parent toolset
+    ``obsidian`` and vice-versa, because platform tools may register
+    MCP servers without the ``mcp-`` prefix.
+    """
+    # Build a normalized set of requested MCP server names (without mcp- prefix)
+    requested_normalized: Optional[set[str]] = None
+    if requested_mcp is not None:
+        requested_normalized = {_normalize_mcp_toolset_name(t) for t in requested_mcp}
+
     preserved = list(child_toolsets)
     for toolset_name in sorted(parent_toolsets):
-        if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
-            preserved.append(toolset_name)
+        is_mcp = _is_mcp_toolset_name(toolset_name)
+        # Also treat bare server names as MCP if the user explicitly requested them
+        bare_name = _normalize_mcp_toolset_name(toolset_name)
+        if not is_mcp and requested_normalized and bare_name in requested_normalized:
+            is_mcp = True
+
+        if is_mcp and toolset_name not in preserved:
+            if requested_normalized is None or bare_name in requested_normalized:
+                preserved.append(toolset_name)
     return preserved
 
 
@@ -1143,11 +1177,21 @@ def _build_child_agent(
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
+        #
+        # MCP toolsets (mcp-xxx) are handled separately: they are not in
+        # TOOLSETS dict (registered dynamically at runtime), so they would
+        # be filtered out by the intersection.  We extract them first and
+        # let _preserve_parent_mcp_toolsets decide which ones to keep.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
+        requested_mcp = [t for t in toolsets if _is_mcp_toolset_name(t)]
+        regular_toolsets = [t for t in toolsets if not _is_mcp_toolset_name(t)]
+        child_toolsets = [t for t in regular_toolsets if t in expanded_parent]
         if _get_inherit_mcp_toolsets():
+            # Preserve only explicitly requested MCP toolsets.
+            # When requested_mcp is empty list → strip all MCP toolsets.
+            # When requested_mcp has values → keep only those MCP toolsets.
             child_toolsets = _preserve_parent_mcp_toolsets(
-                child_toolsets, parent_toolsets
+                child_toolsets, parent_toolsets, requested_mcp=requested_mcp
             )
         child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:

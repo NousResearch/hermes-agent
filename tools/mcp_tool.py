@@ -5565,6 +5565,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
+        # Also register the canonical name as a self-alias so that
+        # validate_toolset("mcp-<name>") resolves correctly.  Without
+        # this, child agents that receive "mcp-obsidian" in their
+        # enabled_toolsets (via _preserve_parent_mcp_toolsets) hit
+        # validate_toolset → False and the tools are silently dropped.
+        registry.register_toolset_alias(toolset_name, toolset_name)
 
     return registered_names
 

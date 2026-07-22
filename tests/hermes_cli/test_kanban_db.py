@@ -477,11 +477,11 @@ os._exit(1)
         assert not kb._pid_alive(child_pid)
     finally:
         try:
-            os.killpg(worker.pid, signal.SIGKILL)
+            os.killpg(worker.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test cleanup
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            os.kill(child_pid, signal.SIGKILL)
+            os.kill(child_pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test cleanup
         except (ProcessLookupError, PermissionError):
             pass
 

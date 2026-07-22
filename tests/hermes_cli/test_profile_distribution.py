@@ -348,6 +348,17 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_registers_s6_gateway_slot(self, profile_env, monkeypatch):
+        """install_distribution must call _maybe_register_gateway_service."""
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "hermes_cli.profiles._maybe_register_gateway_service",
+            lambda name: calls.append(name),
+        )
+        staged = _make_staging_dir(profile_env, "src")
+        install_distribution(str(staged), name="s6test")
+        assert calls == ["s6test"]
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default

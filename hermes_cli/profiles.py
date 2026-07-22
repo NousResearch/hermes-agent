@@ -2080,6 +2080,10 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
         shutil.move(str(final_source), str(profile_dir))
 
+    # Register the imported profile's gateway service, matching what
+    # create_profile() does. On host (systemd/launchd) this is a no-op.
+    _maybe_register_gateway_service(canon)
+
     return profile_dir
 
 

@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -444,6 +445,40 @@ class TestHasContentAfterThinkBlock:
 class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
+
+    def test_list_content_flattened_no_crash(self, agent):
+        """Anthropic-via-OpenRouter returns content as a block list.
+
+        A raw list reaching ``re.sub`` raised ``TypeError: expected string
+        or bytes-like object, got 'list'``, which the outer conversation
+        loop swallowed and retried forever (infinite "preparing terminal…"
+        loop). ``strip_think_blocks`` must flatten list content to visible
+        text and drop reasoning blocks.
+        """
+        result = agent._strip_think_blocks(
+            [
+                {"type": "text", "text": "visible answer"},
+                {"type": "thinking", "thinking": "internal reasoning"},
+            ]
+        )
+        assert isinstance(result, str)
+        assert "visible answer" in result
+        assert "internal reasoning" not in result
+
+    def test_dict_content_flattened_no_crash(self, agent):
+        """Some servers return content as a single dict block."""
+        result = agent._strip_think_blocks({"type": "text", "text": "hello world"})
+        assert isinstance(result, str)
+        assert "hello world" in result
+
+    def test_list_of_only_thinking_returns_empty(self, agent):
+        """A list carrying only reasoning blocks yields no visible text."""
+        assert (
+            agent._strip_think_blocks([{"type": "thinking", "thinking": "x"}]) == ""
+        )
+
+    def test_empty_list_returns_empty(self, agent):
+        assert agent._strip_think_blocks([]) == ""
 
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
@@ -1995,23 +2030,38 @@ class TestBuildApiKwargs:
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
-    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        """xhigh effort should normalize to high for Copilot GitHub Models."""
+    def test_reasoning_xhigh_preserved_for_copilot_when_supported(self, agent, monkeypatch):
+        """The registered Copilot profile must preserve a supported xhigh."""
         from agent.transports import get_transport
         from providers import get_provider_profile
 
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["none", "low", "medium", "high", "xhigh"],
+        )
         transport = get_transport("chat_completions")
         profile = get_provider_profile("copilot")
         msgs = [{"role": "user", "content": "hi"}]
         kwargs = transport.build_kwargs(
-            model="gpt-5.4",
+            model="gpt-5.5",
             messages=msgs,
             tools=None,
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "xhigh"},
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "xhigh"}
+
+    def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
+        """The core GitHub Responses path must preserve a supported xhigh."""
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["none", "low", "medium", "high", "xhigh"],
+        )
+        agent.model = "gpt-5.5"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"
@@ -2443,6 +2493,24 @@ class TestExecuteToolCalls:
         assert "valid json object" in messages[0]["content"].lower()
         assert "tool was not executed" in messages[0]["content"].lower()
 
+    def test_none_args_rejected_without_dispatch(self, agent):
+        """None arguments must not crash the dispatch path. Current contract:
+        malformed (non-string, non-JSON-object) args are rejected without
+        executing the tool — same as invalid JSON strings. The mainline
+        run_conversation path normalizes None to "{}" BEFORE dispatch (see
+        test_tool_call_none_args_verbose_logging_does_not_crash), so this
+        direct-dispatch path only needs to degrade gracefully, not coerce."""
+        tc = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            mock_hfc.assert_not_called()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["tool_call_id"] == "c1"
+        assert "tool was not executed" in messages[0]["content"].lower()
+
     def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
@@ -2707,10 +2775,40 @@ class TestConcurrentToolExecution:
                 mock_seq.assert_called_once()
                 mock_con.assert_not_called()
 
+    def test_none_args_batch_does_not_crash_parallelism_gating(self, agent):
+        """Non-string tool arguments must not crash the segment planner —
+        the None-args call becomes a sequential barrier and the batch
+        dispatches without raising."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments=None, call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
     def test_non_dict_args_forces_sequential(self, agent):
         """Tool arguments that parse to a non-dict type should fall back to sequential."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='"just a string"', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_dict_args_batch_forces_sequential_without_crash(self, agent):
+        """Pre-parsed dict arguments (non-string) must not crash the planner.
+        Current contract: the mainline loop normalizes dict args to JSON
+        strings BEFORE dispatch, so raw dicts reaching the gate are treated
+        as barriers (defensive sequential), consistent with the executors
+        rejecting non-string args rather than repairing them."""
+        tc1 = _mock_tool_call(name="web_search", arguments={"q": "alpha"}, call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments={"q": "beta"}, call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
@@ -2747,6 +2845,29 @@ class TestConcurrentToolExecution:
         assert "alpha" in messages[0]["content"]
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
+
+    def test_concurrent_none_args_rejected_without_crash(self, agent):
+        """Concurrent executor must not crash on arguments=None. Current
+        contract (_parse_tool_arguments): non-object args are rejected with
+        a structured error result and the tool is not executed; the valid
+        sibling still runs. One result per call, in order."""
+        tc1 = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"ok"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        seen_args = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            seen_args.append((kwargs["tool_call_id"], args))
+            return "ok"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        # Only the valid call executed; the None-args call was rejected.
+        assert seen_args == [("c2", {"q": "ok"})]
+        assert [m["tool_call_id"] for m in messages] == ["c1", "c2"]
+        assert "tool was not executed" in messages[0]["content"].lower()
 
     def test_concurrent_preserves_order_despite_timing(self, agent):
         """Even if tools finish in different order, messages should be in original order."""
@@ -3902,7 +4023,9 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         from agent.portal_tags import nous_portal_tags
 
-        assert kwargs["extra_body"]["tags"] == nous_portal_tags()
+        assert kwargs["extra_body"]["tags"] == nous_portal_tags(
+            session_id=agent.session_id
+        )
         assert kwargs["extra_body"]["provider"] == {
             "only": ["deepseek"],
             "ignore": ["deepinfra"],
@@ -3924,7 +4047,11 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         from agent.portal_tags import nous_portal_tags
 
-        assert kwargs["extra_body"] == {"tags": nous_portal_tags()}
+        expected = {"tags": nous_portal_tags(session_id=agent.session_id)}
+        if agent.session_id:
+            # Top-level sticky-routing key ships whenever a session exists.
+            expected["session_id"] = agent.session_id
+        assert kwargs["extra_body"] == expected
 
     def test_summary_drops_invalid_provider_sort(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
@@ -4078,6 +4205,66 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        agent._fallback_index = 0
+
+        content_filter_response = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="content_filter"),
+            output=[],
+            output_text="",
+            model="gpt-5.5",
+            usage=None,
+        )
+        fallback_response = SimpleNamespace(
+            status="completed",
+            incomplete_details=None,
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Recovered on fallback")],
+                )
+            ],
+            model="fallback/model",
+            usage=None,
+        )
+        hook_events = []
+
+        def _fake_activate(reason=None):
+            agent._fallback_index = len(agent._fallback_chain)
+            return True
+
+        with (
+            patch.object(agent, "_create_request_openai_client", return_value=MagicMock()),
+            patch.object(agent, "_close_request_openai_client"),
+            patch.object(agent, "_run_codex_stream", side_effect=[content_filter_response, fallback_response]) as mock_run_codex_stream,
+            patch.object(agent, "_try_activate_fallback", side_effect=_fake_activate) as mock_try_activate_fallback,
+            patch.object(agent, "_invoke_api_request_error_hook", side_effect=lambda **kw: hook_events.append(kw)),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("summarize this large Slack thread")
+
+        assert result["final_response"] == "Recovered on fallback"
+        assert result["completed"] is True
+        mock_try_activate_fallback.assert_called_once_with()
+        assert mock_run_codex_stream.call_count == 2
+        assert hook_events[0]["error_type"] == "ContentPolicyBlocked"
+        assert hook_events[0]["retryable"] is False
+        assert hook_events[0]["reason"] == FailoverReason.content_policy_blocked.value
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"
@@ -4120,6 +4307,25 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_tool_call_none_args_verbose_logging_does_not_crash(self, agent):
+        self._setup_agent(agent)
+        agent.verbose_logging = True
+        tc = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert mock_handle_function_call.call_args.args[:2] == ("web_search", {})
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
@@ -4644,6 +4850,136 @@ class TestRunConversation:
             "role": "assistant",
             "content": "Sure, here's how to do it: first",
         }
+
+    def test_redirect_during_thinking_retries_same_turn_with_context(self, agent):
+        """A corrective follow-up keeps displayed reasoning and does not end the turn."""
+        self._setup_agent(agent)
+        agent.reasoning_callback = lambda _text: None
+        final = _mock_response(content="Using Postgres instead.", finish_reason="stop")
+        requests = []
+        persisted = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            if len(requests) == 1:
+                agent._fire_reasoning_delta("I should implement this with SQLite.")
+                assert agent.redirect("No, use Postgres instead.") is True
+                raise InterruptedError("redirect cancelled the first request")
+            return final
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(
+                agent,
+                "_persist_session",
+                side_effect=lambda messages, *_a, **_k: persisted.append(
+                    [dict(message) for message in messages]
+                ),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Choose a database and implement it.")
+
+        assert result["completed"] is True
+        assert result["interrupted"] is False
+        assert result["final_response"] == "Using Postgres instead."
+        assert len(requests) == 2
+
+        replay = requests[1]["messages"]
+        assert [m["role"] for m in replay[-3:]] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+        checkpoint = replay[-2]["content"]
+        assert "interrupted by a user correction" in checkpoint
+        assert "I should implement this with SQLite." in checkpoint
+        assert replay[-1]["content"] == "No, use Postgres instead."
+        assert agent._pending_redirect is None
+        assert any(
+            snapshot[-1].get("content") == "No, use Postgres instead."
+            and snapshot[-2].get("role") == "assistant"
+            for snapshot in persisted
+            if len(snapshot) >= 2
+        )
+
+    def test_redirect_wins_race_with_response_completion(self, agent):
+        """If the provider returns as redirect lands, discard the stale answer."""
+        self._setup_agent(agent)
+        stale = _mock_response(content="Using SQLite.", finish_reason="stop")
+        corrected = _mock_response(content="Using Postgres.", finish_reason="stop")
+        calls = 0
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                assert agent.redirect("Use Postgres instead.") is True
+                return stale
+            return corrected
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Choose a database.")
+
+        assert calls == 2
+        assert result["final_response"] == "Using Postgres."
+        assert all(
+            message.get("content") != "Using SQLite."
+            for message in result["messages"]
+        )
+
+    def test_redirect_from_input_thread_cancels_live_model_request(self, agent):
+        """Exercise the real cross-thread path used by CLI and gateways."""
+        self._setup_agent(agent)
+        agent.reasoning_callback = lambda _text: None
+        entered = threading.Event()
+        results = {}
+        calls = 0
+        final = _mock_response(content="Corrected answer.", finish_reason="stop")
+
+        def _fake_api_call(_api_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent._fire_reasoning_delta("Following the original approach.")
+                entered.set()
+                deadline = time.time() + 2
+                while not agent._interrupt_requested and time.time() < deadline:
+                    time.sleep(0.01)
+                raise InterruptedError("request cancelled by redirect")
+            return final
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            worker = threading.Thread(
+                target=lambda: results.update(
+                    result=agent.run_conversation("Take the original approach.")
+                )
+            )
+            worker.start()
+            assert entered.wait(timeout=2)
+            assert agent.redirect("Use the corrected approach.") is True
+            worker.join(timeout=5)
+
+        assert worker.is_alive() is False
+        assert calls == 2
+        assert results["result"]["completed"] is True
+        assert results["result"]["final_response"] == "Corrected answer."
+        checkpoint = results["result"]["messages"][-3]
+        assert "Following the original approach." in checkpoint["content"]
+        assert results["result"]["messages"][-2]["content"] == (
+            "Use the corrected approach."
+        )
 
     def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
         """An interrupt with no streamed text falls back to the metadata sentinel."""
@@ -6016,9 +6352,16 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return current
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self,
+                *,
+                status_code,
+                error_context=None,
+                api_key_hint=None,
+            ):
                 assert status_code == 402
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6037,9 +6380,16 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self,
+                *,
+                status_code,
+                error_context=None,
+                api_key_hint=None,
+            ):
                 assert status_code == 400
                 assert error_context == {"reason": "out_of_extra_usage"}
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -7431,13 +7781,60 @@ class TestAnthropicInterruptHandler:
         assert "anthropic_messages" in source, \
             "interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
-    def test_interruptible_rebuilds_anthropic_client(self):
-        """After interrupting, the Anthropic client should be rebuilt."""
-        import inspect
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+        """#67142: a non-streaming Anthropic interrupt must abort the
+        request-local client from the poll thread, never close/rebuild the
+        shared _anthropic_client (which raced a live SSL BIO and corrupted an
+        unrelated SQLite DB via TLS-FD recycling).
+
+        Replaces the former source-reading assertion (which asserted the old,
+        now-removed rebuild-on-interrupt behavior) with a behavior test.
+        """
+        import threading
+        import time
+        from unittest.mock import MagicMock
+        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
-        source = inspect.getsource(interruptible_api_call)
-        assert "build_anthropic_client" in source, \
-            "interruptible_api_call must rebuild Anthropic client after interrupt"
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = MagicMock()
+        agent._rebuild_anthropic_client = MagicMock()
+        request_client = MagicMock()
+        agent._create_request_anthropic_client = MagicMock(return_value=request_client)
+        agent._abort_request_anthropic_client = MagicMock()
+        agent._close_request_anthropic_client = MagicMock()
+
+        def _create(_api_kwargs, *, client):
+            assert client is request_client
+            agent._interrupt_requested = True
+            time.sleep(1.0)
+            raise RuntimeError("forced close would have happened")
+
+        agent._anthropic_messages_create = MagicMock(side_effect=_create)
+
+        t0 = time.time()
+        with pytest.raises(InterruptedError):
+            interruptible_api_call(agent, {"model": "x", "messages": []})
+        elapsed = time.time() - t0
+
+        assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+        # The shared client is never closed/rebuilt from the poll thread.
+        agent._anthropic_client.close.assert_not_called()
+        agent._rebuild_anthropic_client.assert_not_called()
+        # The poll (stranger) thread aborts the request-local client's socket.
+        agent._abort_request_anthropic_client.assert_called_once_with(
+            request_client, reason="interrupt_abort"
+        )
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""

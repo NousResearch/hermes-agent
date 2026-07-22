@@ -1,13 +1,15 @@
 from unittest.mock import patch
 
+import pytest
 
-def test_pip_install_detected_when_no_git_dir(tmp_path):
-    """When PROJECT_ROOT has no .git, detect as pip install."""
+
+def test_unknown_install_detected_when_no_git_dir(tmp_path):
+    """When PROJECT_ROOT has no .git, detect as 'unknown' (not 'pip')."""
     with patch("hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
         from hermes_cli.config import detect_install_method
         method = detect_install_method(project_root=tmp_path)
-        assert method == "pip"
+        assert method == "unknown"
 
 
 def test_git_install_detected_when_git_dir_exists(tmp_path):
@@ -30,15 +32,6 @@ def test_managed_install_takes_precedence(tmp_path):
         assert method == "nixos"
 
 
-def test_recommended_update_command_pip():
-    """Pip installs recommend pip install --upgrade."""
-    from hermes_cli.config import recommended_update_command_for_method
-    cmd = recommended_update_command_for_method("pip")
-    assert "pip install" in cmd or "uv pip install" in cmd
-    assert "--upgrade" in cmd
-    assert "hermes-agent" in cmd
-
-
 def test_stamp_file_takes_precedence(tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / ".install_method").write_text("docker\n")
@@ -46,6 +39,30 @@ def test_stamp_file_takes_precedence(tmp_path):
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
         from hermes_cli.config import detect_install_method
         assert detect_install_method(project_root=tmp_path) == "docker"
+
+
+@pytest.mark.parametrize("retired_method", ["pip", "homebrew"])
+def test_code_scoped_retired_stamp_falls_back_to_unknown(tmp_path, retired_method):
+    """Removed install methods must not survive in an upgraded code stamp."""
+    (tmp_path / ".install_method").write_text(retired_method + "\n")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=tmp_path) == "unknown"
+
+
+@pytest.mark.parametrize("retired_method", ["pip", "homebrew"])
+def test_home_scoped_retired_stamp_falls_back_to_unknown(tmp_path, retired_method):
+    """Removed install methods must not survive in an upgraded home stamp."""
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (home / ".install_method").write_text(retired_method + "\n")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "unknown"
 
 
 def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
@@ -111,7 +128,7 @@ def test_home_non_docker_stamp_still_honored_for_backcompat(tmp_path):
     """Legacy non-'docker' home stamps (e.g. 'git') are still respected.
 
     Only the 'docker' value carries the cross-contamination risk, so a host
-    install that historically stamped 'git'/'pip' into $HERMES_HOME keeps
+    install that historically stamped 'git' into $HERMES_HOME keeps
     resolving from there when no code-scoped stamp exists yet.
     """
     code = tmp_path / "code"
@@ -134,8 +151,8 @@ def test_stamp_install_method_writes_code_scoped(tmp_path):
     home.mkdir()
     with patch("hermes_cli.config.get_hermes_home", return_value=home):
         from hermes_cli.config import stamp_install_method
-        stamp_install_method("pip", project_root=code)
-    assert (code / ".install_method").read_text().strip() == "pip"
+        stamp_install_method("git", project_root=code)
+    assert (code / ".install_method").read_text().strip() == "git"
     assert not (home / ".install_method").exists()
 
 
@@ -158,13 +175,13 @@ def test_container_without_stamp_is_not_docker(tmp_path):
         assert detect_install_method(project_root=tmp_path) == "git"
 
 
-def test_container_pip_install_without_stamp_is_pip(tmp_path):
-    """Container + no .git + no stamp -> pip, not docker (issue #34397)."""
+def test_container_unknown_install_without_stamp_is_unknown(tmp_path):
+    """Container + no .git + no stamp -> unknown, not docker (issue #34397)."""
     with patch("hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
          patch("hermes_constants.is_container", return_value=True):
         from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=tmp_path) == "pip"
+        assert detect_install_method(project_root=tmp_path) == "unknown"
 
 
 def test_recommended_update_command_docker():
@@ -172,77 +189,28 @@ def test_recommended_update_command_docker():
     assert "docker pull" in recommended_update_command_for_method("docker")
 
 
-def test_banner_warns_on_pip_install(tmp_path):
-    """The welcome banner surfaces a warning when the install method is pip."""
-    import io
-    from rich.console import Console
-    from hermes_cli import banner
-
-    hh = tmp_path / ".hermes"
-    hh.mkdir()
-    (hh / ".install_method").write_text("pip\n")
-
-    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
-         patch("hermes_constants.get_hermes_home", return_value=hh):
-        buf = io.StringIO()
-        # Wide console so the warning isn't wrapped across lines in the panel.
-        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
-        banner.build_welcome_banner(
-            console, model="m", cwd="/tmp",
-            tools=[{"function": {"name": "terminal"}}],
-            enabled_toolsets=["terminal"],
-        )
-        out = buf.getvalue()
-
-    assert "officially" in out
-    assert "platform-support" in out
+def test_recommended_update_command_nix():
+    from hermes_cli.config import recommended_update_command_for_method
+    command = recommended_update_command_for_method("nix")
+    assert "nix profile upgrade" in command
+    assert "nixos-rebuild" in command
 
 
-def test_banner_warns_on_homebrew_install(tmp_path):
-    """The welcome banner surfaces a warning when the install method is homebrew."""
-    import io
-    from rich.console import Console
-    from hermes_cli import banner
+def test_nix_store_path_detected_as_nix(tmp_path, monkeypatch):
+    """A code path under /nix/store/ (nix run / nix profile install) is detected
+    as 'nix' even without HERMES_MANAGED or a .install_method stamp."""
+    # detect_install_method checks whether the resolved root is a descendant
+    # of _NIX_STORE (Path("/nix/store")). We can't create files under the real
+    # /nix/store, so patch the constant to point at a temp dir and create the
+    # fake install path under it.
+    fake_nix_store = tmp_path / "fake-nix-store"
+    fake_nix_store.mkdir(parents=True)
+    fake_nix = fake_nix_store / "abc123-hermes-agent-0.19.0"
+    fake_nix.mkdir(parents=True)
 
-    hh = tmp_path / ".hermes"
-    hh.mkdir()
-    (hh / ".install_method").write_text("homebrew\n")
+    monkeypatch.setattr("hermes_cli.config._NIX_STORE", fake_nix_store)
 
-    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
-         patch("hermes_constants.get_hermes_home", return_value=hh):
-        buf = io.StringIO()
-        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
-        banner.build_welcome_banner(
-            console, model="m", cwd="/tmp",
-            tools=[{"function": {"name": "terminal"}}],
-            enabled_toolsets=["terminal"],
-        )
-        out = buf.getvalue()
-
-    assert "officially" in out
-    assert "Homebrew" in out
-    assert "platform-support" in out
-
-
-def test_banner_no_pip_warning_on_git_install(tmp_path):
-    """Git installs must not show the pip-install warning."""
-    import io
-    from rich.console import Console
-    from hermes_cli import banner
-
-    hh = tmp_path / ".hermes"
-    hh.mkdir()
-    (hh / ".install_method").write_text("git\n")
-
-    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
-         patch("hermes_constants.get_hermes_home", return_value=hh):
-        buf = io.StringIO()
-        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
-        banner.build_welcome_banner(
-            console, model="m", cwd="/tmp",
-            tools=[{"function": {"name": "terminal"}}],
-            enabled_toolsets=["terminal"],
-        )
-        out = buf.getvalue()
-
-    assert "officially" not in out
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=fake_nix) == "nix"

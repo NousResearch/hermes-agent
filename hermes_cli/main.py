@@ -65,6 +65,125 @@ import os
 import sys
 
 
+def _exit_after_oneshot(rc: object) -> None:
+    """Exit one-shot mode without letting late native finalizers change rc.
+
+    The SIGABRT this guards against (#30387, #43055) fires in a
+    native-extension finalizer during CPython's ``Py_FinalizeEx``, *after*
+    the response has printed. Flush streams, shut down file logging, then
+    ``os._exit`` past interpreter finalization. The ``atexit`` chain is
+    deliberately skipped — several handlers re-enter native code that may
+    be the abort source. Stateful cleanup is handled in ``_run_agent`` and
+    ``_cleanup_oneshot_runtime``.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    if rc is None:
+        exit_code = 0
+    elif isinstance(rc, int):
+        exit_code = rc
+    else:
+        exit_code = 1
+    os._exit(exit_code)
+
+
+_oneshot_cleanup_done = False
+
+
+def _cleanup_oneshot_runtime() -> None:
+    """Best-effort process-global cleanup before one-shot hard exit.
+
+    ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
+    session_db.close — all in ``_run_agent``'s finally block). This mirrors the
+    process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
+    be skipped by ``os._exit``.
+    """
+    global _oneshot_cleanup_done
+    if _oneshot_cleanup_done:
+        return
+    _oneshot_cleanup_done = True
+    try:
+        from tools.terminal_tool import cleanup_all_environments
+        cleanup_all_environments()
+    except Exception:
+        pass
+    try:
+        from tools.async_delegation import interrupt_all
+        interrupt_all(reason="oneshot shutdown")
+    except Exception:
+        pass
+    try:
+        from tools.browser_tool import _emergency_cleanup_all_sessions
+        _emergency_cleanup_all_sessions()
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except BaseException:
+        pass
+    try:
+        from agent.auxiliary_client import shutdown_cached_clients
+        shutdown_cached_clients()
+    except Exception:
+        pass
+
+
+def _run_and_exit_oneshot(
+    prompt: str,
+    *,
+    model: object = None,
+    provider: object = None,
+    toolsets: object = None,
+    usage_file: object = None,
+) -> None:
+    try:
+        from hermes_cli.oneshot import run_oneshot
+
+        rc = run_oneshot(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            usage_file=usage_file,
+        )
+    except KeyboardInterrupt:
+        rc = 130
+    except SystemExit as exc:
+        if exc.code is not None and not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+            rc = 1
+        else:
+            rc = exc.code
+    except BaseException:
+        # Defense-in-depth. ``run_oneshot`` already converts agent failures
+        # into an int return code and only re-raises KeyboardInterrupt /
+        # SystemExit (handled above). Anything still escaping here means
+        # ``run_oneshot`` itself malfunctioned — surface it on stderr but never
+        # fall through to normal interpreter teardown, which is the exact path
+        # that aborts with SIGABRT on AL2023 (the bug this routine fixes).
+        import traceback
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
+        rc = 1
+    try:
+        _cleanup_oneshot_runtime()
+    finally:
+        # The hard exit is the safety boundary for #43055. Even an interrupt
+        # during best-effort cleanup must not fall back into interpreter
+        # finalization, where the reported native SIGABRT occurs.
+        _exit_after_oneshot(rc)
+
+
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
@@ -272,6 +391,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import re
 import shlex
 import shutil
 import stat
@@ -286,7 +406,7 @@ from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
-from hermes_cli.subcommands.postinstall import build_postinstall_parser
+
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
 from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.login import build_login_parser
@@ -302,6 +422,7 @@ from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -1766,10 +1887,15 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    if not ext_dir:
-        _ensure_tui_workspace(tui_dir)
-
-    # 1. Prebuilt bundle (nix / packaged release): just run it.
+    # 1. Prebuilt bundle (nix / packaged release / Docker image): just run it.
+    #
+    # This must run BEFORE _ensure_tui_workspace() below. A prebuilt install
+    # (Docker image, Nix build, or prior `npm run build`) ships
+    # hermes_cli/tui_dist/entry.js but never ships ui-tui/ at all (that
+    # directory only exists in a git checkout) — so requiring the workspace
+    # to exist first made every prebuilt dashboard Chat tab connection
+    # hard-exit before it ever got a chance to try the bundled entry.js it
+    # already has. See #56665.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1777,11 +1903,16 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 node = _node_bin("node")
                 return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
 
-        # 1b. Bundled in wheel (pip install)
+        # 1b. Bundled prebuilt TUI (Docker image, Nix build, or prior npm build)
         bundled = _find_bundled_tui()
         if bundled is not None:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
+
+    # No prebuilt bundle available (or --dev, which never uses one) — we're
+    # about to npm install/build from source, so the workspace must exist.
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
@@ -1822,6 +1953,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 npm,
                 "install",
                 *npm_workspace_args,
+                # --include=dev: ui-tui's build toolchain (esbuild, typescript)
+                # lives in devDependencies. An inherited NODE_ENV=production
+                # (e.g. from a container shell or a parent TUI launch) or an
+                # npm `omit=dev` config would silently skip them and the TUI
+                # build would fail. See _run_npm_install_deterministic.
+                "--include=dev",
                 "--silent",
                 "--no-fund",
                 "--no-audit",
@@ -1997,6 +2134,39 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _safe_tui_cwd(env: Optional[dict] = None) -> str:
+    """Return a stable cwd value for the Node TUI child environment."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        candidate = ((env or {}).get("PWD") or os.environ.get("PWD") or "").strip()
+        if candidate and Path(candidate).is_dir():
+            return candidate
+        return str(PROJECT_ROOT)
+
+
+def _apply_tui_python_env(env: dict) -> None:
+    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
+    if not src_root or not Path(src_root).is_dir():
+        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+
+    cwd = str(env.get("HERMES_CWD") or "").strip()
+    if not cwd or not Path(cwd).is_dir():
+        env["HERMES_CWD"] = _safe_tui_cwd(env)
+
+    python = str(env.get("HERMES_PYTHON") or "").strip()
+    if os.path.dirname(python):
+        python_path = Path(python)
+        if not python_path.is_absolute():
+            python_path = Path(env["HERMES_CWD"]) / python_path
+        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
+    else:
+        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
+    if not python_is_executable:
+        env["HERMES_PYTHON"] = sys.executable
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -2030,11 +2200,6 @@ def _launch_tui(
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
-        "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
-    )
-    env.setdefault("HERMES_PYTHON", sys.executable)
-    env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
@@ -2058,6 +2223,8 @@ def _launch_tui(
             sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+
+    _apply_tui_python_env(env)
 
     if model:
         env["HERMES_MODEL"] = model
@@ -2737,27 +2904,6 @@ def cmd_setup(args):
     run_setup_wizard(args)
 
 
-def cmd_postinstall(args):
-    """One-shot bootstrap for pip users: install non-Python deps + run setup."""
-    from hermes_cli.config import stamp_install_method
-    from hermes_cli.dep_ensure import ensure_dependency
-
-    stamp_install_method("pip")
-
-    print("⚕ Hermes post-install bootstrap")
-    print()
-
-    for dep in ("node", "browser", "ripgrep", "ffmpeg"):
-        ensure_dependency(dep)
-
-    if not _has_any_provider_configured():
-        print()
-        cmd_setup(args)
-    else:
-        print()
-        print("✓ Post-install complete.")
-
-
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
@@ -3003,6 +3149,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.models import (
         CANONICAL_PROVIDERS,
         _PROVIDER_LABELS,
+        _PROVIDER_ALIASES,
         group_providers,
         provider_group_for_slug,
     )
@@ -3026,7 +3173,30 @@ def select_provider_and_model(args=None):
     # resolves back to a concrete slug, so the dispatch chain below is
     # unchanged. Custom providers and the trailing actions stay flat.
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
-    grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
+    # Honor ``model_catalog.excluded_providers`` so the CLI ``hermes model``
+    # picker hides the same providers the gateway/TUI pickers do. A canonical
+    # provider is hidden if its slug OR any of its aliases appears in the
+    # exclusion list (case-insensitive), matching list_authenticated_providers'
+    # matching against hermes_id / alias / canonical slug.
+    _cli_excluded = {
+        str(p).strip().lower()
+        for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
+        if p
+    }
+    if _cli_excluded:
+        _alias_to_canon = _PROVIDER_ALIASES
+        _names_for: dict[str, set[str]] = {}
+        for _p in CANONICAL_PROVIDERS:
+            _names_for[_p.slug] = {_p.slug.lower()}
+        for _alias, _canon in _alias_to_canon.items():
+            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
+        _visible_slugs = [
+            p.slug for p in CANONICAL_PROVIDERS
+            if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
+        ]
+    else:
+        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group
     # if it's grouped, otherwise the active slug itself.
@@ -3251,6 +3421,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
+    ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
@@ -4367,6 +4538,13 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_skin(args):
+    """Skin management (list / use / set)."""
+    from hermes_cli.skin_cmd import skin_command
+
+    skin_command(args)
+
+
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     if getattr(args, "quick", False):
@@ -4621,15 +4799,19 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 
 
 def _web_ui_build_needed(web_dir: Path) -> bool:
-    """Return True if the web UI dist is missing or stale.
+    """Return True if the web UI dist is missing or its source content changed.
 
-    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
-    The dashboard source lives under ``web/``, but the Vite build
-    still outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
-    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``, so Python
-    packaging can continue serving the same static asset directory. Uses the
-    Vite manifest as the sentinel because it is written last and therefore
-    has the newest mtime of any build output.
+    Uses a SHA-256 content hash of the web source tree (the same approach
+    ``_desktop_build_needed()`` already uses for the Electron build), NOT
+    mtime comparison. ``git checkout`` / ``git pull`` / ``hermes update``
+    rewrite source mtimes without changing content, which made the old
+    mtime check unreliable in both directions: it could skip a rebuild when
+    source had genuinely changed (serving a stale dashboard) and force a
+    rebuild when nothing had. A content hash is stable across mtime churn.
+
+    The dashboard source lives under ``web/`` but Vite outputs to
+    ``hermes_cli/web_dist/`` (per vite.config.ts outDir), NOT ``web/dist/``,
+    so the dist directory is never part of the hashed source tree.
     """
     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
     dist_dir = project_root / "hermes_cli" / "web_dist"
@@ -4638,29 +4820,98 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         sentinel = dist_dir / "index.html"
     if not sentinel.exists():
         return True
-    dist_mtime = sentinel.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
-    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in skip]
-        for fn in filenames:
-            if fn.endswith((".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")):
-                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_mtime:
-                    return True
-    for meta in (
-        "package.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "vite.config.ts",
-        "vite.config.js",
-    ):
-        mp = web_dir / meta
-        if mp.exists() and mp.stat().st_mtime > dist_mtime:
-            return True
-    # Workspace root lockfile (single package-lock.json covers all workspaces).
-    root_lock = project_root / "package-lock.json"
-    if root_lock.exists() and root_lock.stat().st_mtime > dist_mtime:
+    stamp_file = _web_ui_stamp_path()
+    if not stamp_file.is_file():
         return True
-    return False
+    try:
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(stamp_data, dict):
+        return True
+    saved_hash = stamp_data.get("contentHash")
+    if not saved_hash:
+        return True
+    return _compute_web_ui_content_hash(project_root, web_dir) != saved_hash
+
+
+def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
+    """Return a SHA-256 hex digest of the web UI source tree.
+
+    Covers ``web_dir`` (the dashboard frontend source) plus the root
+    ``package.json`` / ``package-lock.json`` (workspace config that
+    determines dependency resolution). Mirrors
+    ``_compute_desktop_content_hash()``: ignored paths (``node_modules/``,
+    ``dist/``, ``*.pyc``, ...) are skipped via the repo-root ``.gitignore``
+    so build output never feeds back into its own staleness check.
+    """
+    h = hashlib.sha256()
+
+    def _hash_file(path: Path) -> None:
+        rel = str(path.relative_to(project_root))
+        h.update(rel.encode())
+        h.update(b"\0")
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+        except OSError:
+            pass
+        h.update(b"\0")
+
+    from pathspec import PathSpec
+
+    gitignore = project_root / ".gitignore"
+    lines: list[str] = []
+    if gitignore.is_file():
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+    spec = PathSpec.from_lines("gitignore", lines)
+
+    # Root workspace config (single package-lock.json covers all workspaces).
+    for name in ("package.json", "package-lock.json"):
+        p = project_root / name
+        if p.is_file():
+            rel = str(p.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(p)
+
+    # Walk the web source tree, pruning ignored directories in-place so we
+    # never descend into node_modules/ or a stray dist/. Sort filenames for
+    # a deterministic, order-independent digest.
+    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
+        dirnames[:] = [
+            d for d in dirnames
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+        ]
+        for fn in sorted(filenames):
+            fp = Path(dirpath) / fn
+            rel = str(fp.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(fp)
+
+    return h.hexdigest()
+
+
+def _web_ui_stamp_path() -> Path:
+    """Return the path to the web UI build stamp file under $HERMES_HOME."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "web-ui-build-stamp.json"
+
+
+def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:
+    """Write the web UI build stamp after a successful build."""
+    stamp_file = _web_ui_stamp_path()
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        stamp_data = {
+            "contentHash": _compute_web_ui_content_hash(project_root, web_dir),
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        # Never let stamp-writing block or fail a build.
+        logger.debug("Failed to write web UI build stamp: %s", exc)
 
 
 def _run_with_idle_timeout(
@@ -4832,6 +5083,25 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    ``--include=dev`` is forced on every invocation: the callers are frontend
+    builds (web UI / TUI / desktop workspaces), and those builds need the dev
+    toolchain (``tsc``, ``vite``, ``electron-builder`` — all
+    ``devDependencies``).  If the caller's environment has
+    ``NODE_ENV=production`` (or npm config ``omit=dev``) — which leaks in from
+    a shell profile, a container image, or the bundled TUI launcher that sets
+    ``NODE_ENV=production`` on its subprocess env — npm silently omits
+    devDependencies (exit 0, no error), so the build toolchain never installs
+    and the subsequent build dies with ``tsc: command not found`` (exit 127).
+    The flag overrides both the env var and npm config, unlike scrubbing
+    ``NODE_ENV`` from the environment which only fixes the env-leak case.
+
+    ``--no-save`` on the ``npm install`` fallback keeps it true to this
+    function's contract: never mutate ``package-lock.json``.  Without it, an
+    out-of-sync lockfile gets rewritten by the fallback, which drifts the
+    committed lockfile and makes every future ``npm ci`` fail — a
+    self-reinforcing cycle where web devDeps never install and a stale dist
+    is served on every update (PR #65595).
     """
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
@@ -4840,7 +5110,7 @@ def _run_npm_install_deterministic(
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        ci_cmd = [npm, "ci", "--include=dev", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -4855,7 +5125,7 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    install_cmd = [npm, "install", "--no-save", "--include=dev", *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,
@@ -4869,6 +5139,49 @@ def _run_npm_install_deterministic(
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+    """Build the web UI frontend if npm is available, serializing across processes.
+
+    Concurrent dashboard boots (e.g. the desktop app's retry loop after a
+    readiness timeout) used to each spawn their own ``npm install`` +
+    ``vite build`` over the same tree; the parallel builds starved each
+    other, none finished, the dist sentinel never advanced, and every new
+    boot re-triggered the build. One process builds under an exclusive
+    flock; the rest serve the existing dist (stale is acceptable) or, when
+    no dist exists yet, block until the builder finishes.
+
+    Staleness is checked once, inside :func:`_do_build_web_ui`, after the
+    lock is held — so a process that queued behind the builder skips the
+    rebuild, and the (os.walk-based) check runs at most once per boot.
+    """
+    if not (web_dir / "package.json").exists():
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        # Windows: no flock — fall through to the unserialized build.
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    dist_index = project_root / "hermes_cli" / "web_dist" / "index.html"
+    try:
+        lock_file = open(project_root / ".web_ui_build.lock", "a", encoding="utf-8")
+    except OSError:
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    try:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if dist_index.exists():
+                # Another process is already building — serve the current
+                # dist instead of piling a second build onto the same tree.
+                return True
+            # No dist at all (first-ever build): wait for the builder.
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    finally:
+        lock_file.close()
+
+
+def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:
@@ -4896,9 +5209,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import with_hermes_node_path
 
-    npm = find_node_executable("npm")
+    npm = _resolve_node_runtime_npm()
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
@@ -4990,6 +5303,8 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    _write_web_ui_build_stamp(project_root, web_dir)
     return True
 
 
@@ -5636,7 +5951,7 @@ def cmd_gui(args: argparse.Namespace):
     except Exception:
         pass
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import with_hermes_node_path
 
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
@@ -5666,7 +5981,7 @@ def cmd_gui(args: argparse.Namespace):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = find_node_executable("npm")
+        npm = _resolve_node_runtime_npm()
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
@@ -5707,7 +6022,14 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
             print("→ Installing desktop workspace dependencies...")
-            nixos_env = _nixos_build_env()
+            # Put the Hermes-managed Node on PATH so npm's child scripts (which
+            # shell out to bare `node`, e.g. electron-winstaller's
+            # select-7z-arch.js) resolve it even when the parent PATH is
+            # stripped — the desktop updater chain (Desktop → hermes-setup →
+            # hermes update) loses shell PATH customizations. Wrapping the
+            # NixOS build env keeps its PYTHON hint while restoring managed Node
+            # ahead of a bare PATH (same idiom as the `hermes update` path).
+            nixos_env = with_hermes_node_path(_nixos_build_env())
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
@@ -5857,11 +6179,10 @@ def _find_stale_dashboard_pids(
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
+    The dashboard may be manually started or managed by the optional
+    ``hermes-dashboard.service`` systemd unit.  Managed units are restarted
+    through their owning systemd scope; only manually-started processes use
+    the kill path because we can't know their original launch args.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
@@ -6005,6 +6326,120 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
+def _print_fts_optimize_available_notice() -> None:
+    """Advertise the opt-in v23 search-index optimization after `hermes update`.
+
+    Only fires when the current profile's state.db is still on the legacy
+    (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
+    points at the exact command. Honors ``sessions.fts_optimize_notice``:
+    ``advise`` (default) prints an advisory notice, ``require`` prints a
+    firmer required-upgrade notice, ``off`` suppresses it. Silent for
+    fresh/already-optimized installs.
+    """
+    mode = "advise"
+    try:
+        from hermes_cli.config import load_config
+
+        mode = str(
+            ((load_config() or {}).get("sessions") or {}).get(
+                "fts_optimize_notice", "advise"
+            )
+        ).strip().lower()
+    except Exception:
+        mode = "advise"
+    if mode == "off":
+        return
+
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+    except Exception:
+        return
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        size_gb = db_path.stat().st_size / (1024 ** 3)
+    except OSError:
+        return
+    # Skip the notice for trivially small DBs — the win isn't worth the nag.
+    if size_gb < 0.5:
+        return
+    db = None
+    interrupted = False
+    try:
+        db = SessionDB(db_path=db_path, read_only=True)
+        # read_only opens skip schema init, so probe the layout directly.
+        row = db._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'messages_fts'"
+        ).fetchone()
+        # An interrupted `optimize-storage` run: the table is already the
+        # v23 shape, but backfill markers / demoted trash tables remain.
+        # Offer the command again — re-running resumes and finishes it.
+        interrupted = bool(
+            db._conn.execute(
+                "SELECT 1 FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
+            ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
+            ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM state_meta WHERE key IN "
+                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
+            ).fetchone()
+        )
+    except Exception:
+        return
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    sql = (row[0] if row else "") or ""
+    if not sql or ("tool_name" in sql and not interrupted):
+        # v23 layout already present (fresh/optimized) — nothing to offer.
+        return
+
+    if interrupted:
+        print()
+        print("◆ Session database optimization incomplete")
+        print(
+            "  A previous `hermes sessions optimize-storage` run was "
+            "interrupted. Search still works; re-run the command to resume "
+            "and finish reclaiming disk:"
+        )
+        print("    hermes sessions optimize-storage")
+        return
+
+    # Concrete size framing — lead with the savings the user cares about.
+    est_reclaim = size_gb * 0.6
+    print()
+    if mode == "require":
+        print("◆ Session database upgrade required")
+        print(
+            f"  Your search index uses the OLD storage layout and should be "
+            f"upgraded. The new layout typically frees ~60% of state.db "
+            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+            f"required for continued optimal operation."
+        )
+    else:
+        print("◆ Reclaim ~60% of your session database disk")
+        print(
+            f"  Your search index uses the old storage layout. Upgrading it "
+            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+            f"of your current {size_gb:.1f} GB."
+        )
+    print("  Run when convenient:  hermes sessions optimize-storage")
+    print(
+        "  It runs in the foreground with a progress bar, is safe to "
+        "interrupt/re-run, and never changes your conversations."
+    )
+
+
 def _print_curator_recent_run_notice() -> None:
     """Print the most recent curator run summary, exactly once.
 
@@ -6091,8 +6526,121 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+_DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
+
+
+def _restart_managed_dashboard_service(
+    reason: str,
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+) -> bool:
+    """Restart a systemd-managed dashboard instead of raw-killing its PID.
+
+    Returns True when a dashboard unit was found and handled (successfully or
+    with a printed actionable failure).  Returning True deliberately prevents
+    the caller from falling back to ``os.kill``: systemd treats a direct
+    SIGTERM of the service's main PID as a clean stop, so ``Restart=on-failure``
+    will not bring the dashboard back.
+    """
+    if sys.platform == "win32":
+        return False
+
+    def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["systemctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    # Probe the user manager first: Hermes installs Linux services in the
+    # user's systemd scope by default.  Only fall back to the system manager
+    # when the unit is not present there, preserving root/system deployments.
+    # Crucially, keep the selected scope for *all* probes and the restart — a
+    # user unit must never be restarted through the system manager (or raw-killed).
+    scope: tuple[str, ...] | None = None
+    listed: subprocess.CompletedProcess | None = None
+    for candidate in (("--user",), ()):
+        try:
+            result = _systemctl(
+                *candidate, "list-unit-files", unit, "--no-legend", "--no-pager"
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        unit_rows = (result.stdout or "").splitlines()
+        if any(row.split()[0:1] == [unit] for row in unit_rows if row.split()):
+            scope = candidate
+            listed = result
+            break
+
+    if scope is None or listed is None:
+        return False
+
+    try:
+        active = _systemctl(*scope, "is-active", unit)
+        enabled = _systemctl(*scope, "is-enabled", unit)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+    active_state = (active.stdout or "").strip()
+    enabled_state = (enabled.stdout or "").strip()
+    if active_state != "active" and enabled_state not in {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "static",
+        "generated",
+    }:
+        return False
+
+    print()
+    print(f"⟲ Restarting managed dashboard service ({reason})")
+
+    scope_label = "systemctl --user" if scope else "sudo systemctl"
+    restart = ("systemctl", *scope, "restart", unit)
+    commands = [restart]
+    if not scope:
+        # System units may require privilege escalation; user units must use
+        # the user manager directly and never prompt for sudo.
+        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+
+    errors: list[str] = []
+    for command in commands:
+        try:
+            result = subprocess.run(
+                list(command),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            errors.append(f"{' '.join(command)}: {e}")
+            continue
+        if result.returncode == 0:
+            print(f"    ✓ restarted {unit}")
+            return True
+        errors.append(
+            f"{' '.join(command)}: {(result.stderr or result.stdout or '').strip()}"
+        )
+
+    print(f"    ✗ failed to restart {unit}")
+    for err in errors:
+        if err.strip():
+            print(f"      {err}")
+    print(
+        "  Dashboard is managed by systemd; not raw-killing its PID because "
+        "systemd would treat that as a clean stop."
+    )
+    print(f"  Restart manually: {scope_label} restart {unit}")
+    return True
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    *,
+    restart_managed: bool = False,
 ) -> None:
     """Kill running ``hermes dashboard`` processes.
 
@@ -6108,10 +6656,15 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    Manually-started dashboards are not auto-restarted because we don't know
+    the original launch args (--host, --port, --insecure, --tui, --no-open).
+    When ``restart_managed`` is true (the ``hermes update`` path), a detected
+    ``hermes-dashboard.service`` is restarted through systemd instead of
+    raw-killing its main PID.
     """
+    if restart_managed and _restart_managed_dashboard_service(reason):
+        return
+
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
@@ -6400,7 +6953,7 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    _update_node_dependencies()
+    node_failures = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
@@ -6439,7 +6992,15 @@ def _update_via_zip(args):
         logger.debug("Model catalog seed during zip update failed: %s", e)
 
     print()
-    print("✓ Update complete!")
+    if node_failures:
+        print(
+            "⚠ Update partially complete — Node.js dependencies for "
+            f"{', '.join(node_failures)} did not refresh."
+        )
+        print("  Code and Python deps are updated, but the dashboard/TUI may")
+        print("  be in a mixed state until the Node deps are rebuilt.")
+    else:
+        print("✓ Update complete!")
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -6448,7 +7009,14 @@ def _update_via_zip(args):
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
-    _kill_stale_dashboard_processes()
+    # Don't stop a working dashboard when the Node refresh failed — see the
+    # git-update path for rationale (#30271).
+    if node_failures:
+        print()
+        print("  ℹ Leaving running dashboard process(es) untouched because the")
+        print("    Node.js dependency refresh did not complete.")
+    else:
+        _kill_stale_dashboard_processes(restart_managed=True)
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8210,15 +8778,94 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
         logger.debug("Could not write npm lockfile hash cache")
 
 
-def _update_node_dependencies() -> None:
-    from hermes_constants import find_node_executable, with_hermes_node_path
+def _is_windows_npm_path(npm_path: str) -> bool:
+    """Return True if ``npm_path`` points at a Windows npm shim.
+
+    On WSL the Windows install dir is exposed through the ``/mnt/c`` drive
+    mount and PATH interop, so ``shutil.which("npm")`` can hand back
+    ``/mnt/c/Program Files/nodejs/npm`` (or the ``npm.cmd`` / ``npm.exe``
+    shim). Those are detected here by their ``.exe``/``.cmd``/``.bat``
+    suffix, a ``/mnt/`` drive-mount prefix, or an embedded backslash (a UNC
+    path). Callers use this only on a POSIX host — on native Windows an
+    ``npm.cmd`` shim is the correct executable.
+    """
+    low = npm_path.lower()
+    return (
+        low.endswith((".exe", ".cmd", ".bat"))
+        or low.startswith("/mnt/")
+        or "\\" in npm_path
+    )
+
+
+def _resolve_node_runtime_npm() -> str | None:
+    """Resolve an npm executable that belongs to the host's Node runtime.
+
+    On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed
+    through PATH interop. Running that Windows npm against the Linux checkout
+    operates over ``\\wsl.localhost\\...`` UNC paths and fails with EISDIR /
+    symlink errors in symlink-heavy trees like ``ui-tui`` (#30271). Refuse a
+    Windows npm on a POSIX host and re-scan PATH (skipping ``/mnt/*`` interop
+    entries) for a Linux-native npm. Returns the npm path, or ``None`` when
+    no suitable npm is reachable.
+    """
+    from hermes_constants import find_node_executable
 
     npm = find_node_executable("npm")
-    if not npm:
-        return
 
+    # On native Windows the platform npm (``npm.cmd``) is exactly what we
+    # want — only reject Windows shims when we're a POSIX/WSL process.
+    if _is_windows():
+        return npm
+
+    if not npm:
+        return None
+
+    if not _is_windows_npm_path(npm):
+        return npm
+
+    # The first resolution was a Windows npm. Re-scan PATH skipping the
+    # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native npm that
+    # came later on PATH is still found.
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory or directory.lower().startswith("/mnt/"):
+            continue
+        candidate = shutil.which("npm", path=directory)
+        if candidate and not _is_windows_npm_path(candidate):
+            return candidate
+    return None
+
+
+def _update_node_dependencies() -> list[str]:
+    """Refresh Node deps in the repo root and update workspaces.
+
+    Returns the list of labels whose npm install failed (empty on success),
+    so the caller can treat a Node refresh failure as a partial update rather
+    than silently reporting ``Update complete!`` (#30271).
+    """
     if not (PROJECT_ROOT / "package.json").exists():
-        return
+        return []
+
+    npm = _resolve_node_runtime_npm()
+    if not npm:
+        # If the only npm reachable inside this WSL shell is the Windows one,
+        # flag it loudly: silently skipping leaves ui-tui deps stale while the
+        # rest of the update proceeds, and running it would corrupt the tree.
+        from hermes_constants import is_wsl
+
+        path_npm = shutil.which("npm")
+        if is_wsl() and path_npm and _is_windows_npm_path(path_npm):
+            print("→ Updating Node.js dependencies...")
+            print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
+            print("    Install Node.js inside the WSL distro (nvm, or your distro's")
+            print("    package manager), then re-run `hermes update`.")
+            failed = ["repo root"]
+            if any(
+                (PROJECT_ROOT / workspace / "package.json").exists()
+                for workspace in ("ui-tui", "web")
+            ):
+                failed.append("ui-tui, web workspaces")
+            return failed
+        return []
 
     from hermes_constants import get_default_hermes_root
 
@@ -8228,7 +8875,7 @@ def _update_node_dependencies() -> None:
     shared_hermes_root = get_default_hermes_root()
     if not _npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
-        return
+        return []
 
     # With a single workspace lockfile the root install would cover ALL
     # workspaces — but apps/desktop pulls in Electron as a devDependency,
@@ -8238,7 +8885,17 @@ def _update_node_dependencies() -> None:
     # Desktop deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
+
+    def _partial_update_failure(*labels: str) -> list[str]:
+        print()
+        print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
+        print("    installation may be in a mixed state (updated code, stale Node")
+        print("    deps). Fix npm and re-run `hermes update`.")
+        return list(labels)
+
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+
+    from hermes_constants import with_hermes_node_path
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
@@ -8261,7 +8918,7 @@ def _update_node_dependencies() -> None:
         stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        return
+        return _partial_update_failure("repo root")
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
@@ -8276,11 +8933,13 @@ def _update_node_dependencies() -> None:
     if ws_result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
-    else:
-        print("  ⚠ npm workspace install failed")
-        stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
+        return []
+
+    print("  ⚠ npm workspace install failed")
+    stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
+    if stderr:
+        print(f"    {stderr.splitlines()[-1]}")
+    return _partial_update_failure("ui-tui, web workspaces")
 
 
 class _UpdateOutputStream:
@@ -8522,18 +9181,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on origin/<branch>?" without performing the update.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
-    PyPI installs can't honor non-default branches, so when this is True
-    on a PyPI install we surface a one-line notice instead of silently
-    dropping the flag.
+    Installs that can't honor non-default branches (e.g. Docker) surface a
+    one-line notice instead of silently dropping the flag.
     """
-    from hermes_cli.config import (
-        detect_install_method,
-        format_unsupported_install_warning,
-        is_unsupported_install_method,
-    )
+    from hermes_cli.config import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(method):
-        print(f"⚠ {format_unsupported_install_warning(method)}")
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
         # same long-form ``docker pull`` guidance ``hermes update`` (apply
@@ -8542,21 +9194,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         from hermes_cli.config import format_docker_update_message
         print(format_docker_update_message())
         sys.exit(1)
-    if method == "pip":
-        from hermes_cli.config import recommended_update_command
-        from hermes_cli.banner import check_via_pypi
-        if branch_explicit and branch != "main":
-            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
-        result = check_via_pypi()
-        if result is None:
-            print("✗ Could not reach PyPI to check for updates.")
-            sys.exit(1)
-        elif result == 0:
-            print("✓ Already up to date.")
-        else:
-            print("⚕ Update available on PyPI.")
-            print(f"  Run '{recommended_update_command()}' to install.")
-        return
+
+    if method in {"nix", "nixos"}:
+        print(recommended_update_command_for_method(method))
+        sys.exit(1)
 
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
@@ -8777,23 +9418,30 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
-def _run_pre_update_backup(args) -> None:
-    """Create a full zip backup of HERMES_HOME before running the update.
+_PRE_UPDATE_SNAPSHOT_KEEP = 1
 
-    Gated on ``updates.pre_update_backup`` in config (default false).  Off
-    by default because the zip can add minutes to every update on large
-    HERMES_HOME directories.  The ``--backup`` flag on ``hermes update``
-    opts in for a single run; ``--no-backup`` forces it off when config
-    has it enabled.  Never raises — a backup failure should not block the
-    update itself.
+# Per-file size cap for the pre-update quick snapshot. Anything larger is
+# skipped with a warning: the snapshot exists to protect small, hard-to-
+# regenerate state (pairing JSONs, cron jobs, config, auth) — not to copy a
+# multi-GB state.db on every update (observed: a 24 GB state.db added ~60s
+# of wall time and silently ate 24 GB of disk per update).
+_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
+
+
+def _resolve_pre_update_backup_mode(args) -> str:
+    """Resolve the pre-update backup mode: ``"off"``, ``"quick"``, or ``"full"``.
+
+    CLI flags win over config; ``--no-backup`` beats ``--backup`` when both
+    are set. Config accepts the mode strings plus legacy booleans:
+    ``true`` → ``full`` (the old zip behavior), ``false`` → ``off``
+    (an explicit opt-out now disables the quick snapshot too — previously
+    it ran unconditionally, ignoring the user's setting). A missing key
+    defaults to ``quick``.
     """
-    # CLI flags win over config.  --no-backup beats --backup if both are set.
     if getattr(args, "no_backup", False):
-        print("◆ Pre-update backup: skipped (--no-backup)")
-        print()
-        return
-
-    force_backup = bool(getattr(args, "backup", False))
+        return "off"
+    if getattr(args, "backup", False):
+        return "full"
 
     try:
         from hermes_cli.config import load_config
@@ -8806,19 +9454,76 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    # The default config ships with ``pre_update_backup: false`` (see
-    # ``hermes_cli/config.py``). Fall back to false if the key is missing
-    # so the default behaviour matches the shipped config: zipping a large
-    # HERMES_HOME can add minutes to every update. Users who want the
-    # #48200 safety net opt in via the config knob or ``--backup``.
-    enabled = updates_cfg.get("pre_update_backup", False)
-    keep = updates_cfg.get("backup_keep", 5)
+    raw = updates_cfg.get("pre_update_backup", "quick")
 
-    if not enabled and not force_backup:
-        # Silent by default — the backup is off, most users don't need to
-        # hear about it on every update.  They can opt in via --backup
-        # or by flipping the config knob.
-        return
+    if raw is True:
+        return "full"
+    if raw is False:
+        return "off"
+    mode = str(raw).strip().lower()
+    if mode in ("off", "false", "none", "disabled"):
+        return "off"
+    if mode in ("full", "zip", "true"):
+        return "full"
+    if mode == "quick":
+        return "quick"
+    logging.getLogger(__name__).warning(
+        "Unknown updates.pre_update_backup value %r — using 'quick'", raw
+    )
+    return "quick"
+
+
+def _run_pre_update_backup(args) -> Optional[str]:
+    """Run the pre-update safety backup and return the quick-snapshot id.
+
+    Single consolidated mechanism gated on ``updates.pre_update_backup``:
+
+    - ``off``   — nothing runs. Explicit user opt-out is honored fully.
+    - ``quick`` (default) — a state snapshot of critical small files
+      (pairing JSONs, cron jobs, config, auth; see ``_QUICK_STATE_FILES``)
+      under ``state-snapshots/``. Files over 1 GiB are skipped with a
+      warning so a bloated state.db can never stall the update
+      (issues #15733, #34600 are the reason this safety net exists).
+    - ``full``  — the quick snapshot PLUS a full zip of HERMES_HOME under
+      ``backups/`` (restorable via ``hermes import``; the #48200 wrong-path
+      wipe is the reason this level exists).
+
+    ``--backup`` forces ``full`` for one run; ``--no-backup`` forces ``off``.
+    Never raises — a backup failure should not block the update itself.
+
+    Returns the quick-snapshot id (used by the post-update cron-jobs
+    restore safety net), or ``None`` when mode is ``off`` or the snapshot
+    failed.
+    """
+    mode = _resolve_pre_update_backup_mode(args)
+
+    if mode == "off":
+        if getattr(args, "no_backup", False):
+            print("◆ Pre-update backup: skipped (--no-backup)")
+            print()
+        # Config-level off is silent — the user opted out; don't spam them
+        # on every update.
+        return None
+
+    snapshot_id = None
+    try:
+        from hermes_cli.backup import create_quick_snapshot
+
+        snapshot_id = create_quick_snapshot(
+            label="pre-update",
+            keep=_PRE_UPDATE_SNAPSHOT_KEEP,
+            max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+        )
+        if snapshot_id:
+            print(f"◆ Pre-update snapshot: {snapshot_id}")
+    except Exception as exc:
+        # Never let a snapshot failure block an update.
+        logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
+
+    if mode != "full":
+        if snapshot_id:
+            print()
+        return snapshot_id
 
     try:
         from hermes_cli.backup import create_pre_update_backup
@@ -8827,24 +9532,31 @@ def _run_pre_update_backup(args) -> None:
             f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update."
         )
         print()
-        return
+        return snapshot_id
+
+    try:
+        from hermes_cli.config import load_config
+
+        _keep = (load_config() or {}).get("updates", {}).get("backup_keep", 5)
+    except Exception:
+        _keep = 5
 
     print("◆ Creating pre-update backup...")
     t0 = _time.monotonic()
     try:
-        out_path = create_pre_update_backup(keep=int(keep))
+        out_path = create_pre_update_backup(keep=int(_keep))
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
         print()
-        return
+        return snapshot_id
 
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
         print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
         print()
-        return
+        return snapshot_id
 
     try:
         size_bytes = out_path.stat().st_size
@@ -8873,9 +9585,9 @@ def _run_pre_update_backup(args) -> None:
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
-    print("  Disable:  omit --backup (backups are off by default)")
-    print("            set updates.pre_update_backup: false in config.yaml")
+    print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
+    return snapshot_id
 
 
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
@@ -9297,6 +10009,60 @@ def _cold_start_windows_gateway_after_update() -> None:
         print(f"  ✓ Starting Windows gateway after update (PID {pid})")
 
 
+
+def _for_each_systemd_gateway_unit(
+    list_units_stdout: str,
+    *,
+    process_unit,
+    on_unit_timeout,
+) -> None:
+    """Process each ``hermes-gateway*.service`` from ``systemctl list-units``.
+
+    ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
+    that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
+    abort the rest of the fleet (#68523).
+    """
+    for line in (list_units_stdout or "").strip().splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        unit = parts[0]
+        if not unit.endswith(".service"):
+            continue
+        # list-units is already pattern-filtered, but keep the name gate so a
+        # stray non-gateway line cannot enter the restart path.
+        if not unit.startswith("hermes-gateway"):
+            continue
+        svc_name = unit.removesuffix(".service")
+        try:
+            process_unit(svc_name)
+        except subprocess.TimeoutExpired as exc:
+            on_unit_timeout(svc_name, exc)
+
+
+def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
+    """Print an explicit incomplete-update warning for unrestarted units."""
+    if not failed_units:
+        return
+    # Preserve discovery order while de-duplicating.
+    seen = set()
+    ordered = []
+    for name in failed_units:
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    print()
+    print("⚠ Update incomplete — some gateway units were not restarted:")
+    for name in ordered:
+        print(f"    - {name}")
+    print("  Skipped units may still be running pre-update code (mixed")
+    print("  sys.modules). Restart them manually, then verify:")
+    print("    hermes gateway status")
+    print("    systemctl --user restart <unit>   # user-scope")
+    print("    sudo systemctl restart <unit>     # system-scope")
+
+
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
     if not token or not token.get("resume_needed"):
@@ -9416,20 +10182,10 @@ def cmd_update(args):
     from hermes_cli.config import (
         detect_install_method,
         format_docker_update_message,
-        format_unsupported_install_warning,
         is_managed,
-        is_unsupported_install_method,
         managed_error,
+        recommended_update_command_for_method,
     )
-
-    # Deprecation notice for pip/Homebrew installs — printed before the
-    # managed-mode early-return below so Homebrew users (who are blocked from
-    # applying the update here) still see it. Warn, don't block: the update
-    # itself still proceeds (except Homebrew, which is managed-mode blocked
-    # for an unrelated reason — brew owns its own upgrade path).
-    _install_method_for_warning = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(_install_method_for_warning):
-        print(f"⚠ {format_unsupported_install_warning(_install_method_for_warning)}")
 
     if is_managed():
         managed_error("update Hermes Agent")
@@ -9441,8 +10197,13 @@ def cmd_update(args):
     # below get a chance to error out with misleading "Not a git
     # repository" text.  See format_docker_update_message() for the full
     # rationale and tag-pinning / config-persistence notes.
-    if detect_install_method(PROJECT_ROOT) == "docker":
+    install_method = detect_install_method(PROJECT_ROOT)
+    if install_method == "docker":
         print(format_docker_update_message())
+        sys.exit(1)
+
+    if install_method in {"nix", "nixos"}:
+        print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 
     if getattr(args, "check", False):
@@ -9465,67 +10226,6 @@ def cmd_update(args):
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     finally:
         _finalize_update_output(_update_io_state)
-
-
-def _cmd_update_pip(args):
-    """Update Hermes via pip (for PyPI installs)."""
-    from hermes_cli import __version__
-    from hermes_cli.config import is_uv_tool_install
-
-    print(f"→ Current version: {__version__}")
-    print("→ Checking PyPI for updates...")
-
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-
-    # Keep managed uv current before using it.
-    update_managed_uv()
-
-    uv = ensure_uv()
-    in_venv = sys.prefix != sys.base_prefix
-    # pipx-managed installs live under .../pipx/venvs/<name>/...
-    pipx_managed = "pipx" in sys.prefix.split(os.sep)
-    pipx = shutil.which("pipx") if pipx_managed else None
-
-    # Only the ``uv pip install`` path inside a venv needs VIRTUAL_ENV
-    # exported (uv refuses to install without it when the launcher shim
-    # didn't activate the venv). ``uv tool upgrade`` / ``pipx upgrade``
-    # operate on a named environment and ignore VIRTUAL_ENV, so we don't
-    # set it for them.
-    export_virtualenv = False
-
-    if is_uv_tool_install():
-        if not uv:
-            print("✗ Detected a uv-tool install but managed uv install failed.")
-            print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
-            sys.exit(1)
-        cmd = [uv, "tool", "upgrade", "hermes-agent"]
-    elif pipx_managed and pipx:
-        # pipx owns its own venv; ``pipx upgrade`` is the only correct path.
-        # Matches scripts/auto-update.sh, which already uses pipx upgrade.
-        cmd = [pipx, "upgrade", "hermes-agent"]
-    elif uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
-        if in_venv:
-            # Launcher shim runs the venv interpreter but doesn't export
-            # VIRTUAL_ENV; without it uv errors "No virtual environment found".
-            export_virtualenv = True
-        else:
-            # Outside any venv, ``--system`` lets uv target the active
-            # interpreter, matching pip's default behaviour.
-            cmd.insert(3, "--system")
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
-
-    print(f"→ Running: {' '.join(cmd)}")
-    run_kwargs = {}
-    if export_virtualenv:
-        run_kwargs["env"] = {**os.environ, "VIRTUAL_ENV": sys.prefix}
-    result = subprocess.run(cmd, **run_kwargs)
-    if result.returncode != 0:
-        print("✗ Update failed")
-        sys.exit(1)
-
-    print("✓ Update complete! Restart hermes to use the new version.")
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -9580,7 +10280,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
-    _run_pre_update_backup(args)
+    # Returns the quick-snapshot id (or None when disabled/failed); the
+    # post-update cron-jobs safety net uses it to detect job loss.
+    pre_update_snapshot_id = _run_pre_update_backup(args)
 
     _windows_gateway_resume = _pause_windows_gateways_for_update()
     if _windows_gateway_resume:
@@ -9617,11 +10319,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "win32":
             use_zip_update = True
         else:
-            from hermes_cli.config import detect_install_method
-            method = detect_install_method(PROJECT_ROOT)
-            if method == "pip":
-                _cmd_update_pip(args)
-                return
             print("✗ Not a git repository. Please reinstall:")
             print(
                 "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
@@ -9865,23 +10562,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print(f"→ Found {commit_count} new commit(s)")
 
-        # Snapshot critical state (state.db, config, pairing JSONs, etc.)
-        # before pulling so a user can recover if something goes wrong.
-        # Issue #15733 reported missing pairing data after an update; even
-        # though `git pull` can't touch $HERMES_HOME, this is cheap
-        # belt-and-suspenders insurance and gives the user something to
-        # restore from via `/snapshot list` / `/snapshot restore <id>`.
-        pre_update_snapshot_id = None
-        try:
-            from hermes_cli.backup import create_quick_snapshot
-
-            pre_update_snapshot_id = create_quick_snapshot(label="pre-update", keep=1)
-            if pre_update_snapshot_id:
-                print(f"  ✓ Pre-update snapshot: {pre_update_snapshot_id}")
-        except Exception as exc:
-            # Never let a snapshot failure block an update.
-            logger.debug("Pre-update snapshot failed: %s", exc)
-
         print("→ Pulling updates...")
         update_succeeded = False
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
@@ -10074,7 +10754,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
+        node_failures = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last
@@ -10086,9 +10766,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        from hermes_constants import find_node_executable
-
-        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
+        if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Capture the (very loud) Electron/vite build output into
@@ -10097,9 +10775,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # covers a still-settling rebuild window the first wait didn't fully
             # catch — then surface the captured tail so the failure is
             # debuggable.
-            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+            #
+            # Start the build subprocess with the Hermes-managed Node on PATH:
+            # when `hermes update` runs inside the desktop updater chain
+            # (Desktop → hermes-setup → hermes update), the shell PATH
+            # customizations are lost, so a bare-PATH child would fail with
+            # `node: not found` before cmd_gui can self-heal.
+            from hermes_constants import with_hermes_node_path
+
+            _build_env = with_hermes_node_path()
+            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
             if build_result.returncode != 0:
-                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
                 tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
@@ -10376,7 +11063,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
-        print("✓ Update complete!")
+        if node_failures:
+            print(
+                "⚠ Update partially complete — Node.js dependencies for "
+                f"{', '.join(node_failures)} did not refresh."
+            )
+            print("  Code and Python deps are updated, but the dashboard/TUI may")
+            print("  be in a mixed state until the Node deps are rebuilt.")
+        else:
+            print("✓ Update complete!")
+
+        # Search-index optimization notice (v23). Existing installs keep their
+        # working search index untouched on update; the compact v23 layout —
+        # which reclaims a large fraction of state.db on heavy users — is
+        # opt-in. Surface it here (the moment the user is already thinking
+        # about their install) with the exact command and the concrete size
+        # win. Show-once-ish: only when a legacy index is actually present.
+        try:
+            _print_fts_optimize_available_notice()
+        except Exception as e:
+            logger.debug("FTS optimize notice failed: %s", e)
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -10459,6 +11165,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except OSError:
                 pass
 
+        gateway_fleet_restart_incomplete = False
+
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
@@ -10469,7 +11177,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _ensure_user_systemd_env,
                 find_gateway_pids,
                 find_profile_gateway_processes,
-                launch_detached_profile_gateway_restart,
+                _prepare_profile_gateway_update_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
                 _wait_for_gateway_exit,
@@ -10649,8 +11357,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _drain_budget = max(_drain_budget, 30.0) + 15.0
 
             restarted_services = []
+            failed_or_stale_units = []
             killed_pids = set()
             relaunched_profiles = []
+            externally_supervised_profiles = []
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -10678,268 +11388,279 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             text=True,
                             timeout=10,
                         )
-                        for line in result.stdout.strip().splitlines():
-                            parts = line.split()
-                            if not parts:
-                                continue
-                            unit = parts[
-                                0
-                            ]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
-                            if not unit.endswith(".service"):
-                                continue
-                            svc_name = unit.removesuffix(".service")
-                            # Check if active
-                            check = subprocess.run(
-                                scope_cmd + ["is-active", svc_name],
+                    except FileNotFoundError:
+                        continue
+                    except subprocess.TimeoutExpired as exc:
+                        # Discovery timeout — skip this scope, keep the other.
+                        print(
+                            f"  ⚠ systemctl timed out listing {scope}-scope "
+                            f"gateway units ({exc.cmd if exc.cmd else 'unknown command'}). "
+                            f"Check the gateway with: hermes gateway status"
+                        )
+                        continue
+
+                    def _restart_one_systemd_gateway_unit(svc_name: str) -> None:
+                        # Check if active
+                        check = subprocess.run(
+                            scope_cmd + ["is-active", svc_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if check.stdout.strip() != "active":
+                            return
+
+                        # Resolve how we may run manage-units verbs
+                        # (reset-failed/start/restart) for this scope.
+                        # None ⇒ no non-interactive privilege path; we
+                        # must avoid those verbs entirely or polkit will
+                        # throw an interactive auth prompt inside our
+                        # captured 10-15s subprocess (the user sees it
+                        # flash and "exit directly" — reported June 2026).
+                        _manage_cmd = _resolve_manage_cmd(
+                            scope, scope_cmd, svc_name
+                        )
+
+                        # Prefer a graceful SIGUSR1 restart so in-flight
+                        # agent runs drain instead of being SIGKILLed.
+                        # The gateway's SIGUSR1 handler calls
+                        # request_restart(via_service=True) → drain →
+                        # exit; systemd's Restart=always respawns the unit.
+                        _main_pid = 0
+                        try:
+                            _show = subprocess.run(
+                                scope_cmd
+                                + [
+                                    "show",
+                                    svc_name,
+                                    "--property=MainPID",
+                                    "--value",
+                                ],
                                 capture_output=True,
                                 text=True,
                                 timeout=5,
                             )
-                            if check.stdout.strip() != "active":
-                                continue
+                            _main_pid = int((_show.stdout or "").strip() or 0)
+                        except (
+                            ValueError,
+                            subprocess.TimeoutExpired,
+                            FileNotFoundError,
+                        ):
+                            _main_pid = 0
 
-                            # Resolve how we may run manage-units verbs
-                            # (reset-failed/start/restart) for this scope.
-                            # None ⇒ no non-interactive privilege path; we
-                            # must avoid those verbs entirely or polkit will
-                            # throw an interactive auth prompt inside our
-                            # captured 10-15s subprocess (the user sees it
-                            # flash and "exit directly" — reported June 2026).
-                            _manage_cmd = _resolve_manage_cmd(
-                                scope, scope_cmd, svc_name
+                        _graceful_ok = False
+                        if _main_pid > 0:
+                            print(
+                                f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                            )
+                            _graceful_ok = _graceful_restart_via_sigusr1(
+                                _main_pid,
+                                drain_timeout=_drain_budget,
                             )
 
-                            # Prefer a graceful SIGUSR1 restart so in-flight
-                            # agent runs drain instead of being SIGKILLed.
-                            # The gateway's SIGUSR1 handler calls
-                            # request_restart(via_service=True) → drain →
-                            # exit; systemd's Restart=always respawns the unit.
-                            _main_pid = 0
-                            try:
-                                _show = subprocess.run(
-                                    scope_cmd
-                                    + [
-                                        "show",
-                                        svc_name,
-                                        "--property=MainPID",
-                                        "--value",
-                                    ],
+                        if _graceful_ok:
+                            # Gateway exited after a planned restart.
+                            # ``Restart=always`` means systemd WILL respawn
+                            # the unit — but only after
+                            # ``RestartSec`` (default 60s on our unit
+                            # file). That 60s wait is a crash-loop guard,
+                            # and is the right default when the gateway
+                            # dies unexpectedly. For a voluntary restart
+                            # on update, it's dead time the user watches.
+                            #
+                            # Shortcut it: ``reset-failed`` + ``start``
+                            # skips RestartSec entirely (we're manually
+                            # initiating the unit, not waiting for
+                            # systemd's auto-restart logic). Takes about
+                            # as long as the process takes to come up
+                            # (~1-3s on a warm box).
+                            #
+                            # If the unit is already active because
+                            # RestartSec elapsed while we were draining,
+                            # ``start`` is a no-op and we fall through to
+                            # the poll below. Either way we collapse the
+                            # 60s+ delay to a ~5s one.
+                            #
+                            # The shortcut needs manage-units privileges.
+                            # Without them (system service, non-root, no
+                            # passwordless sudo) skip it — systemd's own
+                            # auto-restart still relaunches the unit after
+                            # RestartSec, no privileges required.
+                            if _manage_cmd is not None:
+                                subprocess.run(
+                                    _manage_cmd + ["reset-failed", svc_name],
                                     capture_output=True,
                                     text=True,
-                                    timeout=5,
+                                    timeout=10,
                                 )
-                                _main_pid = int((_show.stdout or "").strip() or 0)
-                            except (
-                                ValueError,
-                                subprocess.TimeoutExpired,
-                                FileNotFoundError,
-                            ):
-                                _main_pid = 0
-
-                            _graceful_ok = False
-                            if _main_pid > 0:
-                                print(
-                                    f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                                subprocess.run(
+                                    _manage_cmd + ["start", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15,
                                 )
-                                _graceful_ok = _graceful_restart_via_sigusr1(
-                                    _main_pid,
-                                    drain_timeout=_drain_budget,
-                                )
-
-                            if _graceful_ok:
-                                # Gateway exited after a planned restart.
-                                # ``Restart=always`` means systemd WILL respawn
-                                # the unit — but only after
-                                # ``RestartSec`` (default 60s on our unit
-                                # file). That 60s wait is a crash-loop guard,
-                                # and is the right default when the gateway
-                                # dies unexpectedly. For a voluntary restart
-                                # on update, it's dead time the user watches.
-                                #
-                                # Shortcut it: ``reset-failed`` + ``start``
-                                # skips RestartSec entirely (we're manually
-                                # initiating the unit, not waiting for
-                                # systemd's auto-restart logic). Takes about
-                                # as long as the process takes to come up
-                                # (~1-3s on a warm box).
-                                #
-                                # If the unit is already active because
-                                # RestartSec elapsed while we were draining,
-                                # ``start`` is a no-op and we fall through to
-                                # the poll below. Either way we collapse the
-                                # 60s+ delay to a ~5s one.
-                                #
-                                # The shortcut needs manage-units privileges.
-                                # Without them (system service, non-root, no
-                                # passwordless sudo) skip it — systemd's own
-                                # auto-restart still relaunches the unit after
-                                # RestartSec, no privileges required.
-                                if _manage_cmd is not None:
-                                    subprocess.run(
-                                        _manage_cmd + ["reset-failed", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=10,
-                                    )
-                                    subprocess.run(
-                                        _manage_cmd + ["start", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=15,
-                                    )
-                                    # Short poll: the gateway should be up
-                                    # within a few seconds now that we
-                                    # bypassed RestartSec.
-                                    if _wait_for_service_active(
-                                        scope_cmd,
-                                        svc_name,
-                                        timeout=10.0,
-                                    ):
-                                        restarted_services.append(svc_name)
-                                        continue
-                                # Passive poll: systemd's auto-restart fires
-                                # after RestartSec regardless of privileges.
-                                # This is the primary path when _manage_cmd is
-                                # None, and the fallback when the explicit
-                                # start didn't take.
-                                _restart_sec = _service_restart_sec(
-                                    scope_cmd,
-                                    svc_name,
-                                    default=0.0,
-                                )
-                                _post_drain_timeout = max(
-                                    10.0,
-                                    _restart_sec + 10.0,
-                                )
-                                if _manage_cmd is None and _restart_sec > 5.0:
-                                    print(
-                                        f"  → {svc_name}: waiting for systemd "
-                                        f"auto-restart (~{int(_restart_sec)}s; "
-                                        "no root for an immediate restart)..."
-                                    )
-                                if _wait_for_service_active(
-                                    scope_cmd,
-                                    svc_name,
-                                    timeout=_post_drain_timeout,
-                                ):
-                                    restarted_services.append(svc_name)
-                                    continue
-                                # Process exited but wasn't respawned (older
-                                # unit without Restart=on-failure or
-                                # RestartForceExitStatus=75).  Fall through
-                                # to systemctl start/restart.
-                                print(
-                                    f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
-                                )
-
-                            # Forcing a restart requires manage-units
-                            # privileges.  Without a non-interactive path,
-                            # running systemctl here would spawn a polkit
-                            # auth prompt inside a captured 10-15s subprocess
-                            # — it flashes and dies before the user can
-                            # answer.  Skip with clear instructions instead.
-                            if _manage_cmd is None:
-                                print(
-                                    f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
-                                    f"    Restart it manually to load the new version:\n"
-                                    f"      sudo systemctl restart {svc_name}\n"
-                                    f"    To let `hermes update` restart it automatically, allow\n"
-                                    f"    passwordless sudo for systemctl, or run updates with sudo."
-                                )
-                                continue
-
-                            # Fallback: blunt systemctl restart.  This is
-                            # what the old code always did; we get here only
-                            # when the graceful path failed (unit missing
-                            # SIGUSR1 wiring, drain exceeded the budget,
-                            # restart-policy mismatch).
-                            #
-                            # Always `reset-failed` first.  If systemd's own
-                            # auto-restart attempts already parked the unit
-                            # in a failed state (transient CHDIR / OOM /
-                            # filesystem race after our drain + exit-75),
-                            # a plain `systemctl restart` can wedge against
-                            # the RestartSec backoff and leave the unit
-                            # dead.  Clearing the failed state first makes
-                            # the restart idempotent.  Mirrors the recovery
-                            # path in `hermes gateway restart`
-                            # (`systemd_restart()`) as of PR #20949.
-                            subprocess.run(
-                                _manage_cmd + ["reset-failed", svc_name],
-                                capture_output=True,
-                                text=True,
-                                timeout=10,
-                            )
-                            restart = subprocess.run(
-                                _manage_cmd + ["restart", svc_name],
-                                capture_output=True,
-                                text=True,
-                                timeout=15,
-                            )
-                            if restart.returncode == 0:
-                                # Verify the service actually survived the
-                                # restart.  systemctl restart returns 0 even
-                                # if the new process crashes immediately.
+                                # Short poll: the gateway should be up
+                                # within a few seconds now that we
+                                # bypassed RestartSec.
                                 if _wait_for_service_active(
                                     scope_cmd,
                                     svc_name,
                                     timeout=10.0,
                                 ):
                                     restarted_services.append(svc_name)
-                                else:
-                                    # Retry once — transient startup failures
-                                    # (stale module cache, import race) often
-                                    # resolve on the second attempt.  Again
-                                    # clear any failed state first so the
-                                    # retry isn't blocked by the previous
-                                    # crash.
-                                    print(
-                                        f"  ⚠ {svc_name} died after restart, retrying..."
-                                    )
-                                    subprocess.run(
-                                        _manage_cmd + ["reset-failed", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=10,
-                                    )
-                                    subprocess.run(
-                                        _manage_cmd + ["restart", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=15,
-                                    )
-                                    if _wait_for_service_active(
-                                        scope_cmd,
-                                        svc_name,
-                                        timeout=10.0,
-                                    ):
-                                        restarted_services.append(svc_name)
-                                        print(f"  ✓ {svc_name} recovered on retry")
-                                    else:
-                                        _scope_flag = "--user " if scope == "user" else ""
-                                        _sudo_hint = "sudo " if scope == "system" else ""
-                                        print(
-                                            f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                            f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
-                                            f"    Recover manually:\n"
-                                            f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
-                                            f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
-                                        )
-                            else:
+                                    return
+                            # Passive poll: systemd's auto-restart fires
+                            # after RestartSec regardless of privileges.
+                            # This is the primary path when _manage_cmd is
+                            # None, and the fallback when the explicit
+                            # start didn't take.
+                            _restart_sec = _service_restart_sec(
+                                scope_cmd,
+                                svc_name,
+                                default=0.0,
+                            )
+                            _post_drain_timeout = max(
+                                10.0,
+                                _restart_sec + 10.0,
+                            )
+                            if _manage_cmd is None and _restart_sec > 5.0:
                                 print(
-                                    f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
+                                    f"  → {svc_name}: waiting for systemd "
+                                    f"auto-restart (~{int(_restart_sec)}s; "
+                                    "no root for an immediate restart)..."
                                 )
-                    except FileNotFoundError:
-                        pass
-                    except subprocess.TimeoutExpired as exc:
-                        # Don't swallow this silently — a wedged systemctl
-                        # call here used to make the whole restart phase
-                        # vanish with no output (June 2026 report).
-                        print(
-                            f"  ⚠ systemctl timed out during the {scope}-scope "
-                            f"gateway restart ({exc.cmd if exc.cmd else 'unknown command'}). "
-                            f"Check the gateway with: hermes gateway status"
+                            if _wait_for_service_active(
+                                scope_cmd,
+                                svc_name,
+                                timeout=_post_drain_timeout,
+                            ):
+                                restarted_services.append(svc_name)
+                                return
+                            # Process exited but wasn't respawned (older
+                            # unit without Restart=on-failure or
+                            # RestartForceExitStatus=75).  Fall through
+                            # to systemctl start/restart.
+                            print(
+                                f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
+                            )
+
+                        # Forcing a restart requires manage-units
+                        # privileges.  Without a non-interactive path,
+                        # running systemctl here would spawn a polkit
+                        # auth prompt inside a captured 10-15s subprocess
+                        # — it flashes and dies before the user can
+                        # answer.  Skip with clear instructions instead.
+                        if _manage_cmd is None:
+                            failed_or_stale_units.append(svc_name)
+                            print(
+                                f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
+                                f"    Restart it manually to load the new version:\n"
+                                f"      sudo systemctl restart {svc_name}\n"
+                                f"    To let `hermes update` restart it automatically, allow\n"
+                                f"    passwordless sudo for systemctl, or run updates with sudo."
+                            )
+                            return
+
+                        # Fallback: blunt systemctl restart.  This is
+                        # what the old code always did; we get here only
+                        # when the graceful path failed (unit missing
+                        # SIGUSR1 wiring, drain exceeded the budget,
+                        # restart-policy mismatch).
+                        #
+                        # Always `reset-failed` first.  If systemd's own
+                        # auto-restart attempts already parked the unit
+                        # in a failed state (transient CHDIR / OOM /
+                        # filesystem race after our drain + exit-75),
+                        # a plain `systemctl restart` can wedge against
+                        # the RestartSec backoff and leave the unit
+                        # dead.  Clearing the failed state first makes
+                        # the restart idempotent.  Mirrors the recovery
+                        # path in `hermes gateway restart`
+                        # (`systemd_restart()`) as of PR #20949.
+                        subprocess.run(
+                            _manage_cmd + ["reset-failed", svc_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
                         )
+                        restart = subprocess.run(
+                            _manage_cmd + ["restart", svc_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        if restart.returncode == 0:
+                            # Verify the service actually survived the
+                            # restart.  systemctl restart returns 0 even
+                            # if the new process crashes immediately.
+                            if _wait_for_service_active(
+                                scope_cmd,
+                                svc_name,
+                                timeout=10.0,
+                            ):
+                                restarted_services.append(svc_name)
+                            else:
+                                # Retry once — transient startup failures
+                                # (stale module cache, import race) often
+                                # resolve on the second attempt.  Again
+                                # clear any failed state first so the
+                                # retry isn't blocked by the previous
+                                # crash.
+                                print(
+                                    f"  ⚠ {svc_name} died after restart, retrying..."
+                                )
+                                subprocess.run(
+                                    _manage_cmd + ["reset-failed", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10,
+                                )
+                                subprocess.run(
+                                    _manage_cmd + ["restart", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15,
+                                )
+                                if _wait_for_service_active(
+                                    scope_cmd,
+                                    svc_name,
+                                    timeout=10.0,
+                                ):
+                                    restarted_services.append(svc_name)
+                                    print(f"  ✓ {svc_name} recovered on retry")
+                                else:
+                                    failed_or_stale_units.append(svc_name)
+                                    _scope_flag = "--user " if scope == "user" else ""
+                                    _sudo_hint = "sudo " if scope == "system" else ""
+                                    print(
+                                        f"  ✗ {svc_name} failed to stay running after restart.\n"
+                                        f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
+                                        f"    Recover manually:\n"
+                                        f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
+                                        f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
+                                    )
+                        else:
+                            failed_or_stale_units.append(svc_name)
+                            print(
+                                f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
+                            )
+
+                    def _on_unit_timeout(svc_name: str, exc: subprocess.TimeoutExpired) -> None:
+                        # Isolate the timeout to this unit and keep going
+                        # (#68523). A scope-wide handler used to abort every
+                        # later gateway and leave the fleet on mixed code.
+                        failed_or_stale_units.append(svc_name)
+                        print(
+                            f"  ⚠ systemctl timed out restarting {svc_name} "
+                            f"({exc.cmd if exc.cmd else 'unknown command'}); "
+                            f"continuing with remaining gateways"
+                        )
+
+                    _for_each_systemd_gateway_unit(
+                        result.stdout,
+                        process_unit=_restart_one_systemd_gateway_unit,
+                        on_unit_timeout=_on_unit_timeout,
+                    )
 
             # --- Launchd services (macOS) ---
             if is_macos():
@@ -10982,7 +11703,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if proc.pid in manual_pids
             }
             for pid, proc in profile_processes.items():
-                if not launch_detached_profile_gateway_restart(proc.profile, pid):
+                restart_mode = _prepare_profile_gateway_update_restart(
+                    proc.profile, pid
+                )
+                if restart_mode is None:
                     continue
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
@@ -11022,7 +11746,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # live when the new gateway polls.
                 _wait_for_gateway_exit(timeout=5.0, force_after=None)
                 killed_pids.add(pid)
-                relaunched_profiles.append(proc.profile)
+                if restart_mode == "external-supervisor":
+                    externally_supervised_profiles.append(proc.profile)
+                else:
+                    relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
                 if pid in profile_processes:
@@ -11040,7 +11767,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if relaunched_profiles:
                     names = ", ".join(relaunched_profiles)
                     print(f"  ✓ Restarting manual gateway profile(s): {names}")
-                unmapped_count = len(killed_pids) - len(relaunched_profiles)
+                if externally_supervised_profiles:
+                    names = ", ".join(externally_supervised_profiles)
+                    print(
+                        "  ✓ Handed gateway profile(s) back to their external "
+                        f"supervisor: {names}"
+                    )
+                unmapped_count = (
+                    len(killed_pids)
+                    - len(relaunched_profiles)
+                    - len(externally_supervised_profiles)
+                )
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")
@@ -11048,6 +11785,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(
                             "    (or: hermes -p <profile> gateway run  for each profile)"
                         )
+
+            if failed_or_stale_units:
+                gateway_fleet_restart_incomplete = True
+                if gateway_mode:
+                    _exit_code_path = get_hermes_home() / ".update_exit_code"
+                    try:
+                        _exit_code_path.write_text("1")
+                    except OSError:
+                        pass
+            _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
 
             if not restarted_services and not killed_pids:
                 # No gateways were running — nothing to do
@@ -11129,16 +11876,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        _kill_stale_dashboard_processes()
+        # Restart a managed dashboard through systemd, or stop stale manual
+        # dashboard processes.  Raw-killing a systemd-owned dashboard PID makes
+        # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
+        # Preserve the safety rule above: a failed Node refresh leaves the
+        # currently running dashboard untouched.
+        if node_failures:
+            print()
+            print("  ℹ Leaving running dashboard process(es) untouched because the")
+            print("    Node.js dependency refresh did not complete.")
+        else:
+            _kill_stale_dashboard_processes(restart_managed=True)
 
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
+
+        if gateway_fleet_restart_incomplete:
+            # Code update itself succeeded, but at least one gateway still
+            # runs pre-update modules — surface that as a failed update so
+            # automation / operators do not treat the fleet as healthy.
+            sys.exit(1)
 
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
@@ -12038,6 +12796,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     try:
         from hermes_cli.config import load_config, save_config
+        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
 
         cfg = load_config()
         dash = cfg.setdefault("dashboard", {})
@@ -12048,6 +12807,16 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         basic["password"] = ""
         if not str(basic.get("secret", "") or "").strip():
             basic["secret"] = secret
+        # The bundled basic provider is a backend plugin that still honours
+        # plugins.disabled. Unblock it when we just wrote basic_auth so the
+        # discover_plugins(force=True) call below can register the provider
+        # (#54489). Surface the mutation so an operator who deliberately
+        # disabled it isn't surprised.
+        if ensure_basic_auth_plugin_enabled_in_config(cfg):
+            print(
+                "  ✓ Re-enabled the bundled 'basic' auth plugin "
+                "(was in plugins.disabled)"
+            )
         save_config(cfg)
     except Exception as exc:
         print(f"  ✗ Failed to write config.yaml: {exc}")
@@ -12070,8 +12839,97 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     print()
 
 
+def _read_ssh_session_token_file(path: str) -> str:
+    """Read and unlink a Desktop SSH token from its private runtime directory."""
+    if sys.platform == "win32":
+        from hermes_cli.windows_ssh_runtime import read_token
+        return read_token(path)
+
+    import stat as _stat
+    from pathlib import Path as _Path
+    from hermes_constants import get_hermes_home as _get_hermes_home
+
+    if not os.path.isabs(path):
+        raise SystemExit("--ssh-session-token-file must be absolute")
+
+    token_path = _Path(path)
+    token_root = _get_hermes_home() / "desktop-ssh"
+    try:
+        relative = token_path.relative_to(token_root)
+    except ValueError as exc:
+        raise SystemExit("--ssh-session-token-file must be under the desktop-ssh directory") from exc
+    if len(relative.parts) != 2 or not re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]):
+        raise SystemExit("--ssh-session-token-file has an invalid runtime path")
+    if not re.fullmatch(r"[0-9a-f]{16}\.token", relative.parts[1]):
+        raise SystemExit("--ssh-session-token-file has an invalid filename")
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = -1
+    directory_fd = -1
+    file_fd = -1
+    try:
+        try:
+            root_fd = os.open(token_root, directory_flags)
+            root_stat = os.fstat(root_fd)
+            if not _stat.S_ISDIR(root_stat.st_mode):
+                raise SystemExit("--ssh-session-token-file has an unsafe runtime root")
+            if hasattr(os, "getuid") and root_stat.st_uid != os.getuid():
+                raise SystemExit("--ssh-session-token-file runtime root has the wrong owner")
+            directory_fd = os.open(relative.parts[0], directory_flags, dir_fd=root_fd)
+            directory_stat = os.fstat(directory_fd)
+            if not _stat.S_ISDIR(directory_stat.st_mode):
+                raise SystemExit("--ssh-session-token-file has an unsafe parent directory")
+            if hasattr(os, "getuid") and directory_stat.st_uid != os.getuid():
+                raise SystemExit("--ssh-session-token-file parent has the wrong owner")
+            if (directory_stat.st_mode & 0o777) != 0o700:
+                raise SystemExit("--ssh-session-token-file parent has unsafe permissions")
+            file_fd = os.open(relative.parts[1], file_flags, dir_fd=directory_fd)
+        except SystemExit:
+            raise
+        except OSError as exc:
+            if exc.errno == getattr(__import__("errno"), "ELOOP", -1):
+                raise SystemExit("--ssh-session-token-file is a symlink") from exc
+            raise SystemExit("--ssh-session-token-file is not accessible") from exc
+
+        file_stat = os.fstat(file_fd)
+        if not _stat.S_ISREG(file_stat.st_mode):
+            raise SystemExit("--ssh-session-token-file is not a regular file")
+        if file_stat.st_size != 64:
+            raise SystemExit("--ssh-session-token-file contains an invalid token")
+        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
+            raise SystemExit("--ssh-session-token-file has the wrong owner")
+        if hasattr(os, "getuid") and (file_stat.st_mode & 0o777) & ~0o600:
+            raise SystemExit("--ssh-session-token-file has unsafe permissions")
+
+        with os.fdopen(file_fd, "r") as token_stream:
+            file_fd = -1
+            token = token_stream.read(65)
+
+        if not re.fullmatch(r"[0-9a-f]{64}", token):
+            raise SystemExit("--ssh-session-token-file contains an invalid token")
+        return token
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if directory_fd >= 0:
+            try:
+                os.unlink(relative.parts[1], dir_fd=directory_fd)
+            except OSError:
+                pass
+            os.close(directory_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    _token_file = getattr(args, "ssh_session_token_file", None)
+    if _token_file and (
+        getattr(args, "status", False) or getattr(args, "stop", False)
+    ):
+        raise SystemExit("--ssh-session-token-file cannot be used with --status or --stop")
+
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
         count = _report_dashboard_status()
@@ -12094,6 +12952,12 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    _ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
+    if _ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", _ssh_owner_nonce):
+        raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
+    _ssh_session_token = None
+    if _token_file and not _headless_backend:
+        raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
@@ -12147,6 +13011,10 @@ def cmd_dashboard(args):
             "--host", args.host,
             "--open-profile", _launch_profile,
         ]
+        if _ssh_owner_nonce:
+            reexec_argv.extend(["--ssh-owner-nonce", _ssh_owner_nonce])
+        if _token_file:
+            reexec_argv.extend(["--ssh-session-token-file", _token_file])
         if args.no_open:
             reexec_argv.append("--no-open")
         if getattr(args, "insecure", False):
@@ -12183,6 +13051,9 @@ def cmd_dashboard(args):
         else:
             os.execvpe(sys.executable, reexec_argv, env)
 
+    if _token_file:
+        _ssh_session_token = _read_ssh_session_token_file(_token_file)
+
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
     try:
@@ -12211,6 +13082,23 @@ def cmd_dashboard(args):
     # backend is the desktop's primary entrypoint and needs the same.
     _sync_bundled_skills_quietly()
 
+    # Bridge terminal.* config into the TERMINAL_* env vars for THIS process,
+    # mirroring the CLI (cli.py env_mappings) and gateway (gateway/run.py
+    # _terminal_env_map) startup bridges. The dashboard/serve backend runs
+    # agents in-process (tui_gateway.ws → server._make_agent) and ticks cron
+    # jobs itself when desktop-spawned — without this bridge those consumers
+    # saw an unset TERMINAL_ENV and silently ran every command on the host
+    # even when config.yaml selects `terminal.backend: docker`
+    # (#63141, #54449, #61115, #65696). PTY chat spawns already bridge their
+    # child env copy; this covers the in-process consumers.
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env()
+    except Exception:
+        logger.debug("terminal config → env bridge failed for dashboard/serve",
+                     exc_info=True)
+
     if _headless_backend:
         # Don't build the SPA, and tell mount_spa() (read at web_server import
         # below) to disable it even if a stray dist exists. Set it first.
@@ -12228,10 +13116,25 @@ def cmd_dashboard(args):
             else PROJECT_ROOT / "hermes_cli" / "web_dist"
         )
         if not (_dist_root / "index.html").exists():
-            print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
-            print("  Or drop --skip-build to build automatically.")
-            sys.exit(1)
+            # The caller promised a pre-built dist but there isn't one.
+            # Instead of hard-failing (issue #59288 — desktop launches with
+            # --build-mode skip after a wipe of web_dist), warn and attempt
+            # ONE recovery build through the normal build path. Only the
+            # default dist location is recoverable: a custom HERMES_WEB_DIST
+            # points at a caller-managed directory the build cannot populate.
+            _recoverable = "HERMES_WEB_DIST" not in os.environ
+            if _recoverable:
+                print(f"⚠ --skip-build was passed but no web dist found at: {_dist_root}")
+                print("  Attempting one recovery build of the web UI...")
+                _build_web_ui(PROJECT_ROOT / "web", fatal=True)
+            if not (_dist_root / "index.html").exists():
+                print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
+                if _recoverable:
+                    print("  The recovery build did not produce a usable dist.")
+                print("  Pre-build first:  npm install --workspace web && npm run build -w web")
+                print("  Or drop --skip-build to build automatically.")
+                sys.exit(1)
+            print("  ✓ Recovery build produced a web dist")
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
     else:
         # HERMES_WEB_DIST is set without --skip-build: the build is skipped
@@ -12306,6 +13209,8 @@ def cmd_dashboard(args):
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
         headless=_headless_backend,
+        ssh_session_token=_ssh_session_token,
+        ssh_owner_nonce=_ssh_owner_nonce,
     )
 
 
@@ -12404,11 +13309,11 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "model", "pairing", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12669,16 +13574,12 @@ def _try_termux_fast_cli_launch() -> bool:
 
     if getattr(args, "oneshot", None):
         _prepare_agent_startup(args)
-        from hermes_cli.oneshot import run_oneshot
-
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-                usage_file=getattr(args, "usage_file", None),
-            )
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -13109,10 +14010,6 @@ def main():
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
 
-    # =========================================================================
-    # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
-    # =========================================================================
-    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
     # =========================================================================
     # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
@@ -13254,6 +14151,11 @@ def main():
     # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
+
+    # =========================================================================
+    # skin command  (parser built in hermes_cli/subcommands/skin.py)
+    # =========================================================================
+    build_skin_parser(subparsers, cmd_skin=cmd_skin)
 
     # =========================================================================
     # console command  (parser built in hermes_cli/subcommands/console.py)
@@ -13850,6 +14752,33 @@ def main():
     sessions_subparsers.add_parser(
         "optimize",
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
+    )
+
+    sessions_optimize_storage = sessions_subparsers.add_parser(
+        "optimize-storage",
+        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",
+        description=(
+            "Rebuild the full-text search index in the compact v23 "
+            "external-content layout. On large databases this reclaims a "
+            "large fraction of state.db (the old layout stored duplicate "
+            "copies of every message and indexed tool output). Runs "
+            "foreground with a progress bar, throttles so a running gateway "
+            "stays responsive, and VACUUMs at the end. Safe to interrupt and "
+            "re-run — it resumes where it left off. No conversation data is "
+            "changed; only the search index is rebuilt."
+        ),
+    )
+    sessions_optimize_storage.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        default=False,
+        help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)",
+    )
+    sessions_optimize_storage.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the disk-space confirmation prompt",
     )
 
     sessions_repair = sessions_subparsers.add_parser(
@@ -14634,6 +15563,96 @@ def main():
                 f"(reclaimed {saved:.1f} MB)"
             )
 
+        elif action == "optimize-storage":
+            db_path = db.db_path
+            if not db.fts_optimize_available():
+                print("Search index is already on the compact layout — nothing to do.")
+                db.close()
+                return
+
+            before_bytes = os.path.getsize(db_path) if db_path.exists() else 0
+            before_mb = before_bytes / (1024 * 1024)
+
+            # Disk preflight: the rebuild adds the new index before the old is
+            # torn down, and the final VACUUM needs a full second copy of the
+            # file. Require headroom ≈ current file size to finish cleanly.
+            do_vacuum = not getattr(args, "no_vacuum", False)
+            try:
+                import shutil as _shutil
+                free_bytes = _shutil.disk_usage(db_path.parent).free
+            except Exception:
+                free_bytes = None
+            need_bytes = before_bytes if do_vacuum else int(before_bytes * 0.3)
+            print(f"Search-index optimization for {db_path}")
+            print(f"  Current database size: {before_mb:.1f} MB")
+            if free_bytes is not None:
+                print(f"  Free disk: {free_bytes / (1024*1024):.0f} MB "
+                      f"(need ~{need_bytes / (1024*1024):.0f} MB to complete"
+                      f"{' incl. VACUUM' if do_vacuum else ''})")
+                if free_bytes < need_bytes:
+                    print()
+                    print("⚠ Not enough free disk to complete safely. Free up "
+                          "space, or run with --no-vacuum (rebuilds the index "
+                          "but doesn't reclaim space until a later VACUUM).")
+                    db.close()
+                    return
+            if before_mb > 500:
+                print("  This may take a while on a large database. It runs in "
+                      "the foreground with progress below; safe to Ctrl-C and "
+                      "re-run (it resumes).")
+            if not getattr(args, "yes", False):
+                try:
+                    resp = input("Proceed? [y/N] ").strip().lower()
+                except EOFError:
+                    resp = ""
+                if resp not in ("y", "yes"):
+                    print("Cancelled.")
+                    db.close()
+                    return
+
+            _last = {"phase": None}
+
+            def _progress(info):
+                phase = info.get("phase")
+                pct = info.get("percent", 0)
+                if phase == "backfill":
+                    print(f"\r  Rebuilding index: {pct:3d}% "
+                          f"({info.get('indexed',0):,}/{info.get('total',0):,})",
+                          end="", flush=True)
+                elif phase != _last["phase"]:
+                    label = {"teardown": "Reclaiming old index",
+                             "vacuum": "Compacting database (VACUUM)",
+                             "done": "Done"}.get(phase, phase)
+                    print(f"\n  {label}…", flush=True)
+                _last["phase"] = phase
+
+            print("Optimizing search-index storage…")
+            try:
+                result = db.optimize_fts_storage(
+                    progress_cb=_progress, vacuum=do_vacuum
+                )
+            except Exception as e:
+                print(f"\nError: optimization failed: {e}")
+                print("No data was lost. Re-run to resume.")
+                db.close()
+                return
+            if not result.get("ok"):
+                print(f"\nCould not optimize: {result.get('reason', 'unknown')}")
+                db.close()
+                return
+            after_mb = (
+                os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
+            )
+            saved = before_mb - after_mb
+            print(f"\n✓ Search index optimized.")
+            print(
+                f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                f"(reclaimed {saved:.1f} MB)"
+            )
+            if result.get("vacuumed") is False:
+                print("  (VACUUM was skipped or failed — run "
+                      "`hermes sessions optimize` later to reclaim freed space.)")
+
         elif action == "stats":
             total = db.session_count()
             msgs = db.message_count()
@@ -14826,16 +15845,12 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
-        from hermes_cli.oneshot import run_oneshot
-
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-                usage_file=getattr(args, "usage_file", None),
-            )
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

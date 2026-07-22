@@ -638,6 +638,88 @@ class TestFetchEndpointModelMetadataLmStudio:
         assert result["publisher/model-a"]["context_length"] == 65536
 
 
+class TestEndpointMetadataCacheIsCredentialScoped:
+    """The /models probe is authenticated, so its catalogue belongs to the key.
+
+    An OpenAI-compatible ``/models`` returns what THAT credential is entitled
+    to — availability and context windows vary by account. Keying the cache on
+    the base URL alone lets one credential's catalogue answer another's probe;
+    in a multiplexed gateway that serves one profile's context window (and the
+    pricing metadata built from it) to a different profile.
+    """
+
+    URL = "https://shared-llm.example.test/v1"
+    TIERS = {
+        "Bearer key-enterprise": [{"id": "shared-model", "context_length": 1_000_000}],
+        "Bearer key-free": [{"id": "shared-model", "context_length": 128_000}],
+    }
+
+    def _clear(self):
+        import agent.model_metadata as mm
+
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+
+    def _tiered_get(self, seen):
+        def _get(url, headers=None, timeout=None, verify=None, **kwargs):
+            auth = (headers or {}).get("Authorization", "")
+            seen.append(auth)
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.ok = True
+            resp.json.return_value = {"data": self.TIERS.get(auth, [])}
+            return resp
+
+        return _get
+
+    def _ctx(self, result):
+        return result.get("shared-model", {}).get("context_length")
+
+    def test_second_credential_does_not_inherit_the_first_catalogue(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        self._clear()
+        seen: list = []
+        with patch("agent.model_metadata.requests.get", self._tiered_get(seen)):
+            enterprise = fetch_endpoint_model_metadata(
+                self.URL, api_key="key-enterprise"
+            )
+            free = fetch_endpoint_model_metadata(self.URL, api_key="key-free")
+
+        assert self._ctx(enterprise) == 1_000_000
+        assert self._ctx(free) == 128_000, (
+            "the free-tier profile inherited the enterprise profile's context "
+            "window from a base-URL-keyed cache"
+        )
+
+    def test_same_credential_still_hits_the_cache(self):
+        """Scoping must not cost a refetch for the common single-key case."""
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        self._clear()
+        seen: list = []
+        with patch("agent.model_metadata.requests.get", self._tiered_get(seen)):
+            first = fetch_endpoint_model_metadata(self.URL, api_key="key-enterprise")
+            second = fetch_endpoint_model_metadata(self.URL, api_key="key-enterprise")
+
+        assert first == second
+        assert seen.count("Bearer key-enterprise") == 1, "cache stopped working"
+
+    def test_cache_key_never_embeds_the_raw_credential(self):
+        import agent.model_metadata as mm
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        self._clear()
+        with patch("agent.model_metadata.requests.get", self._tiered_get([])):
+            fetch_endpoint_model_metadata(self.URL, api_key="key-enterprise")
+
+        keys = list(mm._endpoint_model_metadata_cache)
+        assert keys, "nothing cached"
+        assert all("key-enterprise" not in k for k in keys), (
+            "raw credential leaked into an in-memory cache key"
+        )
+
+
 class TestQueryLocalContextLengthNetworkError:
     """_query_local_context_length handles network failures gracefully."""
 

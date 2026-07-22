@@ -268,18 +268,21 @@ class InsightsEngine:
             except (json.JSONDecodeError, TypeError, AttributeError):
                 continue
 
-        # Merge: prefer tool_name source, supplement with tool_calls source
-        # for tools not already counted
+        # Merge: combine tool_name and tool_calls sources.
+        # These record tool usage via different paths (tool_name from tool
+        # execution results, tool_calls from assistant-side call records).
+        # Across mixed session sources (gateway / CLI / ACP), the two may
+        # capture disjoint sets of calls, so we sum rather than take max.
         if not tool_counts and tool_calls_counts:
             # No tool_name data at all — use tool_calls exclusively
             tool_counts = tool_calls_counts
         elif tool_counts and tool_calls_counts:
-            # Both sources have data — use whichever has the higher count per tool
-            # (they may overlap, so take the max to avoid double-counting)
+            # Both sources present — sum counts since they may capture
+            # disjoint tool calls across different session sources.
             all_tools = set(tool_counts) | set(tool_calls_counts)
             merged = Counter()
             for tool in all_tools:
-                merged[tool] = max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
+                merged[tool] = tool_counts.get(tool, 0) + tool_calls_counts.get(tool, 0)
             tool_counts = merged
 
         # Convert to the expected format

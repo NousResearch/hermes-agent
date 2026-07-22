@@ -71,7 +71,9 @@ import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
+import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
+import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
@@ -173,6 +175,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     openCommandCenterSection,
     openStarmap,
     profilesOpen,
+    resetOverlayReturnRoute,
     settingsOpen,
     starmapOpen,
     toggleCommandCenter
@@ -632,6 +635,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   useGatewayBoot({
+    beforeConnectionSwitch: () => {
+      startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null })
+      resetOverlayReturnRoute()
+      resetProjectTreeState()
+      closeAllTerminals()
+    },
     handleGatewayEvent: handleGatewayEventWithPlugins,
     onConnectionReady: c => {
       connectionRef.current = c

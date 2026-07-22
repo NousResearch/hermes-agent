@@ -840,6 +840,7 @@ text-* variant utilities. */ .btn-arc {
 /* `[data-state='open']` keeps the trigger looking focused while its dropdown is
    open — Radix moves focus into the list, so the trigger itself loses :focus. */
 .desktop-input-chrome:focus,
+.desktop-input-chrome:focus-within,
 .desktop-input-chrome[data-state='open'] {
   border-color: var(--dt-composer-ring);
   box-shadow: none;

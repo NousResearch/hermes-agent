@@ -534,17 +534,19 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   const card = billing.card
 
   if (!card) {
+    // No card → a single "Add payment method" link, the way every other app does
+    // it. The reason (buys/auto-refill are blocked) already leads the page as a
+    // notice, so the row stays a bare call-to-action with no redundant status text.
     return {
-      action: { label: 'Update ↗', url: portalUrl },
-      description: 'Add a payment method on the portal before buying top-up credits.',
+      action: { label: 'Add payment method', url: portalUrl },
+      description: '',
       id: 'payment_method',
-      title: 'Payment method',
-      value: 'No card on file'
+      title: 'Payment method'
     }
   }
 
   return {
-    action: { label: 'Update ↗', url: portalUrl },
+    action: { label: 'Update', url: portalUrl },
     description: 'Manage the card used for top-ups and subscription renewals.',
     id: 'payment_method',
     title: 'Payment method',

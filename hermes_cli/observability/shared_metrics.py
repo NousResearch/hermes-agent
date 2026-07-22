@@ -17,8 +17,11 @@ from utils import atomic_json_write
 
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
+    CLIENT_FIRST_SUCCESSFUL_TASK_METRIC,
+    CLIENT_FIRST_USABLE_METRIC,
     COUNTER_METRICS,
     MODEL_CALL_METRIC,
+    TASK_FINISHED_METRIC,
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )
@@ -30,6 +33,8 @@ _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
 _ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
+_FIRST_USABLE_STATE_KEY = "first_usable_recorded_at"
+_FIRST_SUCCESSFUL_TASK_STATE_KEY = "first_successful_task_recorded_at"
 
 
 def _utc_now() -> datetime:
@@ -117,6 +122,92 @@ class SharedMetricsStore:
                 resource,
                 period_start=_utc_now().date().isoformat(),
             )
+
+    def record_first_usable(self, resource: dict[str, str]) -> bool:
+        """Record the first usable Hermes runtime boundary once per install."""
+        return self._record_once(
+            CLIENT_FIRST_USABLE_METRIC,
+            _FIRST_USABLE_STATE_KEY,
+            resource,
+        )
+
+    def record_task_counter(
+        self,
+        metric_name: str,
+        dimensions: dict[str, str],
+        resource: dict[str, str],
+    ) -> None:
+        """Record a task counter and atomically latch its first success."""
+        self._validate_counter(metric_name, dimensions, resource)
+        now = _utc_now()
+        with self._connection() as connection:
+            with write_txn(connection):
+                self._record_counter_in_transaction(
+                    connection,
+                    metric_name,
+                    dimensions,
+                    resource,
+                    period_start=now.date().isoformat(),
+                )
+                if (
+                    metric_name == TASK_FINISHED_METRIC
+                    and dimensions.get("outcome") == "success"
+                ):
+                    self._record_once_in_transaction(
+                        connection,
+                        CLIENT_FIRST_SUCCESSFUL_TASK_METRIC,
+                        _FIRST_SUCCESSFUL_TASK_STATE_KEY,
+                        resource,
+                        now=now,
+                    )
+
+    def _record_once(
+        self,
+        metric_name: str,
+        state_key: str,
+        resource: dict[str, str],
+    ) -> bool:
+        dimensions: dict[str, str] = {}
+        self._validate_counter(metric_name, dimensions, resource)
+        now = _utc_now()
+        with self._connection() as connection:
+            with write_txn(connection):
+                return self._record_once_in_transaction(
+                    connection,
+                    metric_name,
+                    state_key,
+                    resource,
+                    now=now,
+                )
+
+    def _record_once_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        metric_name: str,
+        state_key: str,
+        resource: dict[str, str],
+        *,
+        now: datetime,
+    ) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM telemetry_state WHERE key = ?",
+            (state_key,),
+        ).fetchone()
+        if row is not None:
+            return False
+        self._install_id(connection)
+        self._record_counter_in_transaction(
+            connection,
+            metric_name,
+            {},
+            resource,
+            period_start=now.date().isoformat(),
+        )
+        connection.execute(
+            "INSERT INTO telemetry_state(key, value) VALUES (?, ?)",
+            (state_key, _isoformat(now)),
+        )
+        return True
 
     @staticmethod
     def _validate_counter(

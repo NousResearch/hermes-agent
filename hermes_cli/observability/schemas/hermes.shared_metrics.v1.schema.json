@@ -71,6 +71,18 @@
             "$ref": "#/$defs/client_active_counter"
           },
           {
+            "$ref": "#/$defs/client_first_usable_counter"
+          },
+          {
+            "$ref": "#/$defs/client_first_successful_task_counter"
+          },
+          {
+            "$ref": "#/$defs/setup_started_counter"
+          },
+          {
+            "$ref": "#/$defs/setup_finished_counter"
+          },
+          {
             "$ref": "#/$defs/model_call_counter"
           },
           {
@@ -123,6 +135,108 @@
         },
         "value": {
           "const": 1
+        }
+      }
+    },
+    "client_first_usable_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "dimensions", "value"],
+      "properties": {
+        "name": {
+          "const": "hermes.client.first_usable"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
+    "client_first_successful_task_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "dimensions", "value"],
+      "properties": {
+        "name": {
+          "const": "hermes.client.first_successful_task"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
+    "setup_started_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "dimensions", "value"],
+      "properties": {
+        "name": {
+          "const": "hermes.setup.started"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {
+              "enum": ["full", "portal", "quick", "reset", "section", "unknown"]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "setup_finished_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "dimensions", "value"],
+      "properties": {
+        "name": {
+          "const": "hermes.setup.finished"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["failure_stage", "mode", "outcome"],
+          "properties": {
+            "failure_stage": {
+              "enum": ["execution", "none", "unknown"]
+            },
+            "mode": {
+              "enum": ["full", "portal", "quick", "reset", "section", "unknown"]
+            },
+            "outcome": {
+              "enum": ["cancelled", "failed", "success"]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

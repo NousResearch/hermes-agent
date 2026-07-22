@@ -23,6 +23,8 @@ from hermes_cli.observability import shared_metrics as shared_metrics_module
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
+    CLIENT_FIRST_SUCCESSFUL_TASK_METRIC,
+    CLIENT_FIRST_USABLE_METRIC,
     CLIENT_ARCHITECTURES,
     CLIENT_INSTALL_METHODS,
     CLIENT_OS_FAMILIES,
@@ -42,6 +44,11 @@ from hermes_cli.observability.shared_metrics_contract import (
     SKILL_POST_PATCH_STATES,
     SKILL_PROVENANCES,
     SKILL_REUSE_STATES,
+    SETUP_FAILURE_STAGES,
+    SETUP_MODES,
+    SETUP_OUTCOMES,
+    SETUP_FINISHED_METRIC,
+    SETUP_STARTED_METRIC,
     TASK_END_REASONS,
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
@@ -53,6 +60,7 @@ from hermes_cli.observability.shared_metrics_contract import (
     TOOL_OUTCOMES,
     TOOL_RETRY_BUCKETS,
     client_active_counter,
+    client_lifecycle_counter,
     client_architecture,
     client_install_method,
     client_os_family,
@@ -149,6 +157,20 @@ def _resource(
         "hermes_version": hermes_version,
         "install_method": install_method,
         "os_family": os_family,
+    }
+
+
+def _successful_task_dimensions() -> dict[str, str]:
+    return {
+        "duration_bucket": "lt_1s",
+        "end_reason": "completed",
+        "entrypoint": "interactive",
+        "execution_surface": "cli",
+        "model_call_count_bucket": "1",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "termination": "none",
+        "tool_call_count_bucket": "0",
     }
 
 
@@ -295,6 +317,64 @@ def test_client_active_package_uses_empty_dimensions_and_stable_install_id(tmp_p
     ]
 
 
+def test_first_usable_and_first_successful_task_are_durable_one_time_latches(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+
+    assert store.record_first_usable(_resource())
+    assert not store.record_first_usable(_resource())
+    store.record_task_counter(
+        "hermes.task_run.finished",
+        {**_successful_task_dimensions(), "outcome": "failed", "end_reason": "failed"},
+        _resource(),
+    )
+    store.record_task_counter(
+        "hermes.task_run.finished",
+        _successful_task_dimensions(),
+        _resource(),
+    )
+    store.record_task_counter(
+        "hermes.task_run.finished",
+        _successful_task_dimensions(),
+        _resource(),
+    )
+
+    restarted = SharedMetricsStore(database_path, outbox_directory)
+    by_metric = {
+        counter["metric_name"]: counter
+        for counter in restarted.counter_snapshot()
+        if counter["metric_name"]
+        in {CLIENT_FIRST_USABLE_METRIC, CLIENT_FIRST_SUCCESSFUL_TASK_METRIC}
+    }
+    assert by_metric[CLIENT_FIRST_USABLE_METRIC]["value"] == 1
+    assert by_metric[CLIENT_FIRST_SUCCESSFUL_TASK_METRIC]["value"] == 1
+    with sqlite3.connect(database_path) as connection:
+        state = dict(
+            connection.execute(
+                "SELECT key, value FROM telemetry_state WHERE key LIKE 'first_%'"
+            ).fetchall()
+        )
+    assert set(state) == {
+        "first_successful_task_recorded_at",
+        "first_usable_recorded_at",
+    }
+
+
+def test_first_usable_latch_is_transactional_across_threads(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        recorded = list(
+            pool.map(lambda _: store.record_first_usable(_resource()), range(4))
+        )
+
+    assert recorded.count(True) == 1
+    [counter] = store.counter_snapshot()
+    assert counter["metric_name"] == CLIENT_FIRST_USABLE_METRIC
+    assert counter["value"] == 1
+
+
 def test_deleting_local_metrics_state_resets_install_identity(tmp_path):
     root = tmp_path / "shared-metrics"
     database_path = root / "metrics.sqlite3"
@@ -396,6 +476,78 @@ def test_client_active_mark_accepts_only_an_empty_allowlisted_payload():
     wrong_schema = deepcopy(event)
     wrong_schema.metadata["hermes.metrics.schema_version"] = "unknown"
     assert client_active_counter(wrong_schema) is None
+
+
+def test_client_lifecycle_marks_require_the_exact_allowlisted_payload():
+    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v1"}
+
+    def event(name: str, data: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            kind="mark",
+            category=None,
+            category_profile=None,
+            name=name,
+            scope_category=None,
+            metadata=metadata,
+            data=data,
+        )
+
+    assert client_lifecycle_counter(event("hermes.client.first_usable", {})) == (
+        CLIENT_FIRST_USABLE_METRIC,
+        {},
+    )
+    assert client_lifecycle_counter(
+        event("hermes.setup.started", {"mode": "quick"})
+    ) == (
+        SETUP_STARTED_METRIC,
+        {"mode": "quick"},
+    )
+    assert client_lifecycle_counter(
+        event(
+            "hermes.setup.finished",
+            {"failure_stage": "none", "mode": "quick", "outcome": "success"},
+        )
+    ) == (
+        SETUP_FINISHED_METRIC,
+        {"failure_stage": "none", "mode": "quick", "outcome": "success"},
+    )
+    assert (
+        client_lifecycle_counter(
+            event("hermes.setup.started", {"mode": "quick", "provider": "sensitive"})
+        )
+        is None
+    )
+    assert client_lifecycle_counter(event("hermes.client.first_usable", None)) is None
+    assert (
+        client_lifecycle_counter(
+            event(
+                "hermes.setup.finished",
+                {"failure_stage": "raw-error", "mode": "quick", "outcome": "failed"},
+            )
+        )
+        is None
+    )
+
+
+def test_package_schema_matches_setup_and_first_use_contracts():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    setup_started = schema["$defs"]["setup_started_counter"]["properties"]["dimensions"]
+    setup_finished = schema["$defs"]["setup_finished_counter"]["properties"][
+        "dimensions"
+    ]
+
+    assert set(setup_started["properties"]["mode"]["enum"]) == SETUP_MODES
+    assert set(setup_finished["properties"]["mode"]["enum"]) == SETUP_MODES
+    assert set(setup_finished["properties"]["outcome"]["enum"]) == SETUP_OUTCOMES
+    assert set(setup_finished["properties"]["failure_stage"]["enum"]) == (
+        SETUP_FAILURE_STAGES
+    )
+    assert schema["$defs"]["client_first_usable_counter"]["properties"]["value"] == {
+        "const": 1
+    }
+    assert schema["$defs"]["client_first_successful_task_counter"]["properties"][
+        "value"
+    ] == {"const": 1}
 
 
 def test_package_schema_matches_the_task_contract():

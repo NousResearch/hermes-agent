@@ -15,6 +15,9 @@ MODEL_CALL_SCOPE = "hermes.model_call"
 TASK_SCOPE = "hermes.task_run"
 TOOL_CALL_SCOPE = "hermes.tool_call"
 CLIENT_ACTIVE_MARK = "hermes.client.active"
+CLIENT_FIRST_USABLE_MARK = "hermes.client.first_usable"
+SETUP_STARTED_MARK = "hermes.setup.started"
+SETUP_FINISHED_MARK = "hermes.setup.finished"
 TOOL_APPROVAL_MARK = "hermes.tool_approval"
 SKILL_LIFECYCLE_MARK = "hermes.skill.lifecycle"
 SKILL_LOAD_MARK = "hermes.skill.load"
@@ -22,6 +25,10 @@ SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 PRIMARY_MODEL_CALL_ROLE = "primary"
 MODEL_CALL_METRIC = "hermes.model_call.count"
 CLIENT_ACTIVE_METRIC = "hermes.client.active"
+CLIENT_FIRST_USABLE_METRIC = "hermes.client.first_usable"
+CLIENT_FIRST_SUCCESSFUL_TASK_METRIC = "hermes.client.first_successful_task"
+SETUP_STARTED_METRIC = "hermes.setup.started"
+SETUP_FINISHED_METRIC = "hermes.setup.finished"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
 TOOL_CALL_METRIC = "hermes.tool_call.count"
@@ -225,6 +232,20 @@ CLIENT_RESOURCE_KEYS: frozenset[str] = frozenset({
     "install_method",
     "os_family",
 })
+SETUP_MODES: frozenset[str] = frozenset({
+    "full",
+    "portal",
+    "quick",
+    "reset",
+    "section",
+    "unknown",
+})
+SETUP_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
+SETUP_FAILURE_STAGES: frozenset[str] = frozenset({
+    "execution",
+    "none",
+    "unknown",
+})
 
 # Shared metrics use an explicit family allowlist rather than raw model IDs or
 # dynamically sourced catalog values. The latter would make the exported schema
@@ -320,6 +341,16 @@ def client_resource_is_valid(resource: Any) -> bool:
 
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     CLIENT_ACTIVE_METRIC: {},
+    CLIENT_FIRST_USABLE_METRIC: {},
+    CLIENT_FIRST_SUCCESSFUL_TASK_METRIC: {},
+    SETUP_STARTED_METRIC: {
+        "mode": SETUP_MODES,
+    },
+    SETUP_FINISHED_METRIC: {
+        "failure_stage": SETUP_FAILURE_STAGES,
+        "mode": SETUP_MODES,
+        "outcome": SETUP_OUTCOMES,
+    },
     MODEL_CALL_METRIC: {
         "call_role": frozenset({PRIMARY_MODEL_CALL_ROLE}),
         "cost_bucket": MODEL_COST_BUCKETS,
@@ -451,6 +482,38 @@ def client_active_counter(event: Any) -> tuple[str, dict[str, str]] | None:
     ):
         return None
     return CLIENT_ACTIVE_METRIC, {}
+
+
+def client_lifecycle_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return one validated setup or first-usable counter from a safe mark."""
+    if not _event_metadata_is_valid(event):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "mark"
+        or getattr(event, "category", None) is not None
+        or getattr(event, "scope_category", None) is not None
+        or getattr(event, "category_profile", None) is not None
+    ):
+        return None
+
+    name = str(getattr(event, "name", "") or "")
+    data = getattr(event, "data", None)
+    if not isinstance(data, dict):
+        return None
+    if name == CLIENT_FIRST_USABLE_MARK:
+        metric_name = CLIENT_FIRST_USABLE_METRIC
+        dimensions: dict[str, Any] = data
+    elif name == SETUP_STARTED_MARK:
+        metric_name = SETUP_STARTED_METRIC
+        dimensions = data
+    elif name == SETUP_FINISHED_MARK:
+        metric_name = SETUP_FINISHED_METRIC
+        dimensions = data
+    else:
+        return None
+    if not counter_dimensions_are_valid(metric_name, dimensions):
+        return None
+    return metric_name, dict(dimensions)
 
 
 def model_call_dimensions(event: Any) -> dict[str, str] | None:

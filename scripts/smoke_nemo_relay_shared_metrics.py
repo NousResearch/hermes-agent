@@ -281,7 +281,11 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.client.active",
+        "hermes.client.first_successful_task",
+        "hermes.client.first_usable",
         "hermes.model_call.count",
+        "hermes.setup.finished",
+        "hermes.setup.started",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -301,6 +305,45 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ]:
         raise AssertionError(
             f"Unexpected client-active counter: {by_name['hermes.client.active']}"
+        )
+    for metric_name in (
+        "hermes.client.first_usable",
+        "hermes.client.first_successful_task",
+    ):
+        if by_name[metric_name] != [
+            {
+                "name": metric_name,
+                "dimensions": {},
+                "value": 1,
+                "packaged_value": 1,
+            }
+        ]:
+            raise AssertionError(f"Unexpected one-time metric: {by_name[metric_name]}")
+    if by_name["hermes.setup.started"] != [
+        {
+            "name": "hermes.setup.started",
+            "dimensions": {"mode": "quick"},
+            "value": 1,
+            "packaged_value": 1,
+        }
+    ]:
+        raise AssertionError(
+            f"Unexpected setup start: {by_name['hermes.setup.started']}"
+        )
+    if by_name["hermes.setup.finished"] != [
+        {
+            "name": "hermes.setup.finished",
+            "dimensions": {
+                "failure_stage": "none",
+                "mode": "quick",
+                "outcome": "success",
+            },
+            "value": 1,
+            "packaged_value": 1,
+        }
+    ]:
+        raise AssertionError(
+            f"Unexpected setup finish: {by_name['hermes.setup.finished']}"
         )
     models = by_name["hermes.model_call.count"]
     if sum(counter["value"] for counter in models) != 2:
@@ -415,9 +458,9 @@ def _validate_packages(
     schema_path: Path,
 ) -> tuple[list[Path], list[dict[str, Any]]]:
     package_paths = sorted(outbox.glob("*.json"))
-    if len(package_paths) != 2:
+    if len(package_paths) != 3:
         raise AssertionError(
-            f"Expected two delta packages in {outbox}, found {len(package_paths)}"
+            f"Expected three delta packages in {outbox}, found {len(package_paths)}"
         )
     try:
         import jsonschema
@@ -460,7 +503,11 @@ def _validate_packages(
             metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.client.active",
+        "hermes.client.first_successful_task",
+        "hermes.client.first_usable",
         "hermes.model_call.count",
+        "hermes.setup.finished",
+        "hermes.setup.started",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -480,6 +527,33 @@ def _validate_packages(
     ]:
         raise AssertionError(
             f"Unexpected client-active metric: {metrics['hermes.client.active']}"
+        )
+    for metric_name in (
+        "hermes.client.first_usable",
+        "hermes.client.first_successful_task",
+    ):
+        if metrics[metric_name] != [
+            {
+                "name": metric_name,
+                "type": "counter",
+                "dimensions": {},
+                "value": 1,
+            }
+        ]:
+            raise AssertionError(
+                f"Unexpected one-time package metric: {metrics[metric_name]}"
+            )
+    if metrics["hermes.setup.started"][0]["dimensions"] != {"mode": "quick"}:
+        raise AssertionError(
+            f"Unexpected setup-start metric: {metrics['hermes.setup.started']}"
+        )
+    if metrics["hermes.setup.finished"][0]["dimensions"] != {
+        "failure_stage": "none",
+        "mode": "quick",
+        "outcome": "success",
+    }:
+        raise AssertionError(
+            f"Unexpected setup-finish metric: {metrics['hermes.setup.finished']}"
         )
     models = metrics["hermes.model_call.count"]
     if sum(metric["value"] for metric in models) != 2:
@@ -622,6 +696,28 @@ def main() -> int:
                 str(relay_python),
                 env.get("PYTHONPATH", ""),
             ]).rstrip(os.pathsep)
+        setup_result = subprocess.run(
+            [
+                str(hermes.parent / "python"),
+                "-c",
+                "\n".join([
+                    "from hermes_cli.observability import relay_shared_metrics",
+                    "attempt = relay_shared_metrics.start_setup_lifecycle('quick')",
+                    "assert attempt is not None",
+                    "relay_shared_metrics.finish_setup_lifecycle(attempt, outcome='success')",
+                ]),
+            ],
+            cwd=workdir,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if setup_result.returncode != 0:
+            raise AssertionError(
+                f"Setup lifecycle probe exited with {setup_result.returncode}\n"
+                f"stdout:\n{setup_result.stdout}\nstderr:\n{setup_result.stderr}"
+            )
         result = subprocess.run(
             [
                 str(hermes),

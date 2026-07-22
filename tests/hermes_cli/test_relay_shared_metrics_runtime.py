@@ -351,6 +351,14 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     ]
     assert len(active_marks) == 2
     assert all(mark[2]["data"] == {} for mark in active_marks)
+    first_usable_marks = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event"
+        and event[1] == "hermes.client.first_usable"
+    ]
+    assert len(first_usable_marks) == 2
+    assert all(mark[2]["data"] == {} for mark in first_usable_marks)
     assert ends[0][2] == {
         "call_role": "primary",
         "cost_bucket": "0_01_to_0_1",
@@ -381,6 +389,8 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
         "hermes.client.active",
+        "hermes.client.first_successful_task",
+        "hermes.client.first_usable",
         "hermes.model_call.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
@@ -393,6 +403,8 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "dimensions": {},
         "value": 1,
     }
+    assert metrics["hermes.client.first_usable"]["value"] == 1
+    assert metrics["hermes.client.first_successful_task"]["value"] == 1
     assert metrics["hermes.model_call.count"]["dimensions"]["model_family"] == "claude"
     assert metrics["hermes.model_call.count"]["value"] == 1
     assert metrics["hermes.tool_call.count"] == {
@@ -457,6 +469,16 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     response_canary = "real-relay-sensitive-response"
     model_canary = "gpt-real-relay-sensitive-model"
     tool_canary = "real-relay-sensitive-tool-result"
+
+    setup_attempt = relay_shared_metrics.start_setup_lifecycle("quick")
+    assert setup_attempt is not None
+    relay_shared_metrics.finish_setup_lifecycle(
+        setup_attempt,
+        outcome="success",
+    )
+    host = relay_runtime.get_runtime()
+    assert host is not None
+    assert host.get_session(setup_attempt.session_id) is None
 
     def base(index: int) -> dict[str, Any]:
         return {
@@ -609,6 +631,16 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
 
     assert by_metric["hermes.client.active"][0]["dimensions"] == {}
     assert by_metric["hermes.client.active"][0]["value"] == 1
+    assert by_metric["hermes.client.first_usable"][0]["dimensions"] == {}
+    assert by_metric["hermes.client.first_usable"][0]["value"] == 1
+    assert by_metric["hermes.client.first_successful_task"][0]["dimensions"] == {}
+    assert by_metric["hermes.client.first_successful_task"][0]["value"] == 1
+    assert by_metric["hermes.setup.started"][0]["dimensions"] == {"mode": "quick"}
+    assert by_metric["hermes.setup.finished"][0]["dimensions"] == {
+        "failure_stage": "none",
+        "mode": "quick",
+        "outcome": "success",
+    }
     assert len(by_metric["hermes.task_run.started"]) == 1
     assert by_metric["hermes.task_run.started"][0]["value"] == 3
     assert {
@@ -696,7 +728,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     }
     package_values: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
     packages = sorted((root / "outbox").glob("*.json"))
-    assert len(packages) == 3
+    assert len(packages) == 4
     package_payloads = [
         json.loads(package.read_text(encoding="utf-8")) for package in packages
     ]
@@ -725,6 +757,43 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "sensitive-approval-description",
     ):
         assert canary not in serialized_analytics
+
+
+def test_real_binding_records_setup_command_failure_without_raw_error_data(
+    real_binding_runtime,
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import main
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    assert real_binding_runtime._native is not None
+    monkeypatch.setattr("hermes_cli.setup.run_setup_wizard", lambda _: False)
+
+    main.cmd_setup(
+        SimpleNamespace(
+            portal=False,
+            quick=False,
+            reset=False,
+            section=None,
+        )
+    )
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
+    by_metric = {row["metric_name"]: row for row in store.counter_snapshot()}
+    assert by_metric["hermes.setup.started"]["dimensions"] == {"mode": "full"}
+    assert by_metric["hermes.setup.finished"]["dimensions"] == {
+        "failure_stage": "unknown",
+        "mode": "full",
+        "outcome": "failed",
+    }
+    packages = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (root / "outbox").glob("*.json")
+    ]
+    assert len(packages) == 1
+    assert "run_setup_wizard" not in json.dumps(packages)
 
 
 def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
@@ -756,7 +825,9 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     monkeypatch.setattr(approval, "get_current_session_key", lambda: "session-key")
     monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-    monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
+    monkeypatch.setattr(
+        approval, "prompt_dangerous_approval", lambda *args, **kwargs: "deny"
+    )
 
     lifecycle.invoke_hook("on_session_start", **base)
     lifecycle.invoke_hook("pre_llm_call", **base, messages=["sensitive-prompt"])
@@ -914,8 +985,63 @@ def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):
 
     assert fake.events == []
     assert not (tmp_path / "hermes-home" / "telemetry").exists()
+
+
+def test_setup_lifecycle_does_not_create_state_before_consent(tmp_path, monkeypatch):
+    fake = _Relay()
+    home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
+    )
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
+
+    assert relay_shared_metrics.start_setup_lifecycle("quick") is None
+    assert not (home / "telemetry").exists()
+    assert fake.events == []
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+
+def test_setup_mark_failure_does_not_leak_an_owned_session(
+    direct_runtime,
+    monkeypatch,
+):
+    host = relay_runtime.get_runtime()
+    assert host is not None
+
+    def fail_mark(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("mark failure")
+
+    monkeypatch.setattr(direct_runtime.scope, "event", fail_mark)
+
+    assert relay_shared_metrics.start_setup_lifecycle("quick") is None
+    assert host._sessions == {}
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert runtime._sessions == {}
+
+
+def test_setup_finish_lookup_failure_closes_the_owned_relay_scope(
+    direct_runtime,
+    monkeypatch,
+):
+    host = relay_runtime.get_runtime()
+    attempt = relay_shared_metrics.start_setup_lifecycle("quick")
+    runtime = relay_shared_metrics._get_runtime()
+    assert host is not None
+    assert attempt is not None
+    assert runtime is not None
+    assert host.get_session(attempt.session_id) is not None
+
+    monkeypatch.setattr(runtime, "ensure_session", lambda _: None)
+    relay_shared_metrics.finish_setup_lifecycle(attempt, outcome="success")
+
+    assert host.get_session(attempt.session_id) is None
 
 
 def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, caplog):
@@ -1560,9 +1686,42 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     assert [row["metric_name"] for row in store.counter_snapshot()] == [
         "hermes.client.active",
-        "hermes.task_run.started"
+        "hermes.client.first_usable",
+        "hermes.task_run.started",
     ]
     assert list((root / "outbox").glob("*.json")) == []
+    relay_runtime._reset_for_tests()
+
+
+def test_disabling_metrics_during_setup_closes_the_owned_relay_scope(
+    tmp_path,
+    monkeypatch,
+):
+    fake = _Relay()
+    profile = tmp_path / "profile"
+    policy = {"enabled": True}
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"telemetry": {"shared_metrics": dict(policy)}},
+    )
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+    attempt = relay_shared_metrics.start_setup_lifecycle("reset")
+    host = relay_runtime.get_runtime()
+    assert attempt is not None
+    assert host is not None
+    assert host.get_session(attempt.session_id) is not None
+
+    policy["enabled"] = False
+    relay_shared_metrics.finish_setup_lifecycle(attempt, outcome="success")
+
+    assert host.get_session(attempt.session_id) is None
+    root = profile / "telemetry" / "shared_metrics"
+    assert list((root / "outbox").glob("*.json")) == []
+    relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
 
 
@@ -2674,11 +2833,14 @@ def test_skill_task_only_correlation_does_not_guess_across_sessions(direct_runti
     runtime = relay_shared_metrics._get_runtime()
     assert runtime is not None
     for session_id in ("session-1", "session-2"):
-        assert runtime.start_task({
-            "session_id": session_id,
-            "task_id": "shared-task",
-            "platform": "cli",
-        }) is not None
+        assert (
+            runtime.start_task({
+                "session_id": session_id,
+                "task_id": "shared-task",
+                "platform": "cli",
+            })
+            is not None
+        )
 
     lifecycle.invoke_hook(
         "on_skill_lifecycle",

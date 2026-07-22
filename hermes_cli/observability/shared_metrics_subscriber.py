@@ -13,9 +13,13 @@ from hermes_cli.config import detect_install_method
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
+    CLIENT_FIRST_USABLE_METRIC,
     MODEL_CALL_METRIC,
+    TASK_FINISHED_METRIC,
+    TASK_STARTED_METRIC,
     TOOL_CALL_METRIC,
     client_active_counter,
+    client_lifecycle_counter,
     client_resource,
     model_call_dimensions,
     skill_counter,
@@ -67,6 +71,10 @@ class SharedMetricsSubscriber:
         if metric is not None:
             metric_name, dimensions = metric
         if dimensions is None:
+            metric = client_lifecycle_counter(event)
+            if metric is not None:
+                metric_name, dimensions = metric
+        if dimensions is None:
             dimensions = model_call_dimensions(event)
             metric_name = MODEL_CALL_METRIC
         if dimensions is None:
@@ -87,6 +95,14 @@ class SharedMetricsSubscriber:
             try:
                 if metric_name == CLIENT_ACTIVE_METRIC:
                     self.store.record_client_active(self._client_resource)
+                elif metric_name == CLIENT_FIRST_USABLE_METRIC:
+                    self.store.record_first_usable(self._client_resource)
+                elif metric_name in {TASK_STARTED_METRIC, TASK_FINISHED_METRIC}:
+                    self.store.record_task_counter(
+                        metric_name,
+                        dimensions,
+                        self._client_resource,
+                    )
                 else:
                     self.store.record_counter(
                         metric_name,

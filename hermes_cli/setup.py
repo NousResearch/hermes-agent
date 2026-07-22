@@ -2611,7 +2611,7 @@ SETUP_SECTIONS = [
 ]
 
 
-def _run_portal_one_shot(config: dict) -> None:
+def _run_portal_one_shot(config: dict) -> bool:
     """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
 
     Wired into ``hermes setup --portal`` and ``hermes portal``. This is the
@@ -2670,13 +2670,13 @@ def _run_portal_one_shot(config: dict) -> None:
         print()
         print_info("  Setup cancelled.")
         print_info("  You can retry later with `hermes portal`.")
-        return
+        return False
     except Exception as exc:
         logger.debug("_model_flow_nous error during `hermes portal`: %s", exc)
         print()
         print_error(f"  Nous Portal setup encountered an error: {exc}")
         print_info("  You can retry later with `hermes portal`.")
-        return
+        return False
 
     # Re-sync the in-memory config from disk — _model_flow_nous (and the
     # underlying login/model save) write via their own load/save cycle, so any
@@ -2693,9 +2693,10 @@ def _run_portal_one_shot(config: dict) -> None:
     print_success("Portal setup complete.")
     print_info("  Run `hermes portal info` to inspect routing.")
     print_info("  Run `hermes` to start chatting.")
+    return True
 
 
-def run_setup_wizard(args):
+def run_setup_wizard(args) -> bool:
     """Run the interactive setup wizard.
 
     Supports full, quick, and section-specific setup:
@@ -2710,7 +2711,7 @@ def run_setup_wizard(args):
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
         managed_error("run setup wizard")
-        return
+        return False
     ensure_hermes_home()
 
     reset_requested = bool(getattr(args, "reset", False))
@@ -2748,12 +2749,11 @@ def run_setup_wizard(args):
         print_noninteractive_setup_guidance(
             "Running in a non-interactive environment (no TTY detected)."
         )
-        return
+        return False
 
     # --portal: one-shot Nous Portal setup. Skips the rest of the wizard.
     if bool(getattr(args, "portal", False)):
-        _run_portal_one_shot(config)
-        return
+        return _run_portal_one_shot(config)
 
     # Check if a specific section was requested
     section = getattr(args, "section", None)
@@ -2778,11 +2778,11 @@ def run_setup_wizard(args):
                 save_config(config)
                 print()
                 print_success(f"{label} configuration complete!")
-                return
+                return True
 
         print_error(f"Unknown setup section: {section}")
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
-        return
+        return False
 
     # Check if this is an existing installation with a provider configured
     from hermes_cli.auth import get_active_provider
@@ -2839,7 +2839,7 @@ def run_setup_wizard(args):
         # or when a required API key got cleared).
         if quick_requested:
             _run_quick_setup(config, hermes_home)
-            return
+            return True
 
         print()
         print_header("Reconfigure")
@@ -2879,10 +2879,10 @@ def run_setup_wizard(args):
 
         if setup_mode == 0:
             _run_first_time_quick_setup(config, hermes_home, is_existing)
-            return
+            return True
         if setup_mode == 2:
             _run_blank_slate_setup(config, hermes_home, is_existing)
-            return
+            return True
 
     # ── Full Setup — run all sections ──
     print_header("Configuration Location")
@@ -2928,6 +2928,7 @@ def run_setup_wizard(args):
         print_info("If setup changed a value you customized, restore it with:")
         print_info(f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
+    return True
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

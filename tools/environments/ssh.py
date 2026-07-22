@@ -352,6 +352,75 @@ class SSHEnvironment(BaseEnvironment):
 
         return _popen_bash(cmd, stdin_data)
 
+    # ------------------------------------------------------------------
+    # Stale ControlMaster / dropped connection recovery
+    # ------------------------------------------------------------------
+
+    _CONN_BROKEN_PATTERNS = (
+        "Control socket connect(",
+        "Connection refused",
+        "Connection closed by",
+        "Connection timed out",
+        "No route to host",
+        "kex_exchange_identification",
+        "ssh_exchange_identification",
+        "Broken pipe",
+    )
+
+    def _is_connection_broken(self, returncode: int, output: str) -> bool:
+        """Return True if `output` looks like an ssh-client-level failure.
+
+        SSH exits 255 specifically for client-side connection errors (man
+        ssh), as opposed to the remote command's own exit code — so pairing
+        that with a known error string avoids mistaking a remote command's
+        legitimate output for a dropped connection.
+        """
+        if returncode != 255:
+            return False
+        return any(p in output for p in self._CONN_BROKEN_PATTERNS)
+
+    def _reconnect(self) -> bool:
+        """Drop a stale ControlMaster socket and re-establish the connection.
+
+        Mirrors DockerEnvironment's out-of-band-removal recovery: a network
+        blip, VPN reconnect, or remote reboot leaves the ControlMaster socket
+        pointing at a dead multiplexed connection, and ssh won't self-heal
+        past a stale socket file. Returns True on success, False if
+        reconnection fails (caller should surface the original error).
+        """
+        logger.warning(
+            "SSH connection to %s@%s appears broken — reconnecting",
+            self.user, self.host,
+        )
+        try:
+            if self.control_socket.exists():
+                self.control_socket.unlink()
+        except OSError:
+            pass
+        try:
+            self._establish_connection()
+        except Exception as e:
+            logger.error("SSH reconnect to %s@%s failed: %s", self.user, self.host, e)
+            return False
+
+        self._snapshot_ready = False
+        self.init_session()
+        logger.info("SSH reconnect to %s@%s successful", self.user, self.host)
+        return True
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        """Execute a command, auto-recovering from a broken SSH connection.
+
+        If the ControlMaster connection was dropped out-of-band, detect the
+        ssh-client-level error and reconnect transparently before retrying
+        once.
+        """
+        result = super().execute(command, cwd, **kwargs)
+        if self._is_connection_broken(result.get("returncode", 0), result.get("output", "")):
+            if self._reconnect():
+                result = super().execute(command, cwd, **kwargs)
+        return result
+
     def cleanup(self):
         if self._sync_manager:
             logger.info("SSH: syncing files from sandbox...")

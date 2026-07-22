@@ -324,3 +324,120 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
         "returncode": 124,
     }
     assert any(call[0] == "POST" and call[1].endswith("/cancel") for call in calls)
+
+
+def test_managed_modal_recreates_sandbox_on_exec_start_404(monkeypatch):
+    """A 404 on exec-start means the sandbox itself is gone (idle-reaped,
+    gateway restart) — safe to recreate and retry since no command ran yet."""
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+    modal_common = sys.modules["tools.environments.modal_utils"]
+
+    create_count = {"n": 0}
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            create_count["n"] += 1
+            return _FakeResponse(200, {"id": f"sandbox-{create_count['n']}"})
+        if method == "POST" and url.endswith("/execs"):
+            if url == "https://modal-gateway.example.com/v1/sandboxes/sandbox-1/execs":
+                return _FakeResponse(404, {"error": "sandbox not found"}, text="sandbox not found")
+            return _FakeResponse(202, {"execId": json["execId"], "status": "running"})
+        if method == "GET" and "/execs/" in url:
+            return _FakeResponse(200, {
+                "execId": url.rsplit("/", 1)[-1],
+                "status": "completed",
+                "output": "hello",
+                "returncode": 0,
+            })
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+    monkeypatch.setattr(modal_common.time, "sleep", lambda _: None)
+
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    result = env.execute("echo hello")
+
+    assert result == {"output": "hello", "returncode": 0}
+    assert create_count["n"] == 2
+    assert env._sandbox_id == "sandbox-2"
+    env.cleanup()
+
+
+def test_managed_modal_exec_start_404_recreate_failure_surfaces_original_error(monkeypatch):
+    """If recreation itself fails, the original 404 should surface rather
+    than a confusing secondary error."""
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+
+    create_count = {"n": 0}
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            create_count["n"] += 1
+            if create_count["n"] == 1:
+                return _FakeResponse(200, {"id": "sandbox-1"})
+            return _FakeResponse(500, {"error": "quota exceeded"}, text="quota exceeded")
+        if method == "POST" and url.endswith("/execs"):
+            return _FakeResponse(404, {"error": "sandbox not found"}, text="sandbox not found")
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    result = env.execute("echo hello")
+    env.cleanup()
+
+    assert result["returncode"] == 1
+    assert "sandbox not found" in result["output"].lower()
+    assert create_count["n"] == 2
+
+
+def test_recreate_sandbox_updates_id_and_idempotency_key(monkeypatch):
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            return _FakeResponse(200, {"id": "sandbox-new"})
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    old_key = env._create_idempotency_key
+
+    assert env._recreate_sandbox() is True
+    assert env._sandbox_id == "sandbox-new"
+    assert env._create_idempotency_key != old_key
+    env.cleanup()
+
+
+def test_recreate_sandbox_returns_false_on_failure(monkeypatch):
+    _install_fake_tools_package()
+    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+
+    create_count = {"n": 0}
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            create_count["n"] += 1
+            if create_count["n"] == 1:
+                return _FakeResponse(200, {"id": "sandbox-1"})
+            return _FakeResponse(500, {"error": "quota exceeded"}, text="quota exceeded")
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    assert env._recreate_sandbox() is False
+    assert env._sandbox_id == "sandbox-1"  # unchanged after failed recreate
+    env.cleanup()

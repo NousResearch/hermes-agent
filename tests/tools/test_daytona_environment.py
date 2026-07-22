@@ -416,6 +416,112 @@ class TestEnsureSandboxReady:
 
 
 # ---------------------------------------------------------------------------
+# Sandbox recreation: sandbox deleted out-of-band (not just stopped)
+# ---------------------------------------------------------------------------
+
+class TestRecreateSandbox:
+    def test_resumes_existing_sandbox(self, make_env):
+        env = make_env()
+        new_sb = _make_sandbox(sandbox_id="sb-resumed")
+        env._daytona.get.side_effect = None
+        env._daytona.get.return_value = new_sb
+
+        assert env._recreate_sandbox() is True
+        assert env._sandbox is new_sb
+        new_sb.start.assert_called()
+
+    def test_creates_fresh_sandbox_when_resume_fails(self, make_env, daytona_sdk):
+        env = make_env()
+        new_sb = _make_sandbox(sandbox_id="sb-fresh")
+        env._daytona.get.side_effect = daytona_sdk.DaytonaError("still gone")
+        env._daytona.create.return_value = new_sb
+
+        assert env._recreate_sandbox() is True
+        assert env._sandbox is new_sb
+
+    def test_returns_false_when_both_resume_and_create_fail(self, make_env, daytona_sdk):
+        env = make_env()
+        env._daytona.get.side_effect = daytona_sdk.DaytonaError("gone")
+        env._daytona.create.side_effect = RuntimeError("quota exceeded")
+
+        assert env._recreate_sandbox() is False
+
+    def test_returns_false_when_init_session_fails(self, make_env, monkeypatch):
+        env = make_env()
+        new_sb = _make_sandbox(sandbox_id="sb-resumed")
+        env._daytona.get.side_effect = None
+        env._daytona.get.return_value = new_sb
+
+        def _raise():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(env, "init_session", _raise)
+        assert env._recreate_sandbox() is False
+
+    def test_not_called_with_lock_held(self, make_env, monkeypatch):
+        """Regression guard: init_session()'s cancel_fn re-acquires
+        self._lock (non-reentrant) on a mid-recovery timeout, so
+        _recreate_sandbox must never run while the caller still holds it."""
+        env = make_env()
+        lock_state = {}
+
+        def fake_init_session():
+            lock_state["locked"] = env._lock.locked()
+
+        monkeypatch.setattr(env, "init_session", fake_init_session)
+        env._recreate_sandbox()
+        assert lock_state["locked"] is False
+
+
+class TestBeforeExecuteRecovery:
+    def test_recreates_sandbox_when_refresh_fails(self, make_env, monkeypatch):
+        env = make_env()
+        env._sandbox.refresh_data.side_effect = RuntimeError("gone")
+        calls = {"n": 0}
+
+        def fake_recreate():
+            calls["n"] += 1
+            return True
+
+        monkeypatch.setattr(env, "_recreate_sandbox", fake_recreate)
+        env._before_execute()
+        assert calls["n"] == 1
+
+    def test_raises_when_recreate_fails(self, make_env, monkeypatch):
+        env = make_env()
+        env._sandbox.refresh_data.side_effect = RuntimeError("gone")
+        monkeypatch.setattr(env, "_recreate_sandbox", lambda: False)
+
+        with pytest.raises(RuntimeError, match="unreachable"):
+            env._before_execute()
+
+    def test_releases_lock_before_recreate(self, make_env, monkeypatch):
+        env = make_env()
+        env._sandbox.refresh_data.side_effect = RuntimeError("gone")
+        lock_state = {}
+
+        def fake_recreate():
+            lock_state["locked"] = env._lock.locked()
+            return True
+
+        monkeypatch.setattr(env, "_recreate_sandbox", fake_recreate)
+        env._before_execute()
+        assert lock_state["locked"] is False
+
+    def test_no_recreate_when_refresh_succeeds(self, make_env, monkeypatch):
+        env = make_env()
+        calls = {"n": 0}
+
+        def fake_recreate():
+            calls["n"] += 1
+            return True
+
+        monkeypatch.setattr(env, "_recreate_sandbox", fake_recreate)
+        env._before_execute()
+        assert calls["n"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Sync safety: shell-metacharacter quoting
 # ---------------------------------------------------------------------------
 

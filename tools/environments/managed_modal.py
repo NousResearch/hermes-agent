@@ -92,6 +92,24 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
                 immediate_result=self._error_result(f"Managed Modal exec failed: {exc}")
             )
 
+        # A 404 here means the sandbox_id itself is gone (idle-reaped,
+        # gateway restart) — safe to recreate and retry since no command
+        # has run yet. A 404 later, from _poll_modal_exec, is ambiguous
+        # (the command may already have executed) and is deliberately left
+        # alone to avoid double-running side effects.
+        if response.status_code == 404 and self._recreate_sandbox():
+            try:
+                response = self._request(
+                    "POST",
+                    f"/v1/sandboxes/{self._sandbox_id}/execs",
+                    json=payload,
+                    timeout=10,
+                )
+            except Exception as exc:
+                return ModalExecStart(
+                    immediate_result=self._error_result(f"Managed Modal exec failed: {exc}")
+                )
+
         if response.status_code >= 400:
             return ModalExecStart(
                 immediate_result=self._error_result(
@@ -210,6 +228,28 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         if not isinstance(sandbox_id, str) or not sandbox_id:
             raise RuntimeError("Managed Modal create did not return a sandbox id")
         return sandbox_id
+
+    def _recreate_sandbox(self) -> bool:
+        """Provision a fresh sandbox after the old one was reaped server-side.
+
+        ``_create_sandbox`` passes ``logicalKey=self._task_id`` and
+        ``persistentFilesystem``, so the gateway reattaches prior filesystem
+        state for persistent sandboxes the same way it does on first create.
+        Returns True on success, False if recreation fails (caller should
+        surface the original error).
+        """
+        old_id = self._sandbox_id
+        logger.warning(
+            "Managed Modal sandbox %s appears to be gone (404) — recreating", old_id,
+        )
+        try:
+            self._create_idempotency_key = str(uuid.uuid4())
+            self._sandbox_id = self._create_sandbox()
+        except Exception as e:
+            logger.error("Recovery: failed to recreate Managed Modal sandbox: %s", e)
+            return False
+        logger.info("Recovery successful — new Managed Modal sandbox %s", self._sandbox_id)
+        return True
 
     def _guard_unsupported_credential_passthrough(self) -> None:
         """Managed Modal does not sync or mount host credential files."""

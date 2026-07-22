@@ -469,7 +469,9 @@ describe('usePromptActions /compress', () => {
       ])
     )
     expect($notifications.get()).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ kind: 'success', message: expect.stringContaining('Compression aborted') })])
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'success', message: expect.stringContaining('Compression aborted') })
+      ])
     )
   })
 

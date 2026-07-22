@@ -19,8 +19,9 @@ import {
 } from '@/store/session'
 import { publishSessionState } from '@/store/session-states'
 
-import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 import type { ClientSessionState } from '../../types'
+
+import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null

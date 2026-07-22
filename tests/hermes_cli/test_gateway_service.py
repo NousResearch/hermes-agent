@@ -1195,6 +1195,35 @@ class TestLaunchdServiceRecovery:
         # Marker is still written so status knows launchd is unavailable
         assert gateway_cli._launchd_unsupported_marker_exists()
 
+    def test_spawn_detached_gateway_closes_first_fd_on_second_open_failure(
+        self, monkeypatch, tmp_path
+    ):
+        """Regression test for #64427: when first open() succeeds but second
+        open() raises OSError, the first file handle must be closed to avoid
+        leaking the fd."""
+        close_called = []
+
+        class FakeFile:
+            def close(self):
+                close_called.append(1)
+
+        call_count = 0
+
+        def fake_open(path, mode):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return FakeFile()
+            raise OSError("mock open failure for second file")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        result = gateway_cli._spawn_detached_gateway()
+
+        assert result is False
+        assert len(close_called) == 1, "first fd was not closed on second open failure"
+
     # ── PID parsing ──────────────────────────────────────────────────────
 
     def test_parse_launchd_pid_from_list_output_with_pid(self):

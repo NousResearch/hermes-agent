@@ -1,6 +1,6 @@
 ---
 title: "Nous Tool Gateway"
-description: "One subscription, every tool. Web search, image generation, TTS, and cloud browsers — all routed through Nous Portal with no extra API keys."
+description: "One subscription, every tool. Web search, image generation, video generation, TTS, and cloud browsers — all routed through Nous Portal with no extra API keys."
 sidebar_label: "Tool Gateway"
 sidebar_position: 2
 ---
@@ -9,7 +9,7 @@ sidebar_position: 2
 
 **One subscription. Every tool built in.**
 
-The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' tool calls — web search, image generation, text-to-speech, and cloud browser automation — through infrastructure Nous already runs, so you don't have to sign up with Firecrawl, FAL, OpenAI, Browser Use, or anyone else just to make your agent useful.
+The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' tool calls — web search, image generation, video generation, text-to-speech, and cloud browser automation — through infrastructure Nous already runs, so you don't have to sign up with Firecrawl, FAL, OpenAI, Browser Use, or anyone else just to make your agent useful.
 
 <div style={{display: 'flex', gap: '1rem', flexWrap: 'wrap', margin: '1.5rem 0'}}>
   <a href="https://portal.nousresearch.com/manage-subscription" style={{background: 'var(--ifm-color-primary)', color: 'white', padding: '0.75rem 1.5rem', borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold'}}>Start or manage subscription →</a>
@@ -21,6 +21,7 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 |---|---|---|
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
 | 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
+| 🎬 | **Video generation** | Text-to-video and image-to-video through FAL — **Veo 3.1**, **Pixverse v6**, **Kling**, **LTX-2.3** — wired into the `video_generate` tool. No FAL key required. Pick a model with `hermes tools` → Video Generation. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
 | 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
@@ -120,6 +121,25 @@ The set evolves — `hermes tools` → Image Generation shows the current live l
 
 ---
 
+## Using individual video models
+
+Video generation routes through FAL the same way image generation does. Set a default model with `hermes tools` → Video Generation, or pin it in `config.yaml` under `video_gen.model`. Use the short family name (not the raw FAL endpoint):
+
+| Model | `video_gen.model` | Tier | Notes |
+|---|---|---|---|
+| LTX 2.3 (22B) | `ltx-2.3` | cheap | 22B with native audio. Fast (~30-60s). |
+| Pixverse v6 | `pixverse-v6` | cheap | Negative prompts, 1-15s durations. |
+| Veo 3.1 | `veo3.1` | premium | Google DeepMind. Cinematic, native audio, strong prompt adherence. |
+| Seedance 2.0 | `seedance-2.0` | premium | ByteDance. Synchronized audio + lip-sync, 4-15s. |
+| Kling v3 4K | `kling-v3-4k` | premium | 4K output, native audio, 3-15s. |
+| Happy Horse 1.0 | `happy-horse` | premium | Alibaba. |
+
+Every model supports both text-to-video (omit `image_url`) and image-to-video (pass `image_url`); the active backend auto-routes to the right endpoint. The `video_generate` tool description is rebuilt at session start to reflect the chosen model's real capabilities — aspect ratios, resolutions, duration range, audio support.
+
+Which models are enabled on a given subscription is decided gateway-side, not by your config. If a model returns an HTTP 4xx with *"Nous Subscription gateway rejected endpoint … This model may not yet be enabled,"* it isn't allowlisted on your subscription yet — pick another model, or set `FAL_KEY` in `.env` to hit FAL directly and bypass the gateway allowlist entirely.
+
+---
+
 ## Configuration reference
 
 Most users never need to touch this — `hermes model` and `hermes tools` cover every workflow interactively. This section is for writing config.yaml directly or scripting setups.
@@ -134,6 +154,10 @@ web:
   use_gateway: true
 
 image_gen:
+  use_gateway: true
+
+video_gen:
+  provider: fal
   use_gateway: true
 
 tts:

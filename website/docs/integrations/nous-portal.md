@@ -46,12 +46,13 @@ Routing happens through OpenRouter under the hood, so model availability and fai
 
 ### The Nous Tool Gateway
 
-The same subscription unlocks the [Tool Gateway](/user-guide/features/tool-gateway), which routes Hermes Agent's tool calls through Nous-managed infrastructure. Five backends, one login:
+The same subscription unlocks the [Tool Gateway](/user-guide/features/tool-gateway), which routes Hermes Agent's tool calls through Nous-managed infrastructure. Six backends, one login:
 
 | Tool | Partner | What it does |
 |------|---------|--------------|
 | **Web search & extract** | Firecrawl | Agent-grade search and full-page extraction. No Firecrawl API key, no rate limit babysitting. |
 | **Image generation** | FAL | Nine models under one endpoint: FLUX 2 Klein 9B, FLUX 2 Pro, Z-Image Turbo, Nano Banana Pro (Gemini 3 Pro Image), GPT Image 1.5, GPT Image 2, Ideogram V3, Recraft V4 Pro, Qwen Image. |
+| **Video generation** | FAL | Text-to-video and image-to-video without a FAL key: Veo 3.1, Pixverse v6, Kling, LTX-2.3. Pick per-generation or set a default with `hermes tools`. |
 | **Text-to-speech** | OpenAI TTS | High-quality TTS without a separate OpenAI key. Enables [voice mode](/user-guide/features/voice-mode) across messaging platforms. |
 | **Cloud browser automation** | Browser Use | Headless Chromium sessions for `browser_navigate`, `browser_click`, `browser_type`, `browser_vision`. No Browserbase account needed. |
 | **Cloud terminal sandbox** | Modal | Serverless terminal sandboxes for code execution (optional add-on). |
@@ -217,6 +218,10 @@ web:
 
 image_gen:
   provider: nous
+
+video_gen:
+  provider: fal
+  use_gateway: true
 
 tts:
   provider: nous

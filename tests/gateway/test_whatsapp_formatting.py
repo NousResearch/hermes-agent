@@ -61,6 +61,7 @@ def _make_adapter():
     adapter._allow_from = set()
     adapter._group_policy = "open"
     adapter._group_allow_from = set()
+    adapter._last_inbound_by_chat = {}
     return adapter
 
 

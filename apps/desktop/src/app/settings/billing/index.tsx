@@ -9,33 +9,35 @@ import { BarChart3, ExternalLink, Lock, Package, Plus, RefreshCw } from '@/lib/i
 import { cn } from '@/lib/utils'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
-import { ListRow, Pill, SectionHeading, SettingsContent } from '../primitives'
+import { ListRow, SectionHeading, SettingsContent } from '../primitives'
 
-import type { BillingRefusal } from './api'
-import { useBillingApi } from './api'
+import { RowValue } from './account-row-value'
+import { BillingApiProvider } from './api'
+import { AutoReloadRow } from './auto-reload-row'
+import { clampAmount, formatMoney } from './billing-amounts'
+import { CurrentPlanCard } from './current-plan-card'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
-import { resolveRefusal } from './errors'
+import { StepUpInlineAction } from './inline-feedback'
+import { openExternal } from './open-external'
 import { BillingPlansView } from './plans-view'
-import { TierArt } from './tier-art'
-import type { BillingAutoReload, BillingStateResponse } from './types'
+import { createSimulatedBillingApi } from './simulated-api'
+import type { BillingStateResponse } from './types'
 import {
   type BillingAccountRowView,
   type BillingNoticeView,
-  type BillingPlanCardView,
   type BillingUsageRowView,
   deriveBillingView,
-  EMPTY_BILLING_VALUE,
   formatUsageUpdatedAgo,
   useBillingState,
   useSubscriptionState
 } from './use-billing-state'
+import { useChargeFlow } from './use-charge-poller'
+import { useStepUpFlow } from './use-step-up'
 
 // `bview` mirrors the settings pview/kview sub-view pattern (deep-linkable, replace
 // navigation). `overview` is the default landing; `plans` is the in-app catalog.
 const BILLING_VIEWS = ['overview', 'plans'] as const
 type BillingSubView = (typeof BILLING_VIEWS)[number]
-import { useChargeFlow } from './use-charge-poller'
-import { useStepUpFlow } from './use-step-up'
 
 const FEATURE_BILLING_INVOICES = false
 
@@ -44,14 +46,6 @@ const BILLING_DEV_FIXTURE_NAMES = import.meta.env.DEV
   : []
 
 type BillingFixtureSelection = 'live' | BillingDevFixtureName
-
-function openExternal(url?: string) {
-  if (!url) {
-    return
-  }
-
-  void window.hermesDesktop?.openExternal?.(url)
-}
 
 function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | 'primary'; value: string }) {
   return (
@@ -92,47 +86,6 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
   )
 }
 
-function RowValue({ onAction, row }: { onAction?: () => void; row: BillingAccountRowView }) {
-  // Destructure to a const so narrowing survives into the onClick closure below.
-  const { action } = row
-
-  return (
-    <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
-      {row.value && (
-        <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-          {row.value}
-        </span>
-      )}
-      {row.pill && <Pill tone={row.pill.tone}>{row.pill.label}</Pill>}
-      {row.secondaryPill && <Pill>{row.secondaryPill}</Pill>}
-      {row.chips?.map(chip => (
-        <Button
-          disabled={chip.disabled}
-          key={chip.label}
-          onClick={chip.url ? () => openExternal(chip.url) : undefined}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          {chip.label}
-        </Button>
-      ))}
-      {action && (
-        <Button
-          disabled={action.disabled}
-          onClick={action.disabled ? undefined : onAction ? onAction : () => openExternal(action.url)}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          {action.label}
-          {!action.disabled && action.url && <ExternalLink className="size-3.5" />}
-        </Button>
-      )}
-    </div>
-  )
-}
-
 function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: BillingAccountRowView }) {
   if (row.id === 'buy_credits' && row.action && row.chips && billing?.can_charge && billing.cli_billing_enabled) {
     return <BuyCreditsRow billing={billing} row={row} />
@@ -156,306 +109,6 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
       key={row.id}
       title={row.title}
     />
-  )
-}
-
-function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
-  return (
-    <div className="@container">
-      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
-        <div className="flex min-w-0 items-center gap-3">
-          <TierArt name={plan.tierName} />
-          <div className="min-w-0">
-            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-              <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                {plan.tierName}
-              </span>
-              {plan.price && (
-                <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {plan.price}/mo
-                </span>
-              )}
-            </div>
-            <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {plan.caption}
-            </div>
-          </div>
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
-          {plan.action && (
-            <Button onClick={onViewPlans} size="sm" type="button" variant="outline">
-              {plan.action.label}
-            </Button>
-          )}
-          {plan.link && (
-            <Button onClick={() => plan.link && openExternal(plan.link.url)} size="sm" type="button" variant="outline">
-              {plan.link.label}
-              <ExternalLink className="size-3.5" />
-            </Button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function AutoReloadRow({
-  autoReload,
-  bounds,
-  row
-}: {
-  autoReload: BillingAutoReload
-  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
-  row: BillingAccountRowView
-}) {
-  const api = useBillingApi()
-  const queryClient = useQueryClient()
-  const [confirmDisable, setConfirmDisable] = useState(false)
-  const [editing, setEditing] = useState(false)
-  // Validation errors are silent until the user edits a field or attempts a
-  // save — opening Manage on a prefilled (possibly below-min) config must not
-  // flash an error (spec §9).
-  const [showErrors, setShowErrors] = useState(false)
-  const [message, setMessage] = useState<null | { kind: 'error' | 'success'; text: string }>(null)
-  const [refusal, setRefusal] = useState<BillingRefusal | null>(null)
-
-  const [reloadTo, setReloadTo] = useState(
-    initialAutoReloadAmount(autoReload.reload_to_usd, autoReload.reload_to_display)
-  )
-
-  const [saving, setSaving] = useState(false)
-
-  const [threshold, setThreshold] = useState(
-    initialAutoReloadAmount(autoReload.threshold_usd, autoReload.threshold_display)
-  )
-
-  const validation = validateAutoReloadInputs(threshold, reloadTo, bounds)
-  const busy = saving
-  const maxBound = bounds.max_usd ?? undefined
-  const minBound = bounds.min_usd ?? undefined
-
-  // Only the canonical-card enabled state edits in place (flagged in the view model).
-  // Off / divergent-card rows have no Manage affordance (or a portal link) and render
-  // read-only.
-  const editable = row.manageInApp === true
-
-  const resetFeedback = () => {
-    setConfirmDisable(false)
-    setMessage(null)
-    setRefusal(null)
-  }
-
-  const openEdit = () => {
-    resetFeedback()
-    setShowErrors(false)
-    setEditing(true)
-  }
-
-  const cancelEdit = () => {
-    resetFeedback()
-    setEditing(false)
-  }
-
-  const save = async () => {
-    if (!validation.values || busy) {
-      return
-    }
-
-    resetFeedback()
-    setSaving(true)
-
-    const result = await api.updateAutoReload({
-      enabled: true,
-      reload_to_usd: validation.values.reloadTo,
-      threshold_usd: validation.values.threshold
-    })
-
-    setSaving(false)
-
-    if (!result.ok) {
-      setRefusal(result.refusal)
-
-      return
-    }
-
-    await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill updated.' })
-    setEditing(false)
-  }
-
-  const disable = async () => {
-    if (busy) {
-      return
-    }
-
-    resetFeedback()
-    setSaving(true)
-
-    // The gateway's billing.auto_reload handler unconditionally requires threshold
-    // + top_up_amount (invalid_request otherwise), so a disable must still carry the
-    // current amounts — mirroring the TUI, which always sends both.
-    const result = await api.updateAutoReload({
-      enabled: false,
-      reload_to_usd: initialAutoReloadAmount(autoReload.reload_to_usd, autoReload.reload_to_display),
-      threshold_usd: initialAutoReloadAmount(autoReload.threshold_usd, autoReload.threshold_display)
-    })
-
-    setSaving(false)
-
-    if (!result.ok) {
-      setRefusal(result.refusal)
-
-      return
-    }
-
-    await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill turned off.' })
-    setEditing(false)
-  }
-
-  // Read-only states (off / divergent card) keep the original ListRow shape.
-  if (!editable) {
-    return (
-      <ListRow
-        action={<RowValue row={row} />}
-        below={
-          <>
-            {row.caption ? (
-              <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                {row.caption}
-              </div>
-            ) : null}
-            <BillingRefusalInline refusal={refusal} />
-            {message && <InlineMessage kind={message.kind}>{message.text}</InlineMessage>}
-          </>
-        }
-        description={row.description}
-        key={row.id}
-        title={row.title}
-      />
-    )
-  }
-
-  const onField = (setter: (value: string) => void) => (event: { target: { value: string } }) => {
-    resetFeedback()
-    setShowErrors(true)
-    setter(event.target.value)
-  }
-
-  // Zero-shift by exact reservation, not a magic min-height: the edit form is
-  // ALWAYS rendered and both states share a single grid cell (`[grid-area:stack]`),
-  // so the row's height always equals the tallest state at EVERY container width —
-  // no breakpoint math that under-reserves when the two inputs stack on narrow
-  // panes. The form is `invisible` + `aria-hidden` when not editing.
-  return (
-    <div className="@container">
-      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-start">
-        <div className="min-w-0">
-          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-            {row.title}
-          </div>
-          <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {row.description}
-          </div>
-          <div className="mt-3 grid [grid-template-areas:'stack']">
-            {/* EDIT layer — always in layout (reserves exact height); hidden until editing. */}
-            <div
-              aria-hidden={!editing}
-              className={cn('space-y-2 [grid-area:stack]', !editing && 'invisible')}
-            >
-              <div className="grid gap-2 @2xl:grid-cols-2">
-                <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  Threshold
-                  <Input
-                    aria-label="Auto-refill threshold"
-                    className="mt-1 py-[3px]"
-                    disabled={busy || !editing}
-                    inputMode="decimal"
-                    max={maxBound}
-                    min={minBound}
-                    onChange={onField(setThreshold)}
-                    size="sm"
-                    step="0.01"
-                    tabIndex={editing ? undefined : -1}
-                    type="number"
-                    value={threshold}
-                  />
-                </label>
-                <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  Reload to
-                  <Input
-                    aria-label="Auto-refill reload-to amount"
-                    className="mt-1 py-[3px]"
-                    disabled={busy || !editing}
-                    inputMode="decimal"
-                    max={maxBound}
-                    min={minBound}
-                    onChange={onField(setReloadTo)}
-                    size="sm"
-                    step="0.01"
-                    tabIndex={editing ? undefined : -1}
-                    type="number"
-                    value={reloadTo}
-                  />
-                </label>
-              </div>
-              {/* Pre-allocated error line — occupies height whether or not shown. */}
-              <div className="min-h-4 text-[length:var(--conversation-caption-font-size)] text-destructive">
-                {showErrors && validation.error ? validation.error : ''}
-              </div>
-              {confirmDisable ? (
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  <span>Turn off auto-refill?</span>
-                  <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
-                    Turn off
-                  </Button>
-                  <Button disabled={busy} onClick={() => setConfirmDisable(false)} size="sm" type="button" variant="ghost">
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  disabled={busy}
-                  onClick={() => setConfirmDisable(true)}
-                  size="sm"
-                  tabIndex={editing ? undefined : -1}
-                  type="button"
-                  variant="outline"
-                >
-                  Disable
-                </Button>
-              )}
-              {/* Refusal stays INSIDE the reserved layer so it never pushes Usage. */}
-              <BillingRefusalInline refusal={refusal} />
-            </div>
-            {/* VIEW layer — success feedback overlaid in the same cell when not editing. */}
-            {!editing && message && (
-              <div className="[grid-area:stack]">
-                <InlineMessage kind={message.kind}>{message.text}</InlineMessage>
-              </div>
-            )}
-          </div>
-        </div>
-        {/* Action column swaps Manage ↔ Save/Cancel in place (top-aligned, no move). */}
-        <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
-          {row.pill && <Pill tone={row.pill.tone}>{row.pill.label}</Pill>}
-          {editing ? (
-            <>
-              <Button disabled={busy || !validation.values} onClick={() => void save()} size="sm" type="button">
-                {busy ? 'Saving…' : 'Save'}
-              </Button>
-              <Button disabled={busy} onClick={cancelEdit} size="sm" type="button" variant="outline">
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <Button onClick={openEdit} size="sm" type="button" variant="outline">
-              Manage
-            </Button>
-          )}
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -618,82 +271,6 @@ function BuyCreditsOutcome({
           <ExternalLink className="size-3.5" />
         </Button>
       )}
-    </div>
-  )
-}
-
-function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | null }) {
-  const stepUp = useStepUpFlow()
-
-  if (!refusal) {
-    return null
-  }
-
-  const resolved = resolveRefusal(refusal)
-  const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : undefined
-
-  return (
-    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-      <span>
-        <span className="font-medium text-foreground">{resolved.title}:</span> {resolved.message}
-      </span>
-      {resolved.action.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
-      {portalUrl && (
-        <Button onClick={() => openExternal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
-          <ExternalLink className="size-3.5" />
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function StepUpInlineAction({ flow }: { flow: ReturnType<typeof useStepUpFlow> }) {
-  if (flow.verification) {
-    return (
-      <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
-        <span className="font-mono text-[0.72rem] font-semibold text-foreground">{flow.verification.code}</span>
-        <Button onClick={flow.openVerification} size="sm" type="button" variant="outline">
-          Open verification page
-          <ExternalLink className="size-3.5" />
-        </Button>
-      </span>
-    )
-  }
-
-  if (flow.message) {
-    return (
-      <span className="inline-flex min-w-0 flex-wrap items-center gap-2">
-        <span>
-          {flow.message.title}: {flow.message.text}
-        </span>
-        <Button onClick={flow.dismiss} size="sm" type="button" variant="outline">
-          Dismiss
-        </Button>
-      </span>
-    )
-  }
-
-  if (flow.phase === 'waiting') {
-    return <span>Waiting for verification link…</span>
-  }
-
-  return (
-    <Button onClick={() => void flow.start()} size="sm" type="button" variant="outline">
-      Verify to continue
-    </Button>
-  )
-}
-
-function InlineMessage({ children, kind }: { children: string; kind: 'error' | 'success' }) {
-  return (
-    <div
-      className={cn(
-        'mt-2 text-[length:var(--conversation-caption-font-size)]',
-        kind === 'error' ? 'text-destructive' : 'text-(--ui-text-tertiary)'
-      )}
-    >
-      {children}
     </div>
   )
 }
@@ -876,15 +453,15 @@ function BillingSettingsContent({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
-  const fixture =
-    import.meta.env.DEV && fixtureName && fixtureName !== 'live' ? billingDevFixtures[fixtureName] : undefined
-
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
 
-  const billingState = useBillingState(!fixture)
-  const subscriptionState = useSubscriptionState(!fixture)
-  const billingResult = fixture?.billing ?? billingState.data
-  const subscriptionResult = fixture?.subscription ?? subscriptionState.data
+  // Fixture mode flows through the SAME query path — the simulated api (supplied by
+  // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
+  // fixture short-circuit here.
+  const billingState = useBillingState()
+  const subscriptionState = useSubscriptionState()
+  const billingResult = billingState.data
+  const subscriptionResult = subscriptionState.data
   const view = deriveBillingView(billingResult, subscriptionResult)
   const billing = billingResult?.ok ? billingResult.data : undefined
   const usageUpdatedAt = oldestUpdatedAt(billingState.dataUpdatedAt, subscriptionState.dataUpdatedAt)
@@ -979,8 +556,27 @@ function BillingSettingsContent({
 
 function BillingSettingsWithDevFixtures() {
   const [fixtureName, setFixtureName] = useState<BillingFixtureSelection>('live')
+  const queryClient = useQueryClient()
 
-  return <BillingSettingsContent fixtureName={fixtureName} onFixtureChange={setFixtureName} />
+  // DEV-only: a picked fixture is served by a simulated api (in-memory, mutable) that
+  // the whole subtree resolves via BillingApiProvider → useBillingApi. `live` → null →
+  // the real gateway api. Rebuilt per fixture so switching starts from a fresh copy.
+  const simulatedApi = useMemo(
+    () => (fixtureName !== 'live' ? createSimulatedBillingApi(billingDevFixtures[fixtureName]) : null),
+    [fixtureName]
+  )
+
+  // Switching fixtures (or its simulated api) must refetch, since the billing queries
+  // are keyed the same across fixtures.
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ['billing'] })
+  }, [queryClient, simulatedApi])
+
+  return (
+    <BillingApiProvider value={simulatedApi}>
+      <BillingSettingsContent fixtureName={fixtureName} onFixtureChange={setFixtureName} />
+    </BillingApiProvider>
+  )
 }
 
 export function BillingSettings() {
@@ -991,129 +587,8 @@ export function BillingSettings() {
   return <BillingSettingsContent />
 }
 
-function clampAmount(raw: string, billing: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>): string {
-  const amount = parseAmount(raw)
-
-  if (amount == null) {
-    return ''
-  }
-
-  const min = parseAmount(billing.min_usd)
-  const max = parseAmount(billing.max_usd)
-  const clampedMin = min == null ? amount : Math.max(min, amount)
-  const clamped = max == null ? clampedMin : Math.min(max, clampedMin)
-
-  return formatAmountForRequest(clamped)
-}
-
-function parseAmount(value?: null | number | string): null | number {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null
-  }
-
-  if (typeof value !== 'string') {
-    return null
-  }
-
-  const parsed = Number(value.replace(/[$,\s]/g, ''))
-
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
-}
-
-function formatAmountForRequest(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
-}
-
 function oldestUpdatedAt(...timestamps: number[]): number {
   const populated = timestamps.filter(timestamp => timestamp > 0)
 
   return populated.length > 0 ? Math.min(...populated) : Date.now()
-}
-
-function initialAutoReloadAmount(...candidates: Array<null | string | undefined>): string {
-  for (const candidate of candidates) {
-    const amount = parseAmount(candidate)
-
-    if (amount != null) {
-      return formatAmountForRequest(amount)
-    }
-  }
-
-  return ''
-}
-
-function validateAutoReloadInputs(
-  thresholdRaw: string,
-  reloadToRaw: string,
-  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
-): { error?: string; values?: { reloadTo: string; threshold: string } } {
-  const threshold = validateBillingAmount('Threshold', thresholdRaw, bounds)
-
-  if (threshold.error || threshold.amount == null) {
-    return { error: threshold.error }
-  }
-
-  const reloadTo = validateBillingAmount('Reload-to', reloadToRaw, bounds)
-
-  if (reloadTo.error || reloadTo.amount == null) {
-    return { error: reloadTo.error }
-  }
-
-  if (reloadTo.amount <= threshold.amount) {
-    return { error: 'Reload-to amount must be greater than the threshold.' }
-  }
-
-  return {
-    values: {
-      reloadTo: formatAmountForRequest(reloadTo.amount),
-      threshold: formatAmountForRequest(threshold.amount)
-    }
-  }
-}
-
-function validateBillingAmount(
-  label: string,
-  raw: string,
-  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
-): { amount?: number; error?: string } {
-  const cleaned = raw.trim().replace(/^\$/, '').trim()
-
-  if (!cleaned || !/^\d+(\.\d{1,2})?$/.test(cleaned)) {
-    return { error: `${label}: enter a dollar amount with at most 2 decimal places.` }
-  }
-
-  const amount = Number(cleaned)
-
-  if (!(amount > 0)) {
-    return { error: `${label}: amount must be greater than $0.` }
-  }
-
-  const min = parseAmount(bounds.min_usd)
-
-  if (min != null && amount < min) {
-    return { error: `${label}: minimum is ${formatMoney(min)}.` }
-  }
-
-  const max = parseAmount(bounds.max_usd)
-
-  if (max != null && amount > max) {
-    return { error: `${label}: maximum is ${formatMoney(max)}.` }
-  }
-
-  return { amount }
-}
-
-function formatMoney(value?: null | number | string): string {
-  const amount = parseAmount(value)
-
-  if (amount == null) {
-    return EMPTY_BILLING_VALUE
-  }
-
-  return new Intl.NumberFormat(undefined, {
-    currency: 'USD',
-    maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
-    minimumFractionDigits: amount % 1 === 0 ? 0 : 2,
-    style: 'currency'
-  }).format(amount)
 }

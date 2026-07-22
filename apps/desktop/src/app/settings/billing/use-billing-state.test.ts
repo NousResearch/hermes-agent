@@ -13,7 +13,7 @@ import {
   todayBillingState,
   todaySubscriptionState
 } from './fixtures.test-util'
-import { buildManageSubscriptionUrl, deriveBillingView } from './use-billing-state'
+import { buildManageSubscriptionUrl, deriveBillingView, formatMonthlyCreditsDelta } from './use-billing-state'
 
 function usageRowFor(
   fixtureName: keyof typeof billingDevFixtures,
@@ -367,9 +367,9 @@ describe('derivePlanCard (current-plan card)', () => {
   })
 
   it('gives a top-tier subscriber a portal link, not a dead in-app button', () => {
-    // The subscriber is on the highest enabled tier: the grid holds only downgrades +
-    // current — nothing to upgrade to — so the card must fall back to the portal link
-    // rather than open a grid with no enabled action.
+    // On the highest tier, every enabled tile below is a downgrade — but downgrades are
+    // themselves actionable in-app at ticket 11, so this stays a "Change plan" account.
+    // (The dead-grid case is a subscriber whose only tile is `current`; covered above.)
     const view = deriveBillingView(
       okBilling(todayBillingState),
       okSubscription({
@@ -401,8 +401,81 @@ describe('derivePlanCard (current-plan card)', () => {
     )
 
     expect(view.tiers.some(tier => tier.state === 'upgrade')).toBe(false)
-    expect(view.plan?.action).toBeUndefined()
-    expect(view.plan?.link?.label).toBe('Adjust plan ↗')
+    // Free below is an in-app downgrade → still actionable → in-app button.
+    expect(view.plan?.action).toMatchObject({ label: 'Change plan' })
+  })
+
+  it('surfaces a scheduled downgrade as the plan-card pending state (drives the undo)', () => {
+    const fixture = billingDevFixtures['pending-downgrade']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.plan).toMatchObject({
+      action: { label: 'Change plan' },
+      caption: 'Changes to Free on Aug 15.',
+      pending: { kind: 'downgrade', tierName: 'Free', when: 'Aug 15' },
+      tierName: 'Plus'
+    })
+  })
+
+  it('surfaces a scheduled cancellation as "Cancels on …" with the same undo and no grid marker', () => {
+    const fixture = billingDevFixtures['pending-cancellation']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.plan).toMatchObject({
+      action: { label: 'Change plan' },
+      caption: 'Cancels on Aug 15.',
+      pending: { kind: 'cancellation', when: 'Aug 15' },
+      tierName: 'Plus'
+    })
+    // A cancellation has no target tier → nothing to mark in the grid.
+    expect(view.tiers.some(tier => tier.state === 'scheduled')).toBe(false)
+  })
+
+  it('lets a pending downgrade win over a cancellation when both are set', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: {
+          ...todaySubscriptionState.current,
+          cancel_at_period_end: true,
+          cancellation_effective_at: '2026-09-01T00:00:00Z',
+          cancellation_effective_display: 'Sep 1',
+          pending_downgrade_at: '2026-08-15T00:00:00Z',
+          pending_downgrade_display: 'Aug 15',
+          pending_downgrade_tier_name: 'Free',
+          tier_id: 'plus',
+          tier_name: 'Plus'
+        },
+        tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 'free',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$20',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    // Downgrade wins (names a concrete target); card + grid agree on it.
+    expect(view.plan?.pending).toMatchObject({ kind: 'downgrade', tierName: 'Free' })
+    expect(view.plan?.caption).toBe('Changes to Free on Aug 15.')
+    expect(view.tiers.find(tier => tier.name === 'Free')?.state).toBe('scheduled')
   })
 
   it('offers only the portal link when the tier catalog is empty', () => {
@@ -424,16 +497,14 @@ describe('derivePlanCard (current-plan card)', () => {
 })
 
 describe('derivePlanTiers (plans grid)', () => {
-  it('marks the current tier, upgrades, and disabled downgrades for a subscriber', () => {
+  it('marks the current tier, upgrades, and in-app downgrades for a subscriber', () => {
     const fixture = billingDevFixtures['subscriber-personal']
     const view = deriveBillingView(fixture.billing, fixture.subscription)
     const byName = Object.fromEntries(view.tiers.map(tier => [tier.name, tier]))
 
     expect(view.tiers.map(tier => tier.name)).toEqual(['Free', 'Plus', 'Super', 'Ultra'])
-    expect(byName.Free).toMatchObject({
-      disabledCaption: 'Downgrades are moving in-app — coming soon.',
-      state: 'downgrade'
-    })
+    expect(byName.Free.state).toBe('downgrade')
+    // Downgrades act in-app (no portal URL / caption) — the PlanCard wires the confirm flow.
     expect('action' in byName.Free).toBe(false)
     expect(byName.Plus.state).toBe('current')
     expect('action' in byName.Plus).toBe(false)
@@ -447,6 +518,20 @@ describe('derivePlanTiers (plans grid)', () => {
     expect(byName.Ultra.state).toBe('upgrade')
   })
 
+  it('marks the pending downgrade target "scheduled" (inert) while other tiers stay actionable', () => {
+    const fixture = billingDevFixtures['pending-downgrade']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+    const byName = Object.fromEntries(view.tiers.map(tier => [tier.name, tier]))
+
+    // Free is the scheduled target → inert marker, not another "Downgrade".
+    expect(byName.Free.state).toBe('scheduled')
+    expect('action' in byName.Free).toBe(false)
+    expect(byName.Plus.state).toBe('current')
+    // Reschedule stays possible on the other lower/higher tiers.
+    expect(byName.Super.state).toBe('upgrade')
+    expect(byName.Ultra.state).toBe('upgrade')
+  })
+
   it('marks the free/lowest tier current (inert) and every paid tier an upgrade when there is no subscription', () => {
     const fixture = billingDevFixtures['free-personal']
     const view = deriveBillingView(fixture.billing, fixture.subscription)
@@ -455,7 +540,6 @@ describe('derivePlanTiers (plans grid)', () => {
     // No "subscribe to Free" — the $0 tier is the current plan, not a choice.
     expect(view.tiers.map(tier => tier.state)).toEqual(['current', 'upgrade', 'upgrade', 'upgrade'])
     expect('action' in byName.Free).toBe(false)
-    expect('disabledCaption' in byName.Free).toBe(false)
     // No downgrade state can exist without a subscription.
     expect(view.tiers.some(tier => tier.state === 'downgrade')).toBe(false)
     expect(byName.Plus).toMatchObject({
@@ -655,5 +739,24 @@ describe('buildManageSubscriptionUrl', () => {
     expect(buildManageSubscriptionUrl({ org_id: 'org_z', portal_url: null }, null, 'tier_q')).toBe(
       'https://portal.nousresearch.com/manage-subscription?org_id=org_z&plan=tier_q'
     )
+  })
+})
+
+describe('formatMonthlyCreditsDelta', () => {
+  it('renders a bare negative decimal as signed dollars, never a raw number', () => {
+    // Credits are DOLLARS — "-88" must not render bare.
+    expect(formatMonthlyCreditsDelta('-88')).toBe('−$88/mo')
+  })
+
+  it('renders a positive delta with a plus sign and dollar formatting', () => {
+    expect(formatMonthlyCreditsDelta('40')).toBe('+$40/mo')
+    expect(formatMonthlyCreditsDelta('-12.50')).toBe('−$12.50/mo')
+  })
+
+  it('hides the line (null) for a zero or absent delta', () => {
+    expect(formatMonthlyCreditsDelta('0')).toBeNull()
+    expect(formatMonthlyCreditsDelta(null)).toBeNull()
+    expect(formatMonthlyCreditsDelta(undefined)).toBeNull()
+    expect(formatMonthlyCreditsDelta('')).toBeNull()
   })
 })

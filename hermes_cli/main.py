@@ -11968,7 +11968,7 @@ def cmd_profile(args):
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
-            if clone or clone_all:
+            if clone_config or clone_all:
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
             else:

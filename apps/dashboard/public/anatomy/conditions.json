@@ -1,0 +1,28 @@
+{
+  "note": "Educational anatomical mapping — where a condition typically manifests. Not exhaustive or a substitute for clinical judgement. SA-relevant conditions prioritised.",
+  "conditions": [
+    { "slug": "tuberculosis", "name": "Tuberculosis (TB)", "structures": ["lungs"] },
+    { "slug": "pneumonia", "name": "Pneumonia", "structures": ["lungs"] },
+    { "slug": "asthma", "name": "Asthma", "structures": ["lungs"] },
+    { "slug": "copd", "name": "COPD", "structures": ["lungs"] },
+    { "slug": "hiv", "name": "HIV", "structures": ["spleen", "lungs", "brain"] },
+    { "slug": "myocardial-infarction", "name": "Myocardial infarction (heart attack)", "structures": ["heart"] },
+    { "slug": "hypertension", "name": "Hypertension", "structures": ["heart", "kidneys"] },
+    { "slug": "heart-failure", "name": "Heart failure", "structures": ["heart", "lungs"] },
+    { "slug": "stroke", "name": "Stroke", "structures": ["brain"] },
+    { "slug": "epilepsy", "name": "Epilepsy", "structures": ["brain"] },
+    { "slug": "meningitis", "name": "Meningitis", "structures": ["brain"] },
+    { "slug": "cirrhosis", "name": "Cirrhosis", "structures": ["liver"] },
+    { "slug": "hepatitis", "name": "Hepatitis", "structures": ["liver"] },
+    { "slug": "gastritis", "name": "Gastritis", "structures": ["stomach"] },
+    { "slug": "peptic-ulcer", "name": "Peptic ulcer disease", "structures": ["stomach"] },
+    { "slug": "appendicitis", "name": "Appendicitis", "structures": ["intestines"] },
+    { "slug": "inflammatory-bowel-disease", "name": "Inflammatory bowel disease", "structures": ["intestines"] },
+    { "slug": "chronic-kidney-disease", "name": "Chronic kidney disease", "structures": ["kidneys"] },
+    { "slug": "urinary-tract-infection", "name": "Urinary tract infection", "structures": ["bladder", "kidneys"] },
+    { "slug": "diabetes", "name": "Diabetes mellitus", "structures": ["pancreas"] },
+    { "slug": "malaria", "name": "Malaria", "structures": ["spleen", "liver"] },
+    { "slug": "osteoporosis", "name": "Osteoporosis", "structures": ["spine", "pelvis", "leg_bones"] },
+    { "slug": "fracture", "name": "Fracture", "structures": ["arm_bones", "leg_bones"] }
+  ]
+}

@@ -1006,6 +1006,23 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertEqual(gold["price"], 2400)
         self.assertEqual(gold["group"], "Metals")
 
+    def test_anatomy_data_integrity(self):
+        base = Path(__file__).resolve().parent.parent / "public" / "anatomy"
+        structures = json.loads((base / "structures.json").read_text())
+        conditions = json.loads((base / "conditions.json").read_text())
+        ids = {s["id"] for s in structures["structures"]}
+        layer_ids = {l["id"] for l in structures["layers"]}
+        # every structure sits in a declared layer
+        for s in structures["structures"]:
+            self.assertIn(s["layer"], layer_ids)
+            self.assertTrue(s["name"] and s["blurb"])
+        # every condition maps to real, non-empty structures
+        self.assertTrue(conditions["conditions"])
+        for c in conditions["conditions"]:
+            self.assertTrue(c["slug"] and c["name"] and c["structures"])
+            for sid in c["structures"]:
+                self.assertIn(sid, ids, f"{c['slug']} references unknown structure {sid}")
+
     def test_changelog_sample_and_normalizer(self):
         d = self.api.changelog({})
         self.assertTrue(d["releases"])

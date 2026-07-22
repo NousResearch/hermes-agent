@@ -1372,6 +1372,43 @@ a.trk-title:hover { color: var(--accent); }
 .mar-cell-val { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
 .mar-cell-unit { font-size: 9px; }
 
+/* ---------- anatomy explorer ---------- */
+.an-wrap { display: flex; gap: 12px; align-items: stretch; min-height: 420px; }
+.an-rail { flex: 0 0 200px; display: flex; flex-direction: column; gap: 12px; }
+.an-rail-group { display: flex; flex-direction: column; gap: 5px; }
+.an-rail-label { font-size: 10px; letter-spacing: 0.12em; color: var(--muted); }
+.an-layers { display: flex; flex-direction: column; gap: 4px; }
+.an-layer { display: flex; align-items: center; gap: 7px; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 5px;
+  color: var(--ink-2); font: inherit; font-size: 12px; padding: 6px 8px; cursor: pointer; }
+.an-layer.on { color: var(--ink); border-color: var(--accent); background: var(--surface); }
+.an-swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; opacity: 0.85; }
+.an-viewport { flex: 1; min-width: 0; min-height: 420px; border: 1px solid var(--hairline);
+  border-radius: 8px; background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%);
+  display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+.an-viewport canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+.an2 { height: 420px; max-height: 100%; }
+.an2-region { cursor: pointer; transition: fill 120ms, opacity 120ms; }
+.an2-skin { fill: color-mix(in srgb, var(--accent) 6%, transparent); stroke: var(--hairline-2); stroke-width: 1.5; }
+.an2-bone { fill: color-mix(in srgb, #e8e2d0 55%, transparent); stroke: var(--hairline-2); stroke-width: 0.6; }
+.an2-bone-outline { stroke: color-mix(in srgb, #e8e2d0 70%, transparent); }
+.an2-organ { fill: color-mix(in srgb, var(--status-critical) 45%, transparent); stroke: color-mix(in srgb, var(--status-critical) 70%, transparent); stroke-width: 0.8; }
+.an2-region:hover { fill: color-mix(in srgb, var(--accent) 40%, transparent); }
+.an2-region.an2-hot { fill: var(--accent); stroke: var(--accent); animation: an-pulse 1.4s ease-in-out infinite; }
+@keyframes an-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+.an-info { border-top: 1px solid var(--hairline); padding-top: 8px; margin-top: 4px; }
+.an-info-name { font-weight: 600; font-size: 14px; }
+.an-info-layer { text-transform: uppercase; letter-spacing: 0.06em; }
+.an-info-blurb { margin: 4px 0 8px; line-height: 1.4; }
+.an-cond, .an-quality { width: 100%; }
+.an-note { margin-top: auto; }
+@media (max-width: 760px) {
+  .an-wrap { flex-direction: column; }
+  .an-rail { flex: none; }
+  .an-viewport { min-height: 360px; }
+  .an2 { height: 360px; }
+}
+
 /* ---------- flights overhead ---------- */
 .fl-head { margin-bottom: 8px; }
 .fl-list { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }

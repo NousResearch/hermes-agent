@@ -28,6 +28,8 @@ export default {
     async function runQuery(text) {
       text = (text || "").trim();
       if (!text || busy) return;
+      // Drive the Anatomy Explorer: highlight where a mentioned condition sits.
+      window.dispatchEvent(new CustomEvent("hub:anatomy-highlight", { detail: { text } }));
       const msgs = [...history(), { role: "user", content: text }];
       busy = true;
       persist([...msgs, { role: "assistant", content: "" }]);

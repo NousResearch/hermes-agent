@@ -31,8 +31,8 @@ function defaultPages() {
       w("worldnews", "m"),
     ] },
     { id: uid(), name: "Health", layout: [
-      w("medbot", "l"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"), w("calc", "m"),
-      w("meded", "l"), w("healthnews", "m"),
+      w("medbot", "l"), w("anatomy", "xl"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"),
+      w("calc", "m"), w("meded", "l"), w("healthnews", "m"),
     ] },
     { id: uid(), name: "AI Lab", layout: [
       w("aidaily", "xl"), w("ailearn", "l"), w("codelab", "l"),
@@ -174,20 +174,26 @@ function backfillDefaultPages(state) {
 
 // Targeted one-time backfill: push each tab's topic-news widget into the
 // matching existing page (by name) if it isn't already there. Guarded by
-// newsSeed so it runs once and respects later manual removals.
-const TAB_NEWS = {
-  markets: "marketsnews", sports: "sportsnews", intel: "worldnews", health: "healthnews",
+// widgetSeed so it runs once per bump and respects later manual removals.
+const WIDGET_SEED = 2;
+const PAGE_WIDGETS = {
+  markets: [["marketsnews", "m"]],
+  sports: [["sportsnews", "m"]],
+  intel: [["worldnews", "m"]],
+  health: [["healthnews", "m"], ["anatomy", "xl"]],
 };
 function backfillTabNews(state) {
-  if (state.newsSeed >= 1) return;
+  if ((state.newsSeed || 0) >= WIDGET_SEED) return;
   for (const page of state.pages || []) {
-    const type = TAB_NEWS[(page.name || "").toLowerCase()];
-    if (!type || !Array.isArray(page.layout)) continue;
-    if (!page.layout.some((wd) => wd.type === type)) {
-      page.layout.push({ id: uid(), type, size: "m" });
+    const wants = PAGE_WIDGETS[(page.name || "").toLowerCase()];
+    if (!wants || !Array.isArray(page.layout)) continue;
+    for (const [type, size] of wants) {
+      if (!page.layout.some((wd) => wd.type === type)) {
+        page.layout.push({ id: uid(), type, size });
+      }
     }
   }
-  state.newsSeed = 1;
+  state.newsSeed = WIDGET_SEED;
 }
 
 /** Ensure pages is a non-empty array and activePage points at a real page. */

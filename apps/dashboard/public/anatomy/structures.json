@@ -1,0 +1,28 @@
+{
+  "layers": [
+    { "id": "skin", "name": "Skin", "color": "#d9a679" },
+    { "id": "muscle", "name": "Muscle", "color": "#b5473f" },
+    { "id": "skeleton", "name": "Skeleton", "color": "#e8e2d0" },
+    { "id": "organ", "name": "Organs", "color": "#c65b6b" }
+  ],
+  "structures": [
+    { "id": "skin", "name": "Skin", "layer": "skin", "blurb": "The body's largest organ; barrier, thermoregulation and sensation." },
+    { "id": "musculature", "name": "Musculature", "layer": "muscle", "blurb": "Skeletal muscles that produce movement and posture." },
+    { "id": "skull", "name": "Skull", "layer": "skeleton", "blurb": "Encloses and protects the brain; houses the special sense organs." },
+    { "id": "spine", "name": "Spine (vertebral column)", "layer": "skeleton", "blurb": "33 vertebrae protecting the spinal cord; axial support." },
+    { "id": "ribcage", "name": "Rib cage", "layer": "skeleton", "blurb": "Protects the heart and lungs; assists ventilation." },
+    { "id": "pelvis", "name": "Pelvis", "layer": "skeleton", "blurb": "Supports the trunk and protects pelvic organs." },
+    { "id": "arm_bones", "name": "Arm bones", "layer": "skeleton", "blurb": "Humerus, radius and ulna of the upper limbs." },
+    { "id": "leg_bones", "name": "Leg bones", "layer": "skeleton", "blurb": "Femur, tibia and fibula of the lower limbs; femur is the longest bone." },
+    { "id": "brain", "name": "Brain", "layer": "organ", "blurb": "Central nervous system control; cognition, movement, autonomic regulation." },
+    { "id": "heart", "name": "Heart", "layer": "organ", "blurb": "Four-chambered muscular pump driving systemic and pulmonary circulation." },
+    { "id": "lungs", "name": "Lungs", "layer": "organ", "blurb": "Gas exchange; oxygen uptake and carbon-dioxide clearance." },
+    { "id": "liver", "name": "Liver", "layer": "organ", "blurb": "Metabolism, detoxification, bile production and clotting-factor synthesis." },
+    { "id": "stomach", "name": "Stomach", "layer": "organ", "blurb": "Acidic digestion and reservoir for ingested food." },
+    { "id": "intestines", "name": "Intestines", "layer": "organ", "blurb": "Small and large bowel; nutrient absorption and stool formation." },
+    { "id": "kidneys", "name": "Kidneys", "layer": "organ", "blurb": "Filter blood, regulate fluid/electrolytes and blood pressure." },
+    { "id": "bladder", "name": "Urinary bladder", "layer": "organ", "blurb": "Stores urine before voiding." },
+    { "id": "spleen", "name": "Spleen", "layer": "organ", "blurb": "Filters blood and supports immune function." },
+    { "id": "pancreas", "name": "Pancreas", "layer": "organ", "blurb": "Endocrine (insulin/glucagon) and exocrine (digestive enzymes) organ." }
+  ]
+}

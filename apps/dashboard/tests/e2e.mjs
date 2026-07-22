@@ -123,7 +123,7 @@ const WIDGET_PAGES = {
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores", "racing", "sportsnews"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "marine", "space", "alerts", "flights", "worldnews"],
-  Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded", "healthnews"],
+  Health: ["medbot", "anatomy", "pubmed", "trials", "drug", "calc", "meded", "healthnews"],
   "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily", "changelog", "tracker"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
@@ -762,6 +762,32 @@ await page.waitForFunction(() =>
   document.querySelector(".widget-calc .calc-val")?.textContent === "10", null, { timeout: 5000 });
 check("clinical calc scores Alvarado", (await page.locator(".widget-calc .calc-val").innerText()) === "10");
 // med education / OSCE
+// anatomy explorer (force 2D tier for deterministic assertions)
+await gotoWidget("anatomy");
+await page.waitForSelector(".widget-anatomy .an-quality", { timeout: 8000 });
+await page.selectOption(".widget-anatomy .an-quality", "2d");
+await page.waitForSelector(".widget-anatomy .an2", { timeout: 8000 });
+check("anatomy renders body regions", (await page.locator(".widget-anatomy .an2-region").count()) >= 12);
+check("anatomy lists anatomical layers", (await page.locator(".widget-anatomy .an-layer").count()) >= 4);
+// condition highlight via the shared bus (as MedBot/Med Ed would drive it)
+const anatHot = await page.evaluate(() => {
+  window.dispatchEvent(new CustomEvent("hub:anatomy-highlight", { detail: { slug: "tuberculosis" } }));
+  return new Promise((res) => setTimeout(() =>
+    res(!!document.querySelector('.widget-anatomy [data-structure="lungs"].an2-hot')), 400));
+});
+check("anatomy highlights a condition's structures", anatHot === true);
+// free-text bridge (how MedBot drives it)
+const anatText = await page.evaluate(() => {
+  window.dispatchEvent(new CustomEvent("hub:anatomy-highlight", { detail: { text: "a case of cirrhosis" } }));
+  return new Promise((res) => setTimeout(() =>
+    res(!!document.querySelector('.widget-anatomy [data-structure="liver"].an2-hot')), 400));
+});
+check("anatomy highlights from free text", anatText === true);
+// selecting a structure populates the info panel
+await page.locator('.widget-anatomy [data-structure="heart"]').click({ force: true });
+check("anatomy info panel names the selection",
+  /heart/i.test(await page.locator(".widget-anatomy .an-info-name").innerText()));
+
 await gotoWidget("meded");
 check("med ed lists OSCE stations", (await page.locator(".widget-meded .meded-station").count()) >= 10);
 const medMsgsB = await page.locator(".widget-medbot .med-msg").count();

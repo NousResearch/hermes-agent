@@ -39,6 +39,10 @@ class TestGatewayLifecyclePattern:
         "launchctl kickstart gui/501/ai.hermes.gateway",
         "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
         "launchctl stop ai.hermes.gateway",
+        "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
+        "launchctl submit -l ai.hermes.gateway.delayed-restart.20260622213211 -- /bin/sh -lc restart-default-gateway-once.sh",
+        "launchctl bootout gui/501/ai.hermes.gateway",
+        "launchctl bootout ~/Library/LaunchAgents/ai.hermes.gateway.plist",
         "systemctl restart hermes-gateway",
         "systemctl stop hermes-gateway.service",
         "systemctl start hermes-gateway",
@@ -84,6 +88,9 @@ class TestGatewayLifecyclePattern:
         "Monitor the gateway and tell me if a restart is recommended",
         "research how the OpenAI API gateway handles restart after rate limiting",
         "compare AWS API Gateway vs Cloudflare on restart latency",
+        # Removing a runaway one-shot restart helper is the safe recovery path
+        # from Discord/Telegram when the gateway itself is still alive.
+        "launchctl bootout gui/501/ai.hermes.gateway.delayed-restart.20260622213211",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
@@ -316,6 +323,9 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl stop hermes-gateway.service",
         "hermes gateway restart",
         "launchctl kickstart gui/501/ai.hermes.gateway",
+        "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
+        "launchctl submit -l ai.hermes.gateway.delayed-restart.20260622213211 -- /bin/sh -lc restart-default-gateway-once.sh",
+        "launchctl bootout gui/501/ai.hermes.gateway",
         "pkill -f hermes.*gateway",
     ])
     def test_blocks_lifecycle_commands_inside_gateway(self, monkeypatch, cmd):

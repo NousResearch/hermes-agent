@@ -1517,7 +1517,26 @@ def init_agent(
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    # The user explicitly configured this provider in
+                    # config.yaml, so failing to activate it must be loud:
+                    # at DEBUG this degrades to a silent, indefinite memory
+                    # outage (the agent runs with built-in memory only and
+                    # nothing ever says so).
+                    if _mp is None:
+                        _ra().logger.warning(
+                            "Memory provider '%s' is configured but its plugin "
+                            "could not be found or loaded; continuing without "
+                            "external memory. Run 'hermes memory status' to "
+                            "diagnose.",
+                            _mem_provider_name,
+                        )
+                    else:
+                        _ra().logger.warning(
+                            "Memory provider '%s' is configured but reports "
+                            "unavailable; continuing without external memory. "
+                            "Run 'hermes memory status' to diagnose.",
+                            _mem_provider_name,
+                        )
                     agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)

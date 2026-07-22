@@ -281,6 +281,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    disabled_functions: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -296,6 +297,9 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        disabled_functions: Per-function tool names to exclude from the result.
+            Applied after toolset resolution and check_fn filtering. Provides
+            finer-grained control than toolset-level enable/disable.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -319,6 +323,7 @@ def get_tool_definitions(
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
+            frozenset(disabled_functions) if disabled_functions else None,
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
@@ -335,7 +340,8 @@ def get_tool_definitions(
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+                                       skip_tool_search_assembly=skip_tool_search_assembly,
+                                       disabled_functions=disabled_functions)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -359,6 +365,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    disabled_functions: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -533,6 +540,20 @@ def _compute_tool_definitions(
         filtered_tools = sanitize_tool_schemas(filtered_tools)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
+
+    # ── Per-function disabled list ─────────────────────────────────────
+    # Strip individual tools by name (e.g. ``skill_manage``) below toolset
+    # granularity.  Applied after sanitization so disabled tools never
+    # enter the bridge catalog, and before the Tool Search bridge so the
+    # deferred set doesn't include them.
+    if disabled_functions:
+        disabled_set = set(disabled_functions)
+        filtered_tools = [
+            t for t in filtered_tools
+            if t.get("function", {}).get("name") not in disabled_set
+        ]
+        if not quiet_mode:
+            print(f"🚫 Disabled functions: {', '.join(sorted(disabled_set))}")
 
     # ── Tool Search (progressive disclosure) ────────────────────────────
     # Conditionally replace MCP + plugin (non-core) tools with three bridge
@@ -1067,6 +1088,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    disabled_functions: Optional[List[str]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1088,6 +1110,9 @@ def handle_function_call(
                        matching ``get_tool_definitions`` semantics.
         disabled_toolsets: The session's disabled toolsets, applied as a
                        subtraction when scoping the bridge catalog.
+        disabled_functions: Per-function tool names that are blocked from
+                       execution.  Defense-in-depth guard: even if a disabled
+                       tool's schema leaks into the prompt, dispatch rejects it.
 
     Returns:
         Function result as a JSON string.
@@ -1171,6 +1196,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                disabled_functions=disabled_functions,
             )
 
     _tool_original_args = dict(function_args)
@@ -1196,6 +1222,15 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        # Defense-in-depth: reject disabled functions at dispatch time even
+        # if the schema filter above somehow didn't catch them (e.g. through
+        # the tool_search → tool_call bridge path).
+        if disabled_functions and function_name in disabled_functions:
+            return json.dumps(
+                {"error": f"Tool '{function_name}' is disabled by configuration"},
+                ensure_ascii=False,
+            )
 
         # Check plugin hooks for a block/approve directive (unless caller
         # already checked — e.g. run_agent._invoke_tool passes skip=True to

@@ -422,6 +422,7 @@ def init_agent(
     tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
+    disabled_functions: List[str] = None,
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
@@ -767,6 +768,7 @@ def init_agent(
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+    agent.disabled_functions = disabled_functions
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -1363,6 +1365,7 @@ def init_agent(
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
+        disabled_functions=disabled_functions,
         quiet_mode=agent.quiet_mode,
     )
     

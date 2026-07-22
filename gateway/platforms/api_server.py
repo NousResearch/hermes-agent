@@ -1924,6 +1924,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        disabled_functions = (user_config.get("tools") or {}).get("disabled_functions") or None
 
         max_iterations = _current_max_iterations()
 
@@ -1940,6 +1941,7 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            disabled_functions=disabled_functions,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,

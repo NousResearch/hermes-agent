@@ -4,8 +4,9 @@ Wires three behaviours:
 
 1. ``post_tool_call`` hook — consumes explicit ``created_paths`` /
    ``files_created`` metadata emitted by write-capable tools, then tracks
-   paths matching test/temp patterns under ``HERMES_HOME`` silently.  Raw
-   command text and terminal output are never creation evidence.
+   paths matching test/temp patterns under ``HERMES_HOME`` silently.  Terminal
+   calls are excluded because arbitrary shell commands cannot prove whether a
+   path was created or merely moved/observed.
 
 2. ``on_session_end`` hook — when any test files were auto-tracked
    during the just-finished turn, runs :func:`disk_cleanup.quick` and
@@ -161,13 +162,13 @@ def _on_post_tool_call(
     if not isinstance(args, dict):
         return
 
-    if tool_name not in {"write_file", "patch", "terminal"}:
+    if tool_name not in {"write_file", "patch"}:
         return
 
-    # Never infer ownership from args or free-form terminal output.  The
-    # result metadata is produced by the tool implementation only after it
-    # has observed a successful newly-created target; absent/invalid metadata
-    # is intentionally ambiguous and therefore preserved.
+    # Only tools that control the actual write operation may establish
+    # creation provenance.  Terminal before/after existence is correlation,
+    # not authorship: a shell command can move an existing human file or race
+    # another creator into the observed path.  Ambiguity is preserved.
     candidates = _extract_trusted_created_paths(result)
 
     for path_str in candidates:

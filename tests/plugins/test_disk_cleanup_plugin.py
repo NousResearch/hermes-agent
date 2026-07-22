@@ -684,7 +684,7 @@ class TestPostToolCallHook:
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
-    def test_terminal_command_picks_up_paths(self, _isolate_env):
+    def test_terminal_metadata_cannot_authorize_cleanup(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "tmp_created.log"
         p.write_text("x")
@@ -698,8 +698,9 @@ class TestPostToolCallHook:
             task_id="t3", session_id="s3",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        data = json.loads(tracked_file.read_text())
-        assert any(Path(i["path"]) == p.resolve() for i in data)
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+        pi._on_session_end(session_id="s3", completed=True, interrupted=False)
+        assert p.exists(), "terminal metadata must not authorize deletion"
 
     def test_terminal_read_only_output_cannot_track_preexisting_test_file(
         self, _isolate_env

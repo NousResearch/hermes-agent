@@ -37,7 +37,6 @@ import logging
 import os
 import platform
 import re
-import shlex
 import time
 import threading
 import atexit
@@ -119,87 +118,6 @@ DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     float,
     "number",
 )
-
-
-_TERMINAL_CREATION_WINDOWS_PATH_REGEX = re.compile(
-    r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/][^\s'\"`]+)"
-)
-
-
-def _terminal_creation_path_candidates(command: str) -> set[str]:
-    """Extract absolute path operands from command text for stat-only checks.
-
-    This is intentionally narrower than a shell parser: it never reads
-    command output and never treats a path as owned by Hermes.  The resulting
-    candidates are only used for before/after existence evidence, which the
-    disk-cleanup plugin consumes through ``created_paths``.
-    """
-    if not isinstance(command, str) or not command:
-        return set()
-
-    candidates = {
-        match.group(1)
-        for match in _TERMINAL_CREATION_WINDOWS_PATH_REGEX.finditer(command)
-    }
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        tokens = []
-    for token in tokens:
-        if token.startswith(("/", "~")) or _TERMINAL_CREATION_WINDOWS_PATH_REGEX.match(token):
-            candidates.add(token)
-    return candidates
-
-
-def _normalize_terminal_creation_path(value: str) -> str | None:
-    """Normalize a candidate path, rejecting foreign Windows paths off-host."""
-    if not isinstance(value, str) or not value:
-        return None
-    if _TERMINAL_CREATION_WINDOWS_PATH_REGEX.match(value) and os.name != "nt":
-        return None
-    try:
-        return str(Path(value).expanduser())
-    except (OSError, ValueError):
-        return None
-
-
-def _snapshot_terminal_creation_candidates(command: str) -> dict[str, bool | None]:
-    """Capture pre-command existence for explicit absolute path operands."""
-    snapshot: dict[str, bool | None] = {}
-    for raw_path in _terminal_creation_path_candidates(command):
-        path = _normalize_terminal_creation_path(raw_path)
-        if path is None:
-            continue
-        try:
-            # lstat treats a pre-existing broken symlink as existing too;
-            # following it would incorrectly turn a user-owned link into a
-            # newly-created artifact candidate.  Unknown access errors stay
-            # unknown rather than becoming false (fail closed).
-            os.lstat(path)
-            snapshot[path] = True
-        except FileNotFoundError:
-            snapshot[path] = False
-        except (OSError, ValueError):
-            snapshot[path] = None
-    return snapshot
-
-
-def _created_terminal_paths(
-    before: dict[str, bool | None], returncode: int
-) -> list[str]:
-    """Return paths proven absent before and present after a successful call."""
-    if returncode != 0:
-        return []
-    created: list[str] = []
-    for path, existed_before in sorted(before.items()):
-        if existed_before is not False:
-            continue
-        try:
-            os.lstat(path)
-            created.append(path)
-        except (FileNotFoundError, OSError, ValueError):
-            continue
-    return created
 
 
 def _check_disk_usage_warning():
@@ -2803,13 +2721,6 @@ def terminal_tool(
                 from tools.interrupt import clear_current_thread_interrupt
                 clear_current_thread_interrupt()
 
-            # Capture only explicit path operands before execution.  This
-            # enables trusted creation metadata without ever treating command
-            # output as ownership evidence.  Background processes are
-            # intentionally excluded because their post-state is not known at
-            # this call boundary.
-            terminal_creation_before = _snapshot_terminal_creation_candidates(command)
-
             while retry_count <= max_retries:
                 try:
                     command_cwd = _resolve_command_cwd(
@@ -2946,11 +2857,6 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
-            created_paths = _created_terminal_paths(
-                terminal_creation_before, returncode
-            )
-            if created_paths:
-                result_dict["created_paths"] = created_paths
             try:
                 from agent.verification_evidence import record_terminal_result
 

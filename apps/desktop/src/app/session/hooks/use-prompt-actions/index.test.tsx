@@ -571,6 +571,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
+        getRuntimeIdForStoredSession={storedId => (storedId === 'stored-session-a' ? 'rt-session-a' : null)}
         onReady={h => (handle = h)}
         onUpdateState={(sessionId, storedSessionId, state) => updates.push({ sessionId, state, storedSessionId })}
         refreshSessions={async () => undefined}
@@ -599,6 +600,102 @@ describe('usePromptActions submit / queue drain semantics', () => {
     ).toBe(true)
     // Offscreen queue drains must not flip the foreground composer into Thinking.
     expect($busy.get()).toBe(false)
+  })
+
+  it('a fromQueue drain carrying a stale runtime id re-homes via session.resume instead of landing in the foreground session', async () => {
+    // The session-switch window this guards: the composer's queue key has
+    // already flipped to session B (route-driven) while the foreground runtime
+    // id prop still reads session A (resume-driven, one settle behind). Without
+    // the central-binding check, prompt.submit fires with session_id=A and B's
+    // queued prompt — plus its whole answer turn — lands inside A. With no
+    // binding recorded for B yet, the stale id must be dropped and the drain
+    // re-homed through the stored-session resume path.
+    const updates: { sessionId: string; state: Record<string, unknown>; storedSessionId: null | string | undefined }[] =
+      []
+
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'session.resume' ? { session_id: 'rt-session-b' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, storedSessionId, state) => updates.push({ sessionId, state, storedSessionId })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued for B mid-switch', {
+      fromQueue: true,
+      sessionId: 'rt-session-a',
+      storedSessionId: 'stored-session-b'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-session-b',
+      source: 'desktop'
+    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-session-b',
+        text: 'queued for B mid-switch'
+      },
+      1_800_000
+    )
+    // The invariant: the stale foreground runtime never receives the prompt.
+    expect(
+      requestGateway.mock.calls.every(
+        ([method, params]) =>
+          method !== 'prompt.submit' || (params as { session_id?: string }).session_id !== 'rt-session-a'
+      )
+    ).toBe(true)
+    expect(
+      updates.some(update => update.sessionId === 'rt-session-b' && update.storedSessionId === 'stored-session-b')
+    ).toBe(true)
+  })
+
+  it('a fromQueue drain rebinds to the centrally recorded runtime when its explicit id is stale', async () => {
+    // Same window, but B's runtime binding is already known centrally — the
+    // drain should adopt the authoritative binding directly (no resume
+    // round-trip) rather than trusting the leftover foreground id.
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        getRuntimeIdForStoredSession={storedId => (storedId === 'stored-session-b' ? 'rt-session-b-live' : null)}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued for B, B already re-bound', {
+      fromQueue: true,
+      sessionId: 'rt-session-a',
+      storedSessionId: 'stored-session-b'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-session-b-live',
+        text: 'queued for B, B already re-bound'
+      },
+      1_800_000
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
+    expect(
+      requestGateway.mock.calls.every(
+        ([method, params]) =>
+          method !== 'prompt.submit' || (params as { session_id?: string }).session_id !== 'rt-session-a'
+      )
+    ).toBe(true)
   })
 
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
@@ -1220,6 +1317,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
+        // The central binding is stale in lockstep with the caller here: the
+        // sleep/wake reaper only clears the GATEWAY's in-memory session, so
+        // client-side state still swears by the old runtime id. That is what
+        // routes this case to the reactive 404→resume→retry path instead of
+        // the proactive binding check (covered by the cross-session drain
+        // tests above).
+        getRuntimeIdForStoredSession={storedId => (storedId === STORED_SESSION_ID ? 'rt-background-stale' : null)}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}

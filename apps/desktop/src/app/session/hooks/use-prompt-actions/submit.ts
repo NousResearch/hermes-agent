@@ -151,6 +151,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let sessionId: null | string = options?.sessionId ?? activeSessionIdRef.current
 
+      // An explicit queued runtime id is authoritative ONLY while it still
+      // belongs to its stored session. On a session switch the composer's
+      // queue key flips with the route while the foreground runtime id lags a
+      // resume behind, so a drain can fire with storedSessionId=B but
+      // sessionId=A-runtime — and the prompt.submit below would land B's
+      // queued prompt (and its whole answer turn) inside A. Verify the pair
+      // against the central binding and drop a stale explicit id: the
+      // targetStoredSessionId resume path below then rebinds the right
+      // runtime, exactly as a background drain with an unknown binding does.
+      // The identity pair (storedSessionId === sessionId) is the fresh-chat
+      // fallback — an unpersisted conversation's queue key IS its runtime id,
+      // so it has no central binding to check against and is left untouched.
+      if (
+        options?.sessionId &&
+        options?.storedSessionId &&
+        options.storedSessionId !== options.sessionId
+      ) {
+        const boundRuntimeId = getRuntimeIdForStoredSession(options.storedSessionId)
+
+        if (boundRuntimeId !== options.sessionId) {
+          sessionId = boundRuntimeId
+        }
+      }
+
       // Pin the foreground session context for the whole async submit pipeline.
       // Without this, a fast session switch during session.resume / file.attach
       // can redirect the user's text into a different chat (#54527). Mutable —

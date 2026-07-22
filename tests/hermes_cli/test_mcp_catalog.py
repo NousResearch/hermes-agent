@@ -414,6 +414,26 @@ class TestPicker:
         assert rc == 0
         assert "demo" in load_config().get("mcp_servers", {})
 
+    def test_install_by_name_preserves_existing_manual_mcp_servers(self, catalog_dir):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.mcp_picker import install_by_name
+
+        manual_server = {
+            "command": "python",
+            "args": ["-m", "custom_mcp"],
+            "env": {"CUSTOM_TOKEN": "${CUSTOM_TOKEN}"},
+            "enabled": False,
+        }
+        save_config({"mcp_servers": {"manual-local": manual_server}})
+
+        rc = install_by_name("demo")
+
+        assert rc == 0
+        servers = load_config()["mcp_servers"]
+        assert servers["manual-local"] == manual_server
+        assert servers["demo"]["command"] == "npx"
+
     def test_run_picker_non_tty_falls_back(self, catalog_dir, capsys, monkeypatch):
         _write_manifest(catalog_dir, "demo", _basic_manifest())
         # Force isatty false

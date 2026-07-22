@@ -183,7 +183,11 @@ MEMORY_GUIDANCE = (
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "asking them to repeat themselves. "
+    "For temporal recap questions (e.g., 'what did we discuss yesterday between 2pm and 4pm'), "
+    "call session_search with window_start and window_end instead of a keyword query; "
+    "the tool returns the raw messages inside that interval. "
+    "If the user only names a topic without a clear time range, use the keyword query shape first."
 )
 
 SKILLS_GUIDANCE = (

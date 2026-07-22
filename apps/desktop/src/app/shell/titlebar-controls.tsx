@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import {
   $fileBrowserOpen,
+  $panesFlipped,
   $sidebarOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
@@ -49,8 +50,13 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
   onOpenSettings: () => void
 }
 
-export function resolveTitlebarEdgeTargets(rtl: boolean): { left: 'files' | 'sessions'; right: 'files' | 'sessions' } {
-  return rtl ? { left: 'files', right: 'sessions' } : { left: 'sessions', right: 'files' }
+export function resolveTitlebarEdgeTargets(
+  rtl: boolean,
+  panesFlipped: boolean
+): { left: 'files' | 'sessions'; right: 'files' | 'sessions' } {
+  const panesMirrored = rtl !== panesFlipped
+
+  return panesMirrored ? { left: 'files', right: 'sessions' } : { left: 'sessions', right: 'files' }
 }
 
 /**
@@ -106,6 +112,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const modHeld = useModifierHeld()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
 
   const toggleHaptics = () => {
@@ -124,7 +131,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // mirrored in Arabic. Keep each titlebar button bound to the pane that is
   // actually drawn beneath its physical edge. The titlebar clusters themselves
   // stay LTR below so icon order and edge placement do not reverse.
-  const edgeTargets = resolveTitlebarEdgeTargets(localeDirection(locale) === 'rtl')
+  const edgeTargets = resolveTitlebarEdgeTargets(localeDirection(locale) === 'rtl', panesFlipped)
   const edgeBindings = {
     files: {
       actionId: 'view.toggleRightSidebar',

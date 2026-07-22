@@ -7,8 +7,11 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
@@ -29,6 +32,39 @@ test('resolveTimeoutMs falls back to defaults and accepts overrides', () => {
   assert.equal(resolveTimeoutMs(0), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs(-25), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs('2750'), 2750)
+})
+
+test('attachment upload cap is bounded above the preview cap', () => {
+  assert.equal(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES, 256 * 1024 * 1024)
+})
+
+test('attachment data URL helper reads bytes above the preview limit without changing that limit', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-large-attachment-'))
+  const source = path.join(tempDir, 'large.bin')
+  const content = Buffer.alloc(DATA_URL_READ_MAX_BYTES + 1024, 0x5a)
+
+  try {
+    fs.writeFileSync(source, content)
+
+    await assert.rejects(
+      resolveReadableFileForIpc(source, {
+        maxBytes: DATA_URL_READ_MAX_BYTES,
+        purpose: 'File preview'
+      }),
+      /file is too large/
+    )
+
+    const dataUrl = await readFileDataUrlForIpc(source, {
+      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      mimeType: 'application/octet-stream',
+      purpose: 'Attachment upload'
+    })
+
+    assert.match(dataUrl, /^data:application\/octet-stream;base64,/)
+    assert.deepEqual(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'), content)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 })
 
 test('encryptDesktopSecret requires available secure storage', () => {

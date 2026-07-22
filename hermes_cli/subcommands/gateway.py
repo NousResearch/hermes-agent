@@ -307,6 +307,42 @@ def build_gateway_parser(
     )
     gateway_enroll.set_defaults(func=cmd_gateway_enroll)
 
+    # Top-level start/stop/restart aliases (#68247).
+    # Users often type `hermes stop` / `hermes start` (supervisor-style) and hit
+    # "invalid choice". These root verbs dispatch to the same ``cmd_gateway``
+    # handler with ``gateway_command`` set, keeping behaviour identical to
+    # ``hermes gateway start|stop|restart`` including ``--system`` / ``--all``.
+    def _add_gateway_lifecycle_root_alias(name: str, *, help_text: str, all_help: str) -> None:
+        alias = subparsers.add_parser(name, help=help_text)
+        alias.add_argument(
+            "--system",
+            action="store_true",
+            help="Target the Linux system-level gateway service",
+        )
+        alias.add_argument(
+            "--all",
+            action="store_true",
+            help=all_help,
+        )
+        _add_compat_platform_flag(alias)
+        alias.set_defaults(func=cmd_gateway, gateway_command=name)
+
+    _add_gateway_lifecycle_root_alias(
+        "start",
+        help_text="Alias for 'hermes gateway start' — start the messaging gateway service",
+        all_help="Kill ALL stale gateway processes across all profiles before starting",
+    )
+    _add_gateway_lifecycle_root_alias(
+        "stop",
+        help_text="Alias for 'hermes gateway stop' — stop the messaging gateway service",
+        all_help="Stop ALL gateway processes across all profiles",
+    )
+    _add_gateway_lifecycle_root_alias(
+        "restart",
+        help_text="Alias for 'hermes gateway restart' — restart the messaging gateway service",
+        all_help="Kill ALL gateway processes across all profiles before restarting",
+    )
+
     # =========================================================================
     # proxy command — local OpenAI-compatible proxy that attaches the user's
     # OAuth-authenticated provider credentials to outbound requests. Lets

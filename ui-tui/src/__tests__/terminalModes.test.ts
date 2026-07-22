@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { resetTerminalModes, TERMINAL_MODE_RESET } from '../lib/terminalModes.js'
+import { resetTerminalModes, setTerminalBackground, TERMINAL_MODE_RESET } from '../lib/terminalModes.js'
 
 describe('terminal mode reset', () => {
   it('includes common sticky input modes', () => {
@@ -58,5 +58,46 @@ describe('terminal mode reset', () => {
     for (const mode of ['\x1b[?1006l', '\x1b[?1003l', '\x1b[?1002l', '\x1b[?1000l']) {
       expect(written).toContain(mode)
     }
+  })
+})
+
+describe('terminal background (OSC 11)', () => {
+  const tty = (write: ReturnType<typeof vi.fn>) => ({ isTTY: true, write }) as unknown as NodeJS.WriteStream
+
+  const written = (fn: (s: NodeJS.WriteStream) => void): string => {
+    const write = vi.fn()
+    fn(tty(write))
+
+    return (write.mock.calls[0]?.[0] as string) ?? ''
+  }
+
+  // Leave the module's "painted" flag clean so the exact-match reset test above
+  // (and other files) never see a stray background restore.
+  afterEach(() => setTerminalBackground('', tty(vi.fn())))
+
+  it('paints the terminal default background from a valid hex', () => {
+    expect(written(s => setTerminalBackground('#08201F', s))).toBe('\x1b]11;#08201F\x07')
+  })
+
+  it('ignores an invalid hex and non-TTY streams', () => {
+    expect(written(s => setTerminalBackground('teal', s))).toBe('')
+
+    const write = vi.fn()
+    setTerminalBackground('#08201f', { isTTY: false, write } as unknown as NodeJS.WriteStream)
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('appends the background restore to the exit reset once painted, not before', () => {
+    expect(written(resetTerminalModes)).not.toContain('\x1b]111\x07')
+
+    setTerminalBackground('#101010', tty(vi.fn()))
+    expect(written(resetTerminalModes)).toContain('\x1b]111\x07')
+  })
+
+  it('clears back to the terminal default when the next skin has no background', () => {
+    setTerminalBackground('#123456', tty(vi.fn()))
+    expect(written(s => setTerminalBackground('', s))).toBe('\x1b]111\x07')
+    // Cleared: a later reset no longer restores.
+    expect(written(resetTerminalModes)).not.toContain('\x1b]111\x07')
   })
 })

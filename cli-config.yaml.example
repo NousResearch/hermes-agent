@@ -722,6 +722,14 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Opt in to a fresh, independently bounded turn when one turn exhausts
+  # max_turns before finishing. The separate max_auto_continues cap prevents
+  # unbounded continuation; 0 disables it even when enabled is true.
+  # auto_continue_on_max_iterations:
+  #   enabled: false
+  #   max_auto_continues: 0
+  #   prompt: ""
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

@@ -5385,13 +5385,26 @@ class SessionDB:
         By default only active messages are returned.
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        # Synthetic continuation markers remain durable user-role rows so the
+        # provider transcript preserves assistant/user alternation, but they do
+        # not represent user-authored turns for /undo, /rewind, or retry target
+        # selection. Filter before LIMIT so repeated continuations cannot hide
+        # the requested number of real user messages.
+        from agent.auto_continue import AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER
+
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, timestamp, content FROM messages "
-                "WHERE session_id = ? AND role = 'user'"
+                "WHERE session_id = ? AND role = 'user' "
+                "AND (content IS NULL OR substr(content, 1, ?) != ?)"
                 f"{active_clause} "
                 "ORDER BY id DESC LIMIT ?",
-                (session_id, int(limit)),
+                (
+                    session_id,
+                    len(AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER),
+                    AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER,
+                    int(limit),
+                ),
             )
             rows = cursor.fetchall()
 

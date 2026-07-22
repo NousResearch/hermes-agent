@@ -68,7 +68,8 @@ class _StubAgent:
             raise RuntimeError("docker teardown EOF")
 
     def _drop_trailing_empty_response_scaffolding(self, *a, **k):
-        pass
+        if "drop_scaffolding" in self._raise_in:
+            raise RuntimeError("scaffolding cleanup failed")
 
     def _persist_session(self, *a, **k):
         if "persist_session" in self._raise_in:
@@ -106,6 +107,7 @@ def _run(
     final_response=None,
     api_call_count=3,
     turn_exit_reason="unknown",
+    defer_iteration_limit_fallback=False,
 ):
     messages = [
         {"role": "user", "content": "do a thing"},
@@ -132,6 +134,7 @@ def _run(
         original_user_message="do a thing",
         _should_review_memory=False,
         _turn_exit_reason=turn_exit_reason,
+        _defer_iteration_limit_fallback=defer_iteration_limit_fallback,
     )
 
 
@@ -182,3 +185,16 @@ def test_text_response_on_last_allowed_call_is_completed():
     )
     assert result["final_response"] == "final report"
     assert result["completed"] is True
+
+
+def test_scaffolding_cleanup_failure_cannot_reintroduce_tool_to_user_continuation():
+    agent = _StubAgent(raise_in=("drop_scaffolding",))
+
+    result = _run(agent, defer_iteration_limit_fallback=True)
+
+    assert result["iteration_limit_continuation_ready"] is True
+    assert result["messages"][-2]["role"] == "tool"
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["cleanup_errors"] == [
+        "persist_session: scaffolding cleanup failed"
+    ]

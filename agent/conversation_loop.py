@@ -596,6 +596,8 @@ def run_conversation(
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    _defer_iteration_limit_fallback: bool = False,
+    _total_api_call_offset: int = 0,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -5832,6 +5834,8 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        _defer_iteration_limit_fallback=_defer_iteration_limit_fallback,
+        total_api_call_count=_total_api_call_offset + api_call_count,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 

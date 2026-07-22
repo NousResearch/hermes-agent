@@ -1742,6 +1742,36 @@ def test_command_dispatch_retry_finds_last_user_message(server):
     assert server._sessions[sid]["history_version"] == 1
 
 
+def test_command_dispatch_retry_ignores_synthetic_continuation_marker(server):
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": "original task"},
+        {"role": "assistant", "content": "Starting a fresh continuation turn."},
+        {
+            "role": "user",
+            "content": "[Continuing after max-iteration exhaustion]\nkeep going",
+        },
+        {"role": "assistant", "content": "finished"},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "retry-auto-continue",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["message"] == "original task"
+    assert server._sessions[sid]["history"] == []
+
+
 def test_command_dispatch_retry_empty_history(server):
     """command.dispatch /retry with empty history returns error."""
     sid = "test-session"

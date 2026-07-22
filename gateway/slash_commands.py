@@ -2324,14 +2324,14 @@ class GatewaySlashCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         history = await self.async_session_store.load_transcript(session_entry.session_id)
         
-        # Find the last user message
+        # Find the last user-authored turn. A persisted max-iteration marker is
+        # an internal continuation boundary, not a retry target.
+        from agent.auto_continue import find_last_real_user_message_index
+
         last_user_msg = None
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_msg = history[i].get("content", "")
-                last_user_idx = i
-                break
+        last_user_idx = find_last_real_user_message_index(history)
+        if last_user_idx is not None:
+            last_user_msg = history[last_user_idx].get("content", "")
         
         if not last_user_msg:
             return t("gateway.retry.no_previous")

@@ -82,6 +82,8 @@ def finalize_turn(
     _should_review_memory,
     _turn_exit_reason,
     _pending_verification_response=None,
+    _defer_iteration_limit_fallback=False,
+    total_api_call_count=None,
     _pending_verification_response_previewed=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
@@ -90,6 +92,9 @@ def finalize_turn(
     loop). See module docstring.
     """
     from agent.conversation_loop import logger
+
+    if total_api_call_count is None:
+        total_api_call_count = api_call_count
 
     budget_exhausted = (
         api_call_count >= agent.max_iterations
@@ -109,6 +114,7 @@ def finalize_turn(
 
     iteration_limit_fallback = False
     preserved_verification_fallback = False
+    iteration_limit_continuation_ready = False
     if continuation_budget_exhausted:
         # A verification/continuation gate deliberately withheld a composed
         # answer, then consumed the remaining budget before producing a newer
@@ -125,21 +131,27 @@ def finalize_turn(
         iteration_limit_fallback = True
         preserved_verification_fallback = True
     elif final_response is None and budget_fallback_eligible:
-        # Budget exhausted — ask the model for a summary via one extra
-        # API call with tools stripped.  _handle_max_iterations injects a
-        # user message and makes a single toolless request.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
-        )
-        if not agent.quiet_mode:
-            agent._safe_print(
-                f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                "— requesting summary..."
+        if _defer_iteration_limit_fallback:
+            # The outer coordinator will start a new, independently bounded
+            # turn after this turn has completed normal cleanup/persistence.
+            # Do not reset this turn's IterationBudget or inject its next user
+            # message here: either would bypass the turn-context lifecycle.
+            iteration_limit_continuation_ready = True
+        else:
+            # Final continuation budget exhausted (or feature disabled) — keep
+            # the established one-call, toolless summary fallback.
+            agent._emit_status(
+                f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                "— asking model to summarise"
             )
-        final_response = agent._handle_max_iterations(messages, api_call_count)
-        iteration_limit_fallback = True
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                    "— requesting summary..."
+                )
+            final_response = agent._handle_max_iterations(messages, api_call_count)
+            iteration_limit_fallback = True
 
     if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the
@@ -233,8 +245,27 @@ def finalize_turn(
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
+    # Establish the provider-valid boundary before entering the fallible
+    # persistence/cleanup block. If scaffolding cleanup or session persistence
+    # raises, the outer coordinator must never receive a ``tool`` tail together
+    # with continuation readiness. The in-block call below is retained as an
+    # idempotent re-check after trailing-scaffolding cleanup.
+    if iteration_limit_continuation_ready:
+        from agent.message_sanitization import (
+            close_max_iteration_continuation_sequence,
+        )
+
+        close_max_iteration_continuation_sequence(messages)
+
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
+
+        if iteration_limit_continuation_ready:
+            from agent.message_sanitization import (
+                close_max_iteration_continuation_sequence,
+            )
+
+            close_max_iteration_continuation_sequence(messages)
 
         # Drop verification-continuation nudges (synthetic user messages)
         # from the live history before the tail-assistant check — only the
@@ -348,11 +379,13 @@ def finalize_turn(
     _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
 
     _diag_msg = (
-        "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
+        "Turn ended: reason=%s model=%s cycle_api_calls=%d/%d "
+        "total_api_calls=%d budget=%d/%d "
         "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
     )
     _diag_args = (
         _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
+        total_api_call_count,
         _budget_used, _budget_max,
         _turn_tool_count, _last_msg_role, _resp_len,
         agent.session_id or "none",
@@ -409,7 +442,7 @@ def finalize_turn(
     #     an empty response, the "(empty)" terminal sentinel, or a
     #     suspiciously short partial fragment with no terminating
     #     punctuation (e.g. "The").  A real short answer keeps its text.
-    if not interrupted:
+    if not interrupted and not iteration_limit_continuation_ready:
         try:
             if agent._turn_completion_explainer_enabled():
                 _stripped = (final_response or "").strip()
@@ -517,7 +550,7 @@ def finalize_turn(
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
-        "api_calls": api_call_count,
+        "api_calls": total_api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
@@ -547,6 +580,10 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if _defer_iteration_limit_fallback or total_api_call_count != api_call_count:
+        result["cycle_api_calls"] = api_call_count
+    if iteration_limit_continuation_ready:
+        result["iteration_limit_continuation_ready"] = True
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Surface any post-loop cleanup failures so the caller can distinguish a

@@ -6396,6 +6396,7 @@ class AIAgent:
             set_accounting_context,
         )
         from agent.conversation_loop import run_conversation
+        from agent.auto_continue import run_with_auto_continue
         from agent.portal_tags import (
             reset_conversation_context,
             set_conversation_context,
@@ -6421,14 +6422,15 @@ class AIAgent:
         # which may be observed from another thread.
         with scoped_runtime_main({}):
             try:
-                return run_conversation(
+                return run_with_auto_continue(
                     self,
-                    user_message,
-                    system_message,
-                    conversation_history,
-                    task_id,
-                    stream_callback,
-                    persist_user_message,
+                    run_conversation,
+                    user_message=user_message,
+                    system_message=system_message,
+                    conversation_history=conversation_history,
+                    task_id=task_id,
+                    stream_callback=stream_callback,
+                    persist_user_message=persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
                 )

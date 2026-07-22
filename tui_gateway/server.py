@@ -9611,7 +9611,11 @@ def _(rid, params: dict) -> dict:
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+            from agent.auto_continue import is_real_user_message
+
+            user_indices = [
+                i for i, message in enumerate(history) if is_real_user_message(message)
+            ]
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
             # indexing below (user_indices[-1] -> the LAST user turn), silently
@@ -13701,12 +13705,11 @@ def _(rid, params: dict) -> dict:
         history = session.get("history", [])
         if not history:
             return _err(rid, 4018, "no previous user message to retry")
-        # Walk backwards to find the last user message
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_idx = i
-                break
+        # Synthetic max-iteration continuation markers are internal parts of
+        # the preceding real user turn and must not become retry targets.
+        from agent.auto_continue import find_last_real_user_message_index
+
+        last_user_idx = find_last_real_user_message_index(history)
         if last_user_idx is None:
             return _err(rid, 4018, "no previous user message to retry")
         content = history[last_user_idx].get("content", "")

@@ -7520,12 +7520,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No messages to retry.")
             return None
         
-        # Walk backwards to find the last user message
-        last_user_idx = None
-        for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
+        # Synthetic max-iteration continuation users belong to the preceding
+        # real user turn and must never become /retry targets.
+        from agent.auto_continue import find_last_real_user_message_index
+
+        last_user_idx = find_last_real_user_message_index(self.conversation_history)
         
         if last_user_idx is None:
             print("(._.) No user message found to retry.")
@@ -7568,10 +7567,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if n < 1:
             n = 1
 
-        # Walk backwards collecting the indices of the last N user messages.
+        # Walk backwards collecting real user turns. Synthetic max-iteration
+        # continuations are part of the preceding turn, not separate undo steps.
+        from agent.auto_continue import is_real_user_message
+
         user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
+            if is_real_user_message(self.conversation_history[i]):
                 user_indices.append(i)
                 if len(user_indices) >= n:
                     break

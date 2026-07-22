@@ -1041,6 +1041,15 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Opt-in continuation when one turn consumes max_turns before it can
+        # finish. Each continuation is a fresh turn with its own max_turns
+        # budget and normal finalization; max_auto_continues is a separate hard
+        # cap. A value <= 0 disables continuation even when enabled is true.
+        "auto_continue_on_max_iterations": {
+            "enabled": False,
+            "max_auto_continues": 0,
+            "prompt": "",
+        },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

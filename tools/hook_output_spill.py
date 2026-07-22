@@ -200,8 +200,20 @@ def _prepare_owned_spill_dir(path: Path) -> bool:
         with marker.open("x", encoding="utf-8") as marker_file:
             marker_file.write(f"{_OWNERSHIP_VALUE}\n")
     except (FileExistsError, OSError):
+        try:
+            marker.unlink(missing_ok=True)
+            path.rmdir()
+        except OSError:
+            pass
         return False
-    return _is_owned_spill_dir(path)
+    if _is_owned_spill_dir(path):
+        return True
+    try:
+        marker.unlink(missing_ok=True)
+        path.rmdir()
+    except OSError:
+        pass
+    return False
 
 
 def prune_spill_files(

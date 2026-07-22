@@ -282,6 +282,22 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertFalse((session / ".hermes-managed").exists())
         self.assertEqual(list(session.glob("*.txt")), [human])
 
+    def test_failed_marker_creation_does_not_poison_new_session_path(self):
+        session = Path(self.tmpdir) / "retryable-session"
+        original_open = Path.open
+
+        def fail_marker_open(path, *args, **kwargs):
+            if path.name == ".hermes-managed":
+                raise OSError("forced marker failure")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", fail_marker_open):
+            self.assertFalse(hos._prepare_owned_spill_dir(session))
+
+        self.assertFalse(session.exists())
+        self.assertTrue(hos._prepare_owned_spill_dir(session))
+        self.assertTrue(hos._is_owned_spill_dir(session))
+
 
 if __name__ == "__main__":
     unittest.main()

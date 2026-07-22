@@ -138,6 +138,7 @@ def _tracked_registry_lock():
             lock_file.write(b"0")
             lock_file.flush()
         lock_file.seek(0)
+        acquired = False
         try:
             if os.name == "nt":
                 import msvcrt
@@ -147,17 +148,19 @@ def _tracked_registry_lock():
                 import fcntl
 
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            acquired = True
             yield
         finally:
-            lock_file.seek(0)
-            if os.name == "nt":
-                import msvcrt
+            if acquired:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
 
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
 
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_tracked_unlocked() -> List[Dict[str, Any]]:
@@ -330,6 +333,17 @@ _PROTECTED_TRACKED_TOP_LEVEL_CASEFOLD = frozenset(
 _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD = frozenset(
     name.casefold() for name in _PROTECTED_TRACKED_TOP_LEVEL_FILES
 )
+_DISPOSABLE_TOP_LEVEL_PREFIXES = ("test_", "tmp_", "temp_")
+
+
+def _is_narrow_top_level_artifact(name: str) -> bool:
+    """Allow only unmistakably disposable names at HERMES_HOME's root."""
+    folded = name.casefold()
+    return (
+        folded.startswith(_DISPOSABLE_TOP_LEVEL_PREFIXES)
+        or ".test." in folded
+        or folded.endswith(".tmp")
+    )
 
 
 def _is_protected_cron_path(p: Path) -> bool:
@@ -369,6 +383,7 @@ def _is_protected_tracked_path(path: Path) -> bool:
     top = rel.parts[0].casefold()
     return (
         top in _PROTECTED_TRACKED_TOP_LEVEL_CASEFOLD
+        or (len(rel.parts) == 1 and not _is_narrow_top_level_artifact(top))
         or (
             len(rel.parts) == 1
             and top in _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD

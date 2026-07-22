@@ -439,6 +439,10 @@ class TestTrackForgetQuick:
             "channel_aliases.json",
             "processes.json",
             "feishu_comment_pairing.json",
+            "kanban.db-wal",
+            "state.db-shm",
+            "webhook_subscriptions.json",
+            "auth.lock",
         ],
     )
     def test_canonical_top_level_state_is_never_deletable(
@@ -466,7 +470,7 @@ class TestTrackForgetQuick:
     ):
         dg = _load_lib()
         first = _isolate_env / "test_first.py"
-        concurrent = _isolate_env / "keep.concurrent"
+        concurrent = _isolate_env / "tmp_concurrent.log"
         first.write_text("delete")
         concurrent.write_text("preserve tracking")
         assert dg.track(str(first), "test", silent=True)

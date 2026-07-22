@@ -1,9 +1,11 @@
 """Anthropic prompt caching strategy.
 
-Single layout: ``system_and_3``. 4 cache_control breakpoints — system
-prompt + last 3 non-system messages, all at the same TTL (5m or 1h).
-Reduces input token costs by ~75% on multi-turn conversations within a
-single session.
+The default layout uses 4 cache_control breakpoints: the static system
+prefix, the end of the system prompt, and the last 2 non-system messages.
+When a static system prefix is unavailable, it falls back to one system
+breakpoint plus the last 3 messages. All markers use the same TTL (5m or 1h).
+This preserves intra-session caching while allowing new sessions to reuse the
+stable system-prompt prefix.
 
 Pure functions -- no class state, no AIAgent dependency.
 """
@@ -81,15 +83,55 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
+def _apply_system_cache_markers(
+    message: dict,
+    cache_marker: dict,
+    static_system_prefix: str | None,
+    *,
+    native_anthropic: bool,
+) -> int:
+    """Mark the static system prefix and full prompt when they can be split.
+
+    The system prompt remains one stored string. Splitting it only in the
+    outgoing request keeps session persistence and non-Anthropic transports
+    unchanged while making the stable prefix independently cacheable.
+    """
+    content = message.get("content")
+    if (
+        isinstance(static_system_prefix, str)
+        and static_system_prefix
+        and isinstance(content, str)
+        and content.startswith(static_system_prefix)
+    ):
+        suffix = content[len(static_system_prefix):]
+        if suffix:
+            message["content"] = [
+                {
+                    "type": "text",
+                    "text": static_system_prefix,
+                    "cache_control": cache_marker,
+                },
+                {"type": "text", "text": suffix, "cache_control": cache_marker},
+            ]
+            return 2
+
+    _apply_cache_marker(message, cache_marker, native_anthropic=native_anthropic)
+    return 1
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
+    static_system_prefix: str | None = None,
 ) -> List[Dict[str, Any]]:
-    """Apply system_and_3 caching strategy to messages for Anthropic models.
+    """Apply Anthropic cache-control markers to API messages.
 
-    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
-    messages, all at the same TTL.
+    When ``static_system_prefix`` exactly matches the beginning of a string
+    system prompt, it receives an early marker and the full system prompt gets
+    a trailing marker. The remaining two markers target the latest cacheable
+    non-system messages. Without that prefix, the legacy system-and-3 layout
+    is retained.
 
     Returns:
         Deep copy of messages with cache_control breakpoints injected.
@@ -103,8 +145,12 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
-        breakpoints_used += 1
+        breakpoints_used = _apply_system_cache_markers(
+            messages[0],
+            marker,
+            static_system_prefix,
+            native_anthropic=native_anthropic,
+        )
 
     remaining = 4 - breakpoints_used
     non_sys = [

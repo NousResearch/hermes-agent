@@ -226,10 +226,10 @@ def _maybe_apply_moa_cache_control(
 
     Reuses the SAME policy function as the main agent loop
     (``anthropic_prompt_cache_policy``) resolved against the slot's own
-    provider/base_url/api_mode/model, and the SAME breakpoint layout
-    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor and
-    aggregator calls decorated exactly like an acting agent on that provider
-    would be — no MoA-specific caching logic to drift.
+    provider/base_url/api_mode/model and shared marker helper
+    (``apply_anthropic_cache_control``). MoA has no per-session static prefix,
+    so it uses the helper's legacy system-and-3 fallback without carrying a
+    separate caching strategy.
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
@@ -302,10 +302,11 @@ def _run_reference(
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
         messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
-        # Apply the same Anthropic-style prompt-caching decoration the main
-        # agent loop applies (system_and_3 breakpoints). The advisory view is
-        # append-only across iterations (new turns append before the trailing
-        # synthetic marker), so on cache-honoring routes (Claude via
+        # Apply the Anthropic-style prompt-caching decoration used by the main
+        # agent loop. This fixed reference prompt has no session-specific
+        # prefix split, so the helper uses its legacy system-and-3 fallback.
+        # The advisory view is append-only across iterations (new turns append
+        # before the trailing synthetic marker), so on cache-honoring routes (Claude via
         # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
         # replays iteration N's cached prefix. Without this, Claude advisors
         # served ZERO cache reads across an entire benchmark run (measured:

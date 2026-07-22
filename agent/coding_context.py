@@ -521,30 +521,46 @@ class RuntimeMode:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]
 
-    def system_blocks(self) -> list[str]:
-        """Stable system-prompt blocks for this posture (brief + workspace).
+    def system_prompt_parts(self) -> tuple[list[str], list[str], list[str]]:
+        """Return prefix, workspace, and trailing posture blocks separately.
 
         The operating brief carries a model-family edit-format nudge appended
         to it (one cached string, not a separate block) so the model is steered
         toward the `patch` mode it handles best — see ``_edit_format_line``.
+
+        The three lists preserve the historical flat prompt order: the brief,
+        the live workspace snapshot, then configured operator instructions.
+        Prompt assembly can therefore put a cache boundary before the snapshot
+        without changing the persisted system-prompt bytes.
         """
         if not self.is_coding:
-            return []
-        blocks: list[str] = []
+            return [], [], []
+        prefix: list[str] = []
+        workspace_parts: list[str] = []
+        trailing: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
             edit_line = _edit_format_line(self.model)
             if edit_line:
                 brief = f"{brief}\n{edit_line}"
-            blocks.append(brief)
+            prefix.append(brief)
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
-            blocks.append(workspace)
+            workspace_parts.append(workspace)
         # Operator instructions ride their own block so the brief (block 0) stays
         # byte-stable and cache-keyed independently of user config.
         if self.instructions:
-            blocks.append(f"Operator instructions (from config):\n{self.instructions}")
-        return blocks
+            trailing.append(f"Operator instructions (from config):\n{self.instructions}")
+        return prefix, workspace_parts, trailing
+
+    def system_blocks(self) -> list[str]:
+        """Return posture blocks in their historical display order.
+
+        ``system_prompt_parts`` is the cache-aware API. This compatibility
+        helper retains the public flat list for callers outside prompt assembly.
+        """
+        prefix, workspace, trailing = self.system_prompt_parts()
+        return [*prefix, *workspace, *trailing]
 
     def compact_skill_categories(self) -> frozenset[str]:
         """Skill categories to demote to names-only in the prompt's skill index.
@@ -643,6 +659,19 @@ def coding_system_blocks(
     return resolve_runtime_mode(
         platform=platform, cwd=cwd, config=config, model=model
     ).system_blocks()
+
+
+def coding_system_prompt_parts(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    config: Optional[dict[str, Any]] = None,
+    model: Optional[str] = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Return coding prefix, workspace snapshot, and trailing guidance."""
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).system_prompt_parts()
 
 
 def coding_compact_skill_categories(

@@ -1114,6 +1114,26 @@ class TestConvertMessages:
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
+    def test_static_system_prefix_markers_are_preserved(self):
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "stable\n\nsession context"},
+                {"role": "user", "content": "Hi"},
+            ],
+            static_system_prefix="stable",
+        )
+
+        system, _ = convert_messages_to_anthropic(messages)
+
+        assert system == [
+            {"type": "text", "text": "stable", "cache_control": {"type": "ephemeral"}},
+            {
+                "type": "text",
+                "text": "\n\nsession context",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+
     def test_assistant_cache_control_blocks_are_preserved(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},

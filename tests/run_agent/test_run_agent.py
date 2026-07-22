@@ -4202,6 +4202,41 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_prompt_cache_marks_static_system_prefix_on_wire(self, agent):
+        self._setup_agent(agent)
+        agent._cached_system_prompt = "stable instructions\n\nsession context"
+        agent._cached_system_prompt_static = "stable instructions"
+        agent._use_prompt_caching = True
+        agent._use_native_cache_layout = False
+        agent._cache_ttl = "5m"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        system = agent.client.chat.completions.create.call_args.kwargs["messages"][0]
+        assert system["role"] == "system"
+        assert system["content"] == [
+            {
+                "type": "text",
+                "text": "stable instructions",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": "\n\nsession context",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)
         agent.api_mode = "codex_responses"

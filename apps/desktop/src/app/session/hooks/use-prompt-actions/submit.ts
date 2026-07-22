@@ -149,7 +149,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
 
-      let sessionId: null | string = options?.sessionId ?? activeSessionIdRef.current
+      // A queued/background drain whose runtime binding was reaped must NOT
+      // inherit the foreground runtime id when its storedSessionId targets a
+      // different session — that would land the queued prompt in whichever
+      // session the user happens to be viewing (cross-session leak). When the
+      // drain is for the current view (no storedSessionId, or it matches the
+      // foreground), the foreground runtime is correct and must be kept.
+      const isBackgroundQueueDrain = Boolean(
+        options?.fromQueue &&
+          options?.storedSessionId &&
+          options.storedSessionId !== selectedStoredSessionIdRef.current
+      )
+
+      let sessionId: null | string = options?.sessionId ?? (isBackgroundQueueDrain ? null : activeSessionIdRef.current)
 
       // Pin the foreground session context for the whole async submit pipeline.
       // Without this, a fast session switch during session.resume / file.attach

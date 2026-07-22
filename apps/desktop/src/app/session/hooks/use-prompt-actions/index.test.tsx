@@ -601,6 +601,62 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect($busy.get()).toBe(false)
   })
 
+  it('a fromQueue drain with null runtime id does NOT land in the foreground session (cross-session leak guard)', async () => {
+    // The cross-session leak: a background drain fires with sessionId=null
+    // (the stored session's runtime was reaped by the gateway). Without the
+    // guard, `null ?? activeSessionIdRef.current` falls back to whichever
+    // runtime id the foreground happens to hold — landing the queued prompt
+    // in the chat the user is currently viewing, NOT the session that owns
+    // the queue entry. The drain must instead go through session.resume to
+    // rebind the correct runtime before submitting.
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'session.resume' ? { session_id: 'rt-session-a-rebound' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={'rt-foreground'}
+        storedSessionId={'rt-foreground'}
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    // Background drain: sessionId=null (binding reaped), storedSessionId
+    // points to a DIFFERENT session than the foreground.
+    const accepted = await handle!.submitText('queued for background session', {
+      fromQueue: true,
+      sessionId: null,
+      storedSessionId: 'stored-session-a'
+    })
+
+    expect(accepted).toBe(true)
+    // Must resume the correct stored session to get the right runtime id.
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-session-a',
+      source: 'desktop'
+    })
+    // The prompt must land in the resumed session, NOT the foreground.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-session-a-rebound',
+        text: 'queued for background session'
+      },
+      1_800_000
+    )
+    // The invariant: the foreground runtime never receives the prompt.
+    expect(
+      requestGateway.mock.calls.every(
+        ([method, params]) => method !== 'prompt.submit' || params?.session_id !== 'rt-foreground'
+      )
+    ).toBe(true)
+  })
+
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
     // A stale-session 404 must not strand the queued entry: submitPrompt returns
     // false on failure so the composer keeps it, and the edge-independent

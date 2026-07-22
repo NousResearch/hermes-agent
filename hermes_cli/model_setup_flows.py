@@ -1012,7 +1012,21 @@ def _model_flow_custom(config):
         # save_config(config) preserves our model settings.  Without
         # this, the wizard overwrites model.provider/base_url with
         # the stale values from its own config dict (#4172).
-        config["model"] = dict(model)
+        _raw_url = effective_url or ""
+        _is_raw_local_url = any(x in _raw_url for x in ["127.0.0.1", "localhost", "::1"])
+        if _is_raw_local_url:
+            # Raw loopback endpoint: apply at session scope only, leaving
+            # the global config (model.base_url for cloud providers)
+            # untouched. Otherwise switching back to a cloud provider
+            # would inherit the localhost URL and fail to connect.
+            if isinstance(config.get("model"), dict):
+                config["model"]["base_url"] = _raw_url
+                config["model"]["provider"] = model.get("provider", config["model"].get("provider", ""))
+            else:
+                config["model"] = dict(model)
+            print(f"⚠️  Raw loopback endpoint {_raw_url} — session only, NOT persisted to config.yaml")
+        else:
+            config["model"] = dict(model)
 
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:

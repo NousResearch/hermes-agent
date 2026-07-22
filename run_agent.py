@@ -2770,6 +2770,22 @@ class AIAgent:
                 "system_prompt": redact_sensitive_text(self._cached_system_prompt or ""),
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
+                # Cumulative token usage / cost counters (#20253). These are
+                # already tracked in-memory and persisted to ``state.db`` via
+                # ``update_token_counts``; mirroring them into the session
+                # JSON makes the file self-contained for auditing, custom
+                # analytics, and post-mortem inspection without having to
+                # cross-reference the SQLite database.
+                "input_tokens": self.session_input_tokens,
+                "output_tokens": self.session_output_tokens,
+                "cache_read_tokens": self.session_cache_read_tokens,
+                "cache_write_tokens": self.session_cache_write_tokens,
+                "reasoning_tokens": self.session_reasoning_tokens,
+                "total_tokens": self.session_total_tokens,
+                "api_call_count": self.session_api_calls,
+                "estimated_cost_usd": self.session_estimated_cost_usd,
+                "cost_status": self.session_cost_status,
+                "cost_source": self.session_cost_source,
                 "messages": cleaned,
             }
 

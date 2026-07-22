@@ -6852,6 +6852,66 @@ class TestSafeWriter:
 
 
 
+    def test_payload_includes_token_usage_counters(self, agent, tmp_path):
+        """Session JSON must mirror the in-memory token / cost counters (#20253).
+
+        Without this, the raw session JSON is missing the data the SQLite
+        ``sessions`` table already stores, so anyone reading the JSON for
+        auditing or analytics has to cross-reference state.db.
+        """
+        agent.session_log_file = tmp_path / "session.json"
+        agent.session_input_tokens = 1234
+        agent.session_output_tokens = 567
+        agent.session_cache_read_tokens = 890
+        agent.session_cache_write_tokens = 12
+        agent.session_reasoning_tokens = 34
+        agent.session_total_tokens = 1834
+        agent.session_api_calls = 7
+        agent.session_estimated_cost_usd = 0.012345
+        agent.session_cost_status = "ok"
+        agent.session_cost_source = "models_dev"
+
+        messages = [{"role": "user", "content": "hello"}]
+        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
+            agent._save_session_log(messages)
+
+        payload = mock_atomic_write.call_args.args[1]
+        assert payload["input_tokens"] == 1234
+        assert payload["output_tokens"] == 567
+        assert payload["cache_read_tokens"] == 890
+        assert payload["cache_write_tokens"] == 12
+        assert payload["reasoning_tokens"] == 34
+        assert payload["total_tokens"] == 1834
+        assert payload["api_call_count"] == 7
+        assert payload["estimated_cost_usd"] == pytest.approx(0.012345)
+        assert payload["cost_status"] == "ok"
+        assert payload["cost_source"] == "models_dev"
+
+    def test_payload_includes_zeroed_counters_for_fresh_session(self, agent, tmp_path):
+        """A brand-new session (no API calls yet) still emits the counter fields,
+        zero-valued — readers can rely on the shape without checking presence."""
+        agent.session_log_file = tmp_path / "session.json"
+        messages = [{"role": "user", "content": "hello"}]
+        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
+            agent._save_session_log(messages)
+
+        payload = mock_atomic_write.call_args.args[1]
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+            "api_call_count",
+        ):
+            assert key in payload
+            assert payload[key] == 0
+        assert payload["estimated_cost_usd"] == 0.0
+        # Defaults from reset_session_state — see run_agent.py L2087-L2088.
+        assert payload["cost_status"] == "unknown"
+        assert payload["cost_source"] == "none"
+
 
 # ===================================================================
 # Anthropic adapter integration fixes

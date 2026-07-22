@@ -20,9 +20,22 @@ describe('readClipboardText', () => {
     await expect(readClipboardText('win32', run)).resolves.toBe('from windows\r\n')
     expect(run).toHaveBeenCalledWith(
       'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+      ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
+  })
+
+  it('forces UTF-8 output encoding in the PowerShell read command (CJK fix)', async () => {
+    // Regression for the ??? on CJK/emoji paste bug: without the
+    // [Console]::OutputEncoding = UTF8 prefix, PowerShell emits the ANSI
+    // code page and non-ASCII chars are decoded as `?`.
+    const run = vi.fn().mockResolvedValue({ stdout: '你好世界，测试中文' })
+
+    await expect(readClipboardText('win32', run)).resolves.toBe('你好世界，测试中文')
+    const [, args] = run.mock.calls[0]
+    const command = (args as string[])[args.length - 1]
+    expect(command).toContain('[System.Text.Encoding]::UTF8')
+    expect(command).toContain('Get-Clipboard -Raw')
   })
 
   it('tries powershell.exe first on WSL', async () => {
@@ -33,7 +46,7 @@ describe('readClipboardText', () => {
     )
     expect(run).toHaveBeenCalledWith(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
+      ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
   })

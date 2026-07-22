@@ -3641,6 +3641,12 @@ def _aux_select_for_task(task: str) -> None:
             current_provider=current_provider,
             current_model=current_model,
             current_base_url=current_base_url,
+            # Interactive picker: also show providers whose credential pool is
+            # entirely rate-limited (exhausted). Rate limits are per-model, and
+            # this persists an aux-task config the user will use later once the
+            # cooldown clears, so hiding the provider here is wrong — same
+            # rationale as the /model picker (#66584).
+            for_picker=True,
         )
     except Exception as exc:
         print(f"Could not detect authenticated providers: {exc}")

@@ -69,8 +69,10 @@ def normalize_whatsapp_identifier(value: str) -> str:
 
 # A target that is "just a phone number" — optional leading ``+`` then digits
 # and the usual human separators (spaces, dots, dashes, parens). Anything that
-# already carries an ``@`` is a fully-qualified JID and must pass through
-# untouched (group ``@g.us``, LID ``@lid``, ``status@broadcast`` etc.).
+# already carries an ``@`` is a fully-qualified JID and normally passes through
+# untouched (group ``@g.us``, ``status@broadcast`` etc.). LID DMs are the one
+# exception: when Baileys has recorded a reverse phone mapping, outbound sends
+# should use that visible phone-number chat instead.
 _BARE_PHONE_RE = re.compile(r"^\+?[\d\s().\-]+$")
 
 
@@ -87,7 +89,8 @@ def to_whatsapp_jid(value: str) -> str:
 
     - ``"+50766715226"`` / ``"50766715226"`` → ``"50766715226@s.whatsapp.net"``
     - ``"50766715226@s.whatsapp.net"`` → unchanged
-    - ``"group-id@g.us"`` / ``"130631430344750@lid"`` → unchanged
+    - ``"group-id@g.us"`` → unchanged
+    - ``"130631430344750@lid"`` → mapped phone JID when the bridge knows it
     - ``"user:device@s.whatsapp.net"`` style colon-before-``@`` → ``@`` form
     - anything that isn't a recognizable bare phone → returned unchanged so
       the bridge can surface a meaningful error rather than us mangling it.
@@ -105,6 +108,29 @@ def to_whatsapp_jid(value: str) -> str:
     if ":" in normalized and "@" in normalized:
         prefix, _, domain = normalized.partition("@")
         normalized = f"{prefix.split(':', 1)[0]}@{domain}"
+
+    # Baileys can accept a LID as an outbound target without placing the
+    # message in the contact's visible phone-number chat. Prefer the bridge's
+    # reverse mapping when one exists, while preserving LIDs that are not yet
+    # mapped. get_hermes_dir supports both current and legacy session layouts.
+    if normalized.endswith("@lid"):
+        lid = normalize_whatsapp_identifier(normalized)
+        if _SAFE_IDENTIFIER_RE.match(lid):
+            session_dir = get_hermes_dir(
+                "platforms/whatsapp/session", "whatsapp/session"
+            )
+            mapping_path = session_dir / f"lid-mapping-{lid}_reverse.json"
+            try:
+                if mapping_path.exists():
+                    mapped = normalize_whatsapp_identifier(
+                        json.loads(mapping_path.read_text(encoding="utf-8"))
+                    )
+                    if mapped:
+                        return f"{mapped}@s.whatsapp.net"
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug(
+                    "whatsapp_identity: failed to read %s: %s", mapping_path, exc
+                )
 
     # Already a fully-qualified JID — leave it alone.
     if "@" in normalized:

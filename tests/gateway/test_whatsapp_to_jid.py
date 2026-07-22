@@ -32,7 +32,6 @@ class TestToWhatsappJid:
         [
             "50766715226@s.whatsapp.net",  # already a user JID
             "123456789-987654321@g.us",    # group JID
-            "130631430344750@lid",         # linked identity
             "status@broadcast",            # broadcast pseudo-chat
             "123@newsletter",              # channel/newsletter
         ],
@@ -45,6 +44,27 @@ class TestToWhatsappJid:
         assert to_whatsapp_jid("60123456789:47@s.whatsapp.net") == (
             "60123456789@s.whatsapp.net"
         )
+
+    def test_lid_with_reverse_mapping_becomes_phone_jid(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.whatsapp_identity.get_hermes_dir",
+            lambda *_args: tmp_path,
+        )
+        (tmp_path / "lid-mapping-130631430344750_reverse.json").write_text(
+            '"50766715226"', encoding="utf-8"
+        )
+
+        assert to_whatsapp_jid("130631430344750@lid") == (
+            "50766715226@s.whatsapp.net"
+        )
+
+    def test_unmapped_lid_passes_through(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.whatsapp_identity.get_hermes_dir",
+            lambda *_args: tmp_path,
+        )
+
+        assert to_whatsapp_jid("130631430344750@lid") == "130631430344750@lid"
 
     @pytest.mark.parametrize("empty", ["", "   ", None])
     def test_empty_input_returns_empty(self, empty):

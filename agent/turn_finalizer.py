@@ -57,6 +57,106 @@ def _ensure_final_response_message(messages, final_response, interrupted):
     return True
 
 
+def _replace_or_append_final_response(messages, final_response):
+    """Make the fresh finalizer output the sole durable assistant closer."""
+    tail = messages[-1] if messages else None
+    if (
+        isinstance(tail, dict)
+        and tail.get("role") == "assistant"
+        and not tail.get("tool_calls")
+    ):
+        messages[-1] = {
+            "role": "assistant",
+            "content": final_response,
+            "finish_reason": "stop",
+        }
+        return
+    messages.append(
+        {
+            "role": "assistant",
+            "content": final_response,
+            "finish_reason": "stop",
+        }
+    )
+
+
+def _fresh_long_turn_final_response(
+    agent,
+    messages,
+    draft_response,
+    api_call_count,
+    logger,
+):
+    """Return a bounded fresh final response, or ``None`` to fail open."""
+    ledger = getattr(agent, "_turn_result_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        ledger.observe_messages(messages)
+        if not ledger.should_finalize:
+            return None
+        if getattr(agent, "_long_turn_terminal_gate_overflowed", False):
+            # The bounded gate already failed open and published the draft.
+            # Replacing it now would create two visible terminal answers.
+            return None
+        prompt = ledger.build_finalizer_prompt(
+            draft_response=draft_response or "",
+            todo_items=agent._todo_store.read(),
+            changed_paths=sorted(
+                getattr(agent, "_turn_file_mutation_paths", set()) or []
+            ),
+        )
+        agent._emit_status("Consolidating the completed long-run result...")
+        from agent.chat_completion_helpers import request_toolless_completion
+
+        response = request_toolless_completion(agent, prompt, api_call_count)
+        response = agent._strip_think_blocks(response or "").strip()
+        return response or None
+    except InterruptedError:
+        raise
+    except Exception:
+        logger.warning("fresh long-turn finalization failed", exc_info=True)
+        return None
+
+
+def _persist_turn_snapshot(
+    agent,
+    messages,
+    conversation_history,
+    final_response,
+    interrupted,
+):
+    """Persist one canonical turn snapshot after private scaffolding is removed."""
+    agent._drop_trailing_empty_response_scaffolding(messages)
+    if interrupted:
+        from agent.message_sanitization import close_interrupted_tool_sequence
+
+        close_interrupted_tool_sequence(messages, final_response)
+    _ensure_final_response_message(messages, final_response, interrupted)
+    apply_override = getattr(agent, "_apply_persist_user_message_override", None)
+    if callable(apply_override):
+        apply_override(messages)
+    agent._persist_session(messages, conversation_history)
+
+
+def persist_terminal_response(
+    agent,
+    messages,
+    conversation_history,
+    final_response,
+):
+    """Persist the canonical response for a direct abnormal loop exit."""
+    if final_response:
+        _replace_or_append_final_response(messages, final_response)
+    _persist_turn_snapshot(
+        agent,
+        messages,
+        conversation_history,
+        final_response,
+        interrupted=False,
+    )
+
+
 def finalize_turn(
     agent,
     *,
@@ -99,6 +199,26 @@ def finalize_turn(
 
     iteration_limit_fallback = False
     preserved_verification_fallback = False
+    long_turn_finalizer_used = False
+    _overflow_canonical_locked = False
+    if (
+        final_response
+        and not interrupted
+        and str(_turn_exit_reason).startswith("text_response(")
+        and bool(getattr(agent, "_long_turn_terminal_gate_overflowed", False))
+    ):
+        # The response gate already failed open to the live stream. It cannot
+        # replace those bytes after the fact, so lock the exact streamed text
+        # as the returned and durable canonical response and suppress text
+        # transforms that would create an undisplayable second answer.
+        _streamed_overflow = (
+            getattr(agent, "_current_streamed_assistant_text", "") or ""
+        )
+        if _streamed_overflow:
+            final_response = _streamed_overflow
+            _replace_or_append_final_response(messages, final_response)
+            _overflow_canonical_locked = True
+        agent._long_turn_terminal_gate_overflowed = False
     if continuation_budget_exhausted:
         # A verification/continuation gate deliberately withheld a composed
         # answer, then consumed the remaining budget before producing a newer
@@ -110,21 +230,75 @@ def finalize_turn(
         iteration_limit_fallback = True
         preserved_verification_fallback = True
     elif final_response is None and budget_fallback_eligible:
-        # Budget exhausted — ask the model for a summary via one extra
-        # API call with tools stripped.  _handle_max_iterations injects a
-        # user message and makes a single toolless request.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
-        )
-        if not agent.quiet_mode:
-            agent._safe_print(
-                f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                "— requesting summary..."
+        try:
+            refined = _fresh_long_turn_final_response(
+                agent,
+                messages,
+                "",
+                api_call_count,
+                logger,
             )
-        final_response = agent._handle_max_iterations(messages, api_call_count)
+        except InterruptedError:
+            interrupted = True
+            _turn_exit_reason = "interrupted_by_user"
+            refined = None
+        api_call_count += int(getattr(agent, "_last_toolless_api_calls", 0) or 0)
+        if interrupted:
+            final_response = None
+        elif refined:
+            final_response = refined
+            _replace_or_append_final_response(messages, refined)
+            long_turn_finalizer_used = True
+        else:
+            # Short turns and fail-open finalizer errors retain the established
+            # full-transcript iteration-limit summary path.
+            agent._emit_status(
+                f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                "— asking model to summarise"
+            )
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                    "— requesting summary..."
+                )
+            final_response = agent._handle_max_iterations(messages, api_call_count)
+            api_call_count += int(
+                getattr(agent, "_last_toolless_api_calls", 0) or 0
+            )
         iteration_limit_fallback = True
+
+    if (
+        final_response
+        and not interrupted
+        and not failed
+        and not _overflow_canonical_locked
+        and str(_turn_exit_reason).startswith("text_response(")
+    ):
+        try:
+            refined = _fresh_long_turn_final_response(
+                agent,
+                messages,
+                final_response,
+                api_call_count,
+                logger,
+            )
+        except InterruptedError:
+            interrupted = True
+            _turn_exit_reason = "interrupted_by_user"
+            final_response = None
+            refined = None
+        api_call_count += int(getattr(agent, "_last_toolless_api_calls", 0) or 0)
+        if refined:
+            final_response = refined
+            _replace_or_append_final_response(messages, refined)
+            long_turn_finalizer_used = True
+
+    _has_held_response = getattr(agent, "_has_held_long_turn_response", None)
+    _defer_long_turn_delivery = bool(
+        long_turn_finalizer_used
+        or (callable(_has_held_response) and _has_held_response())
+    )
 
     if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the
@@ -201,11 +375,20 @@ def finalize_turn(
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
-    try:
-        agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
-    except Exception as _save_err:
-        _cleanup_errors.append(f"save_trajectory: {_save_err}")
-        logger.error("finalize_turn: _save_trajectory failed: %s", _save_err, exc_info=True)
+    if not _defer_long_turn_delivery:
+        try:
+            agent._save_trajectory(
+                messages,
+                _summarize_user_message_for_log(user_message),
+                completed,
+            )
+        except Exception as _save_err:
+            _cleanup_errors.append(f"save_trajectory: {_save_err}")
+            logger.error(
+                "finalize_turn: _save_trajectory failed: %s",
+                _save_err,
+                exc_info=True,
+            )
 
     # Clean up VM and browser for this task after conversation completes
     try:
@@ -218,53 +401,22 @@ def finalize_turn(
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
-    try:
-        agent._drop_trailing_empty_response_scaffolding(messages)
-
-        # When the turn was interrupted and the last message is a tool
-        # result, append a synthetic assistant message to close the
-        # tool-call sequence. Without this, the session persists a
-        # ``tool → user`` alternation that strict providers (Gemini,
-        # Claude) reject, causing them to hallucinate a continuation of
-        # the user's message on the next turn (#48879).
-        #
-        # ``_drop_trailing_empty_response_scaffolding`` only rewinds the
-        # tool tail when an empty-response scaffolding flag is present; a
-        # clean ``/stop`` interrupt after a successful tool sets no such
-        # flag, so the tool result survives as the tail and we close it
-        # here instead. On an interrupt ``final_response`` is typically
-        # empty, so fall back to an explicit placeholder rather than
-        # persisting an empty-content assistant turn.
-        if interrupted:
-            from agent.message_sanitization import close_interrupted_tool_sequence
-            close_interrupted_tool_sequence(messages, final_response)
-
-        # Some recovery/fallback paths return a real final_response without
-        # adding a closing assistant message to the transcript (e.g. the
-        # partial-stream and prior-turn-content recovery ``break`` sites in
-        # ``conversation_loop``). If persisted as-is, the durable session can
-        # end at a tool/user message even though the caller — and the gateway
-        # platform — already saw a completed assistant response. The next turn
-        # then replays a user-only backlog and the model re-answers every
-        # "unanswered" message. Close the durable turn at the source, at the
-        # single chokepoint every recovery ``break`` flows through, so the
-        # invariant "delivered final_response ⇒ assistant row in transcript"
-        # holds regardless of which path produced it. (#43849 / #44100)
-        _ensure_final_response_message(messages, final_response, interrupted)
-
-        # The model has completed its request, so replace API-local
-        # voice/model/skill guidance with the clean user input before writing the
-        # final durable snapshot and returning the continuation history. Earlier
-        # turn-start flushes use the DB-only override because their messages are
-        # still needed for the API request; this finalizer runs after that request
-        # is complete (#48677 / #63766).
-        _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
-        if callable(_apply_override):
-            _apply_override(messages)
-        agent._persist_session(messages, conversation_history)
-    except Exception as _persist_err:
-        _cleanup_errors.append(f"persist_session: {_persist_err}")
-        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
+    if not _defer_long_turn_delivery:
+        try:
+            _persist_turn_snapshot(
+                agent,
+                messages,
+                conversation_history,
+                final_response,
+                interrupted,
+            )
+        except Exception as _persist_err:
+            _cleanup_errors.append(f"persist_session: {_persist_err}")
+            logger.error(
+                "finalize_turn: _persist_session failed: %s",
+                _persist_err,
+                exc_info=True,
+            )
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -323,9 +475,9 @@ def finalize_turn(
     # structurally impossible past the model.
     #
     # Gate: only applied when a real text response exists for this
-    # turn and the user didn't interrupt.  Empty/interrupted turns
-    # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    # turn, the user didn't interrupt, and no fail-open overflow locked the
+    # exact streamed bytes as canonical.
+    if final_response and not interrupted and not _overflow_canonical_locked:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
@@ -350,8 +502,9 @@ def finalize_turn(
     #   - We only ACT when there is no genuinely usable reply this turn:
     #     an empty response, the "(empty)" terminal sentinel, or a
     #     suspiciously short partial fragment with no terminating
-    #     punctuation (e.g. "The").  A real short answer keeps its text.
-    if not interrupted:
+    #     punctuation (e.g. "The").
+    #   - A fail-open overflow is already irrevocably visible and remains exact.
+    if not interrupted and not _overflow_canonical_locked:
         try:
             if agent._turn_completion_explainer_enabled():
                 _stripped = (final_response or "").strip()
@@ -392,13 +545,16 @@ def finalize_turn(
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
+    # The draft was held back. The canonical closer will be published only
+    # after every completion postprocessor and persistence step below.
     _response_transformed = False
 
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
+    # Plugins can transform the LLM's output text before it's returned unless
+    # a fail-open overflow already made the exact response irrevocably visible.
     # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not _overflow_canonical_locked:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
@@ -415,6 +571,63 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    if _defer_long_turn_delivery:
+        # The withheld draft is not canonical. Apply every completion
+        # postprocessor first, replace the sole assistant closer, persist that
+        # exact snapshot, and only then publish the same bytes.
+        if final_response and not interrupted:
+            _replace_or_append_final_response(messages, final_response)
+
+        try:
+            agent._save_trajectory(
+                messages,
+                _summarize_user_message_for_log(user_message),
+                completed,
+            )
+        except Exception as _save_err:
+            _cleanup_errors.append(f"save_trajectory: {_save_err}")
+            logger.error(
+                "finalize_turn: _save_trajectory failed: %s",
+                _save_err,
+                exc_info=True,
+            )
+
+        try:
+            _persist_turn_snapshot(
+                agent,
+                messages,
+                conversation_history,
+                final_response,
+                interrupted,
+            )
+        except Exception as _persist_err:
+            _cleanup_errors.append(f"persist_session: {_persist_err}")
+            logger.error(
+                "finalize_turn: _persist_session failed: %s",
+                _persist_err,
+                exc_info=True,
+            )
+
+        if interrupted or failed:
+            agent._discard_long_turn_response_gates()
+        else:
+            try:
+                _published_canonical_response = agent._publish_held_long_turn_response(
+                    final_response or "",
+                    force=long_turn_finalizer_used,
+                )
+                if _published_canonical_response:
+                    # The stream consumer already received the exact
+                    # postprocessed bytes. Do not ask downstream delivery to
+                    # reconcile the same transformed response a second time.
+                    _response_transformed = False
+            except Exception:
+                logger.warning(
+                    "failed to publish consolidated long-turn response",
+                    exc_info=True,
+                )
+                agent._discard_long_turn_response_gates()
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

@@ -124,6 +124,49 @@ class TestSSEAgentCancelOnDisconnect:
 
         asyncio.run(run())
 
+    def test_empty_content_queue_emits_agent_final_response_before_done(self):
+        adapter = _make_adapter()
+        stream_q = queue.Queue()
+        stream_q.put(None)
+
+        async def fake_agent():
+            return {
+                "final_response": "CANONICAL_DIRECT_RESULT",
+                "completed": False,
+                "partial": True,
+                "error": "Response truncated",
+            }, {}
+
+        async def run():
+            from aiohttp import web
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            await asyncio.sleep(0)
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            mock_response.write = AsyncMock()
+            mock_response.prepare = AsyncMock()
+
+            with patch(
+                "gateway.platforms.api_server.web.StreamResponse",
+                return_value=mock_response,
+            ):
+                await adapter._write_sse_chat_completion(
+                    _make_request(),
+                    "cmpl-direct",
+                    "gpt-4",
+                    1234567890,
+                    stream_q,
+                    agent_task,
+                )
+
+            wire = b"".join(
+                call.args[0] for call in mock_response.write.await_args_list
+            ).decode()
+            assert wire.count("CANONICAL_DIRECT_RESULT") == 1
+            assert wire.index("CANONICAL_DIRECT_RESULT") < wire.index("[DONE]")
+
+        asyncio.run(run())
+
     def test_broken_pipe_also_cancels_agent(self):
         """BrokenPipeError (another disconnect variant) also cancels the task."""
         adapter = _make_adapter()

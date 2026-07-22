@@ -338,6 +338,31 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+    # Keep a bounded completion record outside the mutable conversation list.
+    # Long active turns can retain hundreds of assistant/tool rows across a
+    # compression boundary; the model then overweights the verification tail
+    # and forgets early implementation work.  The ledger is owned by this
+    # immutable turn_id, treats the loaded history as an already-seen baseline,
+    # and feeds one fresh tools-disabled finalizer after a long run.
+    agent._active_provider_response_gate = None
+    agent._held_long_turn_response_gate = None
+    agent._long_turn_terminal_gate_overflowed = False
+    agent._last_toolless_api_calls = 0
+    try:
+        from agent.turn_result_ledger import TurnResultLedger
+
+        agent._turn_result_ledger = TurnResultLedger.start(
+            turn_id=turn_id,
+            original_user_message=original_user_message,
+            conversation_history=conversation_history or [],
+            initial_todo_items=agent._todo_store.read(),
+        )
+    except Exception:
+        # Completion evidence is a fail-open quality aid.  A construction bug
+        # must never prevent the user's real turn from running.
+        agent._turn_result_ledger = None
+        logger.debug("turn result ledger initialization failed", exc_info=True)
+
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
     if (agent._memory_nudge_interval > 0

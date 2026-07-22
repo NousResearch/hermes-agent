@@ -4701,46 +4701,210 @@ class AIAgent:
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
-    def _reset_stream_delivery_tracking(self) -> None:
-        """Reset tracking for text delivered during the current model response."""
-        # Flush any benign partial-tag tail held by the think scrubber
-        # first (#17924): an innocent '<' at the end of the stream that
-        # turned out not to be a tag prefix should reach the UI.  Then
-        # flush the context scrubber.  Order matters — the think
-        # scrubber's output feeds into the context scrubber's state.
+    def _deliver_scrubbed_stream_delta(self, text: str) -> None:
+        """Deliver already-scrubbed visible text without re-running scrubbers."""
+        callbacks = [
+            cb
+            for cb in (self.stream_delta_callback, self._stream_callback)
+            if cb is not None
+        ]
+        delivered = False
+        for cb in callbacks:
+            try:
+                cb(text)
+                delivered = True
+            except Exception:
+                pass
+        if delivered:
+            self._record_streamed_assistant_text(text)
+
+    def _route_scrubbed_stream_delta(self, text: str) -> None:
+        """Route one scrubbed delta through the active provider-response gate."""
+        gate = getattr(self, "_active_provider_response_gate", None)
+        if gate is not None:
+            consumed, fail_open_chunks = gate.capture(text)
+            for chunk in fail_open_chunks:
+                self._deliver_scrubbed_stream_delta(chunk)
+            if consumed:
+                return
+        self._deliver_scrubbed_stream_delta(text)
+
+    def _flush_stream_scrubber_tails(self) -> None:
+        """Flush benign scrubber tails through the same response delivery gate."""
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         if think_scrubber is not None:
             think_tail = think_scrubber.flush()
             if think_tail:
-                # Route the tail through the context scrubber too so a
-                # memory-context span straddling the final boundary is
-                # still caught.
                 ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
                 if ctx_scrubber is not None:
                     think_tail = ctx_scrubber.feed(think_tail)
                 if think_tail:
-                    callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-                    for cb in callbacks:
-                        try:
-                            cb(think_tail)
-                        except Exception:
-                            pass
-                    self._record_streamed_assistant_text(think_tail)
-        # Flush any benign partial-tag tail held by the context scrubber so it
-        # reaches the UI before we clear state for the next model call.  If
-        # the scrubber is mid-span, flush() drops the orphaned content.
+                    self._route_scrubbed_stream_delta(think_tail)
+
         scrubber = getattr(self, "_stream_context_scrubber", None)
         if scrubber is not None:
             tail = scrubber.flush()
             if tail:
-                callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-                for cb in callbacks:
-                    try:
-                        cb(tail)
-                    except Exception:
-                        pass
-                self._record_streamed_assistant_text(tail)
+                self._route_scrubbed_stream_delta(tail)
+
+    def _reset_stream_delivery_tracking(self) -> None:
+        """Reset tracking for text delivered during the current model response."""
+        self._flush_stream_scrubber_tails()
         self._current_streamed_assistant_text = ""
+
+    def _start_provider_response_gate(
+        self,
+        *,
+        enabled: bool,
+        discard: bool = False,
+    ) -> None:
+        """Open one bounded gate for the provider response about to start."""
+        from agent.provider_response_gate import ProviderResponseGate
+
+        stale = getattr(self, "_active_provider_response_gate", None)
+        if stale is not None:
+            self._active_provider_response_gate = None
+            if not stale.discard and not stale.overflowed:
+                for chunk in stale.drain():
+                    self._deliver_scrubbed_stream_delta(chunk)
+
+        # A response provisionally treated as terminal can still be followed
+        # by an internal continuation gate. Fail open before the next provider
+        # response so its prose is never silently lost.
+        held = getattr(self, "_held_long_turn_response_gate", None)
+        if held is not None and not discard:
+            self._held_long_turn_response_gate = None
+            if not held.overflowed:
+                for chunk in held.drain():
+                    self._deliver_scrubbed_stream_delta(chunk)
+
+        self._long_turn_terminal_gate_overflowed = False
+        self._active_provider_response_gate = (
+            ProviderResponseGate(discard=discard) if enabled else None
+        )
+
+    def _finish_provider_response_gate(
+        self,
+        *,
+        terminal: bool,
+        discard: bool = False,
+    ) -> bool:
+        """Classify the active response and flush or retain its visible text."""
+        self._flush_stream_scrubber_tails()
+        gate = getattr(self, "_active_provider_response_gate", None)
+        self._active_provider_response_gate = None
+        if gate is None:
+            return False
+        if discard or gate.discard:
+            gate.clear()
+            return False
+        if gate.overflowed:
+            self._long_turn_terminal_gate_overflowed = bool(terminal)
+            return False
+        if terminal:
+            self._held_long_turn_response_gate = gate
+            self._long_turn_terminal_gate_overflowed = False
+            return True
+        for chunk in gate.drain():
+            self._deliver_scrubbed_stream_delta(chunk)
+        return False
+
+    def _current_provider_response_text(self) -> str:
+        gate = getattr(self, "_active_provider_response_gate", None)
+        if gate is None:
+            gate = getattr(self, "_held_long_turn_response_gate", None)
+        return gate.text if gate is not None else ""
+
+    def _has_held_long_turn_response(self) -> bool:
+        return getattr(self, "_held_long_turn_response_gate", None) is not None
+
+    def _publish_held_long_turn_response(
+        self,
+        final_response: str,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """Discard the draft and publish exact canonical bytes once."""
+        gate = getattr(self, "_held_long_turn_response_gate", None)
+        self._held_long_turn_response_gate = None
+        self._active_provider_response_gate = None
+        self._long_turn_terminal_gate_overflowed = False
+        if gate is None and not force:
+            return False
+        if gate is not None:
+            gate.clear()
+        self._stream_needs_break = False
+        self._current_streamed_assistant_text = ""
+        if isinstance(final_response, str) and final_response:
+            self._deliver_scrubbed_stream_delta(final_response)
+        return True
+
+    def _flush_active_provider_response_gate(self) -> bool:
+        """Fail open when an abnormal branch exits before classification."""
+        self._flush_stream_scrubber_tails()
+        gate = getattr(self, "_active_provider_response_gate", None)
+        self._active_provider_response_gate = None
+        if gate is None:
+            return False
+        delivered = False
+        for chunk in gate.drain():
+            self._deliver_scrubbed_stream_delta(chunk)
+            delivered = True
+        return delivered
+
+    def _prepare_abnormal_provider_response(
+        self,
+        final_response: str,
+        *,
+        include_buffered_partial: bool = False,
+    ) -> str:
+        """Choose one canonical closer when a provider response exits abnormally."""
+        self._flush_stream_scrubber_tails()
+        gate = getattr(self, "_active_provider_response_gate", None)
+        if gate is not None and gate.overflowed:
+            # Overflow already failed open to the live stream. Preserve those
+            # exact bytes as the durable/returned response instead of inventing
+            # a second terminal answer that cannot replace them.
+            streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
+            self._active_provider_response_gate = None
+            self._long_turn_terminal_gate_overflowed = False
+            return streamed or final_response
+        if include_buffered_partial and gate is not None:
+            partial = gate.text.strip()
+            if partial:
+                return f"{partial}\n\n{final_response}"
+        return final_response
+
+    def _publish_canonical_abnormal_response(self, final_response: str) -> bool:
+        """Publish an abnormal canonical closer once, after it is persisted."""
+        gate = getattr(self, "_active_provider_response_gate", None)
+        if gate is not None:
+            if gate.overflowed:
+                return False
+            self._finish_provider_response_gate(terminal=True)
+            return self._publish_held_long_turn_response(final_response, force=True)
+        streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
+        if isinstance(final_response, str) and final_response and not streamed.endswith(
+            final_response
+        ):
+            self._stream_needs_break = False
+            self._deliver_scrubbed_stream_delta(final_response)
+        return bool(final_response)
+
+    def _publish_active_provider_response_gate(self, final_response: str) -> bool:
+        """Backward-compatible wrapper for abnormal canonical publication."""
+        return self._publish_canonical_abnormal_response(final_response)
+
+    def _discard_long_turn_response_gates(self) -> None:
+        active = getattr(self, "_active_provider_response_gate", None)
+        held = getattr(self, "_held_long_turn_response_gate", None)
+        if active is not None:
+            active.clear()
+        if held is not None:
+            held.clear()
+        self._active_provider_response_gate = None
+        self._held_long_turn_response_gate = None
+        self._long_turn_terminal_gate_overflowed = False
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
@@ -4817,25 +4981,21 @@ class AIAgent:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
-            if not prepended_break and not getattr(
-                self, "_current_streamed_assistant_text", ""
+            if (
+                not prepended_break
+                and not getattr(self, "_current_streamed_assistant_text", "")
+                and not self._current_provider_response_text()
             ):
                 text = text.lstrip("\n")
         if not text:
             return
-        callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-        delivered = False
-        for cb in callbacks:
-            try:
-                cb(text)
-                delivered = True
-            except Exception:
-                pass
-        if delivered:
-            self._record_streamed_assistant_text(text)
+        self._route_scrubbed_stream_delta(text)
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        gate = getattr(self, "_active_provider_response_gate", None)
+        if gate is not None and gate.discard:
+            return
         cb = self.reasoning_callback
         if cb is not None:
             try:

@@ -3780,6 +3780,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             last_activity = time.monotonic()
+            content_emitted = False
 
             # Role chunk
             role_chunk = {
@@ -3801,12 +3802,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
+                nonlocal content_emitted
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    if isinstance(item, str) and item:
+                        content_emitted = True
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -3870,6 +3874,14 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_error is not None:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
+
+            # Some core terminal branches return a canonical response without
+            # emitting a provider delta. Streaming clients cannot recover that
+            # text after [DONE], so emit it once when the queue carried none.
+            if not content_emitted and isinstance(result, dict):
+                direct_final = result.get("final_response")
+                if isinstance(direct_final, str) and direct_final:
+                    last_activity = await _emit(direct_final)
 
             # Decide finish_reason, matching the non-streaming logic: "length"
             # for truncation, "error" for failure, "stop" for normal completion.

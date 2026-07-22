@@ -33,6 +33,7 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
+from agent.turn_finalizer import persist_terminal_response
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -481,6 +482,29 @@ _CONTENT_POLICY_RECOVERY_HINT = (
     "Try rephrasing the request, narrowing the context, or "
     "adding a fallback provider with `hermes fallback add`."
 )
+
+
+def _commit_abnormal_provider_response(
+    agent,
+    messages: List[Dict],
+    conversation_history: List[Dict],
+    final_response: str,
+    *,
+    include_buffered_partial: bool = True,
+) -> str:
+    """Persist and then publish one canonical abnormal terminal response."""
+    final_response = agent._prepare_abnormal_provider_response(
+        final_response,
+        include_buffered_partial=include_buffered_partial,
+    )
+    persist_terminal_response(
+        agent,
+        messages,
+        conversation_history,
+        final_response,
+    )
+    agent._publish_canonical_abnormal_response(final_response)
+    return final_response
 
 
 def _content_policy_blocked_result(
@@ -1165,14 +1189,20 @@ def run_conversation(
                         # No fallback available — surface buffered context
                         # so user sees the rate-limit message that led here.
                         agent._flush_status_buffer()
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": (
+                        _final_response = _commit_abnormal_provider_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            (
                                 f"⏳ {_nous_msg}\n\n"
                                 "No fallback provider available. "
                                 "Try again after the reset, or add a "
                                 "fallback provider in config.yaml."
                             ),
+                            include_buffered_partial=False,
+                        )
+                        return {
+                            "final_response": _final_response,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -1185,7 +1215,14 @@ def run_conversation(
                     pass  # Never let rate guard break the agent loop
 
             try:
+                _turn_result_ledger = getattr(agent, "_turn_result_ledger", None)
                 agent._reset_stream_delivery_tracking()
+                agent._start_provider_response_gate(
+                    enabled=bool(
+                        _turn_result_ledger is not None
+                        and _turn_result_ledger.should_finalize
+                    )
+                )
                 # api_messages is built once, before this retry loop, while the
                 # primary provider is active.  A mid-conversation fallback can
                 # switch to a require-side provider (DeepSeek / Kimi / MiMo) that
@@ -1595,8 +1632,18 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
-                        agent._persist_session(messages, conversation_history)
                         _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
+                        _final_response = agent._prepare_abnormal_provider_response(
+                            _final_response,
+                            include_buffered_partial=True,
+                        )
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _final_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_final_response)
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -1619,6 +1666,7 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             _interrupt_text = f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries})."
                             close_interrupted_tool_sequence(messages, _interrupt_text)
+                            agent._flush_active_provider_response_gate()
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
@@ -1781,9 +1829,18 @@ def run_conversation(
                         f"{_refusal_detail}\n\n"
                         f"{_CONTENT_POLICY_RECOVERY_HINT}"
                     )
+                    _refusal_response = agent._prepare_abnormal_provider_response(
+                        _refusal_response
+                    )
 
                     agent._cleanup_task_resources(effective_task_id)
-                    agent._persist_session(messages, conversation_history)
+                    persist_terminal_response(
+                        agent,
+                        messages,
+                        conversation_history,
+                        _refusal_response,
+                    )
+                    agent._publish_canonical_abnormal_response(_refusal_response)
                     return _content_policy_blocked_result(
                         messages,
                         api_call_count,
@@ -1875,8 +1932,17 @@ def run_conversation(
                             "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
                             "→ Or switch to a larger/non-reasoning model with `/model`"
                         )
+                        _exhaust_response = agent._prepare_abnormal_provider_response(
+                            _exhaust_response
+                        )
                         agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _exhaust_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_exhaust_response)
                         return {
                             "final_response": _exhaust_response,
                             "messages": messages,
@@ -1987,7 +2053,13 @@ def run_conversation(
 
                             partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
                             agent._cleanup_task_resources(effective_task_id)
-                            agent._persist_session(messages, conversation_history)
+                            persist_terminal_response(
+                                agent,
+                                messages,
+                                conversation_history,
+                                partial_response or None,
+                            )
+                            agent._flush_active_provider_response_gate()
                             return {
                                 "final_response": partial_response or None,
                                 "messages": messages,
@@ -2046,14 +2118,23 @@ def run_conversation(
                                     f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                     force=True,
                                 )
-                            agent._cleanup_task_resources(effective_task_id)
-                            agent._persist_session(messages, conversation_history)
                             _final_response = (
                                 "Stream repeatedly dropped mid tool-call (network); "
                                 "the tool was not executed"
                                 if _is_stub_stall
                                 else "Response truncated due to output length limit"
                             )
+                            _final_response = agent._prepare_abnormal_provider_response(
+                                _final_response
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            persist_terminal_response(
+                                agent,
+                                messages,
+                                conversation_history,
+                                _final_response,
+                            )
+                            agent._publish_canonical_abnormal_response(_final_response)
                             return {
                                 "final_response": _final_response,
                                 "messages": messages,
@@ -2063,17 +2144,24 @@ def run_conversation(
                                 "error": _final_response,
                             }
 
-                    # If we have prior messages, roll back to last complete state
+                    # Preserve the current turn and append a canonical failure response.
                     if len(messages) > 1:
-                        agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn")
-                        rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
-
+                        _final_response = "Response truncated due to output length limit"
+                        _final_response = agent._prepare_abnormal_provider_response(
+                            _final_response
+                        )
                         agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _final_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_final_response)
 
                         return {
-                            "final_response": "Response truncated due to output length limit",
-                            "messages": rolled_back_messages,
+                            "final_response": _final_response,
+                            "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
@@ -2082,10 +2170,20 @@ def run_conversation(
                     else:
                         # First message was truncated - mark as failed
                         agent._flush_status_buffer()
+                        _final_response = "First response truncated due to output length limit"
+                        _final_response = agent._prepare_abnormal_provider_response(
+                            _final_response
+                        )
                         agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True)
-                        agent._persist_session(messages, conversation_history)
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _final_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_final_response)
                         return {
-                            "final_response": "First response truncated due to output length limit",
+                            "final_response": _final_response,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -2349,8 +2447,14 @@ def run_conversation(
                 # the model "forgets" what it just said — exactly what users hit
                 # when they stop to redirect mid-response.
                 _partial = agent._strip_think_blocks(
-                    getattr(agent, "_current_streamed_assistant_text", "") or ""
+                    getattr(agent, "_current_streamed_assistant_text", "")
+                    or agent._current_provider_response_text()
+                    or ""
                 ).strip()
+                # An interrupted response is never eligible for long-turn
+                # replacement. Fail open its already-scrubbed partial exactly
+                # once, matching ordinary streaming behavior.
+                agent._finish_provider_response_gate(terminal=False)
                 if _partial:
                     messages.append({"role": "assistant", "content": _partial})
                     final_response = _partial
@@ -3157,12 +3261,22 @@ def run_conversation(
                         f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
                         f"auto-compaction disabled — not compressing."
                     )
-                    agent._persist_session(messages, conversation_history)
                     _final_response = (
                         "Context overflow and auto-compaction is disabled "
                         "(compression.enabled: false). Run /compress to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
+                    _final_response = agent._prepare_abnormal_provider_response(
+                        _final_response,
+                        include_buffered_partial=True,
+                    )
+                    persist_terminal_response(
+                        agent,
+                        messages,
+                        conversation_history,
+                        _final_response,
+                    )
+                    agent._publish_canonical_abnormal_response(_final_response)
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -3451,8 +3565,12 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = f"Request payload too large: max compression attempts ({max_compression_attempts}) reached."
+                        _final_response = _commit_abnormal_provider_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
+                        )
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -3507,8 +3625,12 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = "Request payload too large (413). Cannot compress further."
+                        _final_response = _commit_abnormal_provider_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            "Request payload too large (413). Cannot compress further.",
+                        )
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -3580,8 +3702,12 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
-                            agent._persist_session(messages, conversation_history)
-                            _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
+                            _final_response = _commit_abnormal_provider_response(
+                                agent,
+                                messages,
+                                conversation_history,
+                                f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                            )
                             return {
                                 "final_response": _final_response,
                                 "messages": messages,
@@ -3621,10 +3747,14 @@ def run_conversation(
                             f"{agent.log_prefix}Output-cap error not routed into compression "
                             f"(max_tokens over provider cap): {error_msg[:200]}"
                         )
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = (
-                            "max_tokens exceeds the provider's output cap for this model. "
-                            "Lower model.max_tokens in config.yaml."
+                        _final_response = _commit_abnormal_provider_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            (
+                                "max_tokens exceeds the provider's output cap for this model. "
+                                "Lower model.max_tokens in config.yaml."
+                            ),
                         )
                         return {
                             "final_response": _final_response,
@@ -3692,8 +3822,12 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
+                        _final_response = _commit_abnormal_provider_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                        )
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -3737,8 +3871,12 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context length exceeded: {new_tokens:,} tokens. Cannot compress further.")
-                        agent._persist_session(messages, conversation_history)
-                        _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."
+                        _final_response = _commit_abnormal_provider_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further.",
+                        )
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -3977,6 +4115,35 @@ def run_conversation(
                             force=True,
                         )
                     logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    if classified.reason == FailoverReason.content_policy_blocked:
+                        _policy_response = (
+                            "⚠️  The model provider's safety filter blocked this request "
+                            "(not a Hermes/gateway failure).\n\n"
+                            f"Provider message: {_nonretryable_summary}\n\n"
+                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        )
+                        _policy_response = agent._prepare_abnormal_provider_response(
+                            _policy_response,
+                            include_buffered_partial=True,
+                        )
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _policy_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_policy_response)
+                        return _content_policy_blocked_result(
+                            messages,
+                            api_call_count,
+                            final_response=_policy_response,
+                            error_detail=_nonretryable_summary,
+                        )
+
+                    _final_response = agent._prepare_abnormal_provider_response(
+                        _nonretryable_summary,
+                        include_buffered_partial=True,
+                    )
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the
@@ -3989,22 +4156,15 @@ def run_conversation(
                             force=True,
                         )
                     else:
-                        agent._persist_session(messages, conversation_history)
-                    if classified.reason == FailoverReason.content_policy_blocked:
-                        _policy_response = (
-                            "⚠️  The model provider's safety filter blocked this request "
-                            "(not a Hermes/gateway failure).\n\n"
-                            f"Provider message: {_nonretryable_summary}\n\n"
-                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
-                        )
-                        return _content_policy_blocked_result(
+                        persist_terminal_response(
+                            agent,
                             messages,
-                            api_call_count,
-                            final_response=_policy_response,
-                            error_detail=_nonretryable_summary,
+                            conversation_history,
+                            _final_response,
                         )
+                    agent._publish_canonical_abnormal_response(_final_response)
                     return {
-                        "final_response": _nonretryable_summary,
+                        "final_response": _final_response,
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
@@ -4162,7 +4322,6 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
-                    agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:
@@ -4193,6 +4352,17 @@ def run_conversation(
                             "execute_code with Python's open() for large "
                             "files, or to write in smaller sections."
                         )
+                    _final_response = agent._prepare_abnormal_provider_response(
+                        _final_response,
+                        include_buffered_partial=True,
+                    )
+                    persist_terminal_response(
+                        agent,
+                        messages,
+                        conversation_history,
+                        _final_response,
+                    )
+                    agent._publish_canonical_abnormal_response(_final_response)
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -4458,13 +4628,22 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True)
                     agent._incomplete_scratchpad_retries = 0
                     
-                    rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
+                    _final_response = "Incomplete REASONING_SCRATCHPAD after 2 retries"
+                    _final_response = agent._prepare_abnormal_provider_response(
+                        _final_response
+                    )
                     agent._cleanup_task_resources(effective_task_id)
-                    agent._persist_session(messages, conversation_history)
+                    persist_terminal_response(
+                        agent,
+                        messages,
+                        conversation_history,
+                        _final_response,
+                    )
+                    agent._publish_canonical_abnormal_response(_final_response)
                     
                     return {
-                        "final_response": "Incomplete REASONING_SCRATCHPAD after 2 retries",
-                        "messages": rolled_back_messages,
+                        "final_response": _final_response,
+                        "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
                         "partial": True,
@@ -4570,9 +4749,21 @@ def run_conversation(
                     continue
 
                 agent._codex_incomplete_retries = 0
-                agent._persist_session(messages, conversation_history)
+                _final_response = (
+                    "Codex response remained incomplete after 3 continuation attempts"
+                )
+                _final_response = agent._prepare_abnormal_provider_response(
+                    _final_response
+                )
+                persist_terminal_response(
+                    agent,
+                    messages,
+                    conversation_history,
+                    _final_response,
+                )
+                agent._publish_canonical_abnormal_response(_final_response)
                 return {
-                    "final_response": "Codex response remained incomplete after 3 continuation attempts",
+                    "final_response": _final_response,
                     "messages": messages,
                     "api_calls": api_call_count,
                     "completed": False,
@@ -4584,6 +4775,9 @@ def run_conversation(
             
             # Check for tool calls
             if assistant_message.tool_calls:
+                # Validate the structured call before classifying this response
+                # as interim. Router-hidden truncation can report tool_calls
+                # even though the arguments were cut off mid-JSON.
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                 
@@ -4619,8 +4813,17 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
                         agent._invalid_tool_retries = 0
-                        agent._persist_session(messages, conversation_history)
                         _final_response = f"Model generated invalid tool call: {invalid_preview}"
+                        _final_response = agent._prepare_abnormal_provider_response(
+                            _final_response
+                        )
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _final_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_final_response)
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -4630,6 +4833,7 @@ def run_conversation(
                             "error": _final_response
                         }
 
+                    agent._finish_provider_response_gate(terminal=False)
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
                     for tc in assistant_message.tool_calls:
@@ -4708,10 +4912,20 @@ def run_conversation(
                             force=True,
                         )
                         agent._invalid_json_retries = 0
+                        _final_response = "Response truncated due to output length limit"
+                        _final_response = agent._prepare_abnormal_provider_response(
+                            _final_response
+                        )
                         agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
+                        persist_terminal_response(
+                            agent,
+                            messages,
+                            conversation_history,
+                            _final_response,
+                        )
+                        agent._publish_canonical_abnormal_response(_final_response)
                         return {
-                            "final_response": "Response truncated due to output length limit",
+                            "final_response": _final_response,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -4728,6 +4942,7 @@ def run_conversation(
                     if agent._invalid_json_retries < 3:
                         agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
                         # Don't add anything to messages, just retry the API call
+                        agent._finish_provider_response_gate(terminal=False)
                         continue
                     else:
                         # Instead of returning partial, inject tool error results so the model can recover.
@@ -4736,6 +4951,7 @@ def run_conversation(
                         agent._invalid_json_retries = 0  # Reset for next attempt
                         
                         # Append the assistant message with its (broken) tool_calls
+                        agent._finish_provider_response_gate(terminal=False)
                         recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
                         messages.append(recovery_assistant)
                         
@@ -4761,6 +4977,10 @@ def run_conversation(
                 
                 # Reset retry counter on successful JSON validation
                 agent._invalid_json_retries = 0
+
+                # The call is structurally valid and will execute or be handled
+                # by post-call guardrails, so its visible prose is now interim.
+                agent._finish_provider_response_gate(terminal=False)
 
                 # ── Post-call guardrails ──────────────────────────
                 assistant_message.tool_calls = agent._cap_delegate_task_calls(
@@ -4873,6 +5093,18 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # Capture each completed tool batch before context compression
+                # can rotate older current-turn rows out of ``messages``. This
+                # updates only the private ledger, never provider requests.
+                _turn_result_ledger = getattr(agent, "_turn_result_ledger", None)
+                if _turn_result_ledger is not None:
+                    try:
+                        _turn_result_ledger.observe_messages(messages)
+                    except Exception:
+                        logger.debug(
+                            "turn result ledger observation failed", exc_info=True
+                        )
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
@@ -4990,6 +5222,7 @@ def run_conversation(
                     # or wasting API calls on retries.
                     _partial_streamed = (
                         getattr(agent, "_current_streamed_assistant_text", "") or ""
+                        or agent._current_provider_response_text()
                     )
                     if agent._has_content_after_think_block(_partial_streamed):
                         _turn_exit_reason = "partial_stream_recovery"
@@ -5009,6 +5242,7 @@ def run_conversation(
                         # gateway fallback delivery can send the recovered
                         # text plus the abnormal-turn explanation.
                         agent._response_was_previewed = False
+                        agent._finish_provider_response_gate(terminal=True)
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -5035,6 +5269,10 @@ def run_conversation(
                         # fallback text as the final response and break.
                         final_response = agent._strip_think_blocks(fallback).strip()
                         agent._response_was_previewed = True
+                        agent._finish_provider_response_gate(
+                            terminal=False,
+                            discard=True,
+                        )
                         break
 
                     # ── Post-tool-call empty response nudge ───────────
@@ -5244,6 +5482,7 @@ def run_conversation(
                         )
 
                     final_response = "(empty)"
+                    agent._finish_provider_response_gate(terminal=True)
                     break
                 
                 # Reset retry counter/signature on successful content
@@ -5273,6 +5512,7 @@ def run_conversation(
                     )
                 ):
                     codex_ack_continuations += 1
+                    agent._finish_provider_response_gate(terminal=False)
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     messages.append(interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
@@ -5338,6 +5578,10 @@ def run_conversation(
                     _verify_nudge = None
 
                 if _verify_nudge:
+                    agent._finish_provider_response_gate(
+                        terminal=False,
+                        discard=True,
+                    )
                     agent._verification_stop_nudges = (
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
@@ -5405,6 +5649,10 @@ def run_conversation(
                     _verify_nudge2 = None
 
                 if _verify_nudge2:
+                    agent._finish_provider_response_gate(
+                        terminal=False,
+                        discard=True,
+                    )
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
                     final_msg["_pre_verify_synthetic"] = True
@@ -5443,6 +5691,10 @@ def run_conversation(
                     _kanban_nudge = None
 
                 if _kanban_nudge:
+                    agent._finish_provider_response_gate(
+                        terminal=False,
+                        discard=True,
+                    )
                     agent._kanban_stop_nudges = (
                         getattr(agent, "_kanban_stop_nudges", 0) + 1
                     )
@@ -5472,6 +5724,7 @@ def run_conversation(
                     final_response = None
                     continue
 
+                agent._finish_provider_response_gate(terminal=True)
                 messages.append(final_msg)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"

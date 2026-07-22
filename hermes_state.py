@@ -5537,6 +5537,42 @@ class SessionDB:
         """Count CJK characters in text."""
         return sum(1 for ch in text if cls._is_cjk_codepoint(ord(ch)))
 
+    @staticmethod
+    def _jieba_segment(query: str) -> "Optional[str]":
+        """Segment a pure CJK query with jieba into AND-connected trigram terms.
+
+        Returns None if jieba is unavailable, query has explicit boolean
+        operators (AND/OR/NOT), or produces too few terms — the caller
+        should fall back to raw trigram substring matching.
+
+        Loads a custom dictionary from ~/.hermes/jieba_dict.txt when
+        present, allowing users to add domain-specific terminology.
+        """
+        try:
+            import jieba
+        except ImportError:
+            return None
+
+        # Preserve user-specified boolean operators
+        tokens = query.split()
+        if any(t.upper() in {"AND", "OR", "NOT"} for t in tokens):
+            return None
+
+        # Load custom dictionary if available
+        dict_path = Path(get_hermes_home()) / "jieba_dict.txt"
+        if dict_path.is_file():
+            try:
+                jieba.load_userdict(str(dict_path))
+            except Exception:
+                pass
+
+        words = [w.strip() for w in jieba.cut(query) if w.strip()]
+        if len(words) <= 1:
+            return None
+
+        parts = ['"' + w.replace('"', '""') + '"' for w in words]
+        return " AND ".join(parts)
+
     def search_messages(
         self,
         query: str,
@@ -5680,17 +5716,24 @@ class SessionDB:
 
             _trigram_succeeded = False
             if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
-                # Trigram FTS5 path — quote each non-operator token to handle
-                # FTS5 special chars (%, *, etc.) while preserving boolean
-                # operators (AND, OR, NOT) for multi-term queries.
-                tokens = raw_query.split()
-                parts = []
-                for tok in tokens:
-                    if tok.upper() in {"AND", "OR", "NOT"}:
-                        parts.append(tok)
-                    else:
-                        parts.append('"' + tok.replace('"', '""') + '"')
-                trigram_query = " ".join(parts)
+                # Attempt jieba segmentation for improved CJK term decomposition.
+                # Falls back silently to raw trigram (substring match) if jieba
+                # is unavailable, query has boolean operators, or produces <2 terms.
+                _jieba_result = self._jieba_segment(raw_query)
+                if _jieba_result is not None:
+                    trigram_query = _jieba_result
+                else:
+                    # Trigram FTS5 path — quote each non-operator token to handle
+                    # FTS5 special chars (%, *, etc.) while preserving boolean
+                    # operators (AND, OR, NOT) for multi-term queries.
+                    tokens = raw_query.split()
+                    parts = []
+                    for tok in tokens:
+                        if tok.upper() in {"AND", "OR", "NOT"}:
+                            parts.append(tok)
+                        else:
+                            parts.append('"' + tok.replace('"', '""') + '"')
+                    trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
                 if not include_inactive:

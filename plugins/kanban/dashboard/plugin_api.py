@@ -771,10 +771,7 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        try:
-            att = kanban_db.delete_attachment(conn, attachment_id)
-        except kanban_db.AttachmentOwnershipUnknown as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        att = kanban_db.delete_attachment(conn, attachment_id)
         if att is None:
             raise HTTPException(status_code=404, detail="attachment not found")
         return {"ok": True, "id": attachment_id}

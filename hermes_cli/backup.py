@@ -2063,6 +2063,7 @@ def _write_exclusive_snapshot_file(
     chunks: Iterator[bytes],
     *,
     bound_parent_fd: Optional[int] = None,
+    mode: Optional[int] = None,
 ) -> tuple[Path, os.stat_result, int]:
     """Write a new snapshot member without trusting a replaceable directory."""
     relative = PurePosixPath(relative_name)
@@ -2116,6 +2117,14 @@ def _write_exclusive_snapshot_file(
                     raise OSError("short write while creating snapshot member")
                 copied += written
                 view = view[written:]
+        # Apply POSIX modes through the already-open descriptor. Windows does
+        # not implement POSIX permissions, and pathname chmod can both race a
+        # replacement and change NTFS ctime before our identity revalidation.
+        if mode is not None and os.name != "nt":
+            try:
+                os.fchmod(fd, mode)
+            except OSError:
+                pass
         os.fsync(fd)
         after = os.fstat(fd)
         path_after = (
@@ -2767,6 +2776,7 @@ def restore_quick_snapshot(
                         stage_rel.as_posix(),
                         _opened_file_chunks(src, source_identity),
                         bound_parent_fd=parent_fd,
+                        mode=stat.S_IMODE(source_identity.st_mode),
                     )
                     if (
                         not _snapshot_directory_is_bound(
@@ -2777,20 +2787,6 @@ def restore_quick_snapshot(
                         )
                     ):
                         raise OSError("snapshot or restore destination changed")
-                    try:
-                        if os.name == "nt":
-                            os.chmod(
-                                stage, stat.S_IMODE(source_identity.st_mode)
-                            )
-                        else:
-                            os.chmod(
-                                stage.name,
-                                stat.S_IMODE(source_identity.st_mode),
-                                dir_fd=parent_fd,
-                                follow_symlinks=False,
-                            )
-                    except OSError:
-                        pass
                     current_stage = _bound_parent_stat(
                         parent_fd, dst.parent, stage.name
                     )

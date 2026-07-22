@@ -64,7 +64,7 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
-def test_init_preserves_legacy_attachment_without_deletion_identity(kanban_home):
+def test_init_preserves_legacy_blob_when_attachment_row_is_deleted(kanban_home):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="legacy attachment")
         attachment_dir = kb.task_attachments_dir(task_id)
@@ -93,9 +93,8 @@ def test_init_preserves_legacy_attachment_without_deletion_identity(kanban_home)
         attachment = kb.get_attachment(conn, attachment_id)
         assert attachment is not None
         assert attachment.filesystem_identity is None
-        with pytest.raises(kb.AttachmentOwnershipUnknown, match="no filesystem ownership"):
-            kb.delete_attachment(conn, attachment_id)
-        assert kb.get_attachment(conn, attachment_id) is not None
+        assert kb.delete_attachment(conn, attachment_id) is not None
+        assert kb.get_attachment(conn, attachment_id) is None
 
     assert blob.read_text() == "legacy"
 

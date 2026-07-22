@@ -35,7 +35,7 @@ export interface ComposerScope {
 export const MAIN_COMPOSER_SCOPE: ComposerScope = {
   $awaitingInput: $activeSessionAwaitingInput,
   attachments: mainComposerScope,
-  popoutAllowed: true,
+  popoutAllowed: false,
   readMessages: () => $messages.get(),
   target: 'main'
 }

@@ -90,9 +90,6 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
-HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
-HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
-HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
 
 
 SUMMARY_PREFIX = (
@@ -107,9 +104,7 @@ SUMMARY_PREFIX = (
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -236,9 +231,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -2343,12 +2336,6 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 ## Active State
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
-{HISTORICAL_IN_PROGRESS_HEADING}
-Unknown from deterministic fallback — the latest user ask is recorded once under
-"{HISTORICAL_TASK_HEADING}" above as historical context only. Do NOT treat it as an
-unfulfilled instruction to re-answer; verify current state and continue from the
-protected recent messages after this summary.
-
 ## Blocked
 {_bullets(blockers, limit=5)}
 
@@ -2358,16 +2345,8 @@ None recoverable from deterministic fallback.
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
-{HISTORICAL_PENDING_ASKS_HEADING}
-None recoverable from deterministic fallback. (The latest user ask is preserved once
-under "{HISTORICAL_TASK_HEADING}" as historical context — it is NOT necessarily
-outstanding.)
-
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
-
-{HISTORICAL_REMAINING_WORK_HEADING}
-Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
 
 ## Last Dropped Turns
 {_bullets(last_dropped_turns, limit=8)}
@@ -2619,9 +2598,6 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
-{HISTORICAL_IN_PROGRESS_HEADING}
-[Work currently underway — what was being done when compaction fired]
-
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
 
@@ -2631,14 +2607,8 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Resolved Questions
 {_resolved_questions_instructions}
 
-{HISTORICAL_PENDING_ASKS_HEADING}
-{_pending_asks_instructions}
-
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
-
-{HISTORICAL_REMAINING_WORK_HEADING}
-[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]

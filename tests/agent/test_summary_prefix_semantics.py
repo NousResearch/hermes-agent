@@ -19,9 +19,6 @@ These tests pin the post-fix invariants so the conflict cannot regress.
 """
 
 from agent.context_compressor import (
-    HISTORICAL_IN_PROGRESS_HEADING,
-    HISTORICAL_PENDING_ASKS_HEADING,
-    HISTORICAL_REMAINING_WORK_HEADING,
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
 )
@@ -37,8 +34,6 @@ def test_latest_message_wins_on_conflict():
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
     assert HISTORICAL_TASK_HEADING.lower() in lower
-    assert HISTORICAL_PENDING_ASKS_HEADING.lower() in lower
-    assert HISTORICAL_REMAINING_WORK_HEADING.lower() in lower
     # Must have an explicit conflict-resolution rule.
     assert "wins" in lower or "supersede" in lower or "discard" in lower or "priority" in lower
 
@@ -51,7 +46,6 @@ def test_handoff_sections_are_framed_as_historical():
     assert "## pending user asks" not in lower
     assert "## remaining work" not in lower
     assert HISTORICAL_TASK_HEADING.lower() in lower
-    assert HISTORICAL_IN_PROGRESS_HEADING.lower() in lower
 
 
 def test_reverse_signals_called_out():

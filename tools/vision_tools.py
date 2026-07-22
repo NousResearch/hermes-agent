@@ -1357,30 +1357,121 @@ async def vision_analyze_tool(
                 )
 
 
-def check_vision_requirements() -> bool:
-    """Check if the configured runtime vision path can resolve a client.
+def _probe_auxiliary_vision_with_detail() -> tuple[bool, Optional[Exception]]:
+    """Single probe of the auxiliary vision resolver with error capture.
 
     Mirrors the fallback chain that ``call_llm(task="vision")`` actually uses
     at runtime: first the explicit ``auxiliary.vision.provider`` (if any),
     and if that fails, the auto chain (main provider → openrouter → nous).
-    Without the auto-fallback step the tool would disappear from the model's
-    tool list whenever the explicit provider name was unresolvable, even
-    when the auto chain would have served the request (issue #31179).
+    Without the auto-fallback step the auxiliary path would disappear
+    whenever the explicit provider name was unresolvable, even when the
+    auto chain would have served the request (issue #31179).
+
+    Returns ``(True, None)`` if either call produces a usable client.
+    Returns ``(False, captured_exception_or_None)`` otherwise.
     """
     try:
         from agent.auxiliary_client import resolve_vision_provider_client
     except ImportError:
-        return False
+        return (False, None)
+    captured: Optional[Exception] = None
     try:
         _provider, client, _model = resolve_vision_provider_client()
         if client is not None:
-            return True
-        # Same fallback to "auto" that call_llm performs when the configured
-        # provider can't be resolved.
+            return (True, None)
+    except Exception as exc:
+        captured = exc
+    # Same fallback to "auto" that call_llm performs when the configured
+    # provider can't be resolved.
+    try:
         _provider, client, _model = resolve_vision_provider_client(provider="auto")
-        return client is not None
+        if client is not None:
+            return (True, None)
+    except Exception as exc:
+        if captured is None:
+            captured = exc
+    return (False, captured)
+
+
+def _auxiliary_vision_client_available() -> bool:
+    """True when the auxiliary vision resolver returns a usable client.
+
+    Delegates to ``_probe_auxiliary_vision_with_detail`` and discards the
+    captured exception detail (callers that need it should call the probe
+    directly).
+
+    NOTE: This function has an inherent timing side-channel: the explicit
+    provider path returns faster than the two-call auto-fallback path.
+    Vision tool visibility is not a security boundary against timing attacks,
+    so this is acceptable.
+    """
+    available, _exc = _probe_auxiliary_vision_with_detail()
+    return available
+
+
+def check_vision_requirements() -> bool:
+    """Compatibility shim — returns True if either the auxiliary vision
+    resolver or the native-image fast path is usable. Prefer the per-tool
+    ``_check_vision_analyze_requirements`` / ``_check_video_analyze_requirements``
+    gates when registering tools so the native fallback does not advertise
+    capabilities (e.g. video) that cannot ride it.
+    """
+    if _auxiliary_vision_client_available():
+        return True
+    try:
+        return _should_use_native_vision_fast_path()
     except Exception:
         return False
+
+
+def _check_vision_analyze_requirements() -> bool:
+    """Whether ``vision_analyze`` should be advertised to the model.
+
+    Image vision can ride the native fast path: when the active main model is
+    itself vision-capable, the analyze step attaches the original pixels to a
+    multimodal tool result without an auxiliary client. So this gate accepts
+    either a working auxiliary vision client OR the native fast path.
+
+    This must not be reused for video or browser_vision — see
+    ``_check_video_analyze_requirements`` / ``_check_browser_vision_requirements``.
+    """
+    aux_available, aux_error = _probe_auxiliary_vision_with_detail()
+    if aux_available:
+        return True
+    if aux_error is not None:
+        logger.warning("Auxiliary vision probe failed, trying native path: %s", aux_error)
+    try:
+        return _should_use_native_vision_fast_path()
+    except Exception as exc:
+        logger.debug("Native vision fast-path check failed: %s", exc)
+        return False
+
+
+def _check_video_analyze_requirements() -> bool:
+    """Whether ``video_analyze`` should be advertised to the model.
+
+    Video analysis has no native fast path — its handler builds a
+    ``video_url`` payload and routes through ``call_llm(task="vision")``
+    against the auxiliary vision provider. This gate therefore only accepts
+    a working auxiliary vision client; the native-image fallback must NOT
+    cause this tool to be advertised, because the handler cannot serve a
+    video request through it.
+    """
+    aux_available, _aux_error = _probe_auxiliary_vision_with_detail()
+    return aux_available
+
+
+def _check_browser_vision_requirements() -> bool:
+    """Whether ``browser_vision`` should be advertised to the model.
+
+    Browser screenshots need the auxiliary vision client — the native image
+    fast path does NOT apply because the browser capture pipeline routes
+    through ``call_llm(task="vision")`` against the auxiliary provider, not
+    through the native multimodal tool-result path. This gate therefore
+    only accepts a working auxiliary vision client.
+    """
+    aux_available, _aux_error = _probe_auxiliary_vision_with_detail()
+    return aux_available
 
 
 
@@ -1515,7 +1606,7 @@ registry.register(
     toolset="vision",
     schema=VISION_ANALYZE_SCHEMA,
     handler=_handle_vision_analyze,
-    check_fn=check_vision_requirements,
+    check_fn=_check_vision_analyze_requirements,
     is_async=True,
     emoji="👁️",
 )
@@ -1891,7 +1982,7 @@ registry.register(
     toolset="video",
     schema=VIDEO_ANALYZE_SCHEMA,
     handler=_handle_video_analyze,
-    check_fn=check_vision_requirements,
+    check_fn=_check_video_analyze_requirements,
     is_async=True,
     emoji="🎬",
 )

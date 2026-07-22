@@ -4784,18 +4784,22 @@ def check_browser_vision_requirements() -> bool:
     """Whether ``browser_vision`` should be advertised to the model.
 
     Requires BOTH a working browser (``check_browser_requirements``) AND a
-    resolvable vision backend. Without the vision check, the tool stays in
-    the model's tool list even when no vision provider is configured, then
-    fails at call time with a cryptic provider-side error like
+    resolvable *auxiliary* vision backend. Without the vision check, the tool
+    stays in the model's tool list even when no vision provider is configured,
+    then fails at call time with a cryptic provider-side error like
     ``unknown variant `image_url`, expected `text``` (issue #31179).
+
+    The native image fast path is NOT sufficient here — browser screenshots
+    need the auxiliary client (they route through ``call_llm(task="vision")``,
+    not the native multimodal tool-result path).
     """
     if not check_browser_requirements():
         return False
     try:
-        from tools.vision_tools import check_vision_requirements
+        from tools.vision_tools import _check_browser_vision_requirements
     except ImportError:
         return False
-    return check_vision_requirements()
+    return _check_browser_vision_requirements()
 
 
 # ============================================================================

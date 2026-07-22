@@ -3119,22 +3119,55 @@ def _apply_bracketed_paste_timeout_patch() -> None:
         _BP_TIMEOUT_S = 2.0  # max time to wait for ESC[201~ before flushing
 
         def _patched_vt100_feed(self_parser, data: str) -> None:
+            end_mark = "\x1b[201~"
+
+            def _emit_bracketed_paste(text: str) -> None:
+                if text:
+                    self_parser.feed_key_callback(
+                        _PtKeyPress(_PtKeys.BracketedPaste, text)
+                    )
+
+            def _arm_timeout_recovery(now: float) -> None:
+                """Keep late bytes from a torn paste grouped briefly.
+
+                The timeout path fires while the terminal is still streaming a
+                bracketed paste but the ESC[201~ terminator has not arrived.
+                If we immediately return to normal parsing, any remaining
+                pasted newlines become real Enter keys. In Hermes' busy input
+                mode those Enters are treated as interrupts, which can flood a
+                running agent with dozens of fake user turns.
+
+                Arm a short idle-based recovery window so subsequent bytes are
+                still surfaced as BracketedPaste events. The cap prevents a
+                genuinely missing terminator from capturing normal typing
+                indefinitely.
+                """
+
+                idle_s = 1.0
+                max_s = 15.0
+                self_parser._hermes_bp_recovery_idle = idle_s
+                self_parser._hermes_bp_recovery_until = now + idle_s
+                self_parser._hermes_bp_recovery_max = now + max_s
+
+            def _clear_timeout_recovery() -> None:
+                self_parser._hermes_bp_recovery_idle = None
+                self_parser._hermes_bp_recovery_until = None
+                self_parser._hermes_bp_recovery_max = None
+
             if self_parser._in_bracketed_paste:
                 self_parser._paste_buffer += data
-                end_mark = "\x1b[201~"
 
                 if end_mark in self_parser._paste_buffer:
                     end_index = self_parser._paste_buffer.index(end_mark)
                     paste_content = self_parser._paste_buffer[:end_index]
-                    self_parser.feed_key_callback(
-                        _PtKeyPress(_PtKeys.BracketedPaste, paste_content)
-                    )
+                    _emit_bracketed_paste(paste_content)
                     self_parser._in_bracketed_paste = False
                     remaining = self_parser._paste_buffer[
                         end_index + len(end_mark):
                     ]
                     self_parser._paste_buffer = ""
                     self_parser._hermes_bp_start = None
+                    _clear_timeout_recovery()
                     if remaining:
                         _patched_vt100_feed(self_parser, remaining)
                 else:
@@ -3148,9 +3181,8 @@ def _apply_bracketed_paste_timeout_patch() -> None:
                         self_parser._paste_buffer = ""
                         self_parser._hermes_bp_start = None
                         if paste_content:
-                            self_parser.feed_key_callback(
-                                _PtKeyPress(_PtKeys.BracketedPaste, paste_content)
-                            )
+                            _emit_bracketed_paste(paste_content)
+                            _arm_timeout_recovery(now)
                             logger.warning(
                                 "Bracketed-paste timeout (%.1fs) — flushed %d bytes "
                                 "without end mark. Terminal may have dropped ESC[201~ "
@@ -3159,6 +3191,46 @@ def _apply_bracketed_paste_timeout_patch() -> None:
                                 len(paste_content),
                             )
             else:
+                recovery_until = getattr(self_parser, "_hermes_bp_recovery_until", None)
+                recovery_max = getattr(self_parser, "_hermes_bp_recovery_max", None)
+                if recovery_until is not None:
+                    now = time.monotonic()
+                    if now <= recovery_until and (recovery_max is None or now <= recovery_max):
+                        if end_mark in data:
+                            end_index = data.index(end_mark)
+                            _emit_bracketed_paste(data[:end_index])
+                            remaining = data[end_index + len(end_mark):]
+                            # If the user pressed Enter immediately after the
+                            # torn paste, drop that one submit. Otherwise the
+                            # recovered tail can still interrupt the in-flight
+                            # agent once. The next explicit Enter still works.
+                            if remaining.startswith("\r\n"):
+                                remaining = remaining[2:]
+                            elif remaining.startswith("\r") or remaining.startswith("\n"):
+                                remaining = remaining[1:]
+                            _clear_timeout_recovery()
+                            if remaining:
+                                _patched_vt100_feed(self_parser, remaining)
+                        else:
+                            _emit_bracketed_paste(data)
+                            recovery_idle = getattr(self_parser, "_hermes_bp_recovery_idle", None)
+                            if recovery_idle is None:
+                                recovery_idle = 1.0
+                            else:
+                                try:
+                                    recovery_idle = float(recovery_idle)
+                                except (TypeError, ValueError):
+                                    recovery_idle = 1.0
+                            if recovery_max is not None:
+                                self_parser._hermes_bp_recovery_until = min(
+                                    now + max(0.0, recovery_idle),
+                                    recovery_max,
+                                )
+                            else:
+                                self_parser._hermes_bp_recovery_until = now + max(0.0, recovery_idle)
+                        return
+                    _clear_timeout_recovery()
+
                 # Normal mode — re-inline prompt_toolkit's normal feed path.
                 # Calling the original feed here would double-buffer after the
                 # bracketed-paste entry transition.

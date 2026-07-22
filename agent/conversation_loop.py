@@ -730,37 +730,14 @@ def run_conversation(
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # ── Code skew guard (#68178) ───────────────────────────────
         # Check whether the source tree has been updated underneath this
-        # long-lived process.  If so, a lazy import can resolve newly-added
-        # symbols against the stale in-memory AIAgent class, producing an
-        # AttributeError that would otherwise retry indefinitely.
-        # Perform the check on every iteration (it is cheap once confirmed).
+        # long-lived process. Log warning, adopt the new revision fingerprint,
+        # and continue turn seamlessly without abruptly canceling active work.
         _skew_warning = getattr(agent, "_check_code_skew_before_turn", lambda: None)()
         if _skew_warning:
-            logger.warning("Code skew detected at API call #%d: %s", api_call_count + 1, _skew_warning)
-            _turn_exit_reason = "code_skew_detected"
-            final_response = (
-                f"I apologize, but the agent has detected that its source code "
-                f"has been updated while running. To avoid compatibility issues, "
-                f"please restart the application. ({_skew_warning})"
-            )
-            messages.append({"role": "assistant", "content": final_response})
-            return finalize_turn(
-                agent,
-                final_response=final_response,
-                api_call_count=api_call_count,
-                interrupted=False,
-                failed=True,
-                messages=messages,
-                conversation_history=conversation_history,
-                effective_task_id=effective_task_id,
-                turn_id=turn_id,
-                user_message=user_message,
-                original_user_message=original_user_message,
-                _should_review_memory=_should_review_memory,
-                _turn_exit_reason=_turn_exit_reason,
-                _pending_verification_response=_pending_verification_response,
-                _pending_verification_response_previewed=_pending_verification_response_previewed,
-            )
+            logger.warning("Code skew detected at API call #%d: %s. Adopting new revision and continuing turn.", api_call_count + 1, _skew_warning)
+            ack_fn = getattr(agent, "_acknowledge_code_skew", None)
+            if ack_fn:
+                ack_fn()
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 

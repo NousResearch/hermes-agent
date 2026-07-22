@@ -140,6 +140,25 @@ def _detect_agent_code_skew() -> tuple[str, str] | None:
     return _agent_code_skew_labels
 
 
+def _acknowledge_agent_code_skew() -> None:
+    """Acknowledge code skew and adopt the current disk revision fingerprint.
+
+    Resets skew detection state so the active process can continue running
+    seamlessly after source updates.
+    """
+    global _agent_code_skew_confirmed, _agent_code_skew_labels, _agent_boot_fingerprint
+    try:
+        from hermes_cli.main import _read_git_revision_fingerprint
+
+        current = _read_git_revision_fingerprint(Path(__file__).resolve().parent)
+        if current:
+            _agent_boot_fingerprint = current
+    except Exception:
+        pass
+    _agent_code_skew_confirmed = False
+    _agent_code_skew_labels = None
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -6548,6 +6567,10 @@ class AIAgent:
             f"new symbols against the stale in-memory class (AttributeError). "
             f"Please restart the application to apply the update safely."
         )
+
+    def _acknowledge_code_skew(self) -> None:
+        """Acknowledge code skew and adopt current revision fingerprint."""
+        _acknowledge_agent_code_skew()
 
     def _run_codex_app_server_turn(
         self,

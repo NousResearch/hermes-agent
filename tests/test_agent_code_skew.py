@@ -71,6 +71,18 @@ class TestCheckCodeSkewBeforeTurn:
         skew = run_agent._detect_agent_code_skew()
         assert skew == ("abc1234567", "def4567890")
 
+    def test_acknowledge_code_skew_resets_state(self, monkeypatch):
+        """Acknowledging skew resets confirmed state so turn loop can continue."""
+        import run_agent
+
+        monkeypatch.setattr(run_agent, "_agent_code_skew_confirmed", True)
+        monkeypatch.setattr(run_agent, "_agent_code_skew_labels", ("abc1234567", "def4567890"))
+
+        run_agent._acknowledge_agent_code_skew()
+
+        assert run_agent._agent_code_skew_confirmed is False
+        assert run_agent._agent_code_skew_labels is None
+
 
 def test_finalize_turn_is_imported_globally():
     """Verify that finalize_turn is imported globally in conversation_loop.py

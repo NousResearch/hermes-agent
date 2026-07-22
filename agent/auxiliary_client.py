@@ -7665,6 +7665,15 @@ async def async_call_llm(
 
     effective_timeout = _effective_aux_timeout(task, timeout)
 
+    # Log what we're about to do — makes auxiliary operations visible.
+    # Mirrors the sync call_llm() path so async aux calls (web_extract,
+    # vision, session_search, ...) show up in agent.log at INFO level.
+    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    if task:
+        logger.info("Auxiliary %s: using %s (%s)%s",
+                     task, resolved_provider or "auto", final_model or "default",
+                     f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
+
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.

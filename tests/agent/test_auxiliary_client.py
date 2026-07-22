@@ -6017,3 +6017,92 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+class TestAsyncCallLlmLogging:
+    """async_call_llm must emit the same "Auxiliary <task>: using ..." INFO
+    line as the sync call_llm() path (issue #48618 / PR #30545): without it,
+    agent.log cannot show which provider/model handled an async auxiliary
+    call (vision pre-analysis, web_extract, session_search, ...), and log
+    greps written for the sync line silently miss the async half.
+    """
+
+    def _patches(self, client):
+        return (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("nous", "nous-model", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "nous-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._to_async_client",
+                return_value=(client, "nous-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task, **_kw: resp,
+            ),
+        )
+
+    @staticmethod
+    def _client(base_url):
+        client = MagicMock()
+        client.base_url = base_url
+        client.chat.completions.create = AsyncMock(return_value={"ok": True})
+        return client
+
+    def _aux_info_messages(self, caplog):
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.INFO and r.getMessage().startswith("Auxiliary ")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_logs_sync_matching_line_with_base_url(self, caplog):
+        client = self._client("https://inference-api.nousresearch.com/v1")
+        p1, p2, p3, p4 = self._patches(client)
+        with p1, p2, p3, p4:
+            with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+                await async_call_llm(
+                    task="session_search",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        lines = self._aux_info_messages(caplog)
+        # Byte-identical to the sync call_llm() line: same prefix, no
+        # "(async)" or other marker, so existing log greps match both paths.
+        assert lines == [
+            "Auxiliary session_search: using nous (nous-model)"
+            " at https://inference-api.nousresearch.com/v1"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_openrouter_base_url_suffix_suppressed(self, caplog):
+        client = self._client("https://openrouter.ai/api/v1")
+        p1, p2, p3, p4 = self._patches(client)
+        with p1, p2, p3, p4:
+            with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+                await async_call_llm(
+                    task="web_extract",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        lines = self._aux_info_messages(caplog)
+        # Mirrors the sync path: the " at <base_url>" suffix is dropped for
+        # OpenRouter routes (the key/model already identify the route).
+        assert lines == ["Auxiliary web_extract: using nous (nous-model)"]
+
+    @pytest.mark.asyncio
+    async def test_taskless_call_stays_silent(self, caplog):
+        client = self._client("https://inference-api.nousresearch.com/v1")
+        p1, p2, p3, p4 = self._patches(client)
+        with p1, p2, p3, p4:
+            with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+                await async_call_llm(
+                    task=None,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        # Same guard as sync: no task, no "Auxiliary ..." line.
+        assert self._aux_info_messages(caplog) == []

@@ -86,7 +86,7 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
@@ -8065,6 +8065,25 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        task_for_skills = get_task(conn, row["id"])
+        if task_for_skills and task_for_skills.skills:
+            missing_skills = _worker_missing_card_skills(
+                row_assignee, task_for_skills.skills
+            )
+            if missing_skills:
+                reason = (
+                    "Card requested skill(s) unavailable to worker profile "
+                    f"{row_assignee!r}: {', '.join(missing_skills)}. "
+                    "Install the missing skill(s) for that profile or edit the "
+                    "card skills before dispatching."
+                )
+                # Dry-run still resolves skills and reports a proposed block
+                # so operators see the same outcome as a real dispatch, but
+                # must not mutate the card (dispatch dry-run contract).
+                if not dry_run:
+                    block_task(conn, row["id"], reason=reason, kind="capability")
+                result.auto_blocked.append(row["id"])
+                continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -8502,6 +8521,147 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
             exc,
         )
         return None
+
+
+def _worker_missing_card_skills(
+    assignee: str,
+    skills: Optional[Iterable[str]],
+) -> list[str]:
+    """Return card skills unavailable to the assignee's worker profile.
+
+    Worker subprocesses resolve ``--skills`` after switching into the
+    assignee profile's HERMES_HOME. Validate against that same profile before
+    spawning so a card cannot silently run without its authored skill context
+    or crash-loop on a deterministic ``Unknown skill(s)`` startup error.
+    """
+    requested = [str(s).strip() for s in (skills or []) if str(s or "").strip()]
+    if not requested:
+        return []
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        profile_home = resolve_profile_env(normalize_profile_name(assignee))
+    except Exception:
+        # Profile existence is checked separately in dispatch. If resolution is
+        # unavailable in a degraded/test environment, don't introduce a new
+        # spawn blocker here.
+        return []
+
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from agent.skill_utils import (
+            get_all_skills_dirs,
+            get_disabled_skill_names,
+            is_skill_support_path,
+            iter_skill_index_files,
+            parse_frontmatter,
+            skill_matches_platform,
+        )
+    except Exception:
+        # Conservative guard: if the lightweight skill helpers are unavailable,
+        # avoid a false-positive block and let worker startup report the error.
+        return []
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        search_dirs = [p for p in get_all_skills_dirs() if p.is_dir()]
+        disabled = get_disabled_skill_names()
+    finally:
+        reset_hermes_home_override(token)
+
+    def _frontmatter(path: Path) -> dict:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            fm, _ = parse_frontmatter(raw)
+            return fm if isinstance(fm, dict) else {}
+        except Exception:
+            return {}
+
+    def _candidate_ok(identifier: str, skill_md: Path) -> bool:
+        fm = _frontmatter(skill_md)
+        if not skill_matches_platform(fm):
+            return False
+        resolved_name = str(fm.get("name") or skill_md.parent.name)
+        return resolved_name not in disabled and identifier not in disabled
+
+    def _exists(identifier: str) -> bool:
+        raw_identifier = identifier
+        identifier_path = Path(identifier).expanduser()
+        if identifier_path.is_absolute():
+            normalized = None
+            for search_dir in search_dirs:
+                try:
+                    normalized = str(identifier_path.relative_to(search_dir))
+                    break
+                except ValueError:
+                    continue
+            if normalized is None:
+                return False
+            identifier = normalized
+        elif (
+            PurePosixPath(identifier).is_absolute()
+            or PureWindowsPath(identifier).is_absolute()
+            or PureWindowsPath(identifier).drive
+            or ".." in PurePosixPath(identifier).parts
+            or ".." in PureWindowsPath(identifier).parts
+        ):
+            return False
+
+        # Plugin-qualified skills are resolved by the worker's plugin registry.
+        # Avoid blocking them here unless they also resolve as categorized
+        # profile skills via the normal category/name fallback.
+        category_fallback = None
+        if ":" in identifier:
+            namespace, _, bare = identifier.partition(":")
+            if namespace and bare:
+                category_fallback = f"{namespace}/{bare}"
+
+        matches: list[Path] = []
+        seen: set[str] = set()
+
+        def _record(skill_md: Path) -> None:
+            try:
+                key = str(skill_md.resolve())
+            except Exception:
+                key = str(skill_md)
+            if key not in seen and _candidate_ok(identifier, skill_md):
+                seen.add(key)
+                matches.append(skill_md)
+
+        names = [identifier]
+        if category_fallback:
+            names.append(category_fallback)
+
+        for search_dir in search_dirs:
+            for name in names:
+                direct = search_dir / name
+                if (
+                    not is_skill_support_path(direct)
+                    and direct.is_dir()
+                    and (direct / "SKILL.md").exists()
+                ):
+                    _record(direct / "SKILL.md")
+                md = direct.with_suffix(".md")
+                if md.exists() and not is_skill_support_path(md):
+                    _record(md)
+
+            for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                if found_skill_md.parent.name == identifier:
+                    _record(found_skill_md)
+                    continue
+                fm = _frontmatter(found_skill_md)
+                if fm.get("name") == identifier:
+                    _record(found_skill_md)
+
+            for found_md in search_dir.rglob(f"{identifier}.md"):
+                if found_md.name != "SKILL.md" and not is_skill_support_path(found_md):
+                    _record(found_md)
+
+        if matches:
+            return len(matches) == 1
+        return ":" in raw_identifier
+
+    return [identifier for identifier in requested if not _exists(identifier)]
 
 
 def _default_spawn(

@@ -25,37 +25,81 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hermes_dirs_for_write_deny() -> list[str]:
+    """Return realpaths of roots whose still-hard-denied stores must be blocked.
+
+    Includes the active HERMES_HOME, the Hermes root, and every
+    ``<root>/profiles/<name>/`` directory. Used so sibling-profile
+    ``mcp-tokens/``, ``pairing/``, ``state.db``, and ``sessions/`` get the
+    same hard deny as the active profile (#37617).
+
+    Does NOT change the relaxed control-file policy (``auth.json`` /
+    ``config.yaml`` / ``webhook_subscriptions.json`` stay writable —
+    ``81e42335``). Soft cross-profile areas (skills/plugins/cron/memories)
+    remain soft-guard only.
+    """
+    dirs: list[str] = []
+    for base in (_hermes_home_path(), _hermes_root_path()):
+        try:
+            real = os.path.realpath(base)
+            if real not in dirs:
+                dirs.append(real)
+        except Exception:
+            continue
+    try:
+        profiles_dir = _hermes_root_path() / "profiles"
+        if profiles_dir.is_dir():
+            for entry in profiles_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                real = os.path.realpath(str(entry))
+                if real not in dirs:
+                    dirs.append(real)
+    except Exception:
+        pass
+    return dirs
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
     hermes_root = _hermes_root_path()
-    return {
-        os.path.realpath(p)
-        for p in [
-            os.path.join(home, ".ssh", "authorized_keys"),
-            os.path.join(home, ".ssh", "id_rsa"),
-            os.path.join(home, ".ssh", "id_ed25519"),
-            os.path.join(home, ".ssh", "config"),
-            # Active profile .env (or top-level .env when not in profile mode).
-            str(hermes_home / ".env"),
-            # Top-level .env, even when running under a profile — overwriting it
-            # leaks credentials across every profile that inherits from root (#15981).
-            str(hermes_root / ".env"),
-            # Active profile Anthropic PKCE credential store.
-            str(hermes_home / ".anthropic_oauth.json"),
-            # Top-level Anthropic PKCE credential store remains sensitive even
-            # when a profile is active; default/non-profile sessions still read it.
-            str(hermes_root / ".anthropic_oauth.json"),
-            os.path.join(home, ".netrc"),
-            os.path.join(home, ".pgpass"),
-            os.path.join(home, ".npmrc"),
-            os.path.join(home, ".pypirc"),
-            os.path.join(home, ".git-credentials"),
-            "/etc/sudoers",
-            "/etc/passwd",
-            "/etc/shadow",
-        ]
-    }
+    paths: list[str] = [
+        os.path.join(home, ".ssh", "authorized_keys"),
+        os.path.join(home, ".ssh", "id_rsa"),
+        os.path.join(home, ".ssh", "id_ed25519"),
+        os.path.join(home, ".ssh", "config"),
+        # Active profile .env (or top-level .env when not in profile mode).
+        str(hermes_home / ".env"),
+        # Top-level .env, even when running under a profile — overwriting it
+        # leaks credentials across every profile that inherits from root (#15981).
+        str(hermes_root / ".env"),
+        # Active profile Anthropic PKCE credential store.
+        str(hermes_home / ".anthropic_oauth.json"),
+        # Top-level Anthropic PKCE credential store remains sensitive even
+        # when a profile is active; default/non-profile sessions still read it.
+        str(hermes_root / ".anthropic_oauth.json"),
+        os.path.join(home, ".netrc"),
+        os.path.join(home, ".pgpass"),
+        os.path.join(home, ".npmrc"),
+        os.path.join(home, ".pypirc"),
+        os.path.join(home, ".git-credentials"),
+        "/etc/sudoers",
+        "/etc/passwd",
+        "/etc/shadow",
+    ]
+    # Sibling (and all named) profiles: .env / PKCE stores stay hard-denied
+    # everywhere under <root>/profiles/*/, not just the active HERMES_HOME.
+    try:
+        profiles_dir = hermes_root / "profiles"
+        if profiles_dir.is_dir():
+            for entry in profiles_dir.iterdir():
+                if entry.is_dir():
+                    paths.append(str(entry / ".env"))
+                    paths.append(str(entry / ".anthropic_oauth.json"))
+    except Exception:
+        pass
+    return {os.path.realpath(p) for p in paths}
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:
@@ -108,14 +152,9 @@ def _classify_write_denial(path: str) -> Optional[str]:
 
     mcp_tokens_dir_name = "mcp-tokens"
 
-    hermes_dirs = []
-    for base in (_hermes_home_path(), _hermes_root_path()):
-        try:
-            real = os.path.realpath(base)
-            if real not in hermes_dirs:
-                hermes_dirs.append(real)
-        except Exception:
-            continue
+    # Active home + root + every <root>/profiles/<name>/ so sibling
+    # mcp-tokens/, pairing/, state.db, and sessions/ are hard-denied too.
+    hermes_dirs = _hermes_dirs_for_write_deny()
 
     for base_real in hermes_dirs:
         # Session transcripts are application-owned state.  Letting the agent's

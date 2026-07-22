@@ -106,6 +106,12 @@ class TestSchema:
         assert "session_search as secondary" in desc
         assert "not found" in desc
 
+    def test_schema_description_explains_bounded_recovery(self):
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "bounded" in desc
+        assert "original character" in desc
+        assert "recovery" in desc
+
 
 class TestHiddenSources:
     def test_tool_source_hidden(self):
@@ -181,6 +187,89 @@ class TestDiscoveryShape:
             anchor_id = hit["match_message_id"]
             window_ids = [m["id"] for m in hit["messages"]]
             assert anchor_id in window_ids
+
+    def test_oversized_message_content_is_bounded_with_exact_recovery_metadata(self, db):
+        db.create_session("s_oversized", source="cli")
+        db.append_message("s_oversized", role="user", content="start")
+        original = "context-overflow needle " + ("A" * 80_000)
+        message_id = db.append_message(
+            "s_oversized", role="assistant", content=original
+        )
+        db.append_message("s_oversized", role="user", content="finish")
+        db._conn.commit()
+
+        discovery = json.loads(session_search(query="context-overflow", db=db))
+        scroll = json.loads(session_search(
+            session_id="s_oversized", around_message_id=message_id, window=1, db=db
+        ))
+        read = json.loads(session_search(session_id="s_oversized", db=db))
+
+        for response, messages in (
+            (discovery, discovery["results"][0]["messages"]),
+            (scroll, scroll["messages"]),
+            (read, read["messages"]),
+        ):
+            preview = next(m for m in messages if m["id"] == message_id)
+            assert preview["content_truncated"] is True
+            assert preview["full_content_chars"] == len(original)
+            assert len(preview["content"]) <= 12_000
+            assert preview["content"].startswith("context-overflow needle")
+            assert "session_search preview truncated" in preview["content"]
+            assert "recovery" in response
+            assert "message id" in response["recovery"]
+
+        stored = next(
+            m for m in db.get_messages("s_oversized") if m["id"] == message_id
+        )
+        assert stored["content"] == original
+
+    def test_discovery_total_output_is_bounded_and_recoverable(self, db):
+        original = "aggregate-overflow needle " + ("Q" * 80_000)
+        for index in range(10):
+            sid = f"s_large_{index}"
+            db.create_session(sid, source="cli")
+            for turn in range(12):
+                db.append_message(
+                    sid,
+                    role="user" if turn % 2 == 0 else "assistant",
+                    content=f"{original} session={index} turn={turn}",
+                )
+        db._conn.commit()
+
+        raw = session_search(query="aggregate-overflow", limit=10, db=db)
+        response = json.loads(raw)
+
+        assert len(raw) < 100_000
+        assert response["count"] == 10
+        assert response["output_truncated"] is True
+        assert response["full_output_chars"] > len(raw)
+        assert "session_id" in response["recovery"]
+        assert "around_message_id" in response["recovery"]
+        for hit in response["results"]:
+            assert hit["session_id"]
+            assert hit["match_message_id"]
+            assert hit["messages"]
+            for message in hit["messages"]:
+                assert message["id"]
+                assert message["full_content_chars"] >= len(message["content"])
+
+    def test_non_content_message_metadata_cannot_bypass_total_bound(self, db):
+        db.create_session("s_tool_metadata", source="cli")
+        message_id = db.append_message(
+            "s_tool_metadata",
+            role="assistant",
+            content="tool call only",
+            tool_calls=[{"arguments": "V" * 250_000}],
+        )
+
+        raw = session_search(session_id="s_tool_metadata", db=db)
+        response = json.loads(raw)
+        message = next(m for m in response["messages"] if m["id"] == message_id)
+
+        assert len(raw) < 100_000
+        assert message["tool_calls_truncated"] is True
+        assert message["tool_calls_full_chars"] > len(message["tool_calls"])
+        assert "recovery" in response
 
     def test_no_results_returns_empty_list(self, db):
         _seed_modpack_sessions(db)
@@ -476,6 +565,19 @@ class TestReadShape:
     def test_read_unknown_session_errors(self, db):
         result = json.loads(session_search(session_id="ghost", db=db))
         assert result["success"] is False
+
+    def test_adversarial_unknown_session_error_is_bounded_and_diagnostic(self, db):
+        session_id = "missing-" + ("S" * 200_000)
+
+        raw = session_search(session_id=session_id, db=db)
+        result = json.loads(raw)
+
+        assert len(raw) < 100_000
+        assert result["success"] is False
+        assert result["error"].startswith("session_id not found: missing-")
+        assert result["error_truncated"] is True
+        assert result["error_full_chars"] == len("session_id not found: ") + len(session_id)
+        assert "recovery" in result
 
     def test_read_truncates_large_session(self, db):
         db.create_session("s_big", source="cli")

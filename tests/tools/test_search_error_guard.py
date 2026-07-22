@@ -216,3 +216,62 @@ class TestSplitToolDiagnostics:
         assert diagnostics == ""
         assert "--" in payload
         assert "a.py-6-after" in payload
+
+
+@pytest.mark.parametrize("method", _METHODS)
+class TestSearchPatternFlagInjection:
+    """The search_files pattern must never be parsed as an rg/grep flag.
+
+    ``_escape_shell_arg`` single-quotes the pattern, which blocks *shell*
+    injection but does nothing about *argument* injection: a token like
+    ``--pre=/bin/sh`` is still handed to ripgrep, which parses it as a flag.
+    ``--pre=CMD`` makes rg run CMD as a preprocessor on every searched file —
+    arbitrary command execution driven entirely by the model/prompt-controlled
+    pattern. The fix inserts a literal ``--`` end-of-options marker before the
+    pattern so everything after it is a positional operand.
+    """
+
+    def test_leading_dash_pattern_does_not_execute_a_command(
+        self, method, tmp_path
+    ):
+        # A real, executable preprocessor that drops a sentinel file if it ever
+        # runs. On vulnerable code rg's `--pre` would invoke it; with the `--`
+        # guard the token is just a search string and the sentinel never appears.
+        sentinel = tmp_path / "rg_pwned.txt"
+        pre = tmp_path / "pre.sh"
+        pre.write_text(
+            "#!/bin/sh\n"
+            f"echo pwned > {sentinel}\n"
+            'cat "$1"\n'
+        )
+        os.chmod(pre, 0o755)
+
+        # Give the search a real file to scan so rg/grep actually walk the tree.
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "f.txt").write_text("needle here\n")
+
+        injection = f"--pre={pre}"
+        res = _search(_ops(tree), method, injection, tree)
+
+        assert not sentinel.exists(), (
+            "search_files pattern was executed as an rg/grep flag — "
+            "argument injection / RCE is not contained"
+        )
+        # The pattern is a flag-shaped literal that matches nothing in the tree,
+        # so this is a clean empty result, never a swallowed flag error.
+        assert res.error is None
+        assert not res.matches
+
+    def test_leading_dash_pattern_is_searched_literally(self, method, tmp_path):
+        # When the dash-prefixed token genuinely appears in a file it must be
+        # found as ordinary text rather than consumed as an option.
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "hit.txt").write_text("config: --pre=value\n")
+
+        res = _search(_ops(tree), method, "--pre=value", tree)
+
+        assert res.error is None
+        assert len(res.matches) == 1
+        assert res.matches[0].path.endswith("hit.txt")

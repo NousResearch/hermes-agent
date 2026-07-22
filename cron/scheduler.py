@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -2663,14 +2664,16 @@ def run_job(
     Execute a single cron job.
 
     ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips
-    the agent's async-resource teardown (``agent.close()`` +
-    ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
-    appends the live agent to that list. The caller is then responsible for
-    calling ``_teardown_cron_agent(agent)`` AFTER it has delivered the result.
+    resource teardown in its ``finally`` block and appends a
+    ``_CronTeardownResources`` owner instead. The caller is responsible for
+    calling ``close()`` on that owner AFTER it has delivered the result. This
+    keeps both the agent and its SessionDB alive through delivery and any late
+    writes from an outstanding timeout worker.
     This closes the ordering window in #58720 where delivery ran against a
     torn-down async client (defense-in-depth alongside the interpreter-shutdown
-    guard). When ``None`` (the default) teardown happens inline as before, so
-    every existing caller is unchanged.
+    guard). When ``None`` (the default), completed workers still tear down
+    inline; an outstanding timeout worker transfers teardown to its completion
+    callback so the SessionDB cannot close underneath a live writer.
 
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
@@ -2913,6 +2916,7 @@ def run_job(
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    _cron_future = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -3496,7 +3500,23 @@ def run_job(
                 _cur_tool or "none",
             )
             if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out (inactivity)")
+                try:
+                    agent.interrupt("Cron job timed out (inactivity)")
+                except Exception as exc:
+                    logger.debug("Job '%s': failed to interrupt timed-out agent: %s", job_id, exc)
+            # shutdown(wait=False) cannot cancel a worker that is already
+            # running. Kill this cron task's registered subprocesses directly
+            # so a blocked terminal tool can unwind and let the worker finish
+            # its final SessionDB writes before deferred teardown runs.
+            try:
+                from tools.process_registry import process_registry
+                process_registry.kill_all(task_id=_cron_session_id)
+            except Exception as exc:
+                logger.debug(
+                    "Job '%s': failed to terminate timed-out tool processes: %s",
+                    job_id,
+                    exc,
+                )
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
@@ -3664,23 +3684,70 @@ def run_job(
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
-            try:
-                _session_db.close()
-            except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
         # Release subprocesses, terminal sandboxes, browser daemons, and the
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
         #
-        # When the caller opted to defer teardown (passed a list), hand the live
-        # agent back instead of closing it here — delivery must run against a
-        # live async client, and the caller tears down afterwards (#58720).
+        # When the caller opted to defer teardown (passed a list), hand all
+        # owned resources back instead of closing them here. Delivery must run
+        # against a live async client (#58720), and a timed-out worker must
+        # finish its late SessionDB writes before the connection closes.
+        _teardown = _CronTeardownResources(
+            agent=agent,
+            session_db=_session_db,
+            worker_future=_cron_future,
+            job_id=job_id,
+        )
         if defer_agent_teardown is not None:
-            if agent is not None:
-                defer_agent_teardown.append(agent)
+            defer_agent_teardown.append(_teardown)
         else:
-            _teardown_cron_agent(agent, job_id)
+            _teardown.close()
+
+
+@dataclass
+class _CronTeardownResources:
+    """Own one cron run's resources until delivery and worker writes finish."""
+
+    agent: Any
+    session_db: Any
+    worker_future: Any
+    job_id: str
+    _lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
+    _callback_registered: bool = field(default=False, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def close(self) -> None:
+        """Close once, deferring safely while a timeout worker is still live."""
+        future_to_watch = None
+        with self._lock:
+            if self._closed:
+                return
+            if self.worker_future is not None and not self.worker_future.done():
+                if self._callback_registered:
+                    return
+                self._callback_registered = True
+                future_to_watch = self.worker_future
+            else:
+                self._closed = True
+
+        if future_to_watch is not None:
+            # add_done_callback also runs when completion races this
+            # registration. Do not use a hard cap that would close the DB under
+            # a live writer and recreate the original message-loss race.
+            future_to_watch.add_done_callback(lambda _future: self.close())
+            return
+
+        _teardown_cron_agent(self.agent, self.job_id)
+        if self.session_db:
+            try:
+                self.session_db.close()
+            except (Exception, KeyboardInterrupt) as exc:
+                logger.debug(
+                    "Job '%s': failed to close SQLite session store: %s",
+                    self.job_id,
+                    exc,
+                )
 
 
 def _teardown_cron_agent(agent, job_id: str) -> None:
@@ -3766,26 +3833,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
-        # Defer the cron agent's async-resource teardown until AFTER delivery.
-        # run_job normally closes the agent (and reaps stale async clients) in
-        # its finally block; doing that before _deliver_result runs means the
-        # live send races a torn-down async client (#58720). Passing a holder
-        # list makes run_job hand the agent back instead, and we tear it down
-        # below once delivery is done. Defense-in-depth alongside the
-        # interpreter-shutdown guard in _deliver_result.
-        _deferred_agents: list = []
+        # Defer the cron run's resource teardown until AFTER delivery. run_job
+        # normally closes the agent, reaps stale async clients, and closes the
+        # SessionDB from its finally block; doing that before _deliver_result
+        # races the live send (#58720), while closing the DB before agent.close
+        # races draining child writes (#54755). The holder transfers ownership
+        # of all three resources here until delivery is done.
+        _deferred_teardowns: list[_CronTeardownResources] = []
         try:
             success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents
+                job, defer_agent_teardown=_deferred_teardowns
             )
         except BaseException:
-            # run_job's finally still hands back the agent when it raises; tear
-            # it down here so a failed run never leaks its async resources
-            # (#10200), then re-raise into the outer handler. BaseException
-            # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run
-            # still triggers teardown before propagating.
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
+            # run_job's finally still hands back its resources when it raises;
+            # tear them down here so a failed run never leaks (#10200), then
+            # re-raise into the outer handler. BaseException (not just
+            # Exception) keeps KeyboardInterrupt/SystemExit covered too.
+            for _deferred_teardown in _deferred_teardowns:
+                _deferred_teardown.close()
             raise
         finally:
             reset_secret_scope(_scope_token)
@@ -3841,11 +3906,11 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
         finally:
-            # Tear down the deferred agent(s) now that save + delivery have run
-            # (or raised). Must happen on every path so cron agents never leak
-            # their subprocesses/clients (#10200).
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
+            # Tear down deferred resources now that save + delivery have run
+            # (or raised). A still-running timeout worker registers completion
+            # teardown here instead of closing its live SessionDB.
+            for _deferred_teardown in _deferred_teardowns:
+                _deferred_teardown.close()
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.

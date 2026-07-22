@@ -172,16 +172,28 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
     """
     order = []
 
+    class FakeSessionDB:
+        def close(self):
+            order.append("session_db.close")
+
     class FakeAgent:
         def close(self):
             order.append("agent.close")
 
     def fake_run_job(job, *, defer_agent_teardown=None):
         order.append("run_job")
-        # Mimic run_job's deferral contract: hand the live agent back so the
-        # caller tears it down after delivery instead of in run_job's finally.
+        # Mimic run_job's deferral contract: hand all owned resources back so
+        # the caller tears them down after delivery instead of in run_job's
+        # finally block.
         assert defer_agent_teardown is not None, "run_one_job must defer teardown"
-        defer_agent_teardown.append(FakeAgent())
+        defer_agent_teardown.append(
+            s._CronTeardownResources(
+                agent=FakeAgent(),
+                session_db=FakeSessionDB(),
+                worker_future=None,
+                job_id=job["id"],
+            )
+        )
         return (True, "out", "final response", None)
 
     def fake_deliver(job, content, adapters=None, loop=None):
@@ -201,8 +213,15 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
     ok = s.run_one_job({"id": "j8", "name": "t"})
 
     assert ok is True
-    # Delivery must strictly precede agent teardown + stale-client reap.
-    assert order == ["run_job", "deliver", "agent.close", "cleanup_stale"], order
+    # Delivery must strictly precede agent teardown + stale-client reap, and
+    # SessionDB remains open until every agent-owned flush has completed.
+    assert order == [
+        "run_job",
+        "deliver",
+        "agent.close",
+        "cleanup_stale",
+        "session_db.close",
+    ], order
 
 
 def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch):
@@ -216,7 +235,14 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
             order.append("agent.close")
 
     def fake_run_job(job, *, defer_agent_teardown=None):
-        defer_agent_teardown.append(FakeAgent())
+        defer_agent_teardown.append(
+            s._CronTeardownResources(
+                agent=FakeAgent(),
+                session_db=None,
+                worker_future=None,
+                job_id=job["id"],
+            )
+        )
         return (True, "out", "final response", None)
 
     def boom_deliver(job, content, adapters=None, loop=None):
@@ -251,7 +277,14 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
             order.append("agent.close")
 
     def fake_run_job(job, *, defer_agent_teardown=None):
-        defer_agent_teardown.append(FakeAgent())
+        defer_agent_teardown.append(
+            s._CronTeardownResources(
+                agent=FakeAgent(),
+                session_db=None,
+                worker_future=None,
+                job_id=job["id"],
+            )
+        )
         return (True, "out", "final response", None)
 
     def boom_save(jid, out):

@@ -288,6 +288,12 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "config, etc.) may reflect work described here — avoid repeating it:",
 )
 
+# Restart handoff detection should be early and bounded: it needs to catch the
+# restored protected head plus a small cluster of already-stacked handoff/ack
+# turns, but it must not treat arbitrary summary-looking live-tail messages as
+# proof that this is a resumed compacted session.
+_RESTART_HANDOFF_PROBE_EXTRA_MESSAGES = 4
+
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
 # Proportion of compressed content to allocate for summary
@@ -318,6 +324,7 @@ _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 # only meant to preserve continuity anchors from the dropped window, not to
 # become another unbounded transcript copy after the LLM summarizer failed.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
+_FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS = 3_000
 _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
@@ -2305,9 +2312,17 @@ class ContextCompressor(ContextEngine):
         )
         previous_summary_note = ""
         if self._previous_summary:
+            previous_summary = redact_sensitive_text(self._previous_summary.strip())
+            if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
+                previous_summary = (
+                    previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
+                    + "\n...[previous summary snapshot truncated]"
+                )
             previous_summary_note = (
-                "\n\nPrevious compaction summary was present and should still be treated as "
-                "background continuity context, but the latest LLM summary update failed."
+                "\n\n## Previous Summary Snapshot\n"
+                f"{previous_summary}\n\n"
+                "The previous compaction summary above remains background "
+                "continuity context because the latest LLM summary update failed."
             )
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""
@@ -2978,11 +2993,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
-        # Strip the trailing end marker too — a rehydrated handoff body that
-        # keeps it would leak the boundary directive into the iterative-update
+        # Strip the end marker too — a rehydrated handoff body that keeps it
+        # would leak the boundary directive into the iterative-update
         # summarizer prompt (and the marker is re-appended on insertion anyway).
-        if text.endswith(_SUMMARY_END_MARKER):
-            text = text[: -len(_SUMMARY_END_MARKER)].rstrip()
+        # Forced user-leading merged summaries keep the live tail request after
+        # this marker, so truncate at the marker even when it is not the final
+        # content.
+        marker_idx = text.find(_SUMMARY_END_MARKER)
+        if marker_idx >= 0:
+            text = text[:marker_idx].rstrip()
         return text
 
     @classmethod
@@ -3080,6 +3099,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "Context compression summary invented user attribution for a "
                 "session with no user-authored turns"
             )
+
+    @classmethod
+    def _is_context_summary_message(cls, message: Any) -> bool:
+        """Return True for summary handoff messages by metadata or content."""
+        if not isinstance(message, dict):
+            return False
+        return cls._has_compressed_summary_metadata(
+            message
+        ) or cls._is_context_summary_content(message.get("content"))
 
     @classmethod
     def _is_blank_user_turn(cls, message: Any) -> bool:
@@ -3240,6 +3268,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         return f"{replacement}{body}".strip()
 
     @classmethod
+    def _find_context_summaries(
+        cls,
+        messages: List[Dict[str, Any]],
+        start: int,
+        end: int,
+    ) -> list[tuple[int, str]]:
+        """Find handoff summaries inside a compression window."""
+        summaries: list[tuple[int, str]] = []
+        for idx in range(start, end):
+            content = messages[idx].get("content")
+            if cls._is_context_summary_message(messages[idx]):
+                summaries.append((
+                    idx,
+                    cls._strip_summary_prefix(_content_text_for_contains(content)),
+                ))
+        return summaries
+
+    @classmethod
     def _find_latest_context_summary(
         cls,
         messages: List[Dict[str, Any]],
@@ -3247,10 +3293,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         end: int,
     ) -> tuple[Optional[int], str]:
         """Find the newest handoff summary inside a compression window."""
-        for idx in range(end - 1, start - 1, -1):
-            content = messages[idx].get("content")
-            if cls._is_context_summary_content(content):
-                return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
+        summaries = cls._find_context_summaries(messages, start, end)
+        if summaries:
+            return summaries[-1]
         return None, ""
 
     @classmethod
@@ -3471,7 +3516,25 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
-    def _effective_protect_first_n(self) -> int:
+    def _restart_handoff_probe_bounds(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[int, int]:
+        """Return the bounded transcript region that can indicate restart decay."""
+        if not messages or self.protect_first_n <= 0:
+            return 0, 0
+        first_non_system = 1 if messages[0].get("role") == "system" else 0
+        return first_non_system, min(
+            len(messages),
+            first_non_system
+            + self.protect_first_n
+            + _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES,
+        )
+
+    def _effective_protect_first_n(
+        self,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
         """``protect_first_n`` decayed across compression cycles.
 
         ``protect_first_n`` keeps the first N non-system messages verbatim so
@@ -3483,9 +3546,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         once, the early turns are already captured in the handoff summary, so
         there's no need to keep re-protecting them: decay to 0 (the system
         prompt is still always protected separately by _protect_head_size).
+        After a restart, infer that decayed state from handoff summaries in the
+        resumed-head region; disk-persisted restarts rely on the content prefix,
+        while the metadata branch covers in-process handoff messages.
         """
         if self.compression_count >= 1 or self._previous_summary:
             return 0
+        if messages and self.protect_first_n > 0:
+            # Probe only the early handoff shape created by a resumed compacted
+            # session. Summary-looking tail content should keep normal tail
+            # semantics and not decay the initial first-compaction protection.
+            first_non_system, restart_probe_end = self._restart_handoff_probe_bounds(
+                messages
+            )
+            if any(
+                self._is_context_summary_message(msg)
+                for msg in messages[first_non_system:restart_probe_end]
+            ):
+                return 0
         return self.protect_first_n
 
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
@@ -3511,7 +3589,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         head = 0
         if messages and messages[0].get("role") == "system":
             head = 1
-        return head + self._effective_protect_first_n()
+        return head + self._effective_protect_first_n(messages)
 
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
@@ -3592,6 +3670,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             if msg.get("role") != "assistant" or self._is_context_summary_content(
                 msg.get("content")
             ):
+                continue
+            if self._is_context_summary_message(msg):
                 continue
             if last_any < 0:
                 last_any = i
@@ -4059,23 +4139,45 @@ This compaction should PRIORITISE preserving all information related to the focu
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
+        # Snapshot the rehydration state so an aborted attempt below can roll
+        # it back. The self-heal scan mutates ``_previous_summary`` (populating
+        # it from a fossil, or discarding a stale cross-session one); if
+        # summary generation then aborts and returns the transcript unchanged,
+        # leaving that mutation behind would make the retry — still
+        # ``compression_count == 0`` but now with a truthy ``_previous_summary``
+        # — take the narrow rescan, miss a beyond-window fossil, and discard the
+        # rehydrated state as cross-session leakage (#57835).
+        _previous_summary_before_scan = self._previous_summary
         # A persisted handoff summary can sit in the protected head after a
         # resume (commonly immediately after the system prompt). Search from
-        # the first non-system message through the compression window so we can
-        # rehydrate iterative-summary state without serializing that handoff as
-        # a new turn. Protected messages after the handoff remain live context,
-        # so only summarize messages that are both after the handoff and inside
-        # the current compression window.
+        # the first non-system message through the compression window. On the
+        # first compaction after a restart, extend through the full transcript
+        # so summaries that landed in the protected tail or drifted past the
+        # decay probe still rehydrate iterative-summary state instead of being
+        # copied forward as stacked fossils.
         summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
-        summary_idx, summary_body = self._find_latest_context_summary(
+        summary_search_end = compress_end
+        if self.compression_count < 1 and not self._previous_summary:
+            summary_search_end = len(messages)
+        summary_search_end = min(len(messages), summary_search_end)
+        summary_indices: set[int] = set()
+        summary_idx = None
+        summary_body = None
+        tail_start = compress_end
+        summary_hits = self._find_context_summaries(
             messages,
             summary_search_start,
-            compress_end,
+            summary_search_end,
         )
         real_user_present = self._transcript_has_real_user_turn(messages)
-        if summary_idx is not None:
-            if summary_body and not self._previous_summary:
-                self._previous_summary = summary_body
+        if summary_hits:
+            summary_idx = summary_hits[-1][0]
+            summary_body = summary_hits[-1][1]
+            if not self._previous_summary:
+                summary_bodies = [body for _, body in summary_hits if body]
+                if summary_bodies:
+                    self._previous_summary = "\n\n".join(summary_bodies)
+            # Zero-user provenance (#64650) rides on the newest handoff hit.
             provenance = messages[summary_idx].get(
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY
             )
@@ -4090,7 +4192,19 @@ This compaction should PRIORITISE preserving all information related to the focu
                 self._summary_has_user_turn = not (
                     summary_body and _NO_USER_TASK_SENTINEL in summary_body
                 )
-            turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+            summary_indices = {idx for idx, _ in summary_hits}
+            pre_summary_turns = [
+                msg for idx, msg in enumerate(
+                    messages[compress_start:summary_idx],
+                    start=compress_start,
+                )
+                if idx not in summary_indices
+            ]
+            turns_to_summarize = (
+                pre_summary_turns + messages[summary_idx + 1:compress_end]
+            )
+            if summary_idx >= compress_end:
+                tail_start = summary_idx + 1
         elif self._previous_summary:
             # No handoff summary found in the current messages, but
             # _previous_summary is non-empty — it was set by a different
@@ -4121,7 +4235,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 self.threshold_percent * 100,
                 self.threshold_tokens,
             )
-            tail_msgs = n_messages - compress_end
+            tail_msgs = n_messages - tail_start
             logger.info(
                 "Summarizing turns %d-%d (%d turns), protecting %d head + %d tail messages",
                 compress_start + 1,
@@ -4174,6 +4288,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                 telemetry["failure_class"] = "summary_network_failure"
             else:
                 telemetry["failure_class"] = "summary_generation_aborted"
+            # Roll back the self-heal rehydration so this aborted attempt is a
+            # true no-op: the next attempt must re-run the full first-compaction
+            # scan instead of narrow-rescanning against a half-populated state
+            # and discarding a legitimately rehydrated fossil (#57835).
+            self._previous_summary = _previous_summary_before_scan
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(
@@ -4214,8 +4333,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             # _strip_context_summary_handoff_message() handles both shapes:
             # standalone handoffs strip to None (dropped), merged handoffs
             # unwrap to their genuine prior-tail content (preserved). Do NOT
-            # short-circuit on summary_idx here: a merged handoff carries real
-            # user content that a blanket skip would silently delete.
+            # short-circuit on summary_indices here: a merged handoff carries
+            # real user content that a blanket skip would silently delete.
             msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
@@ -4246,17 +4365,26 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         tail_messages: List[Dict[str, Any]] = []
-        for i in range(compress_end, n_messages):
+        # Start at tail_start (not compress_end): the restart-decay scan may
+        # have advanced it past a summary that sat beyond compress_end
+        # (#57835). summary_indices rows are already rehydrated; the strip
+        # helper handles any that remain (standalone → dropped, merged →
+        # unwrapped to genuine prior-tail content, #47274).
+        for i in range(max(compress_end, tail_start), n_messages):
+            if i in summary_indices and i >= tail_start:
+                # A summary at/after tail_start was already folded into
+                # _previous_summary; don't re-emit it verbatim.
+                continue
             msg = _fresh_compaction_message_copy(messages[i])
             stripped = self._strip_context_summary_handoff_message(msg)
             if stripped is not None:
                 tail_messages.append(stripped)
 
         _merge_summary_into_tail = False
-        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
-        # NOTE: derive the tail's leading role from tail_messages (post
-        # handoff-strip), not messages[compress_end] — a stripped stale
+        # last_head_role reads the assembled (post-strip) head; first_tail_role
+        # reads the assembled (post-strip) tail_messages — a stripped stale
         # handoff must not influence alternation-safe role selection.
+        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
         first_tail_role = tail_messages[0].get("role", "user") if tail_messages else None
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
@@ -4265,7 +4393,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Anthropic unconditionally rejects requests whose first message
         # is not role=user, so we must pin the summary to "user" and
         # prevent the flip logic below from reverting it (#52160).
-        _force_user_leading = last_head_role == "system"
+        _force_user_leading = compress_start == 0 or last_head_role == "system"
         # Zero-user-turn guard (#58753). The #52160 guard above only fires
         # when the system prompt sits *inside* ``messages`` (the gateway
         # ``/compress`` path). The main auto-compression path passes the
@@ -4299,7 +4427,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary_role = "assistant"
         # If the chosen role collides with the tail AND flipping wouldn't
         # collide with the head, flip it.
-        if first_tail_role and summary_role == first_tail_role:
+        if first_tail_role is not None and summary_role == first_tail_role:
             flipped = "assistant" if summary_role == "user" else "user"
             if flipped != last_head_role and not _force_user_leading:
                 summary_role = flipped
@@ -4332,27 +4460,39 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         for tail_idx, msg in enumerate(tail_messages):
             if _merge_summary_into_tail and tail_idx == 0:
-                # Merge the summary into the first tail message, but place
-                # the END MARKER at the very end so the model sees an
-                # unambiguous boundary. Old tail content is preserved as
-                # reference material BEFORE the summary, clearly delimited
-                # so it is not mistaken for a new message to respond to.
-                # Uses _append_text_to_content to safely handle both
-                # string and multimodal-list content types.
-                # Fixes ghost-message leakage across compaction boundaries
-                # where old head messages survived verbatim and appeared
-                # before the summary.
+                # Merge the summary into the first (post-strip) tail message.
                 old_content = msg.get("content", "")
-                suffix = (
-                    "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
-                    + summary + "\n\n"
-                    + _SUMMARY_END_MARKER
-                )
-                msg["content"] = _append_text_to_content(
-                    _append_text_to_content(old_content, suffix, prepend=False),
-                    _MERGED_PRIOR_CONTEXT_HEADER + "\n",
-                    prepend=True,
-                )
+                if _force_user_leading and summary_role == "user":
+                    # The summary must be part of the first user-visible
+                    # message for Anthropic/Bedrock, but the real tail request
+                    # still has to appear *after* the summary boundary.
+                    prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
+                    msg["content"] = _append_text_to_content(
+                        old_content,
+                        prefix,
+                        prepend=True,
+                    )
+                else:
+                    # Merge the summary into the first tail message, but place
+                    # the END MARKER at the very end so the model sees an
+                    # unambiguous boundary. Old tail content is preserved as
+                    # reference material BEFORE the summary, clearly delimited
+                    # so it is not mistaken for a new message to respond to.
+                    # Uses _append_text_to_content to safely handle both
+                    # string and multimodal-list content types.
+                    # Fixes ghost-message leakage across compaction boundaries
+                    # where old head messages survived verbatim and appeared
+                    # before the summary.
+                    suffix = (
+                        "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
+                        + summary + "\n\n"
+                        + _SUMMARY_END_MARKER
+                    )
+                    msg["content"] = _append_text_to_content(
+                        _append_text_to_content(old_content, suffix, prepend=False),
+                        _MERGED_PRIOR_CONTEXT_HEADER + "\n",
+                        prepend=True,
+                    )
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True

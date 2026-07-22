@@ -3898,6 +3898,35 @@ class TestDoubleCompactionSummaryRole:
             f"compatibility, got role={non_system[0]['role']!r}"
         )
 
+    def test_restart_handoff_without_system_still_starts_with_user(self):
+        """When decayed head protection leaves no head, the visible transcript
+        must still begin with a user role for Anthropic/Bedrock compatibility.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary of resumed turns"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2,
+            )
+
+        msgs = [
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\nold persisted summary"},
+            {"role": "assistant", "content": "handoff acknowledged"},
+            {"role": "user", "content": "new work after restart"},
+            {"role": "assistant", "content": "new answer after restart"},
+            {"role": "user", "content": "more new work after restart"},
+            {"role": "assistant", "content": "more new answer after restart"},
+            {"role": "user", "content": "tail request"},
+            {"role": "assistant", "content": "tail answer"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert result[0]["role"] == "user"
+        assert "summary of resumed turns" in (result[0].get("content") or "")
+
     def test_double_compaction_user_tail_merges_into_tail(self):
         """When the summary is forced to role=user (system-only head) and
         the first tail message is also user, the summary must merge into

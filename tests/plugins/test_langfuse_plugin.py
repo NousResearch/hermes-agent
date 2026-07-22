@@ -711,6 +711,33 @@ class TestRequestMessageCoercion:
         ) == [{"role": "user", "content": "h"}]
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
 
+    def test_messages_for_langfuse_includes_anthropic_system_param(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        out = mod._messages_for_langfuse_input(
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "You are Hermes."
+        assert out[1]["role"] == "user"
+
+    def test_messages_for_langfuse_skips_duplicate_system(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        out = mod._messages_for_langfuse_input(
+            request_messages=[
+                {"role": "system", "content": "already here"},
+                {"role": "user", "content": "hi"},
+            ],
+            system_prompt="ignored when messages include system",
+        )
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "already here"
+        assert out[1]["role"] == "user"
+
 
 class TestToolCallOutputBackfill:
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
@@ -1021,3 +1048,256 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+class TestSystemPromptInGenerationInput:
+    """The generation input must carry the system prompt even for providers
+    that move it out of ``messages``: Anthropic Messages (``system`` kwarg)
+    and the Responses/Codex API (``instructions``).  Hermes forwards it to
+    hooks as ``system_prompt``; the plugin prepends a ``role: system`` entry.
+
+    Regression for the trace gap discussed in PR #32175 (Anthropic) and its
+    Codex sibling: without this, hosted traces show conversations without the
+    agent's instructions, skills, and memory."""
+
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _capture_generation(self, mod, monkeypatch):
+        """Route on_pre_llm_request into a seeded TraceState and record the
+        generation observation kwargs."""
+        captured = {}
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        def fake_child(state_, **kw):
+            captured["input"] = kw.get("input_value")
+            captured["metadata"] = kw.get("metadata")
+            return object()
+
+        monkeypatch.setattr(mod, "_start_child_observation", fake_child)
+        return captured
+
+    def _fire(self, mod, *, request_messages, system_prompt=None):
+        kwargs = dict(
+            task_id="task-1",
+            session_id="sess-1",
+            model="m",
+            provider="p",
+            api_mode="codex_responses",
+            api_call_count=1,
+            request_messages=request_messages,
+        )
+        if system_prompt is not None:
+            kwargs["system_prompt"] = system_prompt
+        mod.on_pre_llm_request(**kwargs)
+
+    def test_string_system_prompt_prepended(self, monkeypatch):
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(
+            mod,
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert captured["input"][0]["role"] == "system"
+        assert captured["input"][0]["content"] == "You are Hermes."
+        assert captured["input"][1]["role"] == "user"
+
+    def test_anthropic_block_list_flattened(self, monkeypatch):
+        """Anthropic OAuth mode sends ``system`` as content blocks (with
+        cache_control); the trace should carry the readable text."""
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        blocks = [
+            {"type": "text", "text": "part one", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "part two"},
+        ]
+        self._fire(
+            mod,
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt=blocks,
+        )
+        first = captured["input"][0]
+        assert first["role"] == "system"
+        assert "part one" in first["content"]
+        assert "part two" in first["content"]
+
+    def test_no_duplicate_when_messages_already_carry_system(self, monkeypatch):
+        """chat_completions keeps system in messages[0]; forwarding
+        system_prompt as well must not produce two system entries."""
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(
+            mod,
+            request_messages=[
+                {"role": "system", "content": "You are Hermes."},
+                {"role": "user", "content": "hi"},
+            ],
+            system_prompt="You are Hermes.",
+        )
+        roles = [m["role"] for m in captured["input"]]
+        assert roles.count("system") == 1
+        assert roles[0] == "system"
+
+    def test_absent_system_prompt_keeps_previous_shape(self, monkeypatch):
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(mod, request_messages=[{"role": "user", "content": "hi"}])
+        assert captured["input"][0]["role"] == "user"
+        assert "system_prompt_chars" not in (captured["metadata"] or {})
+
+    def test_system_survives_serialization_window(self, monkeypatch):
+        """_serialize_messages keeps only the last 12 messages; the system
+        prompt must be prepended after windowing so long conversations
+        never drop it."""
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        many = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+            for i in range(30)
+        ]
+        self._fire(mod, request_messages=many, system_prompt="SYS")
+        assert captured["input"][0]["role"] == "system"
+        # window (12) + prepended system
+        assert len(captured["input"]) == 13
+
+    def test_metadata_records_chars(self, monkeypatch):
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._fire(
+            mod,
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert captured["metadata"]["system_prompt_chars"] == len("You are Hermes.")
+
+
+class TestSystemPromptCrossesHookBoundary:
+    """End-to-end across the hook seam with real transport-built kwargs —
+    the regression coverage PR #32175's review asked for: verify the
+    provider-specific request shape (Anthropic ``system`` kwarg, Codex
+    ``instructions``) actually reaches the Langfuse generation input, with
+    no Hermes internals mocked (only the Langfuse client is faked)."""
+
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _capture_generation(self, mod, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        state = mod.TraceState(trace_id="t", root_ctx=None, root_span=None)
+        task_key = mod._trace_key("task-1", "sess-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        def fake_child(state_, **kw):
+            captured["input"] = kw.get("input_value")
+            return object()
+
+        monkeypatch.setattr(mod, "_start_child_observation", fake_child)
+        return captured
+
+    def _derive_and_fire(self, mod, api_kwargs, api_messages):
+        """Mirror agent/conversation_loop.py's pre_api_request emission:
+        derive request_messages exactly the way the loop does, derive
+        system_prompt via the loop's helper, and invoke the plugin hook."""
+        from agent.conversation_loop import _system_prompt_for_hooks
+
+        request_messages = api_kwargs.get("messages")
+        if not isinstance(request_messages, list):
+            request_messages = api_kwargs.get("input")
+        if not isinstance(request_messages, list):
+            request_messages = api_messages
+        mod.on_pre_llm_request(
+            task_id="task-1",
+            session_id="sess-1",
+            model="m",
+            provider="p",
+            api_mode="x",
+            api_call_count=1,
+            request_messages=list(request_messages),
+            system_prompt=_system_prompt_for_hooks(api_kwargs, request_messages),
+        )
+
+    def test_codex_instructions_reach_generation_input(self, monkeypatch):
+        from agent.transports.codex import ResponsesApiTransport
+
+        api_messages = [
+            {"role": "system", "content": "SYS-CODEX"},
+            {"role": "user", "content": "hi"},
+        ]
+        api_kwargs = ResponsesApiTransport().build_kwargs("gpt-x", api_messages, None)
+        # Premise: the Responses API moves the system prompt out of the input.
+        assert api_kwargs["instructions"] == "SYS-CODEX"
+        assert all(i.get("role") != "system" for i in api_kwargs["input"] if isinstance(i, dict))
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_messages)
+        assert captured["input"][0]["role"] == "system"
+        assert captured["input"][0]["content"] == "SYS-CODEX"
+
+    def test_anthropic_system_kwarg_reaches_generation_input(self, monkeypatch):
+        from agent.transports.anthropic import AnthropicTransport
+
+        api_messages = [
+            {"role": "system", "content": "SYS-ANTHROPIC"},
+            {"role": "user", "content": "hi"},
+        ]
+        api_kwargs = AnthropicTransport().build_kwargs(
+            "claude-x", api_messages, None, max_tokens=64
+        )
+        # Premise: the Messages API moves the system prompt to a kwarg.
+        assert "system" in api_kwargs
+        assert all(m.get("role") != "system" for m in api_kwargs["messages"])
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_messages)
+        assert captured["input"][0]["role"] == "system"
+        assert "SYS-ANTHROPIC" in captured["input"][0]["content"]
+
+    def test_bedrock_system_kwarg_reaches_generation_input(self, monkeypatch):
+        from agent.transports.bedrock import BedrockTransport
+
+        api_messages = [
+            {"role": "system", "content": "SYS-BEDROCK"},
+            {"role": "user", "content": "hi"},
+        ]
+        api_kwargs = BedrockTransport().build_kwargs(
+            "anthropic.claude-x", api_messages, None, max_tokens=64
+        )
+        # Premise: Bedrock Converse moves system into a separate 'system' kwarg,
+        # shaped as [{"text": ...}] blocks — no "type" key, unlike Anthropic.
+        assert api_kwargs["system"] == [{"text": "SYS-BEDROCK"}]
+        assert all(m.get("role") != "system" for m in api_kwargs["messages"])
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_messages)
+        assert captured["input"][0]["role"] == "system"
+        assert "SYS-BEDROCK" in captured["input"][0]["content"]
+
+    def test_chat_completions_shape_needs_no_fallback(self, monkeypatch):
+        """When system stays in messages[0] (chat_completions), the helper
+        returns it but the plugin must not duplicate the entry."""
+        from agent.conversation_loop import _system_prompt_for_hooks
+
+        api_kwargs = {
+            "messages": [
+                {"role": "system", "content": "SYS-CHAT"},
+                {"role": "user", "content": "hi"},
+            ]
+        }
+        sp = _system_prompt_for_hooks(api_kwargs, api_kwargs["messages"])
+        assert sp == "SYS-CHAT"
+
+        mod = self._make_mod()
+        captured = self._capture_generation(mod, monkeypatch)
+        self._derive_and_fire(mod, api_kwargs, api_kwargs["messages"])
+        roles = [m["role"] for m in captured["input"]]
+        assert roles.count("system") == 1

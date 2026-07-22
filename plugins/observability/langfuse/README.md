@@ -36,6 +36,10 @@ hermes plugins list                 # observability/langfuse should show "enable
 hermes chat -q "hello"              # then check Langfuse for a "Hermes turn" trace
 ```
 
+Generation observations include the Hermes system prompt when the provider
+uses a separate `system` param (Anthropic Messages API). Open an **LLM call**
+child span to inspect `role: system` (truncated via `HERMES_LANGFUSE_MAX_CHARS`).
+
 ## Optional tuning
 
 ```bash

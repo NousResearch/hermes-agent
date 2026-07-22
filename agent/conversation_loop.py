@@ -187,6 +187,24 @@ def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
     return True
 
 
+def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
+    """System prompt as actually sent to the provider, for observability hooks.
+
+    Providers move it out of ``messages``: Anthropic Messages uses a separate
+    ``system`` kwarg (str or content-block list), the Responses/Codex API uses
+    top-level ``instructions``; Chat Completions keeps it as ``messages[0]``.
+    Returns None when the request carries no system prompt.
+    """
+    system_prompt = api_kwargs.get("system")
+    if system_prompt is None:
+        system_prompt = api_kwargs.get("instructions")
+    if system_prompt is None and isinstance(request_messages, list) and request_messages:
+        first = request_messages[0]
+        if isinstance(first, dict) and first.get("role") == "system":
+            system_prompt = first.get("content")
+    return system_prompt
+
+
 def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     provider = (provider or "").strip().lower()
     if provider == "nous":
@@ -1214,6 +1232,13 @@ def run_conversation(
                             request_messages = api_kwargs.get("input")
                         if not isinstance(request_messages, list):
                             request_messages = api_messages
+                        # Anthropic (``system``) and Responses/Codex
+                        # (``instructions``) move the system prompt out of
+                        # messages; pass it explicitly for observability
+                        # plugins (Langfuse).
+                        system_prompt_for_hooks = _system_prompt_for_hooks(
+                            api_kwargs, request_messages
+                        )
                         # Shallow-copy the outer list so plugins that retain the
                         # reference for async snapshotting don't observe later
                         # mutations of api_messages.  The inner dicts are not
@@ -1248,6 +1273,7 @@ def run_conversation(
                             request_messages=list(request_messages)
                             if isinstance(request_messages, list)
                             else [],
+                            system_prompt=system_prompt_for_hooks,
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),
                             approx_input_tokens=approx_tokens,

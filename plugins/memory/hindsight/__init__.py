@@ -1526,12 +1526,41 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
+    def _build_user_prefix(self) -> str:
+        """Build the prefix prepended to retained user-turn content.
+
+        Format:
+        - With user metadata: ``{user_name}({platform}:{user_id})``
+        - With non-DM chat metadata: append `` in group {chat_name}({chat_id})``
+        - Fallback when ``user_id`` is absent: use ``user_name`` if present,
+          otherwise ``retain_user_prefix``, otherwise literal ``User``.
+
+        Examples:
+        - DM: ``Alice(telegram:12345)``
+        - Group: ``Alice(telegram:12345) in awesome-hermes-community(100100)``
+        - CLI/TUI fallback with ``retain_user_prefix='User'``: ``User``
+        """
+        user = self._user_name or self._retain_user_prefix or "User"
+        if self._user_id:
+            platform = self._platform or "unknown"
+            label = f"{user}({platform}:{self._user_id})"
+        else:
+            label = user
+
+        if self._chat_type and self._chat_type != "dm" and (self._chat_name or self._chat_id):
+            group = self._chat_name or self._chat_id
+            if self._chat_id:
+                group = f"{group}({self._chat_id})"
+            label = f"{label} in {group}"
+
+        return label
+
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._build_user_prefix()}: {user_content}",
                 "timestamp": now,
             },
             {

@@ -30,6 +30,11 @@ try:
 except ImportError:
     _HAS_NUMPY = False
 
+try:
+    from . import textseg
+except ImportError:
+    import textseg  # type: ignore[no-redef]
+
 logger = logging.getLogger(__name__)
 
 _TWO_PI = 2.0 * math.pi
@@ -111,8 +116,9 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
 def encode_text(text: str, dim: int = 1024) -> "np.ndarray":
     """Bag-of-words: bundle of atom vectors for each token.
 
-    Tokenizes by lowercasing, splitting on whitespace, and stripping
-    leading/trailing punctuation from each token.
+    Tokenizes by lowercasing and CJK-aware splitting (textseg/jieba for
+    Chinese text, plain whitespace otherwise), then stripping leading/
+    trailing punctuation from each token.
 
     Returns bundle of all token atom vectors.
     If text is empty or produces no tokens, returns encode_atom("__hrr_empty__", dim).
@@ -121,7 +127,7 @@ def encode_text(text: str, dim: int = 1024) -> "np.ndarray":
 
     tokens = [
         token.strip(".,!?;:\"'()[]{}")
-        for token in text.lower().split()
+        for token in textseg.tokenize(text.lower())
     ]
     tokens = [t for t in tokens if t]
 

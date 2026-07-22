@@ -15,8 +15,10 @@ if TYPE_CHECKING:
 
 try:
     from . import holographic as hrr
+    from . import textseg
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
+    import textseg  # type: ignore[no-redef]
 
 
 class FactRetriever:
@@ -547,15 +549,17 @@ class FactRetriever:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Simple whitespace tokenization with lowercasing.
+        """CJK-aware tokenization with lowercasing.
 
-        Strips common punctuation. No stemming/lemmatization (Phase 1).
+        Non-CJK text splits on whitespace (historical behavior); CJK text
+        is segmented via textseg/jieba so Jaccard overlap is computed on
+        real words instead of whole clauses. Strips common punctuation.
+        No stemming/lemmatization (Phase 1).
         """
         if not text:
             return set()
-        # Split on whitespace, lowercase, strip punctuation
         tokens = set()
-        for word in text.lower().split():
+        for word in textseg.tokenize(text.lower()):
             cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
             if cleaned:
                 tokens.add(cleaned)
@@ -582,14 +586,28 @@ class FactRetriever:
         "you", "your", "yours", "yourself", "yourselves",
     })
 
+    # Chinese function words / conversational fillers dropped before FTS5
+    # OR-expansion, mirroring _FTS_STOPWORDS for English. Single-char
+    # particles (的/了/吗/在/是…) never reach this set — the <2-char rule
+    # drops them first. Keep this list small and unambiguous: only words
+    # that carry zero retrieval signal in a query.
+    _FTS_STOPWORDS_ZH = frozenset({
+        "我们", "你们", "他们", "她们", "它们", "这个", "那个", "这些", "那些",
+        "这里", "那里", "什么", "怎么", "如何", "为什么", "怎么办", "哪个", "哪些",
+        "请问", "帮我", "给我", "一下", "一个", "现在", "可以", "需要", "应该",
+        "就是", "但是", "因为", "所以", "还是", "或者", "然后", "已经", "正在",
+        "不是", "没有", "有没有", "是不是", "能不能", "要不要", "告诉",
+    })
+
     @classmethod
     def _sanitize_fts_query(cls, query: str) -> str:
         """Convert a natural-language query to an FTS5-safe OR expression.
 
         FTS5 treats a multi-word MATCH argument as AND-joined by default,
         which tanks recall on prose queries. This helper:
-          - tokenizes the query
-          - drops stopwords and short (<2 char) tokens
+          - tokenizes the query (CJK text is segmented via textseg/jieba,
+            so Chinese prose becomes real words instead of one giant token)
+          - drops stopwords (EN + ZH) and short (<2 char) tokens
           - strips FTS5 special characters from each token
           - OR-joins the survivors
 
@@ -602,13 +620,15 @@ class FactRetriever:
         # accidentally creating a malformed query.
         _FTS_SPECIAL = '"()*^:-+'
         tokens: list[str] = []
-        for raw in query.lower().split():
+        for raw in textseg.tokenize(query.lower()):
             cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
                 str.maketrans("", "", _FTS_SPECIAL)
             )
             if len(cleaned) < 2:
                 continue
             if cleaned in cls._FTS_STOPWORDS:
+                continue
+            if cleaned in cls._FTS_STOPWORDS_ZH:
                 continue
             # FTS5 phrase-literal each token to ensure no special chars
             # sneak through as operators.

@@ -174,11 +174,15 @@ def _is_owned_spill_dir(path: Path) -> bool:
     """Return whether a session directory has exact, non-symlink ownership."""
     marker = path / _OWNERSHIP_MARKER
     try:
+        path_attrs = int(getattr(path.lstat(), "st_file_attributes", 0))
+        marker_attrs = int(getattr(marker.lstat(), "st_file_attributes", 0))
         return (
             path.is_dir()
             and not path.is_symlink()
+            and not (path_attrs & 0x400)
             and marker.is_file()
             and not marker.is_symlink()
+            and not (marker_attrs & 0x400)
             and marker.read_text(encoding="utf-8").strip() == _OWNERSHIP_VALUE
         )
     except (OSError, UnicodeError):
@@ -201,7 +205,6 @@ def _prepare_owned_spill_dir(path: Path) -> bool:
             marker_file.write(f"{_OWNERSHIP_VALUE}\n")
     except (FileExistsError, OSError):
         try:
-            marker.unlink(missing_ok=True)
             path.rmdir()
         except OSError:
             pass
@@ -209,11 +212,72 @@ def _prepare_owned_spill_dir(path: Path) -> bool:
     if _is_owned_spill_dir(path):
         return True
     try:
-        marker.unlink(missing_ok=True)
         path.rmdir()
     except OSError:
         pass
     return False
+
+
+def _atomic_unlink_spill(path: Path) -> bool:
+    """Unlink the exact opened spill object, never a pathname replacement."""
+    fd: Optional[int] = None
+    quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
+        if path.is_symlink() or attributes & 0x400 or not path.is_file():
+            return False
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+
+            create_file = ctypes.windll.kernel32.CreateFileW
+            create_file.argtypes = (
+                ctypes.c_wchar_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+            )
+            create_file.restype = ctypes.c_void_p
+            handle = create_file(
+                str(path),
+                0x80000000,  # GENERIC_READ
+                0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ|WRITE|DELETE
+                None,
+                3,  # OPEN_EXISTING
+                0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT
+                None,
+            )
+            if handle == ctypes.c_void_p(-1).value:
+                raise ctypes.WinError()
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+            except BaseException:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                raise
+        else:
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        os.replace(path, quarantine)
+        if not os.path.samestat(opened, quarantine.lstat()):
+            try:
+                os.link(quarantine, path)
+                quarantine.unlink()
+            except OSError:
+                pass
+            return False
+        quarantine.unlink()
+        return True
+    except OSError:
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def prune_spill_files(
@@ -269,8 +333,8 @@ def prune_spill_files(
             if not expired and index < maximum:
                 continue
             try:
-                path.unlink()
-                removed += 1
+                if _atomic_unlink_spill(path):
+                    removed += 1
             except OSError:
                 logger.debug("hook output spill prune skipped %s", path, exc_info=True)
     return removed

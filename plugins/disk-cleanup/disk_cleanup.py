@@ -28,6 +28,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -336,6 +337,7 @@ _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD = frozenset(
 _DISPOSABLE_TOP_LEVEL_PREFIXES = ("test_", "tmp_", "temp_")
 _DISPOSABLE_TRACKED_ROOTS = frozenset({
     "artifacts",
+    "cache",
     "downloads",
     "scratch",
     "temp",
@@ -378,7 +380,7 @@ def _is_protected_cron_path(p: Path) -> bool:
                 len(parts) >= 3
                 and parts[1] == "output"
                 and p.is_file()
-                and not p.is_symlink()
+                and not _is_link_like(p)
             )
 
     # Lazily build the set once per process so HERMES_HOME is resolved
@@ -474,6 +476,18 @@ def _capture_identity(path: Path) -> Optional[Dict[str, int]]:
     }
 
 
+def _is_link_like(path: Path) -> bool:
+    """Reject symlinks and Windows reparse points such as junctions."""
+    try:
+        if path.is_symlink():
+            return True
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
+        reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        return bool(attributes & reparse_flag)
+    except OSError:
+        return True
+
+
 def _identity_matches(path: Path, expected: Dict[str, int]) -> bool:
     """Return whether *path* is still the exact object that was tracked."""
     current = _capture_identity(path)
@@ -530,10 +544,18 @@ def _managed_marker_matches(path: Path, expected: str) -> bool:
     """Return true only for a regular, readable ownership marker."""
     marker = path / _EMPTY_DIR_OWNERSHIP_MARKER
     try:
+        if not marker.is_file() or _is_link_like(marker):
+            return False
+        value = marker.read_text(encoding="utf-8").strip()
+        if expected != "spawn-trees":
+            return value == expected
+        prefix = "spawn-trees:"
+        digest = value.removeprefix(prefix)
         return (
-            marker.is_file()
-            and not marker.is_symlink()
-            and marker.read_text(encoding="utf-8").strip() == expected
+            value.startswith(prefix)
+            and len(digest) == 24
+            and all(char in "0123456789abcdef" for char in digest)
+            and path.name == f"s-{digest}"
         )
     except (OSError, UnicodeError):
         return False
@@ -553,15 +575,92 @@ def _remove_path(path: Path) -> Optional[str]:
     return None
 
 
+def _restore_quarantined_path(quarantine: Path, original: Path) -> str:
+    try:
+        os.link(quarantine, original)
+        quarantine.unlink()
+        return f"filesystem identity changed during delete; restored {original}"
+    except OSError:
+        return f"filesystem identity changed during delete; preserved at {quarantine}"
+
+
+def _open_delete_candidate(path: Path) -> int:
+    """Open *path* while allowing an atomic rename on Windows."""
+    if os.name != "nt":
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        return os.open(path, flags)
+
+    import ctypes
+    import msvcrt
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0x80000000,  # GENERIC_READ
+        0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ|WRITE|DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError()
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except BaseException:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        raise
+
+
+def _atomic_unlink_regular(
+    path: Path, expected_identity: Optional[Dict[str, int]] = None
+) -> Optional[str]:
+    """Move an opened object to a nonce path before unlinking it."""
+    fd: Optional[int] = None
+    quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
+    try:
+        fd = _open_delete_candidate(path)
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _is_link_like(path)
+            or not path.is_file()
+        ):
+            return "path is not a regular non-link file"
+        if expected_identity is not None and _capture_identity(path) != expected_identity:
+            return "tracked filesystem identity changed"
+        os.replace(path, quarantine)
+        moved = quarantine.lstat()
+        if not os.path.samestat(opened, moved):
+            return _restore_quarantined_path(quarantine, path)
+        quarantine.unlink()
+        return None
+    except OSError as exc:
+        return str(exc)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _remove_tracked_path(path: Path, identity: Dict[str, int]) -> Optional[str]:
     """Remove only the unchanged filesystem object authorized by tracking."""
     if _is_protected_tracked_path(path) or _is_protected_cron_path(path):
         return "protected durable path"
     if not stat.S_ISREG(identity.get("mode", 0)):
         return "tracked path is not a regular file"
-    if not _identity_matches(path, identity):
-        return "tracked filesystem identity changed"
-    return _remove_path(path)
+    return _atomic_unlink_regular(path, identity)
 
 
 def fmt_size(n: float) -> str:
@@ -590,7 +689,7 @@ def track(
     source_path = Path(path_str).expanduser()
 
     try:
-        if source_path.is_symlink() or not source_path.is_file():
+        if _is_link_like(source_path) or not source_path.is_file():
             _log(f"REJECT: {source_path} (not a regular file)")
             return False
         path = source_path.resolve()
@@ -852,11 +951,11 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     for root_name, retention_days in _MANAGED_ARTIFACT_RETENTION_DAYS.items():
         artifact_root = hermes_home / root_name
         try:
-            if artifact_root.is_symlink() or not artifact_root.is_dir():
+            if _is_link_like(artifact_root) or not artifact_root.is_dir():
                 continue
             session_dirs = [
                 p for p in artifact_root.iterdir()
-                if p.is_dir() and not p.is_symlink()
+                if p.is_dir() and not _is_link_like(p)
             ]
         except OSError:
             continue
@@ -870,7 +969,7 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
                 for artifact in session_dir.iterdir():
                     if (
                         artifact.name in _MANAGED_ARTIFACT_SKIP_NAMES
-                        or artifact.is_symlink()
+                        or _is_link_like(artifact)
                         or not artifact.is_file()
                     ):
                         continue
@@ -879,7 +978,10 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
                         if age_seconds <= retention_days * 24 * 60 * 60:
                             continue
                         size = artifact.stat().st_size
-                        artifact.unlink()
+                        error = _atomic_unlink_regular(artifact)
+                        if error is not None:
+                            errors.append(f"{artifact}: {error}")
+                            continue
                         artifacts += 1
                         freed += size
                         _log(f"DELETED: {artifact} (managed artifact retention)")
@@ -898,7 +1000,7 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         for top in hermes_home.iterdir():
             if (
                 top.is_dir()
-                and not top.is_symlink()
+                and not _is_link_like(top)
                 and _is_owned_empty_dir_root(top)
             ):
                 sweep_stack.append((top, False))
@@ -922,7 +1024,7 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
             for child in dirpath.iterdir():
                 if (
                     child.is_dir()
-                    and not child.is_symlink()
+                    and not _is_link_like(child)
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
                     and child.name not in _EMPTY_DIR_SWEEP_PROTECTED_NAMES
                 ):

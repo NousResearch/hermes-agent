@@ -219,6 +219,21 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
 
+    def test_prune_preserves_file_when_delete_identity_changes(self):
+        spill = Path(self.tmpdir) / "sess" / "old.txt"
+        spill.parent.mkdir()
+        (spill.parent / ".hermes-managed").write_text("hook_outputs\n")
+        spill.write_text("preserve")
+        old_time = os.path.getmtime(spill) - 100
+        os.utime(spill, (old_time, old_time))
+
+        with patch.object(hos.os.path, "samestat", return_value=False):
+            removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(spill.read_text(), "preserve")
+        self.assertEqual(list(spill.parent.glob("*.hermes-delete-*")), [])
+
     def test_prune_preserves_unmarked_session_directory(self):
         session = Path(self.tmpdir) / "human-session"
         session.mkdir()

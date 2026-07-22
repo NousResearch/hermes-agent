@@ -527,6 +527,32 @@ class TestTrackForgetQuick:
         assert dg.quick(paths=[str(artifact)])["deleted"] == 1
         assert not artifact.exists()
 
+    def test_cache_root_remains_trackable(self, _isolate_env):
+        dg = _load_lib()
+        artifact = _isolate_env / "cache" / "tool-output.tmp"
+        artifact.parent.mkdir()
+        artifact.write_text("temporary")
+
+        assert dg.guess_category(artifact) == "temp"
+        assert dg.track(str(artifact), "temp", silent=True)
+
+    def test_quick_preserves_file_when_delete_identity_changes(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        artifact = _isolate_env / "scratch" / "replace-me.tmp"
+        artifact.parent.mkdir()
+        artifact.write_text("tracked")
+        assert dg.track(str(artifact), "temp", silent=True)
+
+        monkeypatch.setattr(dg.os.path, "samestat", lambda _left, _right: False)
+
+        result = dg.quick(paths=[str(artifact)])
+
+        assert result["deleted"] == 0
+        assert artifact.read_text() == "tracked"
+        assert not list(artifact.parent.glob("*.hermes-delete-*"))
+
     def test_quick_commit_preserves_concurrent_tracking_addition(
         self, _isolate_env, monkeypatch
     ):
@@ -784,9 +810,10 @@ class TestTrackForgetQuick:
     def test_quick_prunes_stale_marked_spawn_tree_snapshots(self, _isolate_env):
         """Spawn-tree history is bounded without deleting unowned sessions."""
         dg = _load_lib()
-        session_dir = _isolate_env / "spawn-trees" / "session-1"
+        digest = "a" * 24
+        session_dir = _isolate_env / "spawn-trees" / f"s-{digest}"
         session_dir.mkdir(parents=True)
-        (session_dir / ".hermes-managed").write_text("spawn-trees\n")
+        (session_dir / ".hermes-managed").write_text(f"spawn-trees:{digest}\n")
         stale = session_dir / "20240101T000000.json"
         stale.write_text("{}")
         old = time.time() - (31 * 24 * 60 * 60)

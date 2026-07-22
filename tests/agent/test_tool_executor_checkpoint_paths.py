@@ -1,8 +1,8 @@
-"""Behavioral coverage for file-tool checkpoint path resolution."""
+"""Behavioral coverage for tool checkpoint path resolution."""
 
 from types import SimpleNamespace
 
-from agent.tool_executor import _ensure_file_checkpoint
+from agent.tool_executor import _ensure_file_checkpoint, _ensure_terminal_checkpoint
 from tools.checkpoint_manager import CheckpointManager
 
 
@@ -38,3 +38,33 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
     assert manager.list_checkpoints(str(workspace_cwd))
     assert manager.list_checkpoints(str(process_cwd)) == []
+
+
+def test_terminal_checkpoint_covers_commands_outside_mutation_heuristic(
+    tmp_path, monkeypatch,
+):
+    """Arbitrary shell programs still get rollback coverage inside workdir."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    victim = workspace / "victim.txt"
+    victim.write_text("before\n")
+
+    monkeypatch.setattr(
+        "tools.checkpoint_manager.CHECKPOINT_BASE",
+        tmp_path / "checkpoints",
+    )
+    manager = CheckpointManager(enabled=True)
+    agent = SimpleNamespace(_checkpoint_mgr=manager)
+    command = "python -c \"from pathlib import Path; Path('victim.txt').unlink()\""
+
+    _ensure_terminal_checkpoint(
+        agent,
+        {"command": command, "workdir": str(workspace)},
+    )
+    victim.unlink()
+
+    checkpoints = manager.list_checkpoints(str(workspace))
+    assert checkpoints
+    result = manager.restore(str(workspace), checkpoints[0]["hash"])
+    assert result["success"] is True
+    assert victim.read_text() == "before\n"

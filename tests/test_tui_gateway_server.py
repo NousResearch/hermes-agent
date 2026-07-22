@@ -346,6 +346,9 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
                 "session_info": {
                     "model": "host-model",
                     "provider": "host-provider",
+                    "fallback_activated": True,
+                    "primary_model": "primary-model",
+                    "primary_provider": "primary-provider",
                     "system_prompt": "host system prompt",
                     "tools": {"core": ["terminal"]},
                     "usage": {"total": 140, "context_used": 80, "context_max": 1000},
@@ -359,6 +362,9 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         info = server._session_info(None, session)
         assert info["model"] == "host-model"
         assert info["provider"] == "host-provider"
+        assert info["fallback_activated"] is True
+        assert info["primary_model"] == "primary-model"
+        assert info["primary_provider"] == "primary-provider"
         assert info["system_prompt"] == "host system prompt"
         assert info["tools"] == {"core": ["terminal"]}
         assert info["usage"]["total"] == 140
@@ -6833,6 +6839,57 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
 
     assert "error" in resp, resp
     assert resp["error"]["code"] == 4010
+
+
+def test_restore_primary_runtime_for_turn_emits_live_identity(monkeypatch):
+    emitted = []
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        _fallback_activated=True,
+        _primary_runtime={"model": "kimi-k3", "provider": "opencode-go"},
+    )
+
+    def restore():
+        agent.model = "kimi-k3"
+        agent.provider = "opencode-go"
+        agent._fallback_activated = False
+        return True
+
+    agent._restore_primary_runtime = restore
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "_session_info", lambda actual_agent, session: {
+        "model": actual_agent.model,
+        "provider": actual_agent.provider,
+        "fallback_activated": actual_agent._fallback_activated,
+    })
+
+    assert server._restore_primary_runtime_for_turn("sid", {}, agent) is True
+    assert emitted == [
+        (
+            "session.info",
+            "sid",
+            {"model": "kimi-k3", "provider": "opencode-go", "fallback_activated": False},
+        )
+    ]
+
+
+def test_session_info_reports_active_fallback_runtime(monkeypatch):
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="gpt-5.5",
+        provider="openai-codex",
+        _fallback_activated=True,
+        _primary_runtime={"model": "kimi-k3", "provider": "opencode-go"},
+    )
+
+    info = server._session_info(agent)
+
+    assert info["model"] == "gpt-5.5"
+    assert info["provider"] == "openai-codex"
+    assert info["fallback_activated"] is True
+    assert info["primary_model"] == "kimi-k3"
+    assert info["primary_provider"] == "opencode-go"
 
 
 def test_session_info_includes_mcp_servers(monkeypatch):

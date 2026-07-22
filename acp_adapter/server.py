@@ -74,6 +74,7 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
+from utils import is_truthy_value
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
@@ -522,6 +523,10 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        # Freeze --yolo / HERMES_YOLO_MODE at server start so a mid-process
+        # skill cannot flip it to bypass ACP edit approval (same security
+        # rationale as tools/approval._YOLO_MODE_FROZEN).
+        self._yolo_mode: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -567,6 +572,11 @@ class HermesACPAgent(acp.Agent):
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
+        # --yolo / HERMES_YOLO_MODE: auto-approve edits (except sensitive
+        # paths, which should_auto_approve_edit still guards).  Mirrors the
+        # _YOLO_MODE_FROZEN bypass in tools/approval.check_dangerous_command.
+        if policy == "ask" and self._yolo_mode:
+            policy = "session"
         return policy, state.cwd
 
     @staticmethod

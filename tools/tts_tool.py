@@ -1149,6 +1149,12 @@ def _concat_audio_files(
             command.extend([
                 "-c:a", "libopus", "-ac", "1", "-b:a", "64k", "-vbr", "off",
             ])
+        else:
+            # Provider chunks already share one output codec/configuration. Preserve
+            # those encoded frames instead of imposing a second lossy encode. The
+            # concat demuxer will fail cleanly on incompatible streams, allowing the
+            # caller to preserve the ordered source files as its safe fallback.
+            command.extend(["-c:a", "copy"])
         command.append(str(temp_output))
 
         result = subprocess.run(

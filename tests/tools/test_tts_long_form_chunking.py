@@ -62,6 +62,34 @@ def test_voice_chunk_combine_reencodes_opus_without_stream_copy(
     assert "copy" not in command
 
 
+def test_non_voice_chunk_combine_preserves_provider_encoded_frames(
+    tmp_path, monkeypatch,
+):
+    first = tmp_path / "first.mp3"
+    second = tmp_path / "second.mp3"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    commands = []
+
+    monkeypatch.setattr("tools.tts_tool.shutil.which", lambda name: "/usr/bin/ffmpeg")
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"combined mp3")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("tools.tts_tool.subprocess.run", fake_run)
+    output = tmp_path / "combined.mp3"
+
+    result = _concat_audio_files([str(first), str(second)], str(output))
+
+    assert result == str(output)
+    assert output.read_bytes() == b"combined mp3"
+    command = commands[0]
+    assert command[command.index("-c:a") + 1] == "copy"
+    assert "libopus" not in command
+
+
 def test_failed_combine_preserves_ordered_separate_deliverables(
     tmp_path, monkeypatch,
 ):

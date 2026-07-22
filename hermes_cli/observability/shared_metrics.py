@@ -77,6 +77,18 @@ class SharedMetricsStore:
                 ).fetchone()
                 if row is not None:
                     last_recorded = self._parse_state_timestamp(row["value"])
+                    if last_recorded is not None and last_recorded > now:
+                        # A wall-clock correction must not suppress activity until
+                        # the stale future timestamp plus another full interval.
+                        connection.execute(
+                            """
+                            UPDATE telemetry_state
+                            SET value = ?
+                            WHERE key = ?
+                            """,
+                            (_isoformat(now), _ACTIVE_INSTALL_STATE_KEY),
+                        )
+                        return False
                     if (
                         last_recorded is not None
                         and now < last_recorded + _ACTIVE_INSTALL_INTERVAL

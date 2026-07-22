@@ -276,6 +276,35 @@ def test_client_active_recovers_from_an_invalid_latch_and_creates_identity(
     assert state["client_active_recorded_at"] == "2026-07-22T10:00:00Z"
 
 
+def test_client_active_rebases_a_future_latch_without_double_counting(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE telemetry_state SET value = ? WHERE key = ?",
+            ("2026-07-24T10:00:00Z", "client_active_recorded_at"),
+        )
+
+    assert not store.record_client_active(_resource())
+    with sqlite3.connect(database_path) as connection:
+        latch = connection.execute(
+            "SELECT value FROM telemetry_state WHERE key = ?",
+            ("client_active_recorded_at",),
+        ).fetchone()[0]
+
+    assert latch == "2026-07-22T10:00:00Z"
+    [counter] = store.counter_snapshot()
+    assert counter["metric_name"] == CLIENT_ACTIVE_METRIC
+    assert counter["value"] == 1
+
+
 def test_client_active_package_uses_empty_dimensions_and_stable_install_id(tmp_path):
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
 

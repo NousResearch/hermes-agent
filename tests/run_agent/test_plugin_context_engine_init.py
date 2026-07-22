@@ -5,6 +5,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 """
 
 from unittest.mock import MagicMock, patch
+from typing import Any
 
 from agent.context_engine import ContextEngine
 
@@ -141,7 +142,7 @@ def test_plugin_engine_update_model_args():
     assert "api_mode" in kw
 
 
-def _codex_agent_kwargs():
+def _codex_agent_kwargs() -> dict[str, Any]:
     return dict(
         model="gpt-5.5",
         provider="openai-codex",
@@ -237,3 +238,33 @@ def test_codex_gpt55_autoraise_applies_when_plugin_engine_missing():
 
     assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
     assert agent.context_compressor.threshold_percent == 0.85
+
+
+def test_process_env_can_isolate_turn_end_policy_for_staging(monkeypatch):
+    """A staging service can test the policy without mutating shared config."""
+    monkeypatch.setenv("HERMES_COMPRESSION_THRESHOLD", "0.80")
+    monkeypatch.setenv("HERMES_COMPRESSION_DEFER_UNTIL_TURN_END", "true")
+    monkeypatch.setenv("HERMES_COMPRESSION_EMERGENCY_THRESHOLD", "0.92")
+    cfg = {
+        "compression": {
+            "enabled": True,
+            "threshold": 0.75,
+            "codex_gpt55_autoraise": False,
+        },
+        "agent": {},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("agent.context_compressor.get_model_context_length", return_value=272_000),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(**_codex_agent_kwargs())
+
+    assert agent.context_compressor.threshold_percent == 0.80
+    assert agent.compression_defer_until_turn_end is True
+    assert agent.compression_emergency_threshold == 0.92

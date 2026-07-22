@@ -32,6 +32,7 @@ class FakeAgent:
         self._iters_since_skill = 0
         self.valid_tool_names = []
         self.persisted_messages: list[dict[str, Any]] | None = None
+        self.compression_calls: list[dict[str, Any]] = []
         self._persist_user_message_idx: int | None = None
         self._persist_user_message_override: Any = None
         self._persist_user_message_timestamp: float | None = None
@@ -328,3 +329,108 @@ def test_fill_pops_db_persisted_marker_for_durable_rewrite(monkeypatch):
     assert "_db_persisted" not in persisted[-1], (
         "marker must be popped so the next flush re-writes the filled content"
     )
+
+
+class _BoundaryCompressor:
+    threshold_tokens = 80
+    context_length = 100
+    max_tokens = 0
+
+    def __init__(self, prompt_tokens=81):
+        self.last_prompt_tokens = prompt_tokens
+
+    def should_compress(self, tokens):
+        return tokens >= self.threshold_tokens
+
+
+def _enable_turn_end_compression(agent, *, fail=False):
+    agent.compression_enabled = True
+    agent.compression_defer_until_turn_end = True
+    agent.compression_emergency_threshold = 0.92
+    agent.context_compressor = _BoundaryCompressor()
+    agent.tools = []
+    agent._last_compaction_in_place = True
+    agent.compression_calls = []
+
+    def _compress(messages, system_message, **kwargs):
+        # The boundary hook must run only after the completed answer has closed
+        # the transcript. Otherwise compaction can lose the visible final turn.
+        assert messages[-1].get("role") == "assistant"
+        assert messages[-1].get("content") == "Done."
+        agent.compression_calls.append(
+            {
+                "system_message": system_message,
+                "approx_tokens": kwargs.get("approx_tokens"),
+                "task_id": kwargs.get("task_id"),
+            }
+        )
+        if fail:
+            raise RuntimeError("summary backend unavailable")
+        agent.context_compressor.last_prompt_tokens = -1
+        compacted = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "[CONTEXT SUMMARY] earlier turns"},
+            {"role": "assistant", "content": "Done."},
+        ]
+        return compacted, "system"
+
+    agent._compress_context = _compress
+
+
+def _finalize_boundary_turn(agent):
+    return finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "finish the task"},
+            {"role": "assistant", "content": "Done."},
+        ],
+        conversation_history=[],
+        effective_task_id="task-boundary",
+        turn_id="turn-boundary",
+        user_message="finish the task",
+        original_user_message="finish the task",
+        system_message="base system prompt",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+
+def test_completed_turn_compacts_at_soft_threshold_before_persistence(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    _enable_turn_end_compression(agent)
+
+    result = _finalize_boundary_turn(agent)
+
+    assert agent.compression_calls == [
+        {
+            "system_message": "base system prompt",
+            "approx_tokens": 81,
+            "task_id": "task-boundary",
+        }
+    ]
+    assert agent.persisted_messages == result["messages"]
+    assert result["messages"][1]["content"].startswith("[CONTEXT SUMMARY]")
+    # compress_context parks real usage at -1 until the next provider call;
+    # callers must receive a non-negative context reading.
+    assert result["last_prompt_tokens"] == 0
+    assert result["completed"] is True
+
+
+def test_failed_turn_end_compression_preserves_completed_answer(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    _enable_turn_end_compression(agent, fail=True)
+
+    result = _finalize_boundary_turn(agent)
+
+    assert result["final_response"] == "Done."
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+    assert result["cleanup_errors"] == [
+        "turn_end_compression: summary backend unavailable"
+    ]

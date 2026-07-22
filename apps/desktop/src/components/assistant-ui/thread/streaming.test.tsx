@@ -328,6 +328,37 @@ function MessageHarness({ message }: { message: ThreadMessage }) {
   )
 }
 
+function TranscriptHarness({ messages }: { messages: ThreadMessage[] }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function assistantInterimMessage(text: string, id = 'assistant-interim-1'): ThreadMessage {
+  return {
+    id,
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: { interim: true }
+    }
+  } as ThreadMessage
+}
+
 function RunningMessageHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -453,6 +484,34 @@ describe('assistant-ui streaming renderer', () => {
     const { container } = render(<IntroHarness />)
 
     expect(container.querySelector('[data-slot="aui_composer-clearance"]')).toBeNull()
+  })
+
+  it('suppresses the action footer on sealed interim messages, keeping it on the final reply', () => {
+    const { container } = render(
+      <TranscriptHarness
+        messages={[
+          userMessage(),
+          assistantInterimMessage('Let me check the files.'),
+          assistantInterimMessage('Now applying the patch.', 'assistant-interim-2'),
+          assistantMessage('All done — patch applied.', false)
+        ]}
+      />
+    )
+
+    // Interim commentary stays visible…
+    expect(container.textContent).toContain('Let me check the files.')
+    expect(container.textContent).toContain('Now applying the patch.')
+    expect(container.textContent).toContain('All done — patch applied.')
+
+    // …but only the turn's final reply carries the copy/refresh action bar.
+    const actionBars = container.querySelectorAll('[data-slot="aui_msg-actions"]')
+    expect(actionBars).toHaveLength(1)
+
+    const finalRoot = [...container.querySelectorAll('[data-slot="aui_assistant-message-root"]')].find(root =>
+      root.textContent?.includes('All done — patch applied.')
+    )
+
+    expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
   it('renders assistant provider errors inline', () => {

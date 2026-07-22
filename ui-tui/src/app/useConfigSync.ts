@@ -7,6 +7,7 @@ import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from 
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
   type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
@@ -205,6 +206,8 @@ export const applyDisplay = (
 
   setBell(!!d.bell_on_complete)
 
+  applyConfiguredTuiTheme(d.tui_theme)
+
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we
   // reset the cached shortcut on every null we would clobber a custom
@@ -217,6 +220,7 @@ export const applyDisplay = (
   }
 
   patchUiState({
+    battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
@@ -241,6 +245,7 @@ export function useConfigSync({
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
+  const mcpRevRef = useRef('')
 
   useEffect(() => {
     if (!sid) {
@@ -254,6 +259,11 @@ export function useConfigSync({
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
+      // Seed the MCP revision baseline too: after a normal boot mtime is
+      // already non-zero, so the poller's baseline branch never runs, and an
+      // unset mcpRevRef would make the FIRST cosmetic write (mtime bump, same
+      // mcp_rev) look like an MCP change and fire a needless reload.mcp.
+      mcpRevRef.current = String(r?.mcp_rev ?? '')
     })
     void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
   }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
@@ -266,10 +276,12 @@ export function useConfigSync({
     const id = setInterval(() => {
       quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
         const next = Number(r?.mtime ?? 0)
+        const nextMcpRev = String(r?.mcp_rev ?? '')
 
         if (!mtimeRef.current) {
           if (next) {
             mtimeRef.current = next
+            mcpRevRef.current = nextMcpRev
           }
 
           return
@@ -281,9 +293,21 @@ export function useConfigSync({
 
         mtimeRef.current = next
 
-        quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-          r => r && turnController.pushActivity('MCP reloaded after config change')
-        )
+        // Reload MCP only when the MCP-relevant config actually changed.
+        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
+        // reconnecting every MCP server for those costs seconds and made
+        // skin switching feel glacial. Older gateways don't send mcp_rev —
+        // fall back to reload-on-any-change there.
+        const mcpChanged = !nextMcpRev || nextMcpRev !== mcpRevRef.current
+
+        mcpRevRef.current = nextMcpRev
+
+        if (mcpChanged) {
+          quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
+            r => r && turnController.pushActivity('MCP reloaded after config change')
+          )
+        }
+
         void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
       })
     }, MTIME_POLL_MS)

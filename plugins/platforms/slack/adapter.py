@@ -3802,6 +3802,7 @@ class SlackAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
@@ -3838,7 +3839,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "value": session_key,
                 },
             ]
-            if not smart_denied:
+            if not smart_denied and allow_session:
                 actions.append({
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
@@ -4223,6 +4224,26 @@ class SlackAdapter(BasePlatformAdapter):
         if self._approval_resolved.pop(msg_ts, True):
             return
 
+        # Resolve the approval FIRST — this unblocks the agent thread. Render
+        # after, so a click that lands past the approval timeout (count == 0)
+        # shows "expired" instead of falsely claiming the command was approved.
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count,
+                session_key,
+                choice,
+                user_name,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve gateway approval from Slack button: %s", exc
+            )
+            count = 0
+
         # Update the message to show the decision and remove buttons
         label_map = {
             "once": f"✅ Approved once by {user_name}",
@@ -4231,6 +4252,11 @@ class SlackAdapter(BasePlatformAdapter):
             "deny": f"❌ Denied by {user_name}",
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
+        if not count:
+            decision_text = (
+                "⌛ Approval expired — command was not run "
+                "(already timed out or resolved elsewhere)"
+            )
 
         # Get original text from the section block
         original_text = ""
@@ -4265,24 +4291,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to update approval message: %s", e)
 
-        # Resolve the approval — this unblocks the agent thread
-        try:
-            from tools.approval import resolve_gateway_approval
-
-            count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count,
-                session_key,
-                choice,
-                user_name,
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to resolve gateway approval from Slack button: %s", exc
-            )
-
-        # (approval state already consumed by atomic pop above)
+        # (approval already resolved above; state consumed by atomic pop)
 
     # ----- Thread context fetching -----
 

@@ -28,6 +28,7 @@ import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
+import { Dialog, Overlay } from './overlay.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
@@ -417,6 +418,12 @@ const ComposerPane = memo(function ComposerPane({
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  // Exactly the "(and N more toolsets…)" tone. `muted` is a
+                  // MID-luminance family tone, so it reads receded on both
+                  // poles even when polarity detection is wrong (transparent
+                  // terminals lie about their background); anything blended
+                  // toward the resolved surface inherits that wrong polarity.
+                  placeholderColor={ui.theme.color.muted}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
@@ -473,6 +480,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
         cols={composer.cols}
@@ -559,6 +567,20 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && <PetPane />}
       </Box>
+
+      {overlay.dialog && (
+        <Overlay backdrop zone={overlay.dialog.zone ?? 'center'}>
+          <Dialog
+            hint={overlay.dialog.hint ?? 'Esc/q close'}
+            title={overlay.dialog.title}
+            width={Math.min(60, composer.cols - 8)}
+          >
+            {overlay.dialog.body.split('\n').map((line, i) => (
+              <Text key={i}>{line || ' '}</Text>
+            ))}
+          </Dialog>
+        </Overlay>
+      )}
     </Shell>
   )
 })

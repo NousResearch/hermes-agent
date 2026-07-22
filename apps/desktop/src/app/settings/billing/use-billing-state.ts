@@ -41,6 +41,8 @@ export interface BillingRowActionView {
 export interface BillingChipView {
   disabled: boolean
   label: string
+  /** When set, clicking the chip opens this URL externally. */
+  url?: string
 }
 
 export interface BillingAccountRowView {
@@ -160,7 +162,8 @@ export function deriveBillingView(
 
 export function buildManageSubscriptionUrl(
   subscription?: null | Pick<SubscriptionStateResponse, 'org_id' | 'portal_url'>,
-  fallbackPortalUrl?: null | string
+  fallbackPortalUrl?: null | string,
+  tierId?: string
 ): string {
   const portalUrls = [subscription?.portal_url, fallbackPortalUrl].filter(
     (url): url is string => typeof url === 'string' && url.length > 0
@@ -172,6 +175,10 @@ export function buildManageSubscriptionUrl(
 
       if (subscription?.org_id) {
         url.searchParams.set('org_id', subscription.org_id)
+      }
+
+      if (tierId) {
+        url.searchParams.set('plan', tierId)
       }
 
       return url.toString()
@@ -272,24 +279,64 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   }
 }
 
+/**
+ * Tier catalog as chips for accounts that can change plans; the current plan is
+ * inert, every other opens the portal where the change/start happens, deep-linked
+ * to that tier via `?plan=`.
+ */
+function subscriptionTierChips(
+  subscription: null | SubscriptionStateResponse,
+  fallbackPortalUrl?: null | string
+): BillingChipView[] | undefined {
+  // Teams have no personal subscription to sell into.
+  if (!subscription?.can_change_plan || subscription.context === 'team') {
+    return undefined
+  }
+
+  const tiers = (subscription.tiers ?? [])
+    .filter(tier => tier.is_enabled && tier.tier_order > 0)
+    .sort((a, b) => a.tier_order - b.tier_order)
+
+  if (tiers.length === 0) {
+    return undefined
+  }
+
+  return tiers.map(tier => {
+    // Monthly credits are dollars; NAS sends a bare decimal string.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+    const suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
+    const label = `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`
+
+    return tier.is_current
+      ? { disabled: true, label: `✓ ${label}` }
+      : { disabled: false, label, url: buildManageSubscriptionUrl(subscription, fallbackPortalUrl, tier.tier_id) }
+  })
+}
+
 function subscriptionRow(
   billing: BillingStateResponse,
   subscription: null | SubscriptionStateResponse,
   subscriptionResult?: BillingResult<SubscriptionStateResponse>
 ): BillingAccountRowView {
-  const manageUrl = buildManageSubscriptionUrl(subscription, subscription?.portal_url ?? billing.portal_url)
+  const fallbackPortalUrl = subscription?.portal_url ?? billing.portal_url
+  const manageUrl = buildManageSubscriptionUrl(subscription, fallbackPortalUrl)
   const current = subscription?.current
   const fallbackPlan = billing.usage?.plan_name ?? EMPTY_BILLING_VALUE
   const value = current?.tier_name ?? fallbackPlan
   const renewal = formatBillingDate(current?.cycle_ends_at ?? billing.usage?.renews_at)
   const unavailable = subscriptionResult && !subscriptionResult.ok
+  const chips = subscriptionTierChips(subscription, fallbackPortalUrl)
 
   return {
     action: { label: 'Adjust plan ↗', url: manageUrl },
     caption: unavailable
       ? 'Subscription details are unavailable; opening the portal is still available.'
       : `Renews ${renewal}`,
-    description: 'Review your plan and change it from the billing portal.',
+    chips,
+    description:
+      !current && chips
+        ? 'Paid models need a subscription — pick a plan to start it on the portal.'
+        : 'Review your plan and change it from the billing portal.',
     id: 'subscription',
     secondaryPill: 'opens portal',
     title: 'Subscription',
@@ -421,18 +468,10 @@ function deriveUsageRows(
   })
 
   const topupValue = topupCreditsValue(billing, usage)
-  const topupRemaining = topupCreditsAmount(billing, usage)
 
+  // No bar: top-ups have no denominator (the wire carries only the current
+  // balance, and the pool is open-ended), so a fill fraction would be fiction.
   rows.push({
-    bar:
-      topupRemaining != null
-        ? {
-            label: 'Top-up credits remaining',
-            state: topupRemaining > 0 ? 'ok' : 'neutral',
-            tone: 'topup',
-            value: topupRemaining > 0 ? 1 : 0
-          }
-        : undefined,
     caption: 'Does not expire',
     id: 'topup_credits',
     title: 'Top-up credits',
@@ -458,7 +497,7 @@ function deriveUsageRows(
               value: clamp01(usedFraction)
             }
           : undefined,
-      caption: cap.is_default_ceiling ? 'Default ceiling' : 'Monthly terminal billing spend',
+      caption: cap.is_default_ceiling ? 'Default ceiling' : 'Monthly remote spending',
       id: 'monthly_cap',
       title: 'Monthly spend cap',
       value
@@ -492,15 +531,6 @@ function topupCreditsValue(billing: BillingStateResponse, usage?: UsageModelData
     usage?.topup_bar?.remaining_display ??
     nonEmpty(billing.balance_display) ??
     formatMoney(billing.balance_usd)
-  )
-}
-
-function topupCreditsAmount(billing: BillingStateResponse, usage?: UsageModelData): null | number {
-  return (
-    parseAmount(usage?.topup_bar?.remaining_display) ??
-    parseAmount(usage?.topup_remaining_display) ??
-    parseAmount(billing.balance_usd) ??
-    parseAmount(billing.balance_display)
   )
 }
 

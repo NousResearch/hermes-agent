@@ -33,8 +33,10 @@ import requests
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
+    ImageGenResponseTooLarge,
     error_response,
     normalize_reference_images,
+    read_response_body_with_limit,
     resolve_aspect_ratio,
     save_url_image,
     success_response,
@@ -446,8 +448,19 @@ class KreaImageGenProvider(ImageGenProvider):
                 headers=headers,
                 json=payload,
                 timeout=30,
+                stream=True,
             )
+            read_response_body_with_limit(response)
             response.raise_for_status()
+        except ImageGenResponseTooLarge as exc:
+            return error_response(
+                error=f"Krea submit response too large: {exc}",
+                error_type="invalid_response",
+                provider="krea",
+                model=model_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
         except requests.HTTPError as exc:
             resp = exc.response
             status = resp.status_code if resp is not None else 0
@@ -554,8 +567,23 @@ class KreaImageGenProvider(ImageGenProvider):
             interval = min(interval * _POLL_BACKOFF, _POLL_MAX_INTERVAL)
 
             try:
-                poll_resp = requests.get(job_url, headers=poll_headers, timeout=30)
+                poll_resp = requests.get(
+                    job_url,
+                    headers=poll_headers,
+                    timeout=30,
+                    stream=True,
+                )
+                read_response_body_with_limit(poll_resp)
                 poll_resp.raise_for_status()
+            except ImageGenResponseTooLarge as exc:
+                return error_response(
+                    error=f"Krea poll response too large for job {job_id}: {exc}",
+                    error_type="invalid_response",
+                    provider="krea",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             except requests.HTTPError as exc:
                 resp = exc.response
                 status = resp.status_code if resp is not None else 0

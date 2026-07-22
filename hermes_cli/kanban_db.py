@@ -6413,6 +6413,11 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    skipped_global_capped: bool = False
+    """True when ready work was deliberately deferred because the board was
+    already at ``kanban.max_spawn`` or ``kanban.max_in_progress``. Appended to
+    preserve the positional constructor order of older ``DispatchResult``
+    fields. This is expected backpressure, not a dispatcher-health failure."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7919,7 +7924,7 @@ def _dispatch_once_locked(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_spawn is not None or max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -7935,16 +7940,16 @@ def _dispatch_once_locked(
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
+    pending_spawnable = bool(ready_rows) or has_spawnable_review(conn)
+    if max_in_progress is not None and pending_spawnable:
+        in_progress = running_count
         if in_progress >= max_in_progress:
+            result.skipped_global_capped = True
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        # Both settings are total-concurrency caps. Keep the tighter total;
+        # the loops below already compare it against running_count + spawned.
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -7984,6 +7989,7 @@ def _dispatch_once_locked(
             _default_assignee_resolved = True
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
+            result.skipped_global_capped = True
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -8175,6 +8181,7 @@ def _dispatch_once_locked(
     ).fetchall()
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
+            result.skipped_global_capped = True
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])

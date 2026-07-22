@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import inspect
 
-from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway.kanban_watchers import (
+    GatewayKanbanWatchersMixin,
+    _dispatcher_health_is_stuck,
+)
+from hermes_cli.kanban_db import DispatchResult
 
 KANBAN_METHODS = [
     "_kanban_notifier_watcher",
@@ -67,3 +71,39 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_dispatcher_health_does_not_call_capacity_backpressure_stuck():
+    capped = DispatchResult(skipped_global_capped=True)
+
+    assert _dispatcher_health_is_stuck(
+        [("default", capped)], ready_boards={"default"}
+    ) is False
+
+
+def test_dispatcher_health_still_flags_unexplained_zero_spawn():
+    unexplained = DispatchResult()
+
+    assert _dispatcher_health_is_stuck(
+        [("default", unexplained)], ready_boards={"default"}
+    ) is True
+
+
+def test_dispatcher_health_does_not_hide_unexplained_board_behind_capped_board():
+    capped = DispatchResult(skipped_global_capped=True)
+    unexplained = DispatchResult()
+
+    assert _dispatcher_health_is_stuck(
+        [("capped", capped), ("broken", unexplained)],
+        ready_boards={"capped", "broken"},
+    ) is True
+
+
+def test_dispatcher_health_does_not_hide_unexplained_board_behind_active_board():
+    active = DispatchResult(spawned=[("t1", "default", "/tmp/work")])
+    unexplained = DispatchResult()
+
+    assert _dispatcher_health_is_stuck(
+        [("active", active), ("broken", unexplained)],
+        ready_boards={"active", "broken"},
+    ) is True

@@ -1,0 +1,141 @@
+# Hermes-Agent — Deployment Config (Ollama + WeChat)
+# Auto-copied to data/config.yaml on first container start.
+# Edit data/config.yaml directly after first run.
+
+_config_version: 16
+
+# =============================================================================
+# Model — Ollama (local)
+# =============================================================================
+model:
+  provider: "custom"  # "ollama" is an alias for "custom" — use "custom" for auxiliary client compatibility
+  base_url: "http://host.docker.internal:11434/v1"
+  default: "gemma4:e4b-it-q8_0"
+  # Manually set context window (Ollama /v1/models may not report it)
+  context_length: 131072
+
+# =============================================================================
+# Terminal
+# =============================================================================
+terminal:
+  backend: "local"
+  cwd: "/opt/data/workspace"
+  timeout: 180
+  lifetime_seconds: 300
+
+# =============================================================================
+# Agent Behavior
+# =============================================================================
+agent:
+  max_turns: 60
+  verbose: false
+  # Local Ollama models do not support the reasoning_effort parameter
+  reasoning_effort: "none"
+
+# =============================================================================
+# Context Compression
+# =============================================================================
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+  # Use same Ollama model (no external provider needed)
+  summary_model: "gemma4:e4b-it-q8_0"
+  summary_provider: "main"
+
+# =============================================================================
+# Memory
+# =============================================================================
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  nudge_interval: 10
+  flush_min_turns: 6
+
+# =============================================================================
+# Session Reset
+# =============================================================================
+session_reset:
+  mode: both
+  idle_minutes: 1440
+  at_hour: 4
+
+# =============================================================================
+# Display
+# =============================================================================
+display:
+  tool_progress: all
+  streaming: true
+  background_process_notifications: result
+  skin: default
+  show_reasoning: false
+
+# =============================================================================
+# Dashboard Auth
+# Upstream 0.17+ requires auth for non-loopback binds (--insecure is a no-op).
+# The dashboard binds 0.0.0.0 inside the container for Docker port forwarding,
+# so basic_auth is required. Change the password by generating a new hash:
+#   docker exec hermes-web python3 -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('your-password'))"
+# Then replace the password_hash below and restart hermes-web.
+# =============================================================================
+dashboard:
+  basic_auth:
+    username: admin
+    password_hash: "scrypt$16384$8$1$QJMs7wfRIelUP6tXKnzgTg==$d4nrKch8xCpKe5pV5hGK5S+CnJrLLF8idO56e58Tlhw="
+    secret: "28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b21628765d337208aa3c"
+    session_ttl_seconds: 86400
+
+# =============================================================================
+# Gateway Platforms
+# =============================================================================
+platforms:
+
+  # WeChat personal account via Tencent iLink Bot API.
+  # Run the QR wizard once to bind the bot to your WeChat account:
+  #   docker compose -f docker-compose.upstream.yml run --rm hermes-gateway \
+  #       hermes gateway setup
+  # Credentials are saved to ~/.hermes/weixin/accounts/<account_id>.json by the
+  # wizard — no further config needed here. Set dm_policy / group_policy below
+  # to restrict who can talk to the bot.
+  weixin:
+    enabled: true
+    extra:
+      dm_policy: "open"        # "open" | "allowlist" | "disabled"
+      group_policy: "disabled" # "open" | "allowlist" | "disabled"
+      # Pin the iLink API base URL here so a stale WEIXIN_BASE_URL in data/.env
+      # (e.g. the wrong https://ilinkai.wechat.com) cannot override it.
+      # The adapter resolution order is: extra.base_url → WEIXIN_BASE_URL env →
+      # ILINK_BASE_URL constant. This pin wins.
+      base_url: "https://ilinkai.weixin.qq.com"
+
+  # Uncomment to enable WeCom (企业微信) corporate AI bot. The wizard returns
+  # bot_id + secret which must be pasted into .extra below.
+  # wecom:
+  #   enabled: true
+  #   extra:
+  #     bot_id: "<from wizard>"
+  #     secret: "<from wizard>"
+
+  # Uncomment to enable a generic inbound webhook. Bind :8644 in compose before enabling.
+  # webhook:
+  #   enabled: false
+  #   extra:
+  #     port: 8644
+
+# =============================================================================
+# Delegation (subagents)
+# =============================================================================
+delegation:
+  max_iterations: 50
+  default_toolsets: ["terminal", "file", "web"]
+  # Subagents inherit the Ollama endpoint from the parent
+
+# =============================================================================
+# Code Execution Sandbox
+# =============================================================================
+code_execution:
+  timeout: 300
+  max_tool_calls: 50

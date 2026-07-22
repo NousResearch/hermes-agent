@@ -1,71 +1,43 @@
-# Hermes-Agent — Docker Compose (Ollama + PostgreSQL + WeChat)
-#
-# Default compose file for running the local stack against the fork's
+# Standalone compose file for running the local stack against the fork's
 # published GHCR image (includes Weixin QR onboarding + dashboard auth).
 #
-# First-run setup:
-#   mkdir -p data
-#   cp docker/hermes-env.example data/.env
-#   # Edit data/.env if needed, then:
+# Routine refresh:
 #   docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 #
-# Services:
-#   hermes-web     — Hermes web UI on :9119
-#   hermes-gateway — Gateway runner with WeChat personal (weixin) platform enabled.
-#                    No host ports — weixin uses outbound long-poll to Tencent iLink.
-#   postgres       — PostgreSQL :5432 (database persisted in the postgres_data volume)
-#
-# Both hermes services share the same ./data volume.
-# Bootstrap (config copy, skills sync) is idempotent — safe to run in parallel.
-#
-# Hermes web UI:                  http://localhost:9119
-# Interactive CLI (chat):         docker exec -it hermes-web hermes
-# Connect WeChat (one-shot):      docker compose -f docker-compose.upstream.yml run --rm hermes-gateway hermes gateway setup
-#
-# Ports (host → container):
-#   9119 → 9119   Hermes Web UI
-#   8642 → 8642   API server (OpenAI-compatible /v1 endpoint — enable via API_SERVER_KEY)
-#   8789 → 8789   Gateway health endpoint (/health)
-#   8644 → 8644   Webhook inbound (disabled by default — enable in data/config.yaml)
-#   5433 → 5432   PostgreSQL (host:5433 → container:5432)
+# Override HERMES_FORK_IMAGE if you want a different fork tag:
+#   HERMES_FORK_IMAGE=ghcr.io/jzkk720/hermes-agent:sha-abc1234 \
+#     docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 
 x-hermes-common: &hermes-common
   image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
   pull_policy: always
   restart: unless-stopped
   volumes:
-    # Runtime data (sessions, memories, skills, config) — persisted on host
     - ./data:/opt/data
-    # Deployment config template — auto-copied to data/config.yaml on first start
     - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
-    # Use the upstream image's baked-in entrypoint. Overlaying docker/entrypoint.sh
-    # from the fork can pin startup behavior and has caused drift on Windows checkouts.
+    # entrypoint.sh is NOT mounted here — the upstream image bakes in its own
+    # working entrypoint. Mounting a Windows-checked-out copy causes CRLF
+    # failures (tini: No such file or directory).
   environment:
-    # UID remapping — must match your host user to avoid permission issues
     - HERMES_UID=1000
     - HERMES_GID=1000
-    # Ollama does not require a real API key; any non-empty string satisfies the field
     - OPENAI_API_KEY=ollama
     # Ollama lives on the Docker host. host.docker.internal resolves via the
     # extra_hosts entry below — works on Docker Desktop (Win/macOS) and on
     # Linux with the host-gateway mapping.
     - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
     - OLLAMA_BASE_URL=http://host.docker.internal:11434
-    # Postgres DSN — available to memory plugins and skills
     - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
   env_file:
-    # User secrets — copy docker/hermes-env.example → data/.env and fill in
     - path: ./data/.env
       required: false
   extra_hosts:
-    # On Linux Docker, resolves host.docker.internal → host network
     - "host.docker.internal:host-gateway"
   depends_on:
     postgres:
       condition: service_healthy
 
 services:
-
   hermes-web:
     <<: *hermes-common
     container_name: hermes-web
@@ -86,11 +58,12 @@ services:
     ports:
       - "127.0.0.1:9119:9119"
     healthcheck:
-          test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:9119/api/status'); sys.exit(0 if r.status==200 else 1)"]
-          interval: 30s
-          timeout: 10s
-          retries: 3
-          start_period: 60s
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:9119/api/status'); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   hermes-gateway:
     <<: *hermes-common
     container_name: hermes-gateway
@@ -107,7 +80,6 @@ services:
       - "8642:8642"
       - "8789:8789"
       - "8644:8644"
-    # Wait for hermes-web's healthcheck so config bootstrap is complete before gateway reads it
     depends_on:
       postgres:
         condition: service_healthy

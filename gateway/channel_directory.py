@@ -322,12 +322,15 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
-            entries.append({
+            entry = {
                 "id": entry_id,
                 "name": _session_entry_name(origin),
                 "type": row.get("chat_type") or "dm",
                 "thread_id": origin.get("thread_id"),
-            })
+            }
+            if origin.get("message_id"):
+                entry["message_id"] = origin.get("message_id")
+            entries.append(entry)
     except Exception as e:
         logger.debug(
             "Channel directory: state.db session read failed for %s: %s",
@@ -360,12 +363,15 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
-            entries.append({
+            entry = {
                 "id": entry_id,
                 "name": _session_entry_name(origin),
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
-            })
+            }
+            if origin.get("message_id"):
+                entry["message_id"] = origin.get("message_id")
+            entries.append(entry)
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
 
@@ -403,6 +409,30 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
             return ch.get("type")
     return None
 
+
+
+def lookup_channel_metadata(platform_name: str, target_id: str) -> Dict[str, str]:
+    """Return routing metadata stored for a channel directory entry.
+
+    Session-derived Feishu topic targets need both ``thread_id`` and the
+    triggering/root ``message_id`` so outbound sends can use Feishu's reply API
+    with ``reply_in_thread=True`` instead of attempting an invalid direct
+    ``thread_id`` create.  Other platforms can ignore the extra metadata.
+    """
+    directory = load_directory()
+    for ch in directory.get("platforms", {}).get(platform_name, []):
+        if ch.get("id") != target_id:
+            continue
+
+        metadata: Dict[str, str] = {}
+        thread_id = ch.get("thread_id")
+        if thread_id:
+            metadata["thread_id"] = str(thread_id)
+        reply_to = ch.get("reply_to_message_id") or ch.get("message_id")
+        if reply_to:
+            metadata["reply_to_message_id"] = str(reply_to)
+        return metadata
+    return {}
 
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """

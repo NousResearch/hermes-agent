@@ -1,4 +1,4 @@
-"""Tests for terminal process timeout, interactive prompt detection, GUI app detection, and non-interactive env injection."""
+"""Tests for terminal process timeout, interactive prompt detection, GUI app detection, CPU idle detection, and non-interactive env injection."""
 
 import os
 import time
@@ -9,6 +9,7 @@ from tools.environments.base import (
     _strip_ansi,
     _detect_interactive_prompt,
     _detect_gui_child_process,
+    _inspect_process_tree_activity,
     _NONINTERACTIVE_ENV_DEFAULTS,
     _BoundedOutputCollector,
     BaseEnvironment,
@@ -113,12 +114,15 @@ def test_wait_for_process_inactivity_timeout():
     proc.pid = 12345
     proc.stdout = None
 
-    with patch("tools.environments.base._BoundedOutputCollector") as MockCollector:
+    with patch("tools.environments.base._BoundedOutputCollector") as MockCollector, \
+         patch("tools.environments.base._inspect_process_tree_activity") as mock_inspect:
         mock_collector_inst = MagicMock()
         MockCollector.return_value = mock_collector_inst
         mock_collector_inst.get_tail.return_value = "Building project..."
         mock_collector_inst.last_update_time = time.monotonic() - 15.0  # 15s idle
         mock_collector_inst.render.side_effect = lambda suffix="": "Building project..." + suffix
+        # Active CPU usage (50.0%) so inactivity timeout triggers instead of 10s idle check
+        mock_inspect.return_value = {"alive": True, "total_cpu": 50.0, "gui_app": None, "child_count": 1}
 
         res = env._wait_for_process(proc, timeout=60, inactivity_timeout=10)
         assert res["returncode"] == 124
@@ -145,3 +149,26 @@ def test_wait_for_process_gui_detection():
         res = env._wait_for_process(proc, timeout=60, inactivity_timeout=60)
         assert res["returncode"] == 0
         assert "Detected desktop GUI application 'SoundVolumeView.exe'" in res["output"]
+
+
+def test_wait_for_process_cpu_idle_detection():
+    env = DummyEnvironment(cwd=".", timeout=60)
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 12345
+    proc.stdout = None
+
+    with patch("tools.environments.base._BoundedOutputCollector") as MockCollector, \
+         patch("tools.environments.base._inspect_process_tree_activity") as mock_inspect:
+        mock_collector_inst = MagicMock()
+        MockCollector.return_value = mock_collector_inst
+        mock_collector_inst.get_tail.return_value = "Waiting on input..."
+        mock_collector_inst.last_update_time = time.monotonic() - 11.0  # 11s idle
+        mock_collector_inst.render.side_effect = lambda suffix="": "Waiting on input..." + suffix
+        # 0.0% CPU usage (sleeping/idle process)
+        mock_inspect.return_value = {"alive": True, "total_cpu": 0.0, "gui_app": None, "child_count": 0}
+
+        res = env._wait_for_process(proc, timeout=60, inactivity_timeout=60)
+        assert res["returncode"] == 124
+        assert "completely idle (0% CPU" in res["output"]

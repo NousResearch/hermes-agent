@@ -233,6 +233,34 @@ def _detect_gui_child_process(pid: int) -> str | None:
     return None
 
 
+def _inspect_process_tree_activity(pid: int) -> dict:
+    """Inspect CPU usage, child processes, and GUI apps across process tree."""
+    if not pid:
+        return {"alive": False, "total_cpu": 0.0, "gui_app": None, "child_count": 0}
+    try:
+        import psutil
+        parent = psutil.Process(pid)
+        procs = [parent] + parent.children(recursive=True)
+        total_cpu = 0.0
+        gui_app = None
+        for p in procs:
+            try:
+                total_cpu += p.cpu_percent(interval=None)
+                name = p.name().lower()
+                if name in _KNOWN_GUI_EXES or (os.name == "nt" and name.endswith(".exe") and name not in _KNOWN_CLI_EXES):
+                    gui_app = p.name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return {
+            "alive": True,
+            "total_cpu": total_cpu,
+            "gui_app": gui_app,
+            "child_count": len(procs) - 1,
+        }
+    except Exception:
+        return {"alive": False, "total_cpu": 0.0, "gui_app": None, "child_count": 0}
+
+
 _NONINTERACTIVE_ENV_DEFAULTS = {
     "CI": "1",
     "DEBIAN_FRONTEND": "noninteractive",
@@ -1030,7 +1058,7 @@ class BaseEnvironment(ABC):
                 # Check for interactive prompts waiting on stdin input
                 _tail = output.get_tail(1000)
                 _prompt_match = _detect_interactive_prompt(_tail)
-                if _prompt_match and _idle_time >= 5.0:
+                if _prompt_match and _idle_time >= 3.0:
                     logger.warning(
                         "Terminating process PID %s: interactive prompt detected ('%s')",
                         _pid, _prompt_match,
@@ -1063,7 +1091,29 @@ class BaseEnvironment(ABC):
                             "returncode": 0,
                         }
 
-                # Check for output inactivity timeout
+                # Dynamic Process & CPU Activity Check:
+                # If output is idle for >= 10s and total CPU across process tree is < 0.5%,
+                # the process is completely sleeping, deadlocked, or stuck on stdin.
+                if _pid and _idle_time >= 10.0:
+                    _proc_act = _inspect_process_tree_activity(_pid)
+                    if _proc_act["alive"] and _proc_act["total_cpu"] < 0.5:
+                        logger.warning(
+                            "Terminating process PID %s: process tree idle (CPU: %.1f%%, no stdout output for %.1fs)",
+                            _pid, _proc_act["total_cpu"], _idle_time,
+                        )
+                        self._kill_process(proc)
+                        drain_thread.join(timeout=2)
+                        idle_msg = (
+                            f"\n[Command terminated early: Process tree is completely idle (0% CPU, no output for {int(_idle_time)}s). "
+                            "The process appears to be hanging, waiting for input, or deadlocked. "
+                            "For long-running or silent background tasks, run with background=true and notify_on_complete=true.]"
+                        )
+                        return {
+                            "output": output.render(suffix=idle_msg),
+                            "returncode": 124,
+                        }
+
+                # Check for output inactivity timeout (for active CPU processes)
                 if effective_inactivity is not None and _idle_time >= effective_inactivity:
                     logger.warning(
                         "Terminating process PID %s: output inactivity for %.1fs",

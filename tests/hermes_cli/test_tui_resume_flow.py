@@ -622,6 +622,56 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     }
 
 
+def test_main_top_level_oneshot_file_reads_prompt_before_dispatch(
+    monkeypatch, main_mod, tmp_path
+):
+    captured = {}
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("private prompt", encoding="utf-8")
+    prompt_path.chmod(0o600)
+
+    import hermes_cli.config as config_mod
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "--oneshot-file", str(prompt_path)])
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setattr(
+        oneshot_mod,
+        "run_oneshot",
+        lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs}) or 0,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured == {
+        "prompt": "private prompt",
+        "model": None,
+        "provider": None,
+        "toolsets": None,
+        "usage_file": None,
+    }
+
+
 def _stub_plugin_discovery(monkeypatch):
     monkeypatch.setitem(
         sys.modules,

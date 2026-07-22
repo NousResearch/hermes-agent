@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -30,6 +31,57 @@ from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
+
+_MAX_ONESHOT_FILE_BYTES = 4 * 1024 * 1024
+
+
+def read_oneshot_file(path: str) -> str:
+    """Read a bounded private prompt file without following symlinks.
+
+    The caller retains ownership of the file and is responsible for deleting
+    it. Requiring a private same-user regular file makes this transport safe
+    for local automation that cannot place sensitive prompts in argv.
+    """
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(Path(path).expanduser(), flags)
+    except OSError as exc:
+        raise ValueError(f"cannot open oneshot file: {type(exc).__name__}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("oneshot file must be a regular file")
+        if metadata.st_size > _MAX_ONESHOT_FILE_BYTES:
+            raise ValueError("oneshot file exceeds the 4 MiB limit")
+        if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
+            raise ValueError("oneshot file must be owned by the current user")
+        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ValueError("oneshot file must not grant group or other permissions")
+        chunks: list[bytes] = []
+        remaining = _MAX_ONESHOT_FILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > _MAX_ONESHOT_FILE_BYTES:
+            raise ValueError("oneshot file exceeds the 4 MiB limit")
+        try:
+            prompt = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("oneshot file must contain valid UTF-8") from exc
+        if not prompt.strip():
+            raise ValueError("oneshot file must contain a non-empty prompt")
+        return prompt
+    finally:
+        os.close(descriptor)
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:

@@ -408,7 +408,7 @@ def _apply_profile_override() -> None:
     # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
     # The exception is command-argv passthrough regions such as `mcp add --args`.
     value_flags = {
-        "-z", "--oneshot",
+        "-z", "--oneshot", "--oneshot-file",
         "-m", "--model",
         "--provider",
         "-t", "--toolsets",
@@ -12732,7 +12732,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 # need to); extra entries would make us skip a real positional.
 _TOP_LEVEL_VALUE_FLAGS = frozenset(
     {
-        "-z", "--oneshot",
+        "-z", "--oneshot", "--oneshot-file",
         "-m", "--model",
         "--provider",
         "-t", "--toolsets",
@@ -12955,7 +12955,11 @@ def _try_termux_fast_cli_launch() -> bool:
 
     first = _first_positional_argv()
     has_oneshot = any(
-        arg == "-z" or arg == "--oneshot" or arg.startswith("--oneshot=")
+        arg == "-z"
+        or arg == "--oneshot"
+        or arg.startswith("--oneshot=")
+        or arg == "--oneshot-file"
+        or arg.startswith("--oneshot-file=")
         for arg in argv
     )
     if not has_oneshot and first not in {None, "chat"}:
@@ -12971,13 +12975,22 @@ def _try_termux_fast_cli_launch() -> bool:
         _print_version_info(check_updates=False)
         return True
 
-    if getattr(args, "oneshot", None):
-        _prepare_agent_startup(args)
+    if getattr(args, "oneshot", None) or getattr(args, "oneshot_file", None):
         from hermes_cli.oneshot import run_oneshot
+
+        prompt = getattr(args, "oneshot", None)
+        if prompt is None:
+            from hermes_cli.oneshot import read_oneshot_file
+
+            try:
+                prompt = read_oneshot_file(args.oneshot_file)
+            except ValueError as exc:
+                parser.error(str(exc))
+        _prepare_agent_startup(args)
 
         sys.exit(
             run_oneshot(
-                args.oneshot,
+                prompt,
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
@@ -15127,14 +15140,22 @@ def main():
     # trigger consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
 
-    # Handle top-level --oneshot / -z: single-shot mode, stdout = final
-    # response only, nothing else. Bypasses cli.py entirely.
-    if getattr(args, "oneshot", None):
+    # Handle top-level one-shot mode: stdout = final response only. Bypasses cli.py.
+    if getattr(args, "oneshot", None) or getattr(args, "oneshot_file", None):
         from hermes_cli.oneshot import run_oneshot
+
+        prompt = getattr(args, "oneshot", None)
+        if prompt is None:
+            from hermes_cli.oneshot import read_oneshot_file
+
+            try:
+                prompt = read_oneshot_file(args.oneshot_file)
+            except ValueError as exc:
+                parser.error(str(exc))
 
         sys.exit(
             run_oneshot(
-                args.oneshot,
+                prompt,
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),

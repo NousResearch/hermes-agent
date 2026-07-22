@@ -99,7 +99,8 @@ def build_top_level_parser():
     parser.add_argument(
         "--version", "-V", action="store_true", help="Show version and exit"
     )
-    parser.add_argument(
+    oneshot_group = parser.add_mutually_exclusive_group()
+    oneshot_group.add_argument(
         "-z",
         "--oneshot",
         metavar="PROMPT",
@@ -110,6 +111,17 @@ def build_top_level_parser():
             "previews, no session_id line. Tools, memory, rules, and "
             "AGENTS.md in the CWD are loaded as normal; approvals are "
             "auto-bypassed. Intended for scripts / pipes."
+        ),
+    )
+    oneshot_group.add_argument(
+        "--oneshot-file",
+        metavar="PATH",
+        default=None,
+        help=(
+            "One-shot mode with the prompt read from a private regular UTF-8 file. "
+            "The file must be owned by the current user, grant no group/other "
+            "permissions on POSIX, and be at most 4 MiB. This keeps sensitive "
+            "prompts out of process arguments."
         ),
     )
     parser.add_argument(

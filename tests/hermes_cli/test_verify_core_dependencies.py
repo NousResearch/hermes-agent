@@ -176,7 +176,10 @@ class TestVerifyCoreDependencies:
             "ptyprocess is gated by sys_platform != 'win32' and must be filtered "
             f"out on Windows; full probe argv was: {probe}"
         )
-        assert "pathspec" in probe, "core deps without markers must be checked"
+        assert any(str(a) == "pathspec" or str(a).startswith("pathspec==") for a in probe), (
+            "core deps without markers must be checked (bare name or exact pin); "
+            f"full probe argv was: {probe}"
+        )
 
     def test_no_pyproject_is_noop(self, tmp_path, monkeypatch):
         """If pyproject.toml is missing (unusual but possible in some test

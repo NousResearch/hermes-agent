@@ -21,8 +21,10 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from hermes_cli.main import (
+    _dashboard_systemd_unit_candidates,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _restart_dashboard_systemd_services,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -45,16 +47,20 @@ def _refresh_bindings_against_live_module():
     ordering within the worker.  The fix lives in the test module because
     the two pollutants above are load-bearing for their own tests.
     """
+    global _dashboard_systemd_unit_candidates
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _restart_dashboard_systemd_services
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
     if live is None:
         live = importlib.import_module("hermes_cli.main")
 
+    _dashboard_systemd_unit_candidates = live._dashboard_systemd_unit_candidates
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _restart_dashboard_systemd_services = live._restart_dashboard_systemd_services
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -253,6 +259,7 @@ class TestKillStaleDashboardPosix:
 
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
+             patch("hermes_cli.main._restart_dashboard_systemd_services", return_value=[]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes()
@@ -285,6 +292,7 @@ class TestKillStaleDashboardPosix:
 
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[99999]), \
+             patch("hermes_cli.main._restart_dashboard_systemd_services", return_value=[]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"), \
              patch("time.monotonic", side_effect=[0.0] + [10.0] * 20):
@@ -308,6 +316,7 @@ class TestKillStaleDashboardPosix:
 
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[12345]), \
+             patch("hermes_cli.main._restart_dashboard_systemd_services", return_value=[]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes()  # must not raise
@@ -324,6 +333,7 @@ class TestKillStaleDashboardPosix:
 
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[12345]), \
+             patch("hermes_cli.main._restart_dashboard_systemd_services", return_value=[]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes()
@@ -376,6 +386,96 @@ class TestKillStaleDashboardWindows:
         out = capsys.readouterr().out
         assert "✗ failed to stop PID 12345" in out
         assert "Access is denied" in out
+
+
+class TestDashboardSystemdRestart:
+    """Dashboard services are restarted after update stops stale backends."""
+
+    def test_detects_loaded_known_user_unit(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        calls: list[list[str]] = []
+
+        def fake_run(args, *a, **kw):
+            calls.append(list(args))
+            joined = " ".join(args)
+            if "show hermes-dashboard.service" in joined and "LoadState" in joined:
+                return MagicMock(returncode=0, stdout="loaded\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("shutil.which", return_value="/bin/systemctl"), \
+             patch("subprocess.run", side_effect=fake_run):
+            assert _dashboard_systemd_unit_candidates(system=False) == [
+                "hermes-dashboard.service"
+            ]
+
+        assert calls[0][:2] == ["systemctl", "--user"]
+
+    def test_detects_wildcard_unit_only_when_execstart_is_dashboard(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        def fake_run(args, *a, **kw):
+            joined = " ".join(args)
+            if "--property=LoadState" in joined:
+                return MagicMock(returncode=1, stdout="not-found\n", stderr="")
+            if "list-unit-files" in joined:
+                return MagicMock(
+                    returncode=0,
+                    stdout="my-hermes-dashboard.service enabled\nother-dashboard.service enabled\n",
+                    stderr="",
+                )
+            if "show my-hermes-dashboard.service" in joined and "ExecStart" in joined:
+                return MagicMock(
+                    returncode=0,
+                    stdout="{ path=/usr/bin/hermes ; argv[]=hermes dashboard --port 9119 }\n",
+                    stderr="",
+                )
+            if "show other-dashboard.service" in joined and "ExecStart" in joined:
+                return MagicMock(returncode=0, stdout="/usr/bin/grafana-server\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("shutil.which", return_value="/bin/systemctl"), \
+             patch("subprocess.run", side_effect=fake_run):
+            assert _dashboard_systemd_unit_candidates(system=False) == [
+                "my-hermes-dashboard.service"
+            ]
+
+    def test_restart_enables_and_restarts_detected_unit(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        commands: list[list[str]] = []
+
+        def fake_candidates(*, system: bool):
+            return ["hermes-dashboard.service"] if not system else []
+
+        def fake_run(args, *a, **kw):
+            commands.append(list(args))
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("hermes_cli.main._dashboard_systemd_unit_candidates", side_effect=fake_candidates), \
+             patch("subprocess.run", side_effect=fake_run):
+            assert _restart_dashboard_systemd_services() == [
+                ("user:hermes-dashboard.service", True, "")
+            ]
+
+        assert ["systemctl", "--user", "daemon-reload"] in commands
+        assert ["systemctl", "--user", "enable", "hermes-dashboard.service"] in commands
+        assert ["systemctl", "--user", "restart", "hermes-dashboard.service"] in commands
+
+    def test_kill_restarts_systemd_service_instead_of_manual_hint(self, capsys):
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]), \
+             patch("hermes_cli.main._restart_dashboard_systemd_services", return_value=[
+                 ("user:hermes-dashboard.service", True, "")
+             ]), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes()
+
+        out = capsys.readouterr().out
+        assert "✓ restarted user:hermes-dashboard.service" in out
+        assert "Restart the dashboard when you're ready" not in out
 
 
 class TestBackCompatAlias:

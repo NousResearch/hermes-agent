@@ -6405,6 +6405,135 @@ def _print_curator_recent_run_notice() -> None:
         pass
 
 
+_DASHBOARD_SYSTEMD_UNIT_NAMES: tuple[str, ...] = (
+    "hermes-dashboard.service",
+    "hermes-webui.service",
+    "hermes-web-ui.service",
+)
+
+
+def _systemd_scope_args(*, system: bool) -> list[str]:
+    return ["systemctl"] if system else ["systemctl", "--user"]
+
+
+def _dashboard_systemd_unit_candidates(*, system: bool) -> list[str]:
+    """Return installed systemd units that look like Hermes dashboard services.
+
+    Hermes does not ship a first-class dashboard service manager yet, but some
+    deployments keep the web UI alive with a local systemd unit.  ``hermes
+    update`` deliberately stops stale ``hermes dashboard`` backends after
+    rebuilding the frontend; if one of those backends belongs to systemd, the
+    update path should hand control back to systemd instead of leaving the web
+    UI offline.
+
+    We keep the detection conservative: known unit names are accepted only if
+    present, and wildcard matches must have an ``ExecStart`` containing a
+    Hermes dashboard command.
+    """
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        return []
+    if not shutil.which("systemctl"):
+        return []
+
+    scope = _systemd_scope_args(system=system)
+    candidates: list[str] = []
+
+    for unit in _DASHBOARD_SYSTEMD_UNIT_NAMES:
+        try:
+            result = subprocess.run(
+                scope + ["show", unit, "--property=LoadState", "--value"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode == 0 and (result.stdout or "").strip() == "loaded":
+            candidates.append(unit)
+
+    try:
+        result = subprocess.run(
+            scope
+            + [
+                "list-unit-files",
+                "hermes*dashboard*.service",
+                "hermes*webui*.service",
+                "hermes*web-ui*.service",
+                "--no-legend",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        result = None
+
+    if result and result.returncode == 0:
+        for line in (result.stdout or "").splitlines():
+            parts = line.split()
+            if not parts or not parts[0].endswith(".service"):
+                continue
+            unit = parts[0]
+            if unit in candidates:
+                continue
+            try:
+                show = subprocess.run(
+                    scope + ["show", unit, "--property=ExecStart", "--value"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                continue
+            exec_start = show.stdout or ""
+            if show.returncode == 0 and (
+                "hermes dashboard" in exec_start
+                or "hermes_cli.main dashboard" in exec_start
+                or "hermes_cli/main.py dashboard" in exec_start
+            ):
+                candidates.append(unit)
+
+    return candidates
+
+
+def _restart_dashboard_systemd_services() -> list[tuple[str, bool, str]]:
+    """Restart installed Hermes dashboard systemd units, returning outcomes."""
+    outcomes: list[tuple[str, bool, str]] = []
+    for system in (False, True):
+        units = _dashboard_systemd_unit_candidates(system=system)
+        if not units:
+            continue
+        scope = _systemd_scope_args(system=system)
+        scope_label = "system" if system else "user"
+        for unit in units:
+            try:
+                subprocess.run(
+                    scope + ["daemon-reload"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                subprocess.run(
+                    scope + ["enable", unit],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                result = subprocess.run(
+                    scope + ["restart", unit],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+                outcomes.append((f"{scope_label}:{unit}", False, str(e)))
+                continue
+            msg = (result.stderr or result.stdout or "").strip()
+            outcomes.append((f"{scope_label}:{unit}", result.returncode == 0, msg))
+    return outcomes
+
+
 def _format_time_ago(iso_ts: str) -> str:
     """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
     try:
@@ -6540,8 +6669,17 @@ def _kill_stale_dashboard_processes(
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
     if killed:
-        print("  Restart the dashboard when you're ready:")
-        print("    hermes dashboard --port <port>")
+        restart_outcomes = _restart_dashboard_systemd_services()
+        if restart_outcomes:
+            print("  Restarting dashboard systemd service(s):")
+            for unit, ok, msg in restart_outcomes:
+                if ok:
+                    print(f"    ✓ restarted {unit}")
+                else:
+                    print(f"    ✗ failed to restart {unit}: {msg or 'unknown error'}")
+        else:
+            print("  Restart the dashboard when you're ready:")
+            print("    hermes dashboard --port <port>")
 
 
 # Back-compat alias: some tests and any external callers may import the old

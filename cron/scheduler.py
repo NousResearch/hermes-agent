@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -40,7 +41,10 @@ from typing import Any, List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags,
+    windows_detach_flags_without_breakaway,
+)
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
@@ -2110,6 +2114,144 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
+# ERROR_ACCESS_DENIED. Some Windows/job-object configurations surface a
+# refused CREATE_BREAKAWAY_FROM_JOB request as WinError 5. Modern nested-job
+# configurations may instead create the child successfully while silently
+# retaining it in every job that forbids breakaway; in that case no fallback
+# is possible or needed, and the documented weaker survival guarantee applies.
+_WINERROR_ACCESS_DENIED = 5
+
+
+def _parent_in_job() -> bool:
+    """Best-effort check: is this process inside a Win32 job object?
+
+    Used only to tighten the legacy/configuration-specific WinError-5
+    fallback below. If the parent is in no job, ERROR_ACCESS_DENIED cannot be
+    a job breakaway refusal, so retrying without the flag would be pointless.
+    Returns True on query failure so a genuine WinError-5 breakaway refusal is
+    not suppressed merely because job membership could not be inspected.
+    """
+    if sys.platform != "win32":  # pragma: no cover - Windows-only branch
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        in_job = wintypes.BOOL(False)
+        ok = kernel32.IsProcessInJob(
+            kernel32.GetCurrentProcess(), None, ctypes.byref(in_job)
+        )
+        if not ok:
+            return True
+        return bool(in_job.value)
+    except Exception:
+        return True
+
+
+def _is_breakaway_denied(exc: OSError) -> bool:
+    """True iff *exc* plausibly is a breakaway-refusal constructor error.
+
+    Some Windows/job-object configurations report a refused
+    ``CREATE_BREAKAWAY_FROM_JOB`` request as ERROR_ACCESS_DENIED (WinError 5).
+    Modern nested-job configurations may instead succeed while retaining the
+    child in a forbidding job, so this predicate is a narrow compatibility
+    fallback rather than a universal detector.
+
+    Any other ``OSError`` (missing interpreter, bad cwd, handle exhaustion,
+    ...) propagates rather than triggering a second creation attempt. The
+    job-membership check rules out unrelated access-denied failures whenever
+    the parent is known not to be in a job.
+    """
+    if getattr(exc, "winerror", None) != _WINERROR_ACCESS_DENIED:
+        return False
+    return _parent_in_job()
+
+
+def _run_script_windows_detached(
+    argv: list, *, timeout: float, cwd: str, env: dict
+) -> tuple:
+    """Launch a cron script detached from the parent Windows job object,
+    with file-backed (not pipe-backed) output capture.
+
+    Returns ``(returncode, stdout_text, stderr_text)``.
+
+    Design invariants (PR #43252 rework; see the review thread):
+
+    * **At-most-once execution.** Only the ``subprocess.Popen`` constructor
+      can be retried, and only when a parent-in-job launch surfaces the
+      legacy/configuration-specific breakaway refusal as WinError 5. Modern
+      nested jobs may instead accept creation while silently retaining the
+      child in a forbidding job; that is one successful construction, not a
+      retry condition. Once a ``Popen`` object exists, no later path can spawn
+      another child: wait, timeout, decode and redaction failures propagate.
+    * **Durable output sink.** stdout/stderr are unnamed ``TemporaryFile``
+      handles the child inherits. Unlike anonymous pipes -- whose read end
+      dies with the parent, killing an output-producing "detached" child
+      the next time it writes -- the inherited file handles keep the file
+      alive until the child (and any grandchildren holding the handle)
+      exit. A script that outlives Hermes can therefore keep writing and
+      complete its side effects. Windows deletes the ``O_TEMPORARY`` file
+      when the last handle closes, so no unredacted output is left on
+      disk on any path, including parent death.
+    * **No console dependency.** stdin is ``DEVNULL``: a detached child
+      has no console, and inheriting the parent's console stdin would
+      leave a dangling handle after parent exit. Cron scripts are
+      non-interactive by contract.
+    * **Timeout parity.** Timeout kills the direct child
+      (``TerminateProcess``), mirroring ``subprocess.run`` semantics, and
+      never retries.
+
+    Contract level: L2. If Hermes dies mid-run the child survives and
+    completes its side effects, but its output is not recovered after
+    restart -- the occurrence was already claimed (``claim_dispatch``) or
+    advanced (``advance_next_run``) before dispatch, so it is not re-run.
+    """
+    with tempfile.TemporaryFile() as stdout_f, tempfile.TemporaryFile() as stderr_f:
+        common = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": stdout_f,
+            "stderr": stderr_f,
+            "cwd": cwd,
+            "env": env,
+        }
+        try:
+            proc = subprocess.Popen(
+                argv, creationflags=windows_detach_flags(), **common
+            )
+        except OSError as exc:
+            if not _is_breakaway_denied(exc):
+                raise
+            logger.info(
+                "Windows reported CREATE_BREAKAWAY_FROM_JOB access denied for "
+                "cron script interpreter %r while the parent is in a job; "
+                "retrying once without breakaway. The child stays free of "
+                "the console but may still be reaped if a retaining job is "
+                "torn down.",
+                argv[0] if argv else "<empty>",
+            )
+            proc = subprocess.Popen(
+                argv,
+                creationflags=windows_detach_flags_without_breakaway(),
+                **common,
+            )
+        # A child process now exists: nothing below may create another.
+        try:
+            returncode = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise
+        stdout_f.seek(0)
+        stdout = stdout_f.read().decode("utf-8", errors="replace")
+        stderr_f.seek(0)
+        stderr = stderr_f.read().decode("utf-8", errors="replace")
+    # Match the universal-newline behaviour of text-mode capture.
+    stdout = stdout.replace("\r\n", "\n").replace("\r", "\n")
+    stderr = stderr.replace("\r\n", "\n").replace("\r", "\n")
+    return returncode, stdout, stderr
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2197,26 +2339,33 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        popen_kwargs = {}
-        if sys.platform == "win32":
-            popen_kwargs = {
-                "creationflags": windows_hide_flags(),
-                "encoding": "utf-8",
-                "errors": "replace",
-            }
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=script_timeout,
-            cwd=str(path.parent),
-            env=env,
-            **popen_kwargs,
-        )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        if sys.platform == "win32":
+            # Detached launch with file-backed capture so the script can
+            # survive parent/job-object teardown without losing its output
+            # sink (PR #43252). Constructor-only breakaway fallback keeps
+            # execution at-most-once. POSIX behaviour is unchanged below.
+            returncode, stdout, stderr = _run_script_windows_detached(
+                argv,
+                timeout=script_timeout,
+                cwd=str(path.parent),
+                env=env,
+            )
+        else:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=script_timeout,
+                cwd=str(path.parent),
+                env=env,
+            )
+            returncode = result.returncode
+            stdout = result.stdout
+            stderr = result.stderr
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2228,8 +2377,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if returncode != 0:
+            parts = [f"Script exited with code {returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:

@@ -225,9 +225,27 @@ Commands approved with "always" are saved to `~/.hermes/config.yaml`:
 command_allowlist:
   - rm
   - systemctl
+  - pattern: chmod
+    args_glob:
+      - ~/.hermes/**
 ```
 
-These patterns are loaded at startup and silently approved in all future sessions.
+String patterns are loaded at startup and silently approved in all future sessions. Structured entries can scope an allowed verb to path-shaped arguments. For example, the `chmod` rule above allows `chmod +x ~/.hermes/skills/foo/run.sh` without allowing `chmod` against `/etc` or `/usr`.
+
+Compound shell commands (`a && b`, `a | b`, `a ; b`, redirection, subshells, and heredocs) are not matched by the allowlist shortcut; each risky operation must be approved independently.
+
+### Deployment-Specific Approval Rules
+
+Admins can require approval for local commands that are operationally disruptive in their deployment even when the command is not universally dangerous:
+
+```yaml
+approvals:
+  command_approval_required:
+    - "systemctl --user restart hermes-gateway*"
+    - "systemctl --user restart openclaw-gateway*"
+```
+
+These rules use the same approval flow as built-in dangerous-command patterns. Entries may be exact commands, command globs, bare verbs, or structured rules with `pattern` and `args_glob`.
 
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.

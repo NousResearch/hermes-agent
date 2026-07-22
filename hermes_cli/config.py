@@ -2681,10 +2681,16 @@ DEFAULT_CONFIG = {
     # Messaging approvals arrive as a push notification the user may not see
     # immediately — 60s proved too tight on Telegram/Discord (the prompt
     # expired before the user reached their phone), so the default is 300.
+    #
+    # command_approval_required — deployment-local command patterns that must
+    # enter the same approval flow as built-in dangerous commands. Entries may
+    # be exact commands, shell-style command globs, bare verbs, or structured
+    # rules with pattern/args_glob.
     "approvals": {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        "command_approval_required": [],
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable
@@ -2714,7 +2720,10 @@ DEFAULT_CONFIG = {
         "destructive_slash_confirm": True,
     },
 
-    # Permanently allowed dangerous command patterns (added via "always" approval)
+    # Permanently allowed dangerous command patterns (added via "always" approval).
+    # Entries may be legacy strings ("recursive delete", "podman *") or
+    # structured path-scoped rules:
+    #   {"pattern": "chmod", "args_glob": ["~/.hermes/**"]}
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},

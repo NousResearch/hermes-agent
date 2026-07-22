@@ -24,7 +24,6 @@ import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getSessionMessages, triggerCronJob } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
-import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
@@ -95,6 +94,10 @@ import { titlebarControlsPosition } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
+import {
+  advanceTranscriptScope,
+  refreshActiveTranscript as refreshActivePersistedTranscript
+} from './active-transcript-refresh'
 import { ContribWiringContext } from './context'
 import { useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
@@ -126,12 +129,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
-  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptGenerationRef = useRef(0)
+  const activeTranscriptScopeKeyRef = useRef('')
+  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
 
   const gatewayState = useStore($gatewayState)
+  const connection = useStore($connection)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
@@ -148,6 +155,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
+
+  const activeTranscriptScopeKey = [
+    connection?.mode ?? 'none',
+    connection?.baseUrl ?? '',
+    connection?.profile ?? '',
+    activeGatewayProfile,
+    routeToken,
+    selectedStoredSessionId ?? '',
+    activeSessionId ?? ''
+  ].join('\u0000')
+
+  advanceTranscriptScope(
+    { generationRef: activeTranscriptGenerationRef, scopeKeyRef: activeTranscriptScopeKeyRef },
+    activeTranscriptScopeKey
+  )
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
 
   const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
@@ -301,44 +323,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
-  // Refresh the open messaging transcript (inbound platform turns arrive via
-  // the background gateway, not the desktop websocket). Signature-gated so a
-  // no-change poll doesn't churn the thread.
-  const refreshActiveMessagingTranscript = useCallback(async () => {
-    const storedSessionId = selectedStoredSessionIdRef.current
-    const runtimeSessionId = activeSessionIdRef.current
-
-    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
-      return
-    }
-
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
-
-    if (!stored || !isMessagingSource(stored.source)) {
-      return
-    }
-
-    try {
-      const latest = await getSessionMessages(storedSessionId, stored.profile)
-      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
-      const sig = sessionMessagesSignature(latest.messages)
-
-      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
-        return
-      }
-
-      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
-      const messages = toChatMessages(latest.messages)
-
-      updateSessionState(
-        runtimeSessionId,
-        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
-        storedSessionId
-      )
-    } catch {
-      // Non-fatal: next poll or manual refresh can hydrate.
-    }
-  }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
+  // Refresh the open persisted transcript. Messaging turns and ordinary chats
+  // written by another Desktop both bypass this renderer's websocket.
+  const refreshActiveTranscript = useCallback(
+    () =>
+      refreshActivePersistedTranscript({
+        activeSessionIdRef,
+        busyRef,
+        findStoredSession: storedSessionId =>
+          $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)),
+        generationRef: activeTranscriptGenerationRef,
+        selectedStoredSessionIdRef,
+        sessionStateByRuntimeIdRef,
+        signatureRef: activeTranscriptSignatureRef,
+        updateSessionState
+      }),
+    [activeSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState]
+  )
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
@@ -427,7 +429,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill (both are nanostores — the blanket
   // invalidateQueries on swap doesn't touch them).
-  const activeGatewayProfile = useStore($activeGatewayProfile)
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
   useEffect(() => {
@@ -666,7 +667,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     activeSessionId,
     freshDraftReady,
     gatewayState,
-    refreshActiveMessagingTranscript,
+    refreshActiveTranscript,
     refreshCronJobs,
     refreshCurrentModel,
     refreshHermesConfig,
@@ -842,7 +843,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // (preview's monitor/devtools cluster, …) arrive as registry contributions.
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
-  const connection = useStore($connection)
   const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
   // Exact vertical centering: titlebarControlsPosition() returns
   // (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2, but TitlebarControls

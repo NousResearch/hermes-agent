@@ -37,7 +37,7 @@ describe('useBackgroundSync', () => {
         activeSessionId: null,
         freshDraftReady: false,
         gatewayState: 'open',
-        refreshActiveMessagingTranscript: vi.fn().mockResolvedValue(undefined),
+        refreshActiveTranscript: vi.fn().mockResolvedValue(undefined),
         refreshCronJobs: vi.fn().mockResolvedValue(undefined),
         refreshCurrentModel: vi.fn().mockResolvedValue(undefined),
         refreshHermesConfig: vi.fn().mockResolvedValue(undefined),
@@ -67,18 +67,90 @@ describe('useBackgroundSync', () => {
     expect(pollOptions?.shouldApply?.()).toBe(false)
   })
 
-  it('does not poll local-only sessions', () => {
-    $connection.set({ mode: 'local' } as never)
-    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+  it('refreshes the open local transcript while a shared gateway is visible', () => {
+    const refreshActiveTranscript = vi.fn().mockResolvedValue(undefined)
 
     renderHook(() =>
       useBackgroundSync({
         activeGatewayProfile: 'san',
         activeIsMessaging: false,
-        activeSessionId: null,
+        activeSessionId: 'runtime-local',
         freshDraftReady: false,
         gatewayState: 'open',
-        refreshActiveMessagingTranscript: vi.fn().mockResolvedValue(undefined),
+        refreshActiveTranscript,
+        refreshCronJobs: vi.fn().mockResolvedValue(undefined),
+        refreshCurrentModel: vi.fn().mockResolvedValue(undefined),
+        refreshHermesConfig: vi.fn().mockResolvedValue(undefined),
+        refreshMessagingSessions: vi.fn().mockResolvedValue(undefined),
+        refreshSessions: vi.fn().mockResolvedValue(undefined),
+        requestGateway: vi.fn().mockResolvedValue({ sessions: [] })
+      })
+    )
+
+    expect(refreshActiveTranscript).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(refreshActiveTranscript).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces slow open-transcript refreshes', async () => {
+    let release: (() => void) | undefined
+
+    const refreshActiveTranscript = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          release = resolve
+        })
+    )
+
+    renderHook(() =>
+      useBackgroundSync({
+        activeGatewayProfile: 'san',
+        activeIsMessaging: false,
+        activeSessionId: 'runtime-local',
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveTranscript,
+        refreshCronJobs: vi.fn().mockResolvedValue(undefined),
+        refreshCurrentModel: vi.fn().mockResolvedValue(undefined),
+        refreshHermesConfig: vi.fn().mockResolvedValue(undefined),
+        refreshMessagingSessions: vi.fn().mockResolvedValue(undefined),
+        refreshSessions: vi.fn().mockResolvedValue(undefined),
+        requestGateway: vi.fn().mockResolvedValue({ sessions: [] })
+      })
+    )
+
+    await act(async () => {
+      vi.advanceTimersByTime(4_000)
+    })
+
+    expect(refreshActiveTranscript).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(refreshActiveTranscript).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not poll local-only sessions', () => {
+    $connection.set({ mode: 'local' } as never)
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+    const refreshActiveTranscript = vi.fn().mockResolvedValue(undefined)
+
+    renderHook(() =>
+      useBackgroundSync({
+        activeGatewayProfile: 'san',
+        activeIsMessaging: false,
+        activeSessionId: 'runtime-local',
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveTranscript,
         refreshCronJobs: vi.fn().mockResolvedValue(undefined),
         refreshCurrentModel: vi.fn().mockResolvedValue(undefined),
         refreshHermesConfig: vi.fn().mockResolvedValue(undefined),
@@ -93,6 +165,7 @@ describe('useBackgroundSync', () => {
     })
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
+    expect(refreshActiveTranscript).not.toHaveBeenCalled()
   })
 })
 

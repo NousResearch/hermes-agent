@@ -19,6 +19,7 @@ import type { GatewayRequester } from '../types'
 const CRON_POLL_INTERVAL_MS = 30_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+const ACTIVE_LOCAL_SESSION_POLL_INTERVAL_MS = 2_000
 // Another Desktop connected to the same remote gateway writes sessions without
 // emitting an event into this renderer's websocket. Reconcile the backend-owned
 // list while visible so cross-device chats appear without a manual reload.
@@ -104,7 +105,7 @@ interface BackgroundSyncParams {
   activeSessionId: null | string
   freshDraftReady: boolean
   gatewayState: string
-  refreshActiveMessagingTranscript: () => Promise<unknown> | unknown
+  refreshActiveTranscript: () => Promise<unknown> | unknown
   refreshCronJobs: () => Promise<unknown> | unknown
   refreshCurrentModel: (force?: boolean) => Promise<unknown> | unknown
   refreshHermesConfig: () => Promise<unknown> | unknown
@@ -147,7 +148,7 @@ export function useBackgroundSync({
   activeSessionId,
   freshDraftReady,
   gatewayState,
-  refreshActiveMessagingTranscript,
+  refreshActiveTranscript,
   refreshCronJobs,
   refreshCurrentModel,
   refreshHermesConfig,
@@ -272,8 +273,54 @@ export function useBackgroundSync({
     }
   }, [gatewayState, refreshSessions, sharedGatewayKey])
 
-  // Only the open messaging transcript needs its own poll — local chats are
-  // live over the websocket already.
+  // Another Desktop can append to the currently open ordinary chat without
+  // sending message events to this renderer. Reconcile that persisted
+  // transcript while visible; the callback itself skips active local streams.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeSessionId || activeIsMessaging || !sharedGatewayKey) {
+      return
+    }
+
+    let active = true
+    let inFlight = false
+
+    const runActiveTranscriptRefresh = async () => {
+      if (inFlight) {
+        return
+      }
+
+      inFlight = true
+
+      try {
+        await refreshActiveTranscript()
+      } catch {
+        // Non-fatal: the next visible tick can reconcile again.
+      } finally {
+        if (active) {
+          inFlight = false
+        }
+      }
+    }
+
+    const dispose = visiblePoll(
+      ACTIVE_LOCAL_SESSION_POLL_INTERVAL_MS,
+      () => void runActiveTranscriptRefresh()
+    )
+
+    return () => {
+      active = false
+      dispose()
+    }
+  }, [
+    activeIsMessaging,
+    activeSessionId,
+    gatewayState,
+    refreshActiveTranscript,
+    sharedGatewayKey
+  ])
+
+  // Messaging transcripts need the same reconciliation on every connection:
+  // inbound platform turns arrive through the background gateway.
   useEffect(() => {
     if (gatewayState !== 'open' || !activeIsMessaging) {
       return
@@ -281,13 +328,13 @@ export function useBackgroundSync({
 
     const dispose = visiblePoll(
       ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
-      () => void refreshActiveMessagingTranscript()
+      () => void refreshActiveTranscript()
     )
 
-    void refreshActiveMessagingTranscript()
+    void refreshActiveTranscript()
 
     return dispose
-  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
+  }, [activeIsMessaging, gatewayState, refreshActiveTranscript])
 
   // A fresh new-session draft (gateway open, no active session) re-pulls the
   // model + config so the composer pill reflects the profile default.

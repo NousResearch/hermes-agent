@@ -42,6 +42,20 @@ describe('sessionMessagesSignature', () => {
     expect(sessionMessagesSignature([msg('user', 'hi')])).not.toBe(sessionMessagesSignature([msg('user', 'yo')]))
   })
 
+  it('changes when reasoning metadata changes', () => {
+    const before = { ...msg('assistant', 'same'), reasoning_content: 'first' }
+    const after = { ...msg('assistant', 'same'), reasoning_content: 'second' }
+
+    expect(sessionMessagesSignature([before])).not.toBe(sessionMessagesSignature([after]))
+  })
+
+  it('changes when tool-call metadata changes', () => {
+    const before = { ...msg('assistant', 'same'), tool_calls: [{ id: 'call-1', function: { name: 'one' } }] }
+    const after = { ...msg('assistant', 'same'), tool_calls: [{ id: 'call-1', function: { name: 'two' } }] }
+
+    expect(sessionMessagesSignature([before])).not.toBe(sessionMessagesSignature([after]))
+  })
+
   it('changes when a message is appended', () => {
     const one = [msg('user', 'hi')]
     expect(sessionMessagesSignature(one)).not.toBe(sessionMessagesSignature([...one, msg('assistant', 'hey')]))

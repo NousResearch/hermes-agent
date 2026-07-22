@@ -1273,6 +1273,54 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
 
 
+def test_load_enabled_toolsets_honors_disabled_project_on_focus_path(monkeypatch):
+    """#54433 review: focus/coding posture must not re-add `project` when disabled."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    # Focus path calls _maybe_with_project(selection) without an explicit cfg,
+    # so the helpers fall through to _load_cfg().
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {"disabled_toolsets": ["project"]}},
+    )
+
+    result = server._load_enabled_toolsets()
+    assert result == ["coding", "figma"]
+    assert "project" not in result
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_configured_fallback(
+    monkeypatch,
+):
+    """#54433 review: configured/fallback path must not re-add disabled `project`."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.config as config_mod
+    import hermes_cli.tools_config as tools_config_mod
+
+    # Force the normal/configured fallback branch (no coding posture selection).
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    cfg = {
+        "agent": {"disabled_toolsets": ["project"]},
+        "platform_toolsets": {"cli": ["memory", "web"]},
+    }
+    monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        tools_config_mod,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory", "web"},
+    )
+
+    result = server._load_enabled_toolsets()
+    assert result == ["memory", "web"]
+    assert "project" not in result
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
@@ -11454,3 +11502,26 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_project_toolset_disabled_honors_config():
+    """#54433: agent.disabled_toolsets:[project] must be detected."""
+    assert server._project_toolset_disabled({"agent": {"disabled_toolsets": ["project"]}}) is True
+    assert server._project_toolset_disabled({"agent": {"disabled_toolsets": ["memory"]}}) is False
+    assert server._project_toolset_disabled({"agent": {}}) is False
+    assert server._project_toolset_disabled({}) is False
+
+
+def test_maybe_with_project_adds_unless_disabled():
+    """#54433: the desktop/TUI resolver must NOT fold in `project` when the
+    user disabled it via agent.disabled_toolsets — previously it was added
+    unconditionally, making the disable a no-op on desktop/TUI."""
+    base = {"file", "web"}
+
+    # Not disabled -> project is folded in (preserves desktop behavior).
+    enabled_cfg = {"agent": {"disabled_toolsets": []}}
+    assert server._maybe_with_project(base, enabled_cfg) == {"file", "web", "project"}
+
+    # Disabled -> project must be absent.
+    disabled_cfg = {"agent": {"disabled_toolsets": ["project"]}}
+    assert server._maybe_with_project(base, disabled_cfg) == {"file", "web"}

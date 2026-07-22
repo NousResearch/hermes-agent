@@ -3046,6 +3046,31 @@ def _load_tool_progress_mode() -> str:
     return mode if mode in {"off", "new", "all", "verbose"} else "all"
 
 
+def _project_toolset_disabled(cfg: dict | None = None) -> bool:
+    """True when agent.disabled_toolsets explicitly suppresses `project`.
+
+    The desktop/TUI resolver folds the `project` toolset back in after the
+    generic disable filter in _get_platform_tools (project lives off
+    _HERMES_CORE_TOOLS, so the platform-recovery path can't surface it). That
+    unconditional re-add made `disabled_toolsets: [project]` a no-op on
+    desktop/TUI (#54433). Honor the user's disable here too.
+    """
+    try:
+        cfg = cfg if cfg is not None else _load_cfg()
+        agent_cfg = (cfg.get("agent") or {}) if isinstance(cfg, dict) else {}
+        disabled = agent_cfg.get("disabled_toolsets") or []
+        return any(str(ts) == "project" for ts in disabled)
+    except Exception:
+        return False
+
+
+def _maybe_with_project(toolsets: set[str], cfg: dict | None = None) -> set[str]:
+    """Add the desktop-only `project` toolset unless the user disabled it."""
+    if _project_toolset_disabled(cfg):
+        return set(toolsets)
+    return {*toolsets, "project"}
+
+
 def _load_enabled_toolsets() -> list[str] | None:
     explicit = [
         item.strip()
@@ -3071,7 +3096,8 @@ def _load_enabled_toolsets() -> list[str] | None:
                 # the focus-mode coding posture returns before the fallback path
                 # that normally adds it — without this the desktop loses the
                 # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                # Honor disabled_toolsets: [project] (#54433).
+                return sorted(_maybe_with_project(set(selection)))
         except Exception:
             pass
 
@@ -3187,8 +3213,9 @@ def _load_enabled_toolsets() -> list[str] | None:
         # recovery above — which keys off hermes-cli's tool universe — can't
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
-        # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        # exactly the surface that can follow a project move — unless the user
+        # explicitly disabled it via agent.disabled_toolsets (#54433).
+        return sorted(_maybe_with_project(set(enabled), cfg))
     except Exception:
         if fallback_notice is not None:
             print(

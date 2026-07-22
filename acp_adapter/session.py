@@ -170,6 +170,8 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # ACP client-provided MCP servers for this session (names preserved across agent rebuilds).
+    mcp_servers: List[Any] = field(default_factory=list)
 
 
 class SessionManager:
@@ -596,6 +598,9 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        enabled_toolsets: List[str] | None = None,
+        disabled_toolsets: List[str] | None = None,
+        mcp_server_names: List[str] | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -619,18 +624,26 @@ class SessionManager:
             for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        # Union config MCP names with any session-scoped ACP MCP names so model
+        # switches can rebuild the agent without re-registering live servers.
+        merged_mcp_names: List[str] = []
+        for name in list(mcp_server_names or []) + configured_mcp_servers:
+            if name and name not in merged_mcp_names:
+                merged_mcp_names.append(name)
 
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
+                list(enabled_toolsets) if enabled_toolsets is not None else ["hermes-acp"],
+                mcp_server_names=merged_mcp_names,
             ),
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+        if disabled_toolsets is not None:
+            kwargs["disabled_toolsets"] = list(disabled_toolsets)
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

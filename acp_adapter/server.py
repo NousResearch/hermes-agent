@@ -789,6 +789,58 @@ class HermesACPAgent(acp.Agent):
         loop = asyncio.get_running_loop()
         loop.call_soon(asyncio.create_task, self._send_usage_update(state))
 
+    def _apply_session_mcp_servers(
+        self,
+        state: SessionState,
+        mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse],
+    ) -> None:
+        """Synchronously register ACP MCP servers and refresh the agent tool surface."""
+        from tools.mcp_tool import register_mcp_servers
+        from model_tools import get_tool_definitions
+        from agent.memory_manager import inject_memory_provider_tools
+
+        config_map: dict[str, dict] = {}
+        for server in mcp_servers:
+            name = server.name
+            if isinstance(server, McpServerStdio):
+                config = {
+                    "command": server.command,
+                    "args": list(server.args),
+                    "env": {item.name: item.value for item in server.env},
+                }
+            else:
+                config = {
+                    "url": server.url,
+                    "headers": {item.name: item.value for item in server.headers},
+                }
+            config_map[name] = config
+
+        register_mcp_servers(config_map)
+
+        enabled_toolsets = _expand_acp_enabled_toolsets(
+            getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+            mcp_server_names=[server.name for server in mcp_servers],
+        )
+        state.agent.enabled_toolsets = enabled_toolsets
+        disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
+        state.agent.tools = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        state.agent.valid_tool_names = {
+            tool["function"]["name"] for tool in state.agent.tools or []
+        }
+        inject_memory_provider_tools(state.agent)
+        invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
+        if callable(invalidate):
+            invalidate()
+        logger.info(
+            "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
+            state.session_id,
+            len(state.agent.tools or []),
+        )
+
     async def _register_session_mcp_servers(
         self,
         state: SessionState,
@@ -799,25 +851,7 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from tools.mcp_tool import register_mcp_servers
-
-            config_map: dict[str, dict] = {}
-            for server in mcp_servers:
-                name = server.name
-                if isinstance(server, McpServerStdio):
-                    config = {
-                        "command": server.command,
-                        "args": list(server.args),
-                        "env": {item.name: item.value for item in server.env},
-                    }
-                else:
-                    config = {
-                        "url": server.url,
-                        "headers": {item.name: item.value for item in server.headers},
-                    }
-                config_map[name] = config
-
-            await asyncio.to_thread(register_mcp_servers, config_map)
+            await asyncio.to_thread(self._apply_session_mcp_servers, state, mcp_servers)
         except Exception:
             logger.warning(
                 "Session %s: failed to register ACP MCP servers",
@@ -826,39 +860,28 @@ class HermesACPAgent(acp.Agent):
             )
             return
 
-        try:
-            from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+        # Remember names for toolset preservation across agent rebuilds (model switch).
+        # Live MCP connections stay process-global; we do NOT re-register on rebuild.
+        state.mcp_servers = list(mcp_servers)
 
-            enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=[server.name for server in mcp_servers],
-            )
-            state.agent.enabled_toolsets = enabled_toolsets
-            disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
-            state.agent.tools = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-                quiet_mode=True,
-            )
-            state.agent.valid_tool_names = {
-                tool["function"]["name"] for tool in state.agent.tools or []
-            }
-            inject_memory_provider_tools(state.agent)
-            invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
-            if callable(invalidate):
-                invalidate()
-            logger.info(
-                "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
-                state.session_id,
-                len(state.agent.tools or []),
-            )
-        except Exception:
-            logger.warning(
-                "Session %s: failed to refresh tool surface after ACP MCP registration",
-                state.session_id,
-                exc_info=True,
-            )
+    def _model_switch_agent_kwargs(self, state: SessionState) -> dict[str, Any]:
+        """Carry forward runtime toolset state when rebuilding the agent for a model switch.
+
+        ACP client MCP servers are already registered globally at session start.
+        Reconnecting them on every switch can block for discovery (up to ~120s);
+        preserve the expanded toolsets instead.
+        """
+        enabled = getattr(state.agent, "enabled_toolsets", None)
+        disabled = getattr(state.agent, "disabled_toolsets", None)
+        mcp_names = [
+            getattr(server, "name", None)
+            for server in (getattr(state, "mcp_servers", None) or [])
+        ]
+        return {
+            "enabled_toolsets": list(enabled) if enabled is not None else None,
+            "disabled_toolsets": list(disabled) if disabled is not None else None,
+            "mcp_server_names": [name for name in mcp_names if name],
+        }
 
     # ---- ACP lifecycle ------------------------------------------------------
 
@@ -1794,6 +1817,7 @@ class HermesACPAgent(acp.Agent):
             cwd=state.cwd,
             model=new_model,
             requested_provider=target_provider,
+            **self._model_switch_agent_kwargs(state),
         )
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
@@ -2041,6 +2065,7 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                **self._model_switch_agent_kwargs(state),
             )
             self.session_manager.save_session(session_id)
             logger.info(

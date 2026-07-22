@@ -1903,3 +1903,261 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+    @pytest.mark.asyncio
+    async def test_register_stores_mcp_servers_on_session(self, agent, mock_manager):
+        """Successful ACP MCP registration remembers servers on SessionState."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+
+        server = McpServerStdio(
+            name="session-mcp",
+            command="/usr/bin/mcp",
+            args=[],
+            env=[],
+        )
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert state.mcp_servers == [server]
+
+
+# ---------------------------------------------------------------------------
+# Model switch must preserve session-scoped ACP MCP servers
+# ---------------------------------------------------------------------------
+
+
+class TestModelSwitchPreservesSessionMcp:
+    """BUG-2: rebuilding the agent on model switch must keep ACP MCP toolsets."""
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_preserves_session_mcp_toolsets(self, tmp_path, monkeypatch):
+        from acp.schema import McpServerStdio
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=list(kwargs.get("enabled_toolsets") or ["hermes-acp"]),
+                disabled_toolsets=(
+                    list(kwargs["disabled_toolsets"])
+                    if kwargs.get("disabled_toolsets") is not None
+                    else None
+                ),
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "openrouter/gpt-5"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("openrouter", "openrouter/gpt-4o"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        server = McpServerStdio(
+            name="zed-fs",
+            command="/usr/bin/mcp-fs",
+            args=["--root", "/tmp"],
+            env=[],
+        )
+        fake_tools = [{"function": {"name": "mcp_zed_fs_read"}}]
+        register_calls = []
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+
+            with patch(
+                "tools.mcp_tool.register_mcp_servers",
+                side_effect=lambda cfg: register_calls.append(dict(cfg)) or ["mcp_zed_fs_read"],
+            ), patch("model_tools.get_tool_definitions", return_value=fake_tools):
+                await acp_agent._register_session_mcp_servers(state, [server])
+                assert "mcp-zed-fs" in state.agent.enabled_toolsets
+
+                result = await acp_agent.set_session_model(
+                    model_id="openrouter/gpt-4o",
+                    session_id=state.session_id,
+                )
+
+        assert isinstance(result, SetSessionModelResponse)
+        # Model switch must preserve toolsets without reconnecting MCP servers.
+        assert len(register_calls) == 1
+        assert "mcp-zed-fs" in state.agent.enabled_toolsets
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_does_not_block_on_mcp_reregister(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: model switch must not invoke register_mcp_servers on the event loop."""
+        from acp.schema import McpServerStdio
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=list(kwargs.get("enabled_toolsets") or ["hermes-acp"]),
+                disabled_toolsets=None,
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "openrouter/gpt-5"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("openrouter", "openrouter/gpt-4o"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        server = McpServerStdio(
+            name="slow-mcp",
+            command="/usr/bin/mcp-slow",
+            args=[],
+            env=[],
+        )
+
+        def _hang_register(_cfg):
+            raise AssertionError(
+                "set_session_model must not re-register MCP servers synchronously"
+            )
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            state.mcp_servers = [server]
+            state.agent.enabled_toolsets = ["hermes-acp", "mcp-slow-mcp"]
+
+            with patch("tools.mcp_tool.register_mcp_servers", side_effect=_hang_register):
+                result = await acp_agent.set_session_model(
+                    model_id="openrouter/gpt-4o",
+                    session_id=state.session_id,
+                )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert "mcp-slow-mcp" in state.agent.enabled_toolsets
+
+    def test_cmd_model_preserves_session_mcp_toolsets(self, tmp_path, monkeypatch):
+        from acp.schema import McpServerStdio
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=list(kwargs.get("enabled_toolsets") or ["hermes-acp"]),
+                disabled_toolsets=None,
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "openrouter/gpt-5"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("openrouter", "openrouter/gpt-4o"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        server = McpServerStdio(
+            name="zed-fs",
+            command="/usr/bin/mcp-fs",
+            args=[],
+            env=[],
+        )
+        register_calls = []
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            state.mcp_servers = [server]
+            state.agent.enabled_toolsets = ["hermes-acp", "mcp-zed-fs"]
+
+            with patch(
+                "tools.mcp_tool.register_mcp_servers",
+                side_effect=lambda cfg: register_calls.append(dict(cfg)) or [],
+            ):
+                result = acp_agent._cmd_model("openrouter/gpt-4o", state)
+
+        assert "Model switched" in result
+        assert register_calls == []
+        assert "mcp-zed-fs" in state.agent.enabled_toolsets

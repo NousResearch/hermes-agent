@@ -39,6 +39,8 @@ from tools.transcription_tools import (
     _render_command_stt_template,
     _resolve_command_stt_provider_config,
     _transcribe_command_stt,
+    _transcribe_whispercpp_server,
+    _whispercpp_server_spec,
     transcribe_audio,
 )
 
@@ -432,6 +434,43 @@ class TestTranscribeCommandSTT:
         )
         assert result["transcript"] == "fr"
 
+    def test_request_language_override_wins_provider_config(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
+            "language": "en",
+        }
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, language_override="zh",
+        )
+        assert result["success"] is True
+        assert result["transcript"] == "zh"
+        assert result["language"] == "zh"
+
+    def test_request_prompt_is_available_to_command_provider(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        interpreter = sys.executable
+        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        cfg = {
+            "command": f'"{interpreter}" -c "{payload}" {{prompt}} {{output_path}}',
+        }
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, prompt_override="阿尔法学院",
+        )
+        assert result["success"] is True
+        assert result["transcript"] == "阿尔法学院"
+
+    def test_request_language_requires_provider_placeholder(self, tmp_path):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {"command": _python_emit_command("should not run"), "language": "en"}
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli", cfg, {}, language_override="zh",
+        )
+        assert result["success"] is False
+        assert "{language}" in result["error"]
+
     def test_language_falls_back_to_stt_section(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         interpreter = sys.executable
@@ -453,6 +492,52 @@ class TestTranscribeCommandSTT:
         }
         result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
         assert result["transcript"] == DEFAULT_COMMAND_STT_LANGUAGE
+
+
+def test_whispercpp_server_spec_is_derived_from_command_provider(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cli = bin_dir / "whisper-cli"
+    cli.write_text("", encoding="utf-8")
+    server = bin_dir / "whisper-server"
+    server.write_text("", encoding="utf-8")
+    server.chmod(0o755)
+    model = tmp_path / "ggml-large-v3.bin"
+    model.write_bytes(b"model")
+    spec = _whispercpp_server_spec({
+        "command": f"{cli} -m {model} -l {{language}} -f {{input_path}}",
+    })
+    assert spec == (str(server), str(model))
+
+
+def test_whispercpp_server_receives_prompt(tmp_path, monkeypatch):
+    audio = _make_silent_wav(tmp_path / "input.wav")
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": "阿尔法学院"}
+
+    def fake_post(url, *, files, data, timeout):
+        captured["data"] = data
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "tools.transcription_tools._ensure_whispercpp_server",
+        lambda config: "http://127.0.0.1:1234",
+    )
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _transcribe_whispercpp_server(
+        str(audio), {}, "zh", prompt="阿尔法学院, AgentKey",
+    )
+
+    assert result is not None
+    assert result["transcript"] == "阿尔法学院"
+    assert captured["data"]["prompt"] == "阿尔法学院, AgentKey"
 
 
 # ---------------------------------------------------------------------------

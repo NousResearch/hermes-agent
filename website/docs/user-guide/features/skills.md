@@ -199,6 +199,40 @@ When a skill response (or any agent response) includes a bare absolute path to a
 
 For audio specifically, the `[[audio_as_voice]]` directive promotes audio files to native voice-message bubbles on platforms that support them (Telegram, WhatsApp).
 
+### Understanding the media path allowlist
+
+By default, the gateway only delivers media files that live inside Hermes-managed cache directories:
+
+```
+~/.hermes/audio_cache/
+~/.hermes/image_cache/
+~/.hermes/video_cache/
+~/.hermes/document_cache/
+~/.hermes/cache/audio/
+~/.hermes/cache/images/
+~/.hermes/browser_screenshots/
+```
+
+Files placed anywhere else — for example `~/my-audio.wav` or `/tmp/screenshot.png` — are silently dropped during delivery. The visible text still goes through, but the attachment disappears with only a debug-level logger warning to show for it.
+
+This restriction exists as a security measure. `MEDIA:` tags in LLM output are untrusted text; without a path allowlist, a malicious prompt could inject `MEDIA:/etc/passwd` and cause Hermes to exfiltrate arbitrary system files.
+
+**Two ways to use a custom output path:**
+
+**Option A — Output directly to a Hermes cache directory:**
+```
+--output ~/.hermes/audio_cache/my-clip.wav
+```
+Send with `MEDIA:~/.hermes/audio_cache/my-clip.wav`. No extra configuration needed.
+
+**Option B — Authorize a custom directory** by setting an environment variable:
+```
+HERMES_MEDIA_ALLOW_DIRS=/path/to/your/dir
+```
+Add it to `~/.hermes/.env` and restart the gateway. Multiple directories can be listed separated by commas (or `;` on Windows).
+
+**Always verify delivery** by sending a test message with the file before assuming it worked.
+
 ### Forcing document-style delivery: `[[as_document]]`
 
 Sometimes you want the **opposite** of inline preview: you want the file delivered as a downloadable attachment, not a re-compressed image bubble. The classic example is a high-resolution screenshot or chart — Telegram's `sendPhoto` recompresses it to ~200 KB at 1280 px, destroying readability. A 1-2 MB PNG sent via `sendDocument` keeps the original bytes intact.

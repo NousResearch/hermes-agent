@@ -836,3 +836,118 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs auto-title
+# ---------------------------------------------------------------------------
+
+
+async def _wait_run_terminal(cli, run_id: str, timeout_s: float = 2.0) -> dict:
+    deadline = time.monotonic() + timeout_s
+    status = {}
+    while time.monotonic() < deadline:
+        status_resp = await cli.get(f"/v1/runs/{run_id}")
+        status = await status_resp.json()
+        if status.get("status") in {"completed", "failed", "cancelled"}:
+            return status
+        await asyncio.sleep(0.05)
+    return status
+
+
+class TestRunsAutoTitle:
+    @pytest.mark.asyncio
+    async def test_triggers_auto_title_on_success(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch.object(adapter, "_ensure_session_db", return_value="db"),
+                patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.session_id = "sess-runs-1"
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Hello there",
+                    "messages": [
+                        {"role": "user", "content": "Hello"},
+                        {"role": "assistant", "content": "Hello there"},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 4
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 6
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "Hello", "session_id": "sess-runs-1"},
+                )
+                run_id = (await resp.json())["run_id"]
+                status = await _wait_run_terminal(cli, run_id)
+
+                assert status["status"] == "completed"
+                maybe_auto_title.assert_called_once()
+                assert maybe_auto_title.call_args.args[1] == "sess-runs-1"
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_title_for_partial_results(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch.object(adapter, "_ensure_session_db", return_value="db"),
+                patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.session_id = "sess-runs-partial"
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Truncated answer",
+                    "partial": True,
+                    "messages": [
+                        {"role": "user", "content": "Hello"},
+                        {"role": "assistant", "content": "Truncated answer"},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 1
+                mock_agent.session_total_tokens = 2
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "Hello"})
+                run_id = (await resp.json())["run_id"]
+                status = await _wait_run_terminal(cli, run_id)
+
+                assert status["status"] == "completed"
+                maybe_auto_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_title_for_interrupted_results(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch.object(adapter, "_ensure_session_db", return_value="db"),
+                patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.session_id = "sess-runs-interrupted"
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "Stopped mid-reply",
+                    "interrupted": True,
+                    "messages": [
+                        {"role": "user", "content": "Hello"},
+                        {"role": "assistant", "content": "Stopped mid-reply"},
+                    ],
+                }
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 1
+                mock_agent.session_total_tokens = 2
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "Hello"})
+                run_id = (await resp.json())["run_id"]
+                status = await _wait_run_terminal(cli, run_id)
+
+                assert status["status"] == "completed"
+                maybe_auto_title.assert_not_called()

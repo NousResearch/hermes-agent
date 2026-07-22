@@ -5,10 +5,11 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,9 @@ _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
     "Write the title in the same language the user is writing in. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "Return ONLY the title text, nothing else. Use the same language as the user when possible. "
+    "Do not mention 'user' or 'assistant'. Do not return reasoning, analysis, or prefixes like "
+    "'The user is asking'. No quotes, no punctuation at the end, no prefixes."
 )
 
 _TITLE_PROMPT_PINNED_LANGUAGE = (
@@ -38,6 +41,68 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
     "Write the title in {language}. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+
+_META_TITLE_PREFIXES = (
+    "the user is asking",
+    "the user wants",
+    "the assistant is",
+    "the conversation is about",
+)
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    stripped = (text or "").strip()
+    pairs = {
+        ('"', '"'),
+        ("'", "'"),
+        ("“", "”"),
+        ("‘", "’"),
+    }
+    while len(stripped) >= 2 and (stripped[0], stripped[-1]) in pairs:
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def _clean_generated_title(raw_title: str) -> Optional[str]:
+    if not raw_title:
+        return None
+
+    # Strip unterminated think blocks (e.g. "<think>Let me reason..." without close tag)
+    title = re.sub(
+        r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>.*",
+        "", raw_title, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Strip any remaining HTML-like tags
+    title = re.sub(r"<[^>]+>", " ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    title = _strip_wrapping_quotes(title)
+
+    if title.lower().startswith("title:"):
+        title = _strip_wrapping_quotes(title[6:].strip())
+
+    lowered = title.lower()
+    if lowered.startswith(_META_TITLE_PREFIXES):
+        quoted = re.search(r'["“‘](.+?)["”’]', title)
+        if quoted:
+            title = quoted.group(1).strip()
+        else:
+            for prefix in _META_TITLE_PREFIXES:
+                if lowered.startswith(prefix):
+                    title = title[len(prefix):].strip(" :.-")
+                    break
+
+    title = _strip_wrapping_quotes(title)
+    if not title:
+        return None
+
+    if len(title.split()) > 12:
+        return None
+
+    if len(title) > 80:
+        title = title[:77] + "..."
+
+    return title or None
 
 
 def _title_language() -> str:
@@ -130,23 +195,13 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        content = response.choices[0].message.content or ""
-        # Strip thinking/reasoning blocks that think-enabled models
-        # (MiniMax M2.7, DeepSeek, etc.) emit even for simple prompts like
-        # title generation. Without this the raw <think>...</think> XML
-        # leaks into session titles. Reuses the canonical scrubber so all
-        # tag variants (unterminated blocks, orphan closes, mixed case)
-        # are handled, not just a single literal <think> pair.
+        content = extract_content_or_reasoning(response).strip()
+        # extract_content_or_reasoning only strips closed reasoning tags.
+        # Run the canonical scrubber next so standalone tool-call XML (and
+        # its payload) is removed before title cleanup — same path CLI uses.
         from agent.agent_runtime_helpers import strip_think_blocks
-        title = strip_think_blocks(None, content).strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
-        if title.lower().startswith("title:"):
-            title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
-        return title if title else None
+        content = strip_think_blocks(None, content).strip()
+        return _clean_generated_title(content)
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.

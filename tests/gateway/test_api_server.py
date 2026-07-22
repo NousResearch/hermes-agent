@@ -4431,3 +4431,173 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+
+# ---------------------------------------------------------------------------
+# _run_agent auto-title behavior
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgentAutoTitle:
+    @pytest.mark.asyncio
+    async def test_triggers_auto_title_on_success(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-1"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "Hello there",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hello there"},
+            ],
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, usage = await adapter._run_agent(
+                user_message="Hello",
+                conversation_history=[{"role": "user", "content": "Hello"}],
+            )
+
+        assert result["final_response"] == "Hello there"
+        assert usage["total_tokens"] == 18
+        maybe_auto_title.assert_called_once_with(
+            "db",
+            "sess-1",
+            "Hello",
+            "Hello there",
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hello there"},
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_title_for_failed_results(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-2"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": ""},
+            ],
+            "failed": True,
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, _usage = await adapter._run_agent(
+                user_message="Hello",
+                conversation_history=[{"role": "user", "content": "Hello"}],
+            )
+
+        assert result.get("failed")
+        maybe_auto_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_title_for_partial_results(self):
+        """Text-bearing soft-partial must not get a permanent session title."""
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-partial"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "Here is a truncated answer",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Here is a truncated answer"},
+            ],
+            "partial": True,
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, _usage = await adapter._run_agent(
+                user_message="Hello",
+                conversation_history=[{"role": "user", "content": "Hello"}],
+            )
+
+        assert result.get("partial")
+        maybe_auto_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_title_for_interrupted_results(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-interrupted"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "Stopped mid-reply",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Stopped mid-reply"},
+            ],
+            "interrupted": True,
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, _usage = await adapter._run_agent(
+                user_message="Hello",
+                conversation_history=[{"role": "user", "content": "Hello"}],
+            )
+
+        assert result.get("interrupted")
+        maybe_auto_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_triggers_auto_title_with_rotated_session_id(self):
+        """Compression may rotate agent.session_id; title must target the new id."""
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-rotated"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "Done",
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Done"},
+            ],
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, _usage = await adapter._run_agent(
+                user_message="Hi",
+                conversation_history=[],
+                session_id="sess-original",
+            )
+
+        assert result["session_id"] == "sess-rotated"
+        maybe_auto_title.assert_called_once()
+        assert maybe_auto_title.call_args.args[1] == "sess-rotated"
+

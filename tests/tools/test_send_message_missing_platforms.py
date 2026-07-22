@@ -2,7 +2,8 @@
 
 import asyncio
 import os
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # ``_send_dingtalk`` and ``_send_matrix`` moved into their bundled plugins
@@ -266,6 +267,52 @@ class TestSendHomeAssistant:
         assert call_kwargs[0][0] == "https://hass.example.com/api/services/notify/notify"
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer hass-tok"
         assert call_kwargs[1]["json"] == {"message": "alert!", "target": "mobile_app_phone"}
+
+    def test_configured_notify_service_via_no_live_adapter(self):
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        from tools.send_message_tool import _send_via_adapter
+
+        resp = _make_aiohttp_resp(200)
+        session_ctx, session = _make_aiohttp_session(resp)
+        original_entry = platform_registry.get("homeassistant")
+        entry = PlatformEntry(
+            name="homeassistant",
+            label="Home Assistant",
+            adapter_factory=lambda config: None,
+            check_fn=lambda: True,
+            standalone_sender_fn=_homeassistant_standalone_send,
+        )
+        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run._gateway_runner_ref = lambda: None
+
+        platform_registry.register(entry)
+        try:
+            with patch.dict(sys.modules, {"gateway.run": fake_gateway_run}), \
+                 patch("aiohttp.ClientSession", return_value=session_ctx):
+                result = asyncio.run(
+                    _send_via_adapter(
+                        SimpleNamespace(value="homeassistant"),
+                        SimpleNamespace(
+                            token="hass-tok",
+                            extra={
+                                "url": "https://hass.example.com",
+                                "notify_service": "notify.mobile_app_phone",
+                            },
+                        ),
+                        "mobile_app_phone",
+                        "alert!",
+                    )
+                )
+        finally:
+            if original_entry is None:
+                platform_registry.unregister("homeassistant")
+            else:
+                platform_registry.register(original_entry)
+
+        assert result["success"] is True
+        assert session.post.call_args.args[0] == (
+            "https://hass.example.com/api/services/notify/mobile_app_phone"
+        )
 
     def test_http_error(self):
         resp = _make_aiohttp_resp(401, text_data="Unauthorized")

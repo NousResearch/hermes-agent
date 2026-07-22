@@ -283,6 +283,23 @@ class TestSendNotification:
             assert notif["message"] == "Test notification from agent"
 
     @pytest.mark.asyncio
+    async def test_send_notify_service_delivered(self):
+        """Configured notify service uses the notify domain endpoint."""
+        async with FakeHAServer() as server:
+            adapter = _adapter_for(server, notify_service="mobile_app_iphone")
+
+            result = await adapter.send("ha_events", "Test mobile push")
+
+            assert result.success is True
+            assert server.received_notifications == []
+            assert len(server.received_service_calls) == 1
+            call = server.received_service_calls[0]
+            assert call["domain"] == "notify"
+            assert call["service"] == "mobile_app_iphone"
+            assert call["data"]["title"] == "Hermes Agent"
+            assert call["data"]["message"] == "Test mobile push"
+
+    @pytest.mark.asyncio
     async def test_send_auth_failure(self):
         """send() returns failure when token is wrong."""
         async with FakeHAServer() as server:

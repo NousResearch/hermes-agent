@@ -4,18 +4,20 @@ Home Assistant platform adapter.
 Connects to the HA WebSocket API for real-time event monitoring.
 State-change events are converted to MessageEvent objects and forwarded
 to the agent for processing.  Outbound messages are delivered as HA
-persistent notifications.
+persistent notifications by default, or through a configured notify service.
 
 Requires:
 - aiohttp (already in messaging extras)
 - HASS_TOKEN env var (Long-Lived Access Token)
 - HASS_URL env var (default: http://homeassistant.local:8123)
+- HASS_NOTIFY_SERVICE env var (optional notify service, e.g. mobile_app_iphone)
 """
 
 import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -37,6 +39,7 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+_NOTIFY_SERVICE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def check_ha_requirements() -> bool:
@@ -48,6 +51,22 @@ def validate_ha_config(config: PlatformConfig) -> bool:
     """Return True when Home Assistant has enough credential config to connect."""
     token = (getattr(config, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
     return bool(token)
+
+
+def _resolve_notify_service(extra: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve and validate a notify service from config or the environment."""
+    value = (extra or {}).get("notify_service") or os.getenv("HASS_NOTIFY_SERVICE", "")
+    service = str(value or "").strip().strip("/")
+    if service.startswith("notify."):
+        service = service.split(".", 1)[1]
+    service = service.strip().strip("/")
+    if service and not _NOTIFY_SERVICE_RE.match(service):
+        logger.warning(
+            "Ignoring invalid Home Assistant notify service: %s",
+            value,
+        )
+        return ""
+    return service
 
 
 class HomeAssistantAdapter(BasePlatformAdapter):
@@ -80,6 +99,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         url = extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
+        self._notify_service: str = _resolve_notify_service(extra)
 
         # Event filtering
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
@@ -392,12 +412,15 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a notification via HA REST API (persistent_notification.create).
+        """Send a notification via HA REST API.
 
         Uses the REST API instead of WebSocket to avoid a race condition
         with the event listener loop that reads from the same WS connection.
         """
-        url = f"{self._hass_url}/api/services/persistent_notification/create"
+        if self._notify_service:
+            url = f"{self._hass_url}/api/services/notify/{self._notify_service}"
+        else:
+            url = f"{self._hass_url}/api/services/persistent_notification/create"
         headers = {
             "Authorization": f"Bearer {self._hass_token}",
             "Content-Type": "application/json",
@@ -465,8 +488,7 @@ async def _standalone_send(
     media_files: Optional[list] = None,
     force_document: bool = False,
 ) -> Dict[str, Any]:
-    """Send a notification via the HA ``notify.notify`` service without a
-    live gateway adapter.
+    """Send a notification via an HA notify service without a live adapter.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
     runner is not in this process (typical for cron jobs running
@@ -477,7 +499,9 @@ async def _standalone_send(
     Reads ``HASS_TOKEN`` from ``pconfig.token`` (set by the gateway config
     loader from env) and falls back to the ``HASS_TOKEN`` env var.  Server
     URL comes from ``pconfig.extra["url"]`` (seeded by the env loader in
-    ``gateway/config.py``) or the ``HASS_URL`` env var.
+    ``gateway/config.py``) or the ``HASS_URL`` env var.  The notify service
+    uses the same config-first, environment-fallback resolution and validation
+    as the live adapter, defaulting to ``notify.notify`` when unset.
 
     ``thread_id``, ``media_files`` and ``force_document`` are accepted for
     signature parity with other standalone senders.  HA notifications have
@@ -497,7 +521,8 @@ async def _standalone_send(
             )
         }
 
-    url = f"{hass_url}/api/services/notify/notify"
+    notify_service = _resolve_notify_service(extra) or "notify"
+    url = f"{hass_url}/api/services/notify/{notify_service}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -566,7 +591,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         required_env=["HASS_TOKEN"],
         install_hint="pip install aiohttp",
-        # Out-of-process cron delivery via the HA ``notify.notify`` service.
+        # Out-of-process cron delivery via the configured HA notify service.
         # Without this hook, ``deliver=homeassistant`` cron jobs would fail
         # with "No live adapter" when cron runs separately from the gateway.
         # Mirrors the Discord / Teams / Mattermost pattern.

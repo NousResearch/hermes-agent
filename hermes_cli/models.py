@@ -1287,6 +1287,8 @@ _PROVIDER_ALIASES = {
     "novitaai": "novita",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "mistral-ai": "mistral",
+    "mistralai": "mistral",
     "tencent": "tencent-tokenhub",
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",

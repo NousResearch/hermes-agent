@@ -11,8 +11,8 @@
 mod bootstrap;
 mod events;
 mod install_script;
-mod powershell;
 mod paths;
+mod powershell;
 mod update;
 
 use std::sync::Arc;
@@ -98,11 +98,33 @@ pub fn run() {
     // debug builds.
     let _guard = paths::init_logging();
 
-    let mode = AppMode::from_args(std::env::args().skip(1));
+    let mut mode = AppMode::from_args(std::env::args().skip(1));
     // Escape hatch: `--reinstall`/`--repair` forces the installer UI even when
     // Hermes is already installed, so users can re-run setup to repair a broken
     // install instead of the launcher fast path silently relaunching the app.
     let force_setup = force_setup_from_args(std::env::args().skip(1));
+
+    // macOS bare-launch self-update. When "Hermes" is launched normally (Install
+    // mode, no repair flag) on an EXISTING install, decide up front whether to
+    // fast-path-relaunch the built app or switch into the Update flow: if the
+    // checkout is behind upstream `main`, flip to Update so a normal launch
+    // self-updates instead of silently running stale code. This is the recurring
+    // "it never updates" trap — users relaunch expecting an update and just get
+    // the old build, because a bare launch always fast-path-relaunched. Up-to-date
+    // installs still relaunch instantly (the launcher stays snappy); and
+    // `install_is_behind` fails safe (false) so a network hiccup never blocks a
+    // launch. Gated to macOS, matching the existing launcher fast path below.
+    let mut macos_relaunch_existing = false;
+    if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup {
+        let install_root = paths::hermes_home().join("hermes-agent");
+        if bootstrap::hermes_is_installed(&install_root) {
+            if bootstrap::install_is_behind(&install_root) {
+                mode = AppMode::Update;
+            } else {
+                macos_relaunch_existing = true;
+            }
+        }
+    }
     tracing::info!(?mode, force_setup, "Hermes installer starting");
 
     tauri::Builder::default()
@@ -129,26 +151,27 @@ pub fn run() {
             //
             // `--reinstall`/`--repair` opts out so a broken install can be
             // repaired by re-running setup instead of launching the bad app.
-            if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup {
+            // `macos_relaunch_existing` was computed above: it is only true for a
+            // bare macOS launch of an up-to-date existing install (a behind
+            // install was flipped to Update mode and falls through to the UI).
+            if macos_relaunch_existing {
                 let install_root = paths::hermes_home().join("hermes-agent");
-                if bootstrap::hermes_is_installed(&install_root) {
-                    match bootstrap::spawn_installed_desktop(&install_root) {
-                        Ok(()) => {
-                            // Brief grace so the spawned app is registered
-                            // before we exit (mirrors launch_hermes_desktop).
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                            tracing::info!(
-                                "hermes already installed — relaunched desktop; exiting installer"
-                            );
-                            app.handle().exit(0);
-                            return Ok(());
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                ?err,
-                                "relaunch of installed desktop failed; showing installer UI"
-                            );
-                        }
+                match bootstrap::spawn_installed_desktop(&install_root) {
+                    Ok(()) => {
+                        // Brief grace so the spawned app is registered
+                        // before we exit (mirrors launch_hermes_desktop).
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        tracing::info!(
+                            "hermes already installed and up to date — relaunched desktop; exiting installer"
+                        );
+                        app.handle().exit(0);
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            ?err,
+                            "relaunch of installed desktop failed; showing installer UI"
+                        );
                     }
                 }
             }

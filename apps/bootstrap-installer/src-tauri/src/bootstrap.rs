@@ -163,17 +163,18 @@ pub async fn get_bootstrap_status(
 /// (e.g. when Stage-Desktop was skipped) so the frontend can present
 /// actionable failure UI rather than silently doing nothing.
 #[tauri::command]
-pub async fn launch_hermes_desktop(
-    app: AppHandle,
-    install_root: String,
-) -> Result<(), String> {
+pub async fn launch_hermes_desktop(app: AppHandle, install_root: String) -> Result<(), String> {
     let install_root = PathBuf::from(install_root);
     let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
         format!(
             "Couldn't find a built Hermes desktop at {}. The desktop build step \
              may have been skipped or failed. Run `hermes desktop` from a \
              terminal to build and launch it.",
-            install_root.join("apps").join("desktop").join("release").display()
+            install_root
+                .join("apps")
+                .join("desktop")
+                .join("release")
+                .display()
         )
     })?;
 
@@ -191,12 +192,8 @@ pub async fn launch_hermes_desktop(
         cmd.creation_flags(0x0000_0008);
     }
 
-    cmd.spawn().map_err(|e| {
-        format!(
-            "failed to launch {}: {e}",
-            exe_path.display()
-        )
-    })?;
+    cmd.spawn()
+        .map_err(|e| format!("failed to launch {}: {e}", exe_path.display()))?;
 
     // Give Windows ~150ms to actually start the new process before we exit.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -258,6 +255,53 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
     install_root.join(".hermes-bootstrap-complete").exists()
         && resolve_hermes_desktop_exe(install_root).is_some()
+}
+
+/// Official upstream over HTTPS. We probe HTTPS (not the checkout's `origin`,
+/// which is often the `git@github.com:` SSH form) deliberately: an SSH origin
+/// backed by a FIDO2/passkey key would block `ls-remote` waiting for a hardware
+/// touch. Mirrors the desktop's `update-remote.cjs` choice.
+const OFFICIAL_REPO_HTTPS_URL: &str = "https://github.com/NousResearch/hermes-agent.git";
+
+/// True when the local checkout's HEAD differs from the upstream `main` tip, i.e.
+/// a bare launch of this install would run stale code. Any git/network failure
+/// returns `false` so a bare launch is NEVER blocked on connectivity — we only
+/// switch to the (slower) update flow when we're sure an update exists.
+pub(crate) fn install_is_behind(install_root: &std::path::Path) -> bool {
+    let head = git_stdout(install_root, &["rev-parse", "HEAD"]);
+    let remote = git_stdout(
+        install_root,
+        &["ls-remote", OFFICIAL_REPO_HTTPS_URL, "refs/heads/main"],
+    );
+    match (head, remote) {
+        (Some(head), Some(remote)) => remote_sha_differs(head.trim(), &remote),
+        _ => false,
+    }
+}
+
+/// Pure comparison (split out for unit testing): does the remote SHA — the first
+/// whitespace token of an `ls-remote` line — exist and differ from the local
+/// HEAD? Empty/missing either side ⇒ not behind (fail safe).
+fn remote_sha_differs(local_head: &str, ls_remote_output: &str) -> bool {
+    let remote_sha = ls_remote_output.split_whitespace().next().unwrap_or("");
+    !remote_sha.is_empty() && !local_head.is_empty() && remote_sha != local_head
+}
+
+/// Run `git <args>` in `cwd`, returning trimmed stdout on success (None on any
+/// failure). `GIT_TERMINAL_PROMPT=0` so a missing credential can never hang on
+/// an interactive prompt.
+fn git_stdout(cwd: &std::path::Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    }
 }
 
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
@@ -348,8 +392,12 @@ async fn run_bootstrap(
     let kind = ScriptKind::for_current_os();
 
     let pin = Pin {
-        commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
-        branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
+        commit: args
+            .commit
+            .or_else(|| option_env_string("BUILD_PIN_COMMIT")),
+        branch: args
+            .branch
+            .or_else(|| option_env_string("BUILD_PIN_BRANCH")),
     };
 
     tracing::info!(
@@ -443,20 +491,21 @@ async fn run_bootstrap(
         return Err(anyhow!(err));
     }
 
-    let manifest: Manifest = powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
-        let err = format!(
-            "install.ps1 -Manifest produced no parseable JSON payload\n{}",
-            truncate(&manifest_result.stdout, 4000)
-        );
-        emit_event(
-            &app,
-            BootstrapEvent::Failed {
-                stage: None,
-                error: err.clone(),
-            },
-        );
-        anyhow!(err)
-    })?;
+    let manifest: Manifest =
+        powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
+            let err = format!(
+                "install.ps1 -Manifest produced no parseable JSON payload\n{}",
+                truncate(&manifest_result.stdout, 4000)
+            );
+            emit_event(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: err.clone(),
+                },
+            );
+            anyhow!(err)
+        })?;
 
     emit_event(
         &app,
@@ -650,7 +699,10 @@ async fn run_bootstrap(
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
     if let Err(err) = crate::paths::copy_self_to_hermes_home() {
-        tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
+        tracing::warn!(
+            ?err,
+            "failed to copy installer into HERMES_HOME (non-fatal)"
+        );
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
@@ -821,8 +873,25 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::path::Path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn remote_sha_differs_detects_behind_and_fails_safe() {
+        let local = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        // ls-remote line: "<sha>\trefs/heads/main"
+        let ahead = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/heads/main";
+        let same = format!("{local}\trefs/heads/main");
+        // Behind: remote tip differs from local HEAD.
+        assert!(remote_sha_differs(local, ahead));
+        // Up to date: identical SHAs.
+        assert!(!remote_sha_differs(local, &same));
+        // Fail safe: empty/garbage remote output (network/git failure) ⇒ not behind.
+        assert!(!remote_sha_differs(local, ""));
+        assert!(!remote_sha_differs(local, "   "));
+        // Fail safe: empty local HEAD ⇒ not behind.
+        assert!(!remote_sha_differs("", ahead));
+    }
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(

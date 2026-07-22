@@ -91,6 +91,46 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
 
+class TestCardCallbackAuthorization(unittest.TestCase):
+    def test_open_group_policy_does_not_authorize_privileged_card_callback(self):
+        """Approval cards must fail closed without a named interactive operator.
+
+        An open group can admit ordinary messages, but a card click resolves a
+        pending privileged action.  The callback therefore needs an explicit
+        administrator or allowed-user identity instead of inheriting the group's
+        permissive message policy.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"default_group_policy": "open"}))
+        adapter._approval_state[1] = {
+            "chat_id": "oc_open_group",
+            "session_key": "session-1",
+        }
+        scheduled = []
+
+        def submit_and_close(loop, coro):
+            scheduled.append(coro)
+            coro.close()
+            return True
+
+        adapter._submit_on_loop = submit_and_close
+        event = SimpleNamespace(
+            operator=SimpleNamespace(open_id="ou_unlisted", user_id="u_unlisted"),
+            context=SimpleNamespace(open_chat_id="oc_open_group"),
+        )
+
+        adapter._handle_approval_card_action(
+            event=event,
+            action_value={"approval_id": 1, "hermes_action": "approve"},
+            loop=object(),
+        )
+
+        assert scheduled == []
+        assert 1 in adapter._approval_state
+
+
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message

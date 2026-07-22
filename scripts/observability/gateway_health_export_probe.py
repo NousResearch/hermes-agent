@@ -43,7 +43,7 @@ def main() -> None:
                 "logs_export_interval_seconds": 5,
                 "resource_attributes": {
                     "service.name": "hermes-gateway-smoke",
-                    "deployment.environment": "local-smoke",
+                    "deployment.environment.name": "local-smoke",
                 },
             },
             "export": {

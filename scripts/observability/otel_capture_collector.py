@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tiny local OTLP/HTTP capture collector for Hermes gateway health smoke tests.
 
-This is not a production collector. It accepts OTLP protobuf POSTs on /v1/traces
-and /v1/metrics, records request metadata as JSONL, and returns 200 so local
-exporters can be exercised without Docker or a vendor backend.
+This is not a production collector. It accepts OTLP protobuf POSTs on /v1/traces,
+/v1/metrics, and /v1/logs, records request metadata as JSONL, and returns 200 so
+local exporters can be exercised without Docker or a vendor backend.
 """
 
 from __future__ import annotations

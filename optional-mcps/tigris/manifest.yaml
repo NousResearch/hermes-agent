@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: tigris
+description: List, read, write, and share objects in Tigris buckets from Hermes.
+source: https://www.tigrisdata.com/docs/mcp/remote/
+
+# Why object storage for an agent: Hermes runs on laptops, VPSes, and
+# serverless infra, and artifacts it produces need to outlive the box. Tigris
+# is S3-compatible object storage with a single global endpoint
+# (t3.storage.dev): objects are served from the region nearest the caller, so
+# the same bucket works unchanged wherever Hermes runs, with no region
+# configuration. Data transfer (egress) is not billed, which matters for
+# agents that repeatedly re-read their own artifacts and state.
+
+# Tigris ships a remote MCP server with native OAuth 2.1 over Streamable HTTP
+# at mcp.storage.dev. Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh — nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.storage.dev/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+
+# Tool selection at install time:
+# The Tigris MCP server exposes bucket management (list / create / delete),
+# object operations (upload, download, list, delete, create folders and text
+# files), and presigned share links. We leave `default_enabled` unset so the
+# install-time checklist starts with everything pre-checked — users prune what
+# they don't want.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Tigris.
+  After auth, restart your Hermes session so the Tigris tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure tigris

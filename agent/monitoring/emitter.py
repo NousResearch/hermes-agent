@@ -114,12 +114,15 @@ class MonitoringEmitter:
         """Register a live batch subscriber (callable(batch: list[dict]))."""
         if callback not in self._subscribers:
             self._subscribers.append(callback)
+        self._enabled = True
 
     def unsubscribe(self, callback) -> None:
         try:
             self._subscribers.remove(callback)
         except ValueError:
             pass
+        if not self._subscribers:
+            self._enabled = False
 
     # ── introspection / shutdown (tests, CLI) ───────────────────────────────
     def flush(self, timeout: float = 2.0) -> None:
@@ -160,7 +163,9 @@ def get_emitter() -> MonitoringEmitter:
         return _EMITTER
     with _EMITTER_LOCK:
         if _EMITTER is None:
-            _EMITTER = MonitoringEmitter()
+            # Collection is opt-in. A plane exporter enables the singleton by
+            # attaching its first subscriber; until then producers are no-ops.
+            _EMITTER = MonitoringEmitter(enabled=False)
     return _EMITTER
 
 

@@ -136,15 +136,21 @@ def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
         "gateway_health": ("name", "gateway_state", "old_state", "new_state",
                            "exit_reason", "restart_requested", "active_agents",
                            "gateway_busy", "gateway_drainable", "platform_count",
-                           "fatal_platform_count", "profile", "install_id", "version",
+                           "fatal_platform_count", "version",
                            "supervision_mode", "pid"),
         "gateway_diagnostic": ("name", "subsystem", "error_class", "error_code",
                                "redacted_message", "platform", "old_state", "new_state",
-                               "profile", "version", "severity"),
+                               "version", "severity"),
     }
     for col in keep_by_kind.get(kind, ()):  # type: ignore[arg-type]
         v = ev.get(col)
         if v is not None:
+            if isinstance(v, str):
+                try:
+                    from agent.monitoring.redaction import redact_for_export
+                    v = (redact_for_export(v) or "[redacted]")[:500]
+                except Exception:
+                    v = "[redaction-unavailable]"
             attrs[f"hermes.{col}"] = v
     return attrs
 

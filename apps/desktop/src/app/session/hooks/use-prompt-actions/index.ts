@@ -599,6 +599,7 @@ export function usePromptActions({
             ) {
               activeSessionIdRef.current = recoveredId
             }
+
             await requestGateway('session.interrupt', {
               expected_stored_session_id: storedSessionId,
               session_id: recoveredId

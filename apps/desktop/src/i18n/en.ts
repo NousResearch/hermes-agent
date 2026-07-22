@@ -2452,6 +2452,25 @@ export const en: Translations = {
     zoneCount: count => `${count} zones`
   },
 
+  selectionTranslate: {
+    title: 'Translate',
+    providerNote: 'Uses your configured Hermes model. Selected text may leave this device via that provider.',
+    detected: 'Detected',
+    target: 'Translate to',
+    defaultPreference: 'Default for next time',
+    modeAuto: 'Auto (EN↔AR)',
+    modeArabic: 'Always Arabic',
+    modeEnglish: 'Always English',
+    source: 'Selected text',
+    translation: 'Translation',
+    translating: 'Translating…',
+    failed: 'Translation failed',
+    retry: 'Retry',
+    copy: 'Copy',
+    copied: 'Translation copied',
+    copyFailed: 'Could not copy translation'
+  },
+
   assistant: {
     thread: {
       loadingSession: 'Loading session',

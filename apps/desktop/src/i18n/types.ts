@@ -2071,6 +2071,25 @@ export interface Translations {
     zoneCount: (count: number) => string
   }
 
+  selectionTranslate: {
+    title: string
+    providerNote: string
+    detected: string
+    target: string
+    defaultPreference: string
+    modeAuto: string
+    modeArabic: string
+    modeEnglish: string
+    source: string
+    translation: string
+    translating: string
+    failed: string
+    retry: string
+    copy: string
+    copied: string
+    copyFailed: string
+  }
+
   assistant: {
     thread: {
       loadingSession: string

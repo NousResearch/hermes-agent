@@ -5157,6 +5157,39 @@ function installContextMenu(window) {
         template.push({ type: 'separator' })
       }
 
+      if (hasSelection) {
+        template.push({
+          label: 'Read Aloud',
+          click: () => {
+            if (!window.isDestroyed()) {
+              window.webContents.send('hermes:selection-speech:read', params.selectionText)
+            }
+          }
+        })
+
+        if (IS_MAC) {
+          template.push({
+            label: 'Look Up',
+            click: () => {
+              if (!window.isDestroyed()) {
+                window.webContents.showDefinitionForSelection()
+              }
+            }
+          })
+        }
+
+        template.push({
+          label: 'Translate…',
+          click: () => {
+            if (!window.isDestroyed()) {
+              window.webContents.send('hermes:selection-translate:open', params.selectionText)
+            }
+          }
+        })
+
+        template.push({ type: 'separator' })
+      }
+
       if (isEditable) {
         template.push(
           { role: 'cut', enabled: params.editFlags.canCut },

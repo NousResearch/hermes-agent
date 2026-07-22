@@ -5,7 +5,9 @@ import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { stopVoicePlayback } from '@/lib/voice-playback'
+import { playSelectedSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { notifyError } from '@/store/notifications'
+import { openSelectionTranslate } from '@/store/selection-translate'
 import { $voicePlayback } from '@/store/voice-playback'
 
 import type { VoiceActivityState } from './types'
@@ -201,6 +203,39 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
       <VoiceLevelBars active={recording} level={state.level} />
     </div>
   )
+}
+
+
+export function SelectionSpeechActivity() {
+  useEffect(() => {
+    const onReadRequested = window.hermesDesktop.selectionSpeech?.onReadRequested
+
+    if (!onReadRequested) {
+      return
+    }
+
+    return onReadRequested(text => {
+      void playSelectedSpeechText(text).catch(error => notifyError(error, 'Read Aloud failed'))
+    })
+  }, [])
+
+  return null
+}
+
+export function SelectionTranslateActivity() {
+  useEffect(() => {
+    const onOpenRequested = window.hermesDesktop.selectionTranslate?.onOpenRequested
+
+    if (!onOpenRequested) {
+      return
+    }
+
+    return onOpenRequested(text => {
+      openSelectionTranslate(text)
+    })
+  }, [])
+
+  return null
 }
 
 export function VoicePlaybackActivity() {

@@ -385,6 +385,90 @@ def test_select_provider_and_model_accepts_named_provider_from_providers_section
     assert "Active provider:  volcengine-plan" in out
 
 
+def test_select_provider_and_model_pins_active_named_provider_first(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "volcengine-plan",
+        "default": "doubao-seed-2.0-code",
+    }
+    cfg["providers"] = {
+        "volcengine-plan": {
+            "name": "volcengine-plan",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "default_model": "doubao-seed-2.0-code",
+            "models": {"doubao-seed-2.0-code": {}},
+        }
+    }
+    save_config(cfg)
+
+    captured = {}
+
+    def fake_prompt_provider_choice(choices, default=0, title="Select provider:"):
+        captured["choices"] = choices
+        captured["default"] = default
+        return None
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice",
+        fake_prompt_provider_choice,
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    assert captured["default"] == 0
+    assert "volcengine-plan" in captured["choices"][0]
+    assert "currently active" in captured["choices"][0]
+
+
+def test_select_provider_and_model_pins_active_group_member_first(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "minimax-cn",
+        "default": "minimax-m3",
+    }
+    save_config(cfg)
+
+    captured = {}
+    prompt_calls = []
+
+    def fake_prompt_provider_choice(choices, default=0, title="Select provider:"):
+        prompt_calls.append((choices, default, title))
+        if len(prompt_calls) == 1:
+            captured["provider_choices"] = choices
+            captured["provider_default"] = default
+            return 0
+        captured["member_choices"] = choices
+        captured["member_default"] = default
+        return None
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice",
+        fake_prompt_provider_choice,
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    assert captured["provider_default"] == 0
+    assert "MiniMax" in captured["provider_choices"][0]
+    assert "currently active" in captured["provider_choices"][0]
+    assert captured["member_default"] == 0
+    assert captured["member_choices"][0] == "MiniMax (China)"
+
+
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     """Codex model list fetching uses the runtime access token."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

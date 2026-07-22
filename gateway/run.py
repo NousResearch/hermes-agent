@@ -10246,6 +10246,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+                # Inject message timestamp so the clarify reply carries the
+                # same [timestamp] prefix as normal user messages (#67825).
+                # Without this, every clarify answer creates a temporal hole
+                # in the LLM's view of the conversation.
+                try:
+                    if _message_timestamps_enabled(_load_gateway_config()):
+                        from hermes_time import get_timezone as _get_clarify_tz
+                        from gateway.message_timestamps import (
+                            coerce_message_timestamp as _coerce_clarify_ts,
+                            render_user_content_with_timestamp as _render_clarify_ts,
+                        )
+                        _clarify_tz = _get_clarify_tz()
+                        _clarify_evt_ts = getattr(event, "timestamp", None)
+                        _clarify_epoch = _coerce_clarify_ts(
+                            _clarify_evt_ts, tz=_clarify_tz,
+                        )
+                        _rendered = _render_clarify_ts(
+                            _raw_clarify_reply, _clarify_epoch, tz=_clarify_tz,
+                        )
+                        if _rendered:
+                            _raw_clarify_reply = _rendered
+                except Exception:
+                    logger.debug(
+                        "Failed to inject timestamp into clarify reply",
+                        exc_info=True,
+                    )
                 _resolved = _clarify_mod.resolve_text_response_for_session(
                     _quick_key, _raw_clarify_reply,
                 )

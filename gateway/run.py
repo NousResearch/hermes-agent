@@ -40,6 +40,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+from urllib.parse import quote, unquote, urlsplit
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -2529,62 +2530,125 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     return None
 
 
-def _whatsapp_owner_tool_gate(source, platform_key, user_config, disabled_toolsets):
-    """Optionally restrict the toolset for non-owner senders on a shared WhatsApp line.
-
-    When ``whatsapp.nonowner_disabled_toolsets`` is set (a list of tool names),
-    every sender that is NOT an owner has those tools disabled -- so a shared /
-    community WhatsApp number can answer friends and family without exposing
-    terminal / code execution / file / etc. to them. An owner is the configured
-    ``whatsapp.home_channel`` chat_id or any id in ``whatsapp.owner_users``.
-
-    No-op (returns ``disabled_toolsets`` unchanged) unless the platform is
-    WhatsApp *and* ``nonowner_disabled_toolsets`` is configured, so existing
-    deployments are unaffected. Once the feature is active it fails closed: any
-    error restricts rather than grants.
-    """
-    if platform_key != "whatsapp" or not isinstance(user_config, dict):
-        return disabled_toolsets
-    wa = user_config.get("whatsapp") or {}
-    drop = wa.get("nonowner_disabled_toolsets")
-    if not (isinstance(drop, list) and drop):
-        return disabled_toolsets  # feature disabled -> no behavior change
-
-    def _restrict():
-        base = list(disabled_toolsets or [])
-        for name in drop:
-            if name not in base:
-                base.append(name)
-        return base
-
-    try:
-        import re as _re
-
-        def _norm(value):
-            text = str(value or "").strip()
-            text = _re.sub(r":.*@", "@", text)
-            text = _re.sub(r"@.*", "", text)
-            return text.lstrip("+")
-
-        owners = set()
-        home = wa.get("home_channel") or {}
-        if isinstance(home, dict) and home.get("chat_id"):
-            owners.add(_norm(home.get("chat_id")))
-        for owner_id in (wa.get("owner_users") or []):
-            if owner_id:
-                owners.add(_norm(owner_id))
-
-        sender = getattr(source, "chat_id", None) or getattr(source, "sender_id", None) or ""
-        if sender and owners and _norm(sender) in owners:
-            return disabled_toolsets  # owner -> full toolset
-        return _restrict()
-    except Exception:
-        return _restrict()  # fail closed
-
-
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _whatsapp_owner_tool_policy(
+    source: "SessionSource",
+    platform_key: str,
+    user_config: dict,
+    enabled_toolsets: list[str],
+) -> tuple[list[str], bool]:
+    """Limit non-owner WhatsApp senders to an explicit toolset allowlist.
+
+    ``whatsapp.nonowner_enabled_toolsets`` is opt-in. Owners are matched from
+    the configured WhatsApp ``home_channel``, ``WHATSAPP_HOME_CHANNEL``, or
+    ``whatsapp.owner_users`` using WhatsApp's phone/LID alias map. Group
+    ownership is always based on the sender, never the group chat ID.
+
+    Once configured, malformed identity/config data fails closed to no tools.
+    The boolean return value marks a non-owner restriction independently of
+    whether its list happens to equal the platform's configured toolsets.
+    """
+    if platform_key != "whatsapp" or not isinstance(user_config, dict):
+        return enabled_toolsets, False
+
+    whatsapp_config = user_config.get("whatsapp")
+    if not isinstance(whatsapp_config, dict):
+        return enabled_toolsets, False
+    if "nonowner_enabled_toolsets" not in whatsapp_config:
+        return enabled_toolsets, False
+
+    raw_nonowner_toolsets = whatsapp_config.get("nonowner_enabled_toolsets")
+    if not isinstance(raw_nonowner_toolsets, list):
+        return [], True
+    requested_nonowner_toolsets = {
+        value.strip()
+        for value in raw_nonowner_toolsets
+        if isinstance(value, str) and value.strip()
+    }
+    # This policy may only remove capabilities already enabled for WhatsApp.
+    # Preserve platform order so agent cache signatures remain deterministic.
+    nonowner_toolsets = [
+        value for value in enabled_toolsets if value in requested_nonowner_toolsets
+    ]
+
+    try:
+        configured_owners: list[str] = []
+        from agent.secret_scope import get_secret
+
+        env_home = str(get_secret("WHATSAPP_HOME_CHANNEL", "") or "").strip()
+        if env_home:
+            configured_owners.append(env_home)
+        else:
+            # Raw config keeps platform settings in one of three supported
+            # paths. Match load_gateway_config() precedence instead of unioning
+            # them: a stale lower-precedence home must never grant owner tools.
+            platform_blocks = [whatsapp_config]
+            platforms_config = user_config.get("platforms")
+            if isinstance(platforms_config, dict):
+                platform_blocks.append(platforms_config.get("whatsapp"))
+            gateway_config = user_config.get("gateway")
+            if isinstance(gateway_config, dict):
+                gateway_platforms = gateway_config.get("platforms")
+                if isinstance(gateway_platforms, dict):
+                    platform_blocks.append(gateway_platforms.get("whatsapp"))
+            for platform_block in platform_blocks:
+                if not isinstance(platform_block, dict):
+                    continue
+                if "home_channel" not in platform_block:
+                    continue
+                home_channel = platform_block.get("home_channel")
+                if not isinstance(home_channel, dict):
+                    return nonowner_toolsets, True
+                if home_channel.get("chat_id"):
+                    configured_owners.append(str(home_channel["chat_id"]))
+                break
+
+        owner_users = whatsapp_config.get("owner_users", [])
+        if not isinstance(owner_users, list):
+            return nonowner_toolsets, True
+        configured_owners.extend(
+            str(value) for value in owner_users if str(value or "").strip()
+        )
+
+        owner_aliases: set[str] = set()
+        for owner in configured_owners:
+            if str(owner).strip().lower().endswith("@g.us"):
+                continue
+            owner_aliases.update(_expand_whatsapp_auth_aliases(owner))
+
+        sender_ids = [
+            getattr(source, "user_id_alt", None),
+            getattr(source, "user_id", None),
+        ]
+        if not any(sender_ids) and getattr(source, "chat_type", "dm") == "dm":
+            sender_ids.append(getattr(source, "chat_id", None))
+
+        sender_aliases: set[str] = set()
+        for sender_id in sender_ids:
+            if sender_id:
+                sender_aliases.update(_expand_whatsapp_auth_aliases(str(sender_id)))
+
+        if owner_aliases and sender_aliases & owner_aliases:
+            return enabled_toolsets, False
+    except Exception:
+        logger.exception("WhatsApp owner tool gate failed; restricting sender")
+
+    return nonowner_toolsets, True
+
+
+def _whatsapp_owner_tool_gate(
+    source: "SessionSource",
+    platform_key: str,
+    user_config: dict,
+    enabled_toolsets: list[str],
+) -> list[str]:
+    return _whatsapp_owner_tool_policy(
+        source, platform_key, user_config, enabled_toolsets
+    )[0]
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -15164,11 +15228,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = _whatsapp_owner_tool_gate(
+                source, platform_key, user_config, enabled_toolsets
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
-            disabled_toolsets = _whatsapp_owner_tool_gate(
-                source, platform_key, user_config, disabled_toolsets
-            )
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
@@ -18971,6 +19035,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        enabled_toolsets: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -19010,6 +19075,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
             return self._is_session_run_current(session_key, run_generation)
 
+        source_profile = str(getattr(source, "profile", None) or "").strip()
+        if not source_profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                source_profile = get_active_profile_name()
+            except Exception:
+                logger.warning(
+                    "Could not resolve proxy source profile",
+                    exc_info=True,
+                )
+        if not source_profile:
+            return {
+                "final_response": "⚠️ Proxy request missing profile identity",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+        proxy_path_parts = [
+            unquote(part)
+            for part in urlsplit(proxy_url).path.rstrip("/").split("/")
+            if part
+        ]
+        proxy_url_profile = (
+            proxy_path_parts[-1]
+            if len(proxy_path_parts) >= 2 and proxy_path_parts[-2] == "p"
+            else None
+        )
+        if proxy_url_profile is not None and proxy_url_profile != source_profile:
+            logger.error(
+                "Refusing proxy request with mismatched URL profile scope"
+            )
+            return {
+                "final_response": "⚠️ Proxy URL profile mismatch",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+            }
+        if proxy_url_profile is None:
+            proxy_url = f"{proxy_url}/p/{quote(source_profile, safe='')}"
+
         # Build messages in OpenAI chat format --------------------------
         #
         # The remote api_server can maintain session continuity via
@@ -19046,6 +19152,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "messages": api_messages,
             "stream": True,
         }
+        proxy_path = "/v1/chat/completions"
+        if enabled_toolsets is not None:
+            if not session_key:
+                logger.error(
+                    "Refusing restricted proxy request without a gateway session key"
+                )
+                return {
+                    "final_response": "⚠️ Restricted proxy request missing session identity",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
+            body["enabled_toolsets"] = enabled_toolsets
+            body["gateway_source"] = {
+                "platform": source.platform.value,
+                "chat_id": str(source.chat_id),
+                "session_key": str(session_key),
+                "profile": source_profile,
+            }
+            for field in (
+                "user_id",
+                "user_id_alt",
+                "thread_id",
+            ):
+                value = getattr(source, field, None)
+                if value is not None and str(value):
+                    body["gateway_source"][field] = str(value)
+            if event_message_id is not None and str(event_message_id):
+                body["gateway_source"]["message_id"] = str(event_message_id)
+            # This endpoint does not exist on older servers.  A restricted
+            # request therefore fails atomically with 404 instead of reaching
+            # a worker that silently ignores the authorization field.
+            proxy_path = "/v1/chat/completions/restricted"
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -19137,7 +19276,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _timeout = ClientTimeout(total=0, sock_read=1800)
             async with _AioClientSession(timeout=_timeout) as session:
                 async with session.post(
-                    f"{proxy_url}/v1/chat/completions",
+                    f"{proxy_url}{proxy_path}",
                     json=body,
                     headers=headers,
                 ) as resp:
@@ -19438,6 +19577,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        gated_toolsets, restrict_proxy_toolsets = _whatsapp_owner_tool_policy(
+            source, platform_key, user_config, enabled_toolsets
+        )
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -19449,7 +19597,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                enabled_toolsets=gated_toolsets if restrict_proxy_toolsets else None,
             )
+
+        enabled_toolsets = gated_toolsets
 
         from run_agent import AIAgent
         import queue
@@ -19459,16 +19610,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
             return self._is_session_run_current(session_key, run_generation)
         
-        user_config = _load_gateway_config()
-        platform_key = _platform_config_key(source.platform)
-
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
-        disabled_toolsets = _whatsapp_owner_tool_gate(
-            source, platform_key, user_config, disabled_toolsets
-        )
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

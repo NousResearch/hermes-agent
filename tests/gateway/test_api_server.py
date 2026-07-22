@@ -29,6 +29,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _api_request_profile,
     _derive_chat_session_id,
     _hermes_version,
     _redact_api_error_text,
@@ -333,6 +334,7 @@ class TestAdapterInit:
 
     def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
+        resolved_platforms = []
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -365,12 +367,29 @@ class TestAdapterInit:
             staticmethod(lambda: {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
-        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda _config, platform: (
+                resolved_platforms.append(platform)
+                or {"context_engine", "terminal"}
+            ),
+        )
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
 
-        agent = adapter._create_agent(session_id="api-session")
+        agent = adapter._create_agent(
+            session_id="api-session",
+            requested_toolsets=["context_engine", "whatsapp_admin"],
+            gateway_source={
+                "platform": "whatsapp",
+                "chat_id": "15551234567@s.whatsapp.net",
+                "user_id": "15551234567@s.whatsapp.net",
+                "user_id_alt": "15557654321@lid",
+                "thread_id": "thread-7",
+                "session_key": "agent:main:whatsapp:dm:15551234567",
+            },
+        )
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
@@ -378,6 +397,16 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+        assert resolved_platforms == ["api_server"]
+        assert captured["enabled_toolsets"] == ["context_engine"]
+        assert captured["platform"] == "whatsapp"
+        assert captured["chat_id"] == "15551234567@s.whatsapp.net"
+        assert captured["user_id"] == "15551234567@s.whatsapp.net"
+        assert captured["user_id_alt"] == "15557654321@lid"
+        assert captured["thread_id"] == "thread-7"
+        assert captured["gateway_session_key"] == (
+            "agent:main:whatsapp:dm:15551234567"
+        )
 
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}
@@ -649,6 +678,21 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
     return APIServerAdapter(config)
 
 
+def _valid_gateway_source(**overrides):
+    source = {
+        "platform": "whatsapp",
+        "chat_id": "15551234567@s.whatsapp.net",
+        "user_id": "15551234567@s.whatsapp.net",
+        "user_id_alt": "15557654321@lid",
+        "thread_id": "thread-7",
+        "message_id": "message-9",
+        "profile": "default",
+        "session_key": "agent:main:whatsapp:dm:15551234567",
+    }
+    source.update(overrides)
+    return source
+
+
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
@@ -662,6 +706,9 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post(
+        "/v1/chat/completions/restricted", adapter._handle_chat_completions
+    )
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
@@ -730,6 +777,78 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_restricted_origin_reaches_contextvars_and_pre_tool_hook(
+        self, adapter, monkeypatch
+    ):
+        from gateway.session_context import async_delivery_supported, get_session_env
+        import hermes_cli.plugins as plugins
+
+        gateway_source = {
+            "platform": "whatsapp",
+            "chat_id": "15551234567@s.whatsapp.net",
+            "user_id": "15551234567@s.whatsapp.net",
+            "user_id_alt": "15557654321@lid",
+            "thread_id": "thread-7",
+            "message_id": "message-9",
+            "profile": "business",
+            "session_key": "agent:business:whatsapp:dm:15551234567",
+        }
+        observed = {}
+        create_kwargs = {}
+
+        def observe_hook(hook_name, **_kwargs):
+            if hook_name == "pre_tool_call":
+                for name in (
+                    "PLATFORM",
+                    "CHAT_ID",
+                    "USER_ID",
+                    "THREAD_ID",
+                    "MESSAGE_ID",
+                    "PROFILE",
+                    "KEY",
+                ):
+                    observed[name] = get_session_env(f"HERMES_SESSION_{name}")
+                observed["async_delivery"] = async_delivery_supported()
+            return []
+
+        monkeypatch.setattr(plugins, "invoke_hook", observe_hook)
+
+        class FakeAgent:
+            session_id = "request-session"
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_total_tokens = 0
+
+            def run_conversation(self, **_kwargs):
+                plugins.get_pre_tool_call_block_message("memory", {})
+                return {"final_response": "ok"}
+
+        def fake_create_agent(**kwargs):
+            create_kwargs.update(kwargs)
+            return FakeAgent()
+
+        monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+
+        await adapter._run_agent(
+            user_message="hello",
+            conversation_history=[],
+            session_id="request-session",
+            gateway_source=gateway_source,
+        )
+
+        assert create_kwargs["gateway_source"] == gateway_source
+        assert observed == {
+            "PLATFORM": "whatsapp",
+            "CHAT_ID": "15551234567@s.whatsapp.net",
+            "USER_ID": "15551234567@s.whatsapp.net",
+            "THREAD_ID": "thread-7",
+            "MESSAGE_ID": "message-9",
+            "PROFILE": "business",
+            "KEY": "agent:business:whatsapp:dm:15551234567",
+            "async_delivery": False,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1217,6 +1336,324 @@ class TestToolsetsEndpoint:
 
 
 class TestChatCompletionsEndpoint:
+    @pytest.fixture(autouse=True)
+    def _default_active_profile(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+
+    @pytest.mark.asyncio
+    async def test_restricted_endpoint_requires_enabled_toolsets(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions/restricted",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "gateway_source": _valid_gateway_source(),
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "enabled_toolsets is required" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_restricted_endpoint_requires_configured_api_key(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions/restricted",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": _valid_gateway_source(),
+                    },
+                )
+
+            assert resp.status == 403
+            assert "requires API key authentication" in (
+                await resp.json()
+            )["error"]["message"]
+            mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_restricted_endpoint_requires_gateway_source(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions/restricted",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                    },
+                )
+
+            assert resp.status == 400
+            assert "gateway_source is required" in (
+                await resp.json()
+            )["error"]["message"]
+            mock_run.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "gateway_source",
+        [
+            None,
+            [],
+            {"platform": "whatsapp", "chat_id": "chat"},
+            _valid_gateway_source(user_id=7),
+            _valid_gateway_source(platform="WhatsApp"),
+            _valid_gateway_source(platform="unknown_gateway"),
+            _valid_gateway_source(chat_id="chat\nforged"),
+            _valid_gateway_source(profile="Bad Profile"),
+            _valid_gateway_source(session_key="x" * 257),
+            {**_valid_gateway_source(), "api_key": "must-not-leak"},
+            {
+                key: value
+                for key, value in _valid_gateway_source().items()
+                if key != "profile"
+            },
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_restricted_endpoint_rejects_malformed_gateway_source(
+        self, auth_adapter, gateway_source
+    ):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions/restricted",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": gateway_source,
+                    },
+                )
+
+            assert resp.status == 400
+            body = await resp.text()
+            assert "Invalid gateway_source" in body
+            assert "must-not-leak" not in body
+            mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_regular_endpoint_rejects_gateway_source(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "gateway_source": _valid_gateway_source(),
+                    },
+                )
+
+            assert resp.status == 400
+            assert "only accepted on the restricted endpoint" in (
+                await resp.json()
+            )["error"]["message"]
+            mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_restricted_stream_source_propagates_to_agent_run(
+        self, auth_adapter, monkeypatch
+    ):
+        source = _valid_gateway_source(profile="business")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "business",
+        )
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                async def run_with_delta(**kwargs):
+                    kwargs["stream_delta_callback"]("ok")
+                    return (
+                        mock_result,
+                        {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                    )
+
+                mock_run.side_effect = run_with_delta
+                resp = await cli.post(
+                    "/v1/chat/completions/restricted",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": source,
+                    },
+                )
+
+            assert resp.status == 200
+            assert "[DONE]" in await resp.text()
+            assert mock_run.call_args.kwargs["gateway_source"] == source
+            assert mock_run.call_args.kwargs["gateway_session_key"] == (
+                source["session_key"]
+            )
+            assert mock_run.call_args.kwargs["requested_toolsets"] == [
+                "context_engine"
+            ]
+
+    @pytest.mark.asyncio
+    async def test_restricted_profile_mismatch_fails_closed(
+        self, auth_adapter, monkeypatch, tmp_path
+    ):
+        class Runner:
+            config = GatewayConfig(multiplex_profiles=True)
+
+        auth_adapter.gateway_runner = Runner()
+        profile_home = tmp_path / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [("default", tmp_path), ("coder", profile_home)],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda _profile: profile_home,
+        )
+
+        def active_profile():
+            assert _api_request_profile.get() == "coder"
+            return "coder"
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", active_profile
+        )
+        app = web.Application(
+            middlewares=[auth_adapter._make_profile_prefix_middleware()]
+        )
+        app.router.add_post(
+            "/p/{profile}/v1/chat/completions/restricted",
+            auth_adapter._handle_chat_completions,
+        )
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mismatch = await cli.post(
+                    "/p/coder/v1/chat/completions/restricted",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": _valid_gateway_source(profile="default"),
+                    },
+                )
+                assert mismatch.status == 400
+                assert "must match the URL profile scope" in (
+                    await mismatch.json()
+                )["error"]["message"]
+                mock_run.assert_not_awaited()
+
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                matched = await cli.post(
+                    "/p/coder/v1/chat/completions/restricted",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": _valid_gateway_source(profile="coder"),
+                    },
+                )
+
+            assert matched.status == 200
+            assert mock_run.call_args.kwargs["gateway_source"]["profile"] == "coder"
+
+    @pytest.mark.asyncio
+    async def test_restricted_unprefixed_profile_must_match_active_profile(
+        self, auth_adapter, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions/restricted",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": _valid_gateway_source(
+                            profile="business"
+                        ),
+                    },
+                )
+
+            assert resp.status == 400
+            assert "does not match the active profile scope" in (
+                await resp.json()
+            )["error"]["message"]
+            mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_restricted_source_rejects_conflicting_session_key(
+        self, auth_adapter
+    ):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions/restricted",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Key": "different-session",
+                    },
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                        "gateway_source": _valid_gateway_source(),
+                    },
+                )
+
+            assert resp.status == 400
+            assert "must match gateway_source.session_key" in (
+                await resp.json()
+            )["error"]["message"]
+            mock_run.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
@@ -4355,6 +4792,47 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             # _create_agent must be called with gateway_session_key threaded through
             assert captured_kwargs.get("gateway_session_key") == "agent:main:webui:dm:user-7"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_threads_requested_toolsets(self, auth_adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "enabled_toolsets": ["context_engine"],
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["requested_toolsets"] == [
+                "context_engine"
+            ]
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_rejects_malformed_toolsets(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "model": "hermes-agent",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "enabled_toolsets": "context_engine",
+                },
+            )
+
+            assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_responses_endpoint_accepts_session_key(self, auth_adapter):

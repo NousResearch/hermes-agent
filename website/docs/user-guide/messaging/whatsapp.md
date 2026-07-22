@@ -130,6 +130,29 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Shared-line tool isolation
+
+On a WhatsApp number shared with customers or a community, give non-owner
+senders only an explicit toolset allowlist:
+
+```yaml
+whatsapp:
+  owner_users:
+    - "15551234567"
+  nonowner_enabled_toolsets:
+    - context_engine
+```
+
+The `WHATSAPP_HOME_CHANNEL` user and entries in `owner_users` keep the normal
+WhatsApp toolsets. Every other sender receives the configured subset of the
+currently enabled WhatsApp toolsets; entries disabled for WhatsApp are ignored,
+so this list can only reduce capabilities. Use an empty list for no tools. Phone
+and LID forms are resolved as aliases, and group ownership is based on the
+message sender, not the group ID. Omitting `nonowner_enabled_toolsets` preserves
+default behavior. In gateway proxy mode, restricted turns use the versioned
+`/v1/chat/completions/restricted` endpoint so older remote servers fail closed;
+upgrade both gateway and API server before enabling this policy.
+
 Then start the gateway:
 
 ```bash

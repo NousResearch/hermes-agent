@@ -264,12 +264,39 @@ COMMAND_REGISTRY: list[CommandDef] = [
 # ---------------------------------------------------------------------------
 
 def _build_command_lookup() -> dict[str, CommandDef]:
-    """Map every name and alias to its CommandDef."""
+    """Map every name and alias to its CommandDef.
+
+    If a name or alias is registered more than once, the **first** entry
+    wins and a warning is logged so the duplicate can be investigated.
+    """
     lookup: dict[str, CommandDef] = {}
     for cmd in COMMAND_REGISTRY:
-        lookup[cmd.name] = cmd
+        if cmd.name in lookup:
+            logger.warning(
+                "Duplicate slash command name %r — first defined by %s, "
+                "ignoring duplicate from %s",
+                cmd.name,
+                lookup[cmd.name].description,
+                cmd.description,
+            )
+        else:
+            lookup[cmd.name] = cmd
         for alias in cmd.aliases:
-            lookup[alias] = cmd
+            if alias in lookup:
+                existing = lookup[alias]
+                # Only warn when two different *canonical* commands clash
+                # via alias; identical-meaning underscore/hyphen variants
+                # (e.g. reload-mcp's alias reload_mcp) are harmless.
+                if existing.name != cmd.name:
+                    logger.warning(
+                        "Duplicate slash command alias %r — claimed by %s (%s) "
+                        "and %s (%s); keeping first",
+                        alias,
+                        existing.name, existing.description,
+                        cmd.name, cmd.description,
+                    )
+            else:
+                lookup[alias] = cmd
     return lookup
 
 

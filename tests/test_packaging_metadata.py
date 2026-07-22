@@ -1,8 +1,11 @@
 import ast
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
+import pathspec
 import pytest
 
 # setuptools is declared in the [dev] extra and is the build backend, but
@@ -115,6 +118,110 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+
+
+def test_gbrain_skill_contract_is_tracked_and_fresh():
+    subprocess.run(
+        [sys.executable, "scripts/build_gbrain_skill_contract.py", "--check"],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    assert (REPO_ROOT / "skills" / "RESOLVER.md").is_file()
+    assert (REPO_ROOT / "skills" / "manifest.json").is_file()
+
+
+def test_docker_build_checks_gbrain_skill_contract_after_source_copy():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    source_copy = dockerfile.index("COPY --link --chmod=a+rX,go-w . .")
+    gate = dockerfile.index(
+        "RUN /opt/hermes/.venv/bin/python "
+        "scripts/build_gbrain_skill_contract.py --check"
+    )
+    privilege_drop = dockerfile.index("USER root", source_copy)
+
+    assert source_copy < gate < privilege_drop
+
+
+def test_docker_build_context_includes_skills_without_local_artifacts():
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    # Docker applies the last matching rule. PathSpec's gitwildmatch pattern
+    # grammar models the glob/negation forms used here without GitIgnoreSpec's
+    # extra directory-priority semantics.
+    ignore_spec = pathspec.PathSpec.from_lines(
+        "gitwildmatch", dockerignore.splitlines()
+    )
+
+    included = [
+        "skills/RESOLVER.md",
+        "skills/manifest.json",
+        "skills/software-development/hermes-agent-skill-authoring/SKILL.md",
+        "skills/research/polymarket/scripts/polymarket.py",
+        "skills/research/polymarket/references/api-endpoints.md",
+        "skills/research/research-paper-writing/templates/colm2025/"
+        "colm2025_conference.pdf",
+    ]
+    assert all((REPO_ROOT / path).is_file() for path in included)
+    assert all(not ignore_spec.match_file(path) for path in included)
+
+    excluded = [
+        "skills/example/.env",
+        "skills/example/.env.local",
+        "skills/example/.venv/lib/python/site.py",
+        "skills/example/node_modules/package/index.js",
+        "skills/example/scripts/__pycache__/helper.cpython-313.pyc",
+        "skills/example/scripts/helper.pyc",
+        "skills/example/dist/bundle.js",
+        "skills/example/build/output.bin",
+    ]
+    assert all(ignore_spec.match_file(path) for path in excluded)
+    assert ignore_spec.match_file("README.md")
+
+
+def test_docker_candidate_builds_share_complete_oci_identity():
+    """The tested local image and published digest must identify one source.
+
+    The workflow builds twice: first it loads an image for the integration
+    tests, then it rebuilds from the cached layers and pushes by digest.  If OCI
+    labels are only added to the second build, the image that passed tests is
+    not the image identity later published.  Keep the identity contract on
+    both build-push steps.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "docker.yml").read_text(
+        encoding="utf-8"
+    )
+    step_starts = [
+        match.start()
+        for match in re.finditer(r"(?m)^      - name: ", workflow)
+    ]
+    step_starts.append(len(workflow))
+    build_steps = [
+        workflow[start:end]
+        for start, end in zip(step_starts, step_starts[1:])
+        if "uses: docker/build-push-action@" in workflow[start:end]
+    ]
+
+    assert len(build_steps) == 2, (
+        "expected the local-load and push-by-digest docker/build-push-action "
+        "steps"
+    )
+    expected_labels = {
+        "org.opencontainers.image.source=https://github.com/${{ github.repository }}",
+        "org.opencontainers.image.revision=${{ github.sha }}",
+        "org.opencontainers.image.version=${{ github.event.release.tag_name || github.ref_name }}",
+    }
+    for step in build_steps:
+        labels_match = re.search(
+            r"(?m)^          labels: \|\n(?P<labels>(?:^            .+\n)+)",
+            step,
+        )
+        assert labels_match is not None, "every candidate build must set OCI labels"
+        labels = {
+            line.strip()
+            for line in labels_match.group("labels").splitlines()
+            if line.strip()
+        }
+        assert expected_labels <= labels
+        assert "HERMES_GIT_SHA=${{ github.sha }}" in step
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():

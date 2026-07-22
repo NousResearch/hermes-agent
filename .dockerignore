@@ -54,6 +54,39 @@ htmlcov/
 
 # Documentation
 *.md
+!skills/
+!skills/**
+# The broad negation above restores bundled skill scripts, references,
+# templates, and other runtime assets. Re-apply non-source exclusions inside
+# that tree so local secrets, dependency trees, and build caches cannot ride
+# into the image merely because they live below skills/.
+skills/**/.git/
+skills/**/__pycache__/
+skills/**/*.py[cod]
+skills/**/*$py.class
+skills/**/*.so
+skills/**/.Python
+skills/**/*.egg-info/
+skills/**/dist/
+skills/**/build/
+skills/**/venv/
+skills/**/env/
+skills/**/ENV/
+skills/**/.venv/
+skills/**/node_modules/
+skills/**/.notebooklm-cli-venv/
+skills/**/.notebooklm-playwright/
+skills/**/.pip-cache/
+skills/**/.uv-cache/
+skills/**/.env
+skills/**/.env.*
+skills/**/.vscode/
+skills/**/.idea/
+skills/**/*.swp
+skills/**/*.swo
+skills/**/.pytest_cache/
+skills/**/.coverage
+skills/**/htmlcov/
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/

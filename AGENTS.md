@@ -949,6 +949,10 @@ violate them.
    stdlib + pytest + `unittest.mock`. No live network calls. Run via
    `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`.
 
+   After adding, moving, or removing a bundled skill, run
+   `python scripts/build_gbrain_skill_contract.py` and commit both generated
+   files. `--check` is the non-mutating CI gate.
+
 8. **`.env.example` additions are isolated to a clearly delimited
    block.** Don't touch the surrounding file — contributor-supplied
    `.env.example` versions are usually stale and edits outside the

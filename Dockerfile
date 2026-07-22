@@ -203,6 +203,11 @@ RUN cd web && npm run build && \
 # write so the build steps below don't need chmod u+w dances.
 COPY --link --chmod=a+rX,go-w . .
 
+# Refuse to publish an image whose committed GBrain resolver/manifest no
+# longer matches the bundled SKILL.md sources. Generate these artifacts in
+# the source tree; image builds are a non-mutating freshness gate.
+RUN /opt/hermes/.venv/bin/python scripts/build_gbrain_skill_contract.py --check
+
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no

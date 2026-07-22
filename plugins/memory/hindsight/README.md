@@ -119,6 +119,20 @@ Config file: `~/.hermes/hindsight/config.json`
 | `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
 
 The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
+#### Local LLM Concurrency
+
+Hindsight's default `HINDSIGHT_API_LLM_MAX_CONCURRENT=32` is tuned for cloud APIs. When pointing Hindsight at a **local** LLM server (`llama-server`, vLLM, LM Studio) that also serves Hermes's main agent or subagents, the default will saturate the endpoint's slot pool and block Hermes from getting an inference slot — the symptom looks like Hermes "freezing" mid-conversation.
+
+For a shared local LLM endpoint, lower the limit to match the Ollama blog recommendation:
+
+```bash
+echo "HINDSIGHT_API_LLM_MAX_CONCURRENT=1" >> ~/.hermes/.env
+# Restart Hermes so the daemon respawns with the new env.
+```
+
+Leave at least one slot free for Hermes. If Hindsight has its own **dedicated** LLM endpoint, you can raise the limit to match the endpoint's slot count.
+
+See the upstream [Hindsight docs](https://hindsight.vectorize.io/sdks/integrations/hermes) for the full caveat and diagnostic commands.
 
 ## Tools
 

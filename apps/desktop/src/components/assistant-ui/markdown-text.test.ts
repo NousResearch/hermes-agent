@@ -94,6 +94,60 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
+  it('autolinks a phone number formatted as inline code', () => {
+    const output = preprocessMarkdown(
+      'Viktoria Pettersson: `010-495 64 04` Telephone hours: Monday and Wednesday 13:00–15:00.'
+    )
+
+    expect(output).toContain('[`010-495 64 04`](tel:0104956404)')
+  })
+
+  it('preserves multi-backtick phone code spans', () => {
+    const output = preprocessMarkdown('Phone: ``010-495 64 04``')
+
+    expect(output).toBe('Phone: [``010-495 64 04``](tel:0104956404)')
+  })
+
+  it('preserves longer and multiline CommonMark code spans', () => {
+    expect(preprocessMarkdown('Phone: ```010-495 64 04```')).toBe('Phone: ```010-495 64 04```')
+    expect(preprocessMarkdown('Phone: ````010-495 64 04````')).toBe('Phone: ````010-495 64 04````')
+    expect(preprocessMarkdown('Code: `a```b`')).toBe('Code: `a```b`')
+    expect(preprocessMarkdown('Code: ```https://example.com/010-495-6404```')).toBe(
+      'Code: ```https://example.com/010-495-6404```'
+    )
+    expect(preprocessMarkdown('Code: `line\nhttps://example.com/010-495-6404`')).toBe(
+      'Code: `line\nhttps://example.com/010-495-6404`'
+    )
+  })
+
+  it('does not nest phone code links inside existing Markdown links', () => {
+    const inline = '[Call `010-495 64 04`](https://example.com/contact)'
+    const reference = '[Call ``010-495 64 04``][office]\n\n[office]: https://example.com/contact'
+
+    expect(preprocessMarkdown(inline)).toBe(inline)
+
+    const referenceOutput = preprocessMarkdown(reference)
+
+    expect(referenceOutput).toContain('[Call ``010-495 64 04``][office]')
+    expect(referenceOutput).not.toContain('tel:')
+  })
+
+  it('terminates on unmatched mixed backtick runs', () => {
+    const input = Array.from({ length: 2_000 }, (_, index) => `${'`'.repeat((index % 5) + 1)}value`).join(' ')
+    const output = preprocessMarkdown(input)
+
+    expect(output.length).toBeGreaterThan(0)
+  })
+
+  it('autolinks plain domestic and international phone numbers without linking times', () => {
+    const output = preprocessMarkdown('Call 010-495 64 04 or +46 (0)10 495 64 04 between 13:00–15:00.')
+
+    expect(output).toContain('[010-495 64 04](tel:0104956404)')
+    expect(output).toContain('[+46 (0)10 495 64 04](tel:+46104956404)')
+    expect(output).toContain('13:00–15:00')
+    expect(output).not.toContain('tel:13001500')
+  })
+
   it('strips orphan numeric citation markers outside code spans', () => {
     const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
 

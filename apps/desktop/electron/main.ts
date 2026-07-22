@@ -78,6 +78,7 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
+import { isExternalUrlAllowed } from './external-url-policy'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
@@ -1224,7 +1225,7 @@ function openExternalUrl(rawUrl) {
     return true
   }
 
-  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+  if (!isExternalUrlAllowed(parsed)) {
     return false
   }
 

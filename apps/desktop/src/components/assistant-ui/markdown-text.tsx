@@ -14,7 +14,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -248,6 +248,22 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const target = href ? normalizeExternalUrl(href) : href
+
+  if (target && /^tel:/i.test(target)) {
+    return (
+      <ExternalLink
+        className={cn(
+          'font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere',
+          className
+        )}
+        href={target}
+        showExternalIcon={false}
+        {...props}
+      >
+        {children}
+      </ExternalLink>
+    )
+  }
 
   if (!target || !/^https?:\/\//i.test(target)) {
     return (

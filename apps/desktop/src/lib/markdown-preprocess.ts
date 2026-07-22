@@ -1,6 +1,12 @@
 import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
+import {
+  hasPhoneNumberContext,
+  isProtectedMarkdownRange,
+  linkifyPhoneNumbersInMarkdown,
+  phoneLinkTarget
+} from '@/lib/phone-links'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
@@ -9,7 +15,7 @@ const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
-const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
+
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/
@@ -91,31 +97,62 @@ function scrubBacktickNoise(text: string): string {
     }
   }
 
-  protectedRanges.sort((a, b) => a.start - b.start)
+  for (const part of splitInlineCodeSpans(text)) {
+    const body = part.text.slice(part.markerLength, -part.markerLength)
+    const precedingCharacter = text[part.start - 1] || ''
 
-  const fenceNoiseRe = /`{3,}/g
+    const isUrlFenceNoise =
+      part.markerLength >= 3 &&
+      Boolean(precedingCharacter) &&
+      !/\s/u.test(precedingCharacter) &&
+      /^\s*https?:\/\//iu.test(body)
+
+    if (part.markerLength > 0 && !isUrlFenceNoise) {
+      protectedRanges.push({ end: part.end, start: part.start })
+    }
+  }
+
+  protectedRanges.sort((a, b) => a.start - b.start)
+  const mergedProtectedRanges: { end: number; start: number }[] = []
+
+  for (const range of protectedRanges) {
+    const previous = mergedProtectedRanges.at(-1)
+
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end)
+    } else {
+      mergedProtectedRanges.push({ ...range })
+    }
+  }
+
+  const scrubUnprotectedNoise = (value: string): string => {
+    let scrubbed = value.replace(/`{3,}/g, '')
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      // Match EXACTLY 2 backticks (not part of a longer run) on each side.
+      // Without the lookbehind/lookahead, two adjacent triple-backtick
+      // fences with only whitespace between them get spliced together —
+      // e.g. ```bash\n...\n```\n\n```latex matches the regex's
+      // last-2-of-bash-close + \n\n + first-2-of-latex-open and the
+      // surrounding fence markers collapse into a single longer block,
+      // which the markdown parser then treats as ONE giant code block.
+      scrubbed = scrubbed.replace(/(?<!`)``(?!`)\s*(?<!`)``(?!`)/g, '')
+      scrubbed = scrubbed.replace(/(^|[^`])``(?=\s|[.,;:!?)\]'"\u2014\u2013-]|$)/g, '$1')
+    }
+
+    return scrubbed
+  }
+
   let out = ''
   let cursor = 0
 
-  for (const range of protectedRanges) {
-    out += text.slice(cursor, range.start).replace(fenceNoiseRe, '')
+  for (const range of mergedProtectedRanges) {
+    out += scrubUnprotectedNoise(text.slice(cursor, range.start))
     out += text.slice(range.start, range.end)
     cursor = range.end
   }
 
-  out += text.slice(cursor).replace(fenceNoiseRe, '')
-
-  for (let pass = 0; pass < 2; pass += 1) {
-    // Match EXACTLY 2 backticks (not part of a longer run) on each side.
-    // Without the lookbehind/lookahead, two adjacent triple-backtick
-    // fences with only whitespace between them get spliced together —
-    // e.g. ```bash\n...\n```\n\n```latex matches the regex's
-    // last-2-of-bash-close + \n\n + first-2-of-latex-open and the
-    // surrounding fence markers collapse into a single longer block,
-    // which the markdown parser then treats as ONE giant code block.
-    out = out.replace(/(?<!`)``(?!`)\s*(?<!`)``(?!`)/g, '')
-    out = out.replace(/(^|[^`])``(?=\s|[.,;:!?)\]'"\u2014\u2013-]|$)/g, '$1')
-  }
+  out += scrubUnprotectedNoise(text.slice(cursor))
 
   return out
 }
@@ -143,16 +180,103 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+interface InlineCodePart {
+  end: number
+  markerLength: number
+  start: number
+  text: string
+}
+
+function splitInlineCodeSpans(text: string): InlineCodePart[] {
+  const parts: InlineCodePart[] = []
+  let cursor = 0
+  let searchFrom = 0
+
+  while (searchFrom < text.length) {
+    const openingStart = text.indexOf('`', searchFrom)
+
+    if (openingStart < 0) {
+      break
+    }
+
+    let openingEnd = openingStart + 1
+
+    while (text[openingEnd] === '`') {
+      openingEnd += 1
+    }
+
+    const markerLength = openingEnd - openingStart
+    const searchEnd = text.length
+    let closingStart = openingEnd
+    let foundClosingMarker = false
+
+    while (closingStart < searchEnd) {
+      closingStart = text.indexOf('`', closingStart)
+
+      if (closingStart < 0 || closingStart >= searchEnd) {
+        break
+      }
+
+      let closingEnd = closingStart + 1
+
+      while (text[closingEnd] === '`') {
+        closingEnd += 1
+      }
+
+      if (closingEnd - closingStart === markerLength) {
+        if (cursor < openingStart) {
+          parts.push({ end: openingStart, markerLength: 0, start: cursor, text: text.slice(cursor, openingStart) })
+        }
+
+        parts.push({
+          end: closingEnd,
+          markerLength,
+          start: openingStart,
+          text: text.slice(openingStart, closingEnd)
+        })
+        cursor = closingEnd
+        searchFrom = closingEnd
+        foundClosingMarker = true
+
+        break
+      }
+
+      closingStart = closingEnd
+    }
+
+    if (!foundClosingMarker) {
+      searchFrom = openingEnd
+    }
+  }
+
+  if (cursor < text.length) {
+    parts.push({ end: text.length, markerLength: 0, start: cursor, text: text.slice(cursor) })
+  }
+
+  return parts
+}
+
 function normalizeVisibleProse(text: string): string {
-  return text
-    .split(INLINE_CODE_SPLIT_RE)
-    .map(part =>
-      part.startsWith('`')
-        ? part
-        : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
-          )
-    )
+  return splitInlineCodeSpans(text)
+    .map(part => {
+      if (part.markerLength > 0) {
+        if (isProtectedMarkdownRange(text, part.start, part.end)) {
+          return part.text
+        }
+
+        const phoneStart = part.start + part.markerLength
+        const phoneEnd = part.end - part.markerLength
+        const target = phoneLinkTarget(text.slice(phoneStart, phoneEnd))
+
+        return target && hasPhoneNumberContext(text, phoneStart, phoneEnd) ? `[${part.text}](${target})` : part.text
+      }
+
+      return linkifyPhoneNumbersInMarkdown(
+        autoLinkRawUrls(
+          part.text.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        )
+      )
+    })
     .join('')
 }
 

@@ -1545,6 +1545,44 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
+_ARCHIVE_OWNERSHIP_PREFIX = b"hermes-managed-backup:v1:"
+
+
+def _archive_ownership_comment(path: Path) -> bytes:
+    digest = hashlib.sha256(path.name.encode("utf-8")).hexdigest().encode("ascii")
+    return _ARCHIVE_OWNERSHIP_PREFIX + digest
+
+
+def _owned_archive_identity(path: Path) -> Optional[os.stat_result]:
+    """Return identity only for an exact archive published by this helper."""
+    fd: Optional[int] = None
+    try:
+        selected = path.lstat()
+        if not stat.S_ISREG(selected.st_mode) or _snapshot_path_is_link_like(path):
+            return None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        if not os.path.samestat(selected, opened) or not stat.S_ISREG(opened.st_mode):
+            return None
+        with os.fdopen(fd, "rb") as archive_file:
+            fd = None
+            with zipfile.ZipFile(archive_file, "r") as archive:
+                if archive.comment != _archive_ownership_comment(path):
+                    return None
+        if not os.path.samestat(selected, path.lstat()):
+            return None
+        return selected
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
 def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     """Write a full zip snapshot of ``hermes_root`` to ``out_path``.
 
@@ -1618,6 +1656,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 else:
                     zf.write(abs_path, arcname=rel_path.as_posix())
                     written_members += 1
+            zf.comment = _archive_ownership_comment(out_path)
 
         if not written_members:
             logger.warning("Full-zip backup aborted: no files could be written")
@@ -1682,13 +1721,9 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
 
     backups = []
     for path in backup_dir.iterdir():
-        try:
-            selected = path.lstat()
-        except OSError:
-            continue
+        selected = _owned_archive_identity(path)
         if (
-            stat.S_ISREG(selected.st_mode)
-            and not _snapshot_path_is_link_like(path)
+            selected is not None
             and path.name.startswith(_PRE_UPDATE_PREFIX)
             and path.suffix.lower() == ".zip"
         ):
@@ -1767,13 +1802,9 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
 
     backups = []
     for path in backup_dir.iterdir():
-        try:
-            selected = path.lstat()
-        except OSError:
-            continue
+        selected = _owned_archive_identity(path)
         if (
-            stat.S_ISREG(selected.st_mode)
-            and not _snapshot_path_is_link_like(path)
+            selected is not None
             and path.name.startswith(_PRE_MIGRATION_PREFIX)
             and path.suffix.lower() == ".zip"
         ):

@@ -2476,8 +2476,10 @@ class TestPreUpdateBackup:
         backup_dir.mkdir(exist_ok=True)
         victim = backup_dir / f"{prefix}20260101-000000.zip"
         newest = backup_dir / f"{prefix}20260102-000000.zip"
-        victim.write_bytes(b"owned")
-        newest.write_bytes(b"newest")
+        for path, content in ((victim, "owned"), (newest, "newest")):
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("config.yaml", content)
+                archive.comment = backup_mod._archive_ownership_comment(path)
         real_remove = backup_mod._remove_owned_snapshot_file
 
         def replace_before_remove(path, expected):
@@ -2496,6 +2498,32 @@ class TestPreUpdateBackup:
             path.exists() and path.read_text() == "human replacement"
             for path in preserved
         )
+
+    @pytest.mark.parametrize(
+        ("prefix", "prune_name"),
+        [
+            ("pre-update-", "_prune_pre_update_backups"),
+            ("pre-migration-", "_prune_pre_migration_backups"),
+        ],
+    )
+    def test_zip_rotation_preserves_unowned_matching_archive(
+        self, hermes_home, prefix, prune_name
+    ):
+        import hermes_cli.backup as backup_mod
+
+        backup_dir = hermes_home / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        human = backup_dir / f"{prefix}20260101-000000.zip"
+        with zipfile.ZipFile(human, "w") as archive:
+            archive.writestr("notes.txt", "human")
+        owned = backup_dir / f"{prefix}20260102-000000.zip"
+        with zipfile.ZipFile(owned, "w") as archive:
+            archive.writestr("config.yaml", "owned")
+            archive.comment = backup_mod._archive_ownership_comment(owned)
+
+        assert getattr(backup_mod, prune_name)(backup_dir, keep=1) == 0
+        with zipfile.ZipFile(human) as archive:
+            assert archive.read("notes.txt") == b"human"
 
     def test_returns_none_if_root_missing(self, tmp_path):
         from hermes_cli.backup import create_pre_update_backup

@@ -1804,11 +1804,15 @@ class TestBangPrefixCommands:
 
     @pytest.mark.asyncio
     async def test_thread_command_skips_context_prefix(self, adapter):
+        """Thread backfill must never prefix a mentioned command's text.
+
+        Post-#69320, thread context IS fetched on first thread entry, but it
+        rides MessageEvent.channel_context — the command token must stay at
+        character zero of ``text``.
+        """
         adapter._has_active_session_for_thread = MagicMock(return_value=False)
         adapter._fetch_thread_context = AsyncMock(
-            side_effect=AssertionError(
-                "_fetch_thread_context must not be called for slash commands"
-            )
+            return_value="[Thread context]\nAlice: earlier\n"
         )
         evt = self._make_event(
             "<@U_BOT> !new",
@@ -1821,6 +1825,7 @@ class TestBangPrefixCommands:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text == "/new"
         assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.channel_context == "[Thread context]\nAlice: earlier\n"
 
     @pytest.mark.asyncio
     async def test_mention_command_drops_rich_text_command_arguments(self, adapter):

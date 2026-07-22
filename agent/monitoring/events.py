@@ -50,7 +50,6 @@ class GatewayDiagnosticEvent:
     subsystem: str
     error_class: str = "unknown"
     error_code: Optional[str] = None
-    redacted_message: Optional[str] = None
     platform: Optional[str] = None
     old_state: Optional[str] = None
     new_state: Optional[str] = None

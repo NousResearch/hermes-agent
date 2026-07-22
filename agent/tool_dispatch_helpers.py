@@ -62,20 +62,23 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
-    r"""(?:^|\s|&&|\|\||;|`)(?:
-        rm\s|rmdir\s|
+    r"""(?:^|[\s;&|(`'"])(?:
+        rm\s|rmdir\s|unlink\s|
         cp\s|install\s|
-        mv\s|
-        sed\s+-i|
+        mv\s|touch\s|mkdir\s|mktemp\s|ln\s|
+        chmod\s|chown\s|
+        sed\s+(?:[^;&|]*\s)?-i|
+        perl\s+(?:[^;&|]*\s)?-pi|
         truncate\s|
         dd\s|
         shred\s|
-        git\s+(?:reset|clean|checkout)\s
+        tee(?:\s|$)|patch(?:\s|$)|
+        git\s+(?:apply|reset|clean|checkout|restore|revert|merge|rebase|cherry-pick|stash|switch)(?:\s|$)
     )""",
     re.VERBOSE,
 )
-# Output redirects that overwrite files (> but not >>)
-_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+# File redirects, excluding descriptor duplication such as ``2>&1``.
+_REDIRECT_OVERWRITE = re.compile(r"(?<!>)>{1,2}(?![>&])\s*\S")
 
 
 def _is_destructive_command(cmd: str) -> bool:

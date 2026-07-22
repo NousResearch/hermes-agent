@@ -3,12 +3,20 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
+from agent.verification_evidence import record_terminal_result, verification_status
 from tools.environments.local import LocalEnvironment
 
 
 _UNSET = object()
+
+
+@pytest.fixture(autouse=True)
+def _clean_terminal_session_cwd(monkeypatch):
+    monkeypatch.setattr(terminal_tool_module, "_session_cwd", {})
 
 
 def _make_env_config(tmp_path, **overrides):
@@ -36,9 +44,13 @@ def _run_terminal(
     invoke_hook=_UNSET,
     approval=None,
     command="echo hello",
+    env_cwd=None,
+    session_id=None,
 ):
     mock_env = MagicMock()
     mock_env.execute.return_value = {"output": output, "returncode": returncode}
+    if env_cwd is not None:
+        mock_env.cwd = env_cwd
 
     monkeypatch.setattr(
         terminal_tool_module, "_get_env_config", lambda: _make_env_config(tmp_path)
@@ -55,7 +67,12 @@ def _run_terminal(
     if invoke_hook is not _UNSET:
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
 
-    result = json.loads(terminal_tool_module.terminal_tool(command=command))
+    result = json.loads(
+        terminal_tool_module.terminal_tool(
+            command=command,
+            session_id=session_id,
+        )
+    )
     return result, mock_env
 
 
@@ -98,6 +115,120 @@ def test_terminal_output_uses_first_valid_string_from_hooks(monkeypatch, tmp_pat
     )
 
     assert result["output"] == "first"
+
+
+def test_successful_mutating_command_reports_workspace_cwd(monkeypatch, tmp_path):
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="",
+        command="cp src/app.py src/app.backup.py",
+    )
+
+    assert result["workspace_mutation"] == {"paths": [str(tmp_path)]}
+
+
+def test_failed_mutating_command_does_not_report_workspace_cwd(monkeypatch, tmp_path):
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="missing",
+        returncode=1,
+        command="cp missing.py src/app.py",
+    )
+
+    assert "workspace_mutation" not in result
+
+
+def test_mutating_command_reports_terminal_final_cwd(monkeypatch, tmp_path):
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="",
+        command="cd sibling && cp source.py output.py",
+        env_cwd=str(sibling),
+    )
+
+    assert result["workspace_mutation"] == {
+        "paths": [str(tmp_path), str(sibling)],
+    }
+
+
+def test_mutating_compound_stales_start_and_final_workspaces(monkeypatch, tmp_path):
+    start = tmp_path / "start"
+    final = tmp_path / "final"
+    start.mkdir()
+    final.mkdir()
+    for project in (start, final):
+        project.joinpath("package.json").write_text(
+            '{"scripts":{"test":"vitest"}}',
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    for project in (start, final):
+        record_terminal_result(
+            command="npm test",
+            cwd=project,
+            session_id="conversation",
+            exit_code=0,
+            output="green",
+        )
+
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        start,
+        output="",
+        command="cp source.py output.py && cd ../final",
+        env_cwd=str(final),
+        session_id="conversation",
+    )
+
+    assert result["workspace_mutation"] == {
+        "paths": [str(start), str(final)],
+    }
+    assert verification_status(
+        session_id="conversation",
+        cwd=start,
+    )["status"] == "stale"
+    assert verification_status(
+        session_id="conversation",
+        cwd=final,
+    )["status"] == "stale"
+
+
+def test_verification_followed_by_cd_records_command_cwd(monkeypatch, tmp_path):
+    start = tmp_path / "start"
+    final = tmp_path / "final"
+    start.mkdir()
+    final.mkdir()
+    for project in (start, final):
+        project.joinpath("package.json").write_text(
+            '{"scripts":{"test":"vitest"}}',
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        start,
+        output="green",
+        command="npm test && cd ../final",
+        env_cwd=str(final),
+        session_id="conversation",
+    )
+
+    assert result["verification_evidence"]["status"] == "passed"
+    assert verification_status(
+        session_id="conversation",
+        cwd=start,
+    )["status"] == "passed"
+    assert verification_status(
+        session_id="conversation",
+        cwd=final,
+    )["status"] == "unverified"
 
 
 def test_terminal_output_transform_still_truncates_long_replacement(monkeypatch, tmp_path):

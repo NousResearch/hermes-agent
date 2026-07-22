@@ -2490,6 +2490,39 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                try:
+                    from agent.verification_evidence import (
+                        mark_workspace_edited,
+                        terminal_mutation_workspaces,
+                        terminal_result_mutates_workspace,
+                    )
+
+                    evidence_session_id = (
+                        session_id or task_id or effective_task_id or "default"
+                    )
+                    if terminal_result_mutates_workspace(
+                        command=command,
+                        cwd=effective_cwd,
+                        session_id=evidence_session_id,
+                        exit_code=None,
+                    ):
+                        mutation_paths = terminal_mutation_workspaces(
+                            command=command,
+                            cwd=effective_cwd,
+                        )
+                        result_data["workspace_mutation"] = {
+                            "paths": list(mutation_paths)
+                        }
+                        for mutation_path in mutation_paths:
+                            mark_workspace_edited(
+                                session_id=evidence_session_id,
+                                cwd=mutation_path,
+                            )
+                except Exception:
+                    logger.debug(
+                        "background mutation recording failed",
+                        exc_info=True,
+                    )
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
                 # cannot occur here and this note never co-occurs with rc=130.
@@ -2854,16 +2887,52 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            env_cwd = getattr(env, "cwd", None)
+            result_cwd = (
+                env_cwd
+                if isinstance(env_cwd, (str, Path)) and str(env_cwd)
+                else command_cwd
+            )
             try:
-                from agent.verification_evidence import record_terminal_result
+                from agent.verification_evidence import (
+                    mark_workspace_edited,
+                    record_terminal_result,
+                    terminal_mutation_workspaces,
+                    terminal_result_mutates_workspace,
+                )
 
-                evidence = record_terminal_result(
+                evidence_session_id = (
+                    session_id or task_id or effective_task_id or "default"
+                )
+                mutation_paths = terminal_mutation_workspaces(
                     command=command,
                     cwd=command_cwd,
-                    session_id=session_id or task_id or effective_task_id or "default",
-                    exit_code=returncode,
-                    output=output,
+                    final_cwd=result_cwd,
                 )
+                mutates_workspace = terminal_result_mutates_workspace(
+                    command=command,
+                    cwd=result_cwd,
+                    session_id=evidence_session_id,
+                    exit_code=returncode,
+                )
+                if mutates_workspace:
+                    result_dict["workspace_mutation"] = {
+                        "paths": list(mutation_paths)
+                    }
+                    for mutation_path in mutation_paths:
+                        mark_workspace_edited(
+                            session_id=evidence_session_id,
+                            cwd=mutation_path,
+                        )
+                    evidence = None
+                else:
+                    evidence = record_terminal_result(
+                        command=command,
+                        cwd=command_cwd,
+                        session_id=evidence_session_id,
+                        exit_code=returncode,
+                        output=output,
+                    )
                 if evidence:
                     result_dict["verification_evidence"] = {
                         "status": evidence.get("status"),

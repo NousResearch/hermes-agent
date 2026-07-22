@@ -141,6 +141,38 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
+    def test_terminal_workspace_mutation_records_paths_for_verify_on_stop(self):
+        agent = _bare_agent()
+
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "cp src/app.py src/app.backup.py"},
+            json.dumps({
+                "workspace_mutation": {
+                    "paths": ["/tmp/project", "/tmp/sibling"],
+                }
+            }),
+            is_error=False,
+        )
+
+        assert agent._turn_file_mutation_paths == {"/tmp/project", "/tmp/sibling"}
+
+    def test_failed_terminal_result_keeps_conservative_mutation_paths(self):
+        agent = _bare_agent()
+
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "cp src/app.py src/app.backup.py && false"},
+            json.dumps({
+                "exit_code": 1,
+                "error": None,
+                "workspace_mutation": {"paths": ["/tmp/project"]},
+            }),
+            is_error=True,
+        )
+
+        assert agent._turn_file_mutation_paths == {"/tmp/project"}
+
     def test_failure_recorded(self):
         agent = _bare_agent()
         result = json.dumps({"success": False, "error": "Could not find old_string"})

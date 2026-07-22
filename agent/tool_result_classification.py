@@ -38,3 +38,23 @@ def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
     if tool_name == "patch":
         return data.get("success") is True
     return False
+
+
+def terminal_workspace_mutation_paths(result: Any) -> tuple[str, ...]:
+    """Return workspace paths reported by a mutating terminal call."""
+    if not isinstance(result, str):
+        return ()
+    try:
+        data = json.loads(result.strip())
+    except Exception:
+        return ()
+    if not isinstance(data, dict) or data.get("error"):
+        return ()
+    mutation = data.get("workspace_mutation")
+    if not isinstance(mutation, dict):
+        return ()
+    paths = mutation.get("paths")
+    if isinstance(paths, list):
+        return tuple(dict.fromkeys(str(path) for path in paths if path))
+    cwd = mutation.get("cwd")
+    return (str(cwd),) if cwd else ()

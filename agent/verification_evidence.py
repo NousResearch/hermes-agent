@@ -28,7 +28,48 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
-_SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+_READ_ONLY_COMMANDS = frozenset({
+    ".",
+    "cat",
+    "cd",
+    "command",
+    "cut",
+    "diff",
+    "dirname",
+    "echo",
+    "env",
+    "false",
+    "fd",
+    "find",
+    "git",
+    "grep",
+    "head",
+    "jq",
+    "ls",
+    "pwd",
+    "readlink",
+    "rg",
+    "sleep",
+    "sort",
+    "source",
+    "stat",
+    "tail",
+    "test",
+    "true",
+    "type",
+    "uniq",
+    "wc",
+    "which",
+})
+_READ_ONLY_GIT_SUBCOMMANDS = frozenset({
+    "diff",
+    "grep",
+    "log",
+    "ls-files",
+    "rev-parse",
+    "show",
+    "status",
+})
 
 
 @dataclass(frozen=True)
@@ -124,7 +165,72 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 def _split_segment_tokens(command: str, *, posix: bool = True) -> list[list[str]]:
     segments: list[list[str]] = []
-    for segment in _SHELL_SPLIT_RE.split(command.strip()):
+    raw_segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    idx = 0
+
+    def flush() -> None:
+        segment = "".join(buf).strip()
+        if segment:
+            raw_segments.append(segment)
+        buf.clear()
+
+    while idx < len(command):
+        char = command[idx]
+        if quote:
+            buf.append(char)
+            if quote == "'":
+                if char == quote:
+                    quote = None
+                idx += 1
+                continue
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            idx += 1
+            continue
+        if escaped:
+            buf.append(char)
+            escaped = False
+            idx += 1
+            continue
+        if char == "\\":
+            buf.append(char)
+            escaped = True
+            idx += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            buf.append(char)
+            idx += 1
+            continue
+        if command.startswith(("&&", "||"), idx):
+            flush()
+            idx += 2
+            continue
+        if char in {";", "|", "\n"}:
+            flush()
+            idx += 1
+            continue
+        if char == "&":
+            is_fd_redirect = (
+                (idx > 0 and command[idx - 1] in {">", "<"})
+                or (idx + 1 < len(command) and command[idx + 1] == ">")
+            )
+            if not is_fd_redirect:
+                flush()
+                idx += 1
+                continue
+        buf.append(char)
+        idx += 1
+    flush()
+
+    for segment in raw_segments:
         if not segment:
             continue
         try:
@@ -133,6 +239,8 @@ def _split_segment_tokens(command: str, *, posix: bool = True) -> list[list[str]
             continue
         if tokens:
             segments.append(tokens)
+    if any(operator in command for operator in ("$(", "`", "<(", ">(")):
+        segments.append(["__dynamic_shell_expansion__"])
     return segments
 
 
@@ -167,7 +275,7 @@ def _strip_command_prefix(tokens: list[str]) -> list[str]:
         remaining = remaining[1:]
     while remaining and "=" in remaining[0] and not remaining[0].startswith("-"):
         remaining = remaining[1:]
-    while remaining and remaining[0] in {"command", "time", "noglob"}:
+    while remaining and remaining[0] in {"builtin", "command", "time", "noglob"}:
         remaining = remaining[1:]
     return remaining
 
@@ -438,7 +546,16 @@ def record_terminal_result(
     exit_code: int,
     output: str = "",
 ) -> Optional[dict[str, Any]]:
-    """Record a foreground terminal result when it is verification evidence."""
+    """Record verification, or stale it after a recognized workspace mutation."""
+
+    if terminal_result_mutates_workspace(
+        command=command,
+        cwd=cwd,
+        session_id=session_id,
+        exit_code=exit_code,
+    ):
+        mark_workspace_edited(session_id=session_id, cwd=cwd)
+        return None
 
     evidence = classify_verification_command(
         command,
@@ -493,6 +610,142 @@ def record_terminal_result(
             conn.commit()
 
     return {"id": event_id, **evidence.__dict__, "created_at": created_at}
+
+
+def _segment_matches_verification(
+    tokens: list[str], evidence: VerificationEvidence | None
+) -> bool:
+    if evidence is None:
+        return False
+    if evidence.kind == "ad_hoc":
+        return _ad_hoc_script_args(tokens, evidence.root) is not None
+    candidate_tokens = _strip_command_prefix(tokens)
+    canonical = _canonical_tokens(evidence.canonical_command)
+    return any(
+        candidate_tokens[:len(candidate)] == candidate
+        for candidate in _equivalent_needles(canonical)
+    )
+
+
+def _segment_is_read_only(tokens: list[str]) -> bool:
+    candidate = _strip_command_prefix(tokens)
+    if not candidate:
+        return True
+    command = Path(candidate[0]).name
+    if command not in _READ_ONLY_COMMANDS:
+        return False
+    if command == "git":
+        return (
+            len(candidate) > 1
+            and candidate[1] in _READ_ONLY_GIT_SUBCOMMANDS
+            and not any(token.startswith("--output") for token in candidate[2:])
+        )
+    if command in {".", "source"}:
+        if len(candidate) != 2:
+            return False
+        path = candidate[1].replace("\\", "/")
+        return path.endswith("/bin/activate") or path.endswith("/activate.fish")
+    if command in {"fd", "find"}:
+        mutating_flags = {
+            "-delete",
+            "-exec",
+            "-execdir",
+            "-ok",
+            "-okdir",
+            "-x",
+            "-X",
+            "--exec",
+            "--exec-batch",
+        }
+        return not any(
+            token in mutating_flags
+            or token.startswith("--exec=")
+            or token.startswith("--exec-batch=")
+            for token in candidate[1:]
+        )
+    if command == "sort":
+        return not any(
+            token.startswith("-o") or token.startswith("--output")
+            for token in candidate[1:]
+        )
+    return True
+
+
+def terminal_mutation_workspaces(
+    *,
+    command: str,
+    cwd: str | Path | None,
+    final_cwd: str | Path | None = None,
+) -> tuple[str, ...]:
+    """Conservative workspace candidates for a mutating shell command."""
+    current = Path(cwd or ".").expanduser().resolve()
+    candidates = [str(current)]
+    for tokens in _split_segment_tokens(command):
+        segment = _strip_command_prefix(tokens)
+        if not segment:
+            continue
+        if Path(segment[0]).name not in {"cd", "pushd"}:
+            continue
+        args = [token for token in segment[1:] if token != "--"]
+        if not args or args[0] == "-" or any(char in args[0] for char in "$`"):
+            continue
+        destination = Path(args[0]).expanduser()
+        current = (
+            destination.resolve()
+            if destination.is_absolute()
+            else (current / destination).resolve()
+        )
+        candidates.append(str(current))
+    if final_cwd:
+        candidates.append(str(Path(final_cwd).expanduser().resolve()))
+    return tuple(dict.fromkeys(candidates))
+
+
+def terminal_result_mutates_workspace(
+    *,
+    command: str,
+    cwd: str | Path | None = None,
+    session_id: str | None = None,
+    exit_code: int | None,
+) -> bool:
+    """Conservatively detect a terminal command that may have changed files.
+
+    A shell's aggregate exit code cannot reveal whether an earlier command in a
+    compound expression already wrote files. Unknown commands are therefore
+    treated as potential mutators; only canonical verification commands and a
+    small read-only allowlist preserve prior evidence.
+    """
+    segments = _split_segment_tokens(command)
+    if not segments:
+        return False
+
+    evidence = classify_verification_command(
+        command,
+        cwd=cwd,
+        session_id=session_id,
+        exit_code=0,
+    )
+    try:
+        from agent.tool_dispatch_helpers import _is_destructive_command
+
+        explicit_mutation = _is_destructive_command(command)
+    except Exception:
+        explicit_mutation = False
+
+    unknown_segment = any(
+        not _segment_matches_verification(tokens, evidence)
+        and not _segment_is_read_only(tokens)
+        for tokens in segments
+    )
+    if not explicit_mutation and not unknown_segment:
+        return False
+    if len(segments) > 1 or exit_code is None:
+        return True
+    if explicit_mutation:
+        return int(exit_code) == 0
+    if unknown_segment:
+        return True
+    return False
 
 
 def mark_workspace_edited(

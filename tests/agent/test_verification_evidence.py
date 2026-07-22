@@ -4,6 +4,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
@@ -88,6 +90,215 @@ def test_records_passed_then_marks_stale_after_edit(tmp_path, monkeypatch):
     status = verification_status(session_id="s1", cwd=tmp_path)
     assert status["status"] == "stale"
     assert status["changed_paths"] == [str(tmp_path / "src" / "app.ts")]
+
+
+def test_successful_mutating_terminal_command_stales_prior_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    event = record_terminal_result(
+        command="cp src/app.ts src/app.backup.ts",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+    )
+
+    assert event is None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "stale"
+
+
+def test_failed_mutating_terminal_command_preserves_prior_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    record_terminal_result(
+        command="cp missing.ts src/app.ts",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=1,
+        output="cp: missing.ts: No such file",
+    )
+
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+
+
+def test_mutating_compound_command_cannot_record_fresh_verification(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    event = record_terminal_result(
+        command="pnpm test && cp src/app.ts src/app.backup.ts",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    assert event is None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "stale"
+
+
+def test_partially_successful_mutating_compound_stales_prior_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    record_terminal_result(
+        command="cp src/app.ts src/app.backup.ts && false",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=1,
+    )
+
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "stale"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "touch generated.ts",
+        "mkdir generated",
+        "printf data >> generated.txt",
+        "printf data | tee generated.txt",
+        "git restore src/app.ts",
+        "find generated -delete",
+        "sort input.txt -o output.txt",
+        "sort -osorted.txt input.txt",
+        "sed -n '1w output.txt' input.txt",
+        "python scripts/generate.py",
+        "source ./mutate.sh",
+        "scripts/run_tests.sh | python scripts/generate.py",
+        "pnpm test && echo $(python scripts/generate.py)",
+        "scripts/run_tests.sh < <(python scripts/generate.py)",
+        "scripts/run_tests.sh 'arg\\'; python scripts/generate.py",
+    ],
+)
+def test_common_terminal_mutations_stale_prior_evidence(
+    tmp_path,
+    monkeypatch,
+    command,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    record_terminal_result(
+        command=command,
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+    )
+
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "stale"
+
+
+def test_mutate_then_verify_compound_requires_separate_verification(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    event = record_terminal_result(
+        command="touch generated.ts && pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    assert event is None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "stale"
+
+
+def test_stderr_redirection_does_not_look_like_a_file_mutation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    event = record_terminal_result(
+        command="pnpm test 2>&1",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    assert event is not None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+
+
+def test_virtualenv_activation_can_prefix_verification(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    event = record_terminal_result(
+        command="source .venv/bin/activate && pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    assert event is not None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+
+
+def test_read_only_terminal_command_preserves_prior_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+
+    record_terminal_result(
+        command="git status --short",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+    )
+
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
 
 
 def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch):

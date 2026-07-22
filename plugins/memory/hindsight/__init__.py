@@ -281,6 +281,27 @@ def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     return future.result(timeout=timeout)
 
 
+def _run_blocking_with_timeout(fn, timeout: float):
+    """Run a blocking callable on a daemon thread with a hard timeout."""
+    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def _worker():
+        try:
+            result_queue.put((True, fn()))
+        except Exception as exc:
+            result_queue.put((False, exc))
+
+    thread = threading.Thread(target=_worker, daemon=True, name="hindsight-blocking-call")
+    thread.start()
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    ok, payload = result_queue.get()
+    if ok:
+        return payload
+    raise payload
+
+
 # ---------------------------------------------------------------------------
 # Backward-compatible alias — instances use self._run_sync() instead.
 # ---------------------------------------------------------------------------
@@ -1066,6 +1087,33 @@ class HindsightMemoryProvider(MemoryProvider):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
 
+    def _embedded_timeout_error(self) -> RuntimeError:
+        timeout = self._timeout or _DEFAULT_TIMEOUT
+        return RuntimeError(
+            "Hindsight local memory service did not become ready within "
+            f"{timeout}s. It may be stuck during embedded daemon startup "
+            "(for example, a missing HuggingFace cache while HF_HUB_OFFLINE=1). "
+            "Check ~/.hermes/logs/hindsight-embed.log or disable local_embedded mode."
+        )
+
+    def _run_local_embedded_attempt(self, operation):
+        state: dict[str, Any] = {}
+
+        def _invoke():
+            client = self._get_client()
+            state["client"] = client
+            return self._run_sync(operation(client))
+
+        try:
+            result = _run_blocking_with_timeout(_invoke, timeout=self._timeout or _DEFAULT_TIMEOUT)
+        except TimeoutError as exc:
+            raise self._embedded_timeout_error() from exc
+
+        client = state.get("client")
+        if client is not None:
+            self._client = client
+        return result
+
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
         if self._mode != "local_embedded":
@@ -1150,6 +1198,19 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _run_hindsight_operation(self, operation):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
+        if self._mode == "local_embedded":
+            try:
+                return self._run_local_embedded_attempt(operation)
+            except Exception as exc:
+                if not self._is_retriable_embedded_connection_error(exc):
+                    raise
+                logger.info(
+                    "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
+                    exc,
+                )
+                self._client = None
+                return self._run_local_embedded_attempt(operation)
+
         client = self._get_client()
         try:
             return self._run_sync(operation(client))

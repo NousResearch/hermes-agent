@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -782,6 +783,43 @@ class TestToolHandlers:
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
+
+    def test_local_embedded_recall_times_out_when_client_startup_hangs(self, provider, monkeypatch):
+        provider._mode = "local_embedded"
+        provider._client = None
+        provider._timeout = 0.05
+
+        def _hung_client():
+            threading.Event().wait(0.2)
+            return _make_mock_client()
+
+        monkeypatch.setattr(provider, "_get_client", _hung_client)
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert "error" in result
+        assert "did not become ready within 0.05s" in result["error"]
+        assert "HF_HUB_OFFLINE=1" in result["error"]
+
+    def test_local_embedded_recall_surfaces_clear_timeout_error(self, provider, monkeypatch):
+        provider._mode = "local_embedded"
+        provider._timeout = 0.05
+
+        def _timeout(coro):
+            coro.close()
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(provider, "_run_sync", _timeout)
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert "error" in result
+        assert "did not become ready within 0.05s" in result["error"]
+        assert "hindsight-embed.log" in result["error"]
 
 
 # ---------------------------------------------------------------------------

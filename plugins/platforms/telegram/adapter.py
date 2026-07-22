@@ -20,7 +20,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -1952,14 +1952,20 @@ class TelegramAdapter(BasePlatformAdapter):
         draft_id: int,
         content: str,
         metadata: Optional[Dict[str, Any]],
-    ) -> bool:
-        """Emit one ``sendRichMessageDraft`` preview frame; True on success.
+    ) -> Tuple[bool, Optional[float]]:
+        """Emit one ``sendRichMessageDraft`` preview frame.
 
-        Draft frames are ephemeral and overwritten by the next frame / the
-        final ``sendRichMessage``, so a duplicate or lost rich draft is
-        harmless — any failure simply returns False and the caller renders the
-        legacy plain-text draft. A permanent/capability failure additionally
-        latches ``_rich_draft_disabled`` so later frames skip the rich attempt.
+        Returns ``(success, retry_after)``. ``retry_after`` is only ever set
+        alongside ``success=False`` and signals a flood-control wait — the
+        caller must propagate that as a retryable ``SendResult`` rather than
+        immediately trying the legacy ``sendMessageDraft`` for the same
+        frame, which would just spend another call in the same flood-control
+        window. Any other failure returns ``(False, None)``: draft frames are
+        ephemeral and overwritten by the next frame / the final
+        ``sendRichMessage``, so a duplicate or lost rich draft is harmless
+        and the caller renders the legacy plain-text draft instead. A
+        permanent/capability failure additionally latches
+        ``_rich_draft_disabled`` so later frames skip the rich attempt.
         """
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id),
@@ -1971,8 +1977,15 @@ class TelegramAdapter(BasePlatformAdapter):
             payload["message_thread_id"] = int(thread_id)
         try:
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
-            return bool(ok)
+            return bool(ok), None
         except Exception as exc:
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None:
+                logger.debug(
+                    "[%s] sendRichMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                    self.name, float(retry_after), chat_id, draft_id,
+                )
+                return False, float(retry_after)
             if self._is_rich_capability_error(exc):
                 self._rich_draft_disabled = True
                 logger.debug(
@@ -1984,7 +1997,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame",
                     self.name, _redact_telegram_error_text(exc),
                 )
-            return False
+            return False, None
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
@@ -4458,14 +4471,43 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
-                    chat_id=normalize_telegram_chat_id(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
-                if _saturated_preview:
-                    self._last_overflow_preview[_preview_key] = content
-                return SendResult(success=True, message_id=message_id)
+                # Streaming tick: try MarkdownV2 so the message stays formatted
+                # while new content arrives.  format_message escapes unmatched
+                # markers (e.g. unclosed **bold), so it virtually never triggers
+                # a BadRequest.  Other errors (flood, network) propagate to the
+                # outer handler so the consumer can back off or enter fallback.
+                # Saturated-preview dedup (above) still applies here: cache the
+                # sent content on every successful exit so the next identical
+                # truncated frame is skipped instead of re-tripping flood control.
+                _streaming_formatted = self.format_message(content)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=_streaming_formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    if _saturated_preview:
+                        self._last_overflow_preview[_preview_key] = content
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as _mdv2_err:
+                    _mdv2_s = str(_mdv2_err).lower()
+                    if "not modified" in _mdv2_s:
+                        if _saturated_preview:
+                            self._last_overflow_preview[_preview_key] = content
+                        return SendResult(success=True, message_id=message_id)
+                    if self._is_bad_request_error(_mdv2_err):
+                        # MarkdownV2 rejected this frame — send plain text for
+                        # this tick; next tick will try MarkdownV2 again.
+                        await self._bot.edit_message_text(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            message_id=int(message_id),
+                            text=content,
+                        )
+                        if _saturated_preview:
+                            self._last_overflow_preview[_preview_key] = content
+                        return SendResult(success=True, message_id=message_id)
+                    raise  # flood / network — propagate to outer handler
 
             formatted = self.format_message(content)
             try:
@@ -4878,9 +4920,23 @@ class TelegramAdapter(BasePlatformAdapter):
         # sendRichMessage will persist, so the animated draft matches the final
         # message. Any failure degrades to the legacy plain-text draft below.
         if self._should_attempt_rich_draft(content):
-            if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
+            rich_ok, rich_retry_after = await self._try_send_rich_draft(
+                chat_id, draft_id, content, metadata,
+            )
+            if rich_ok:
                 # Drafts have no message_id; report success without one.
                 return SendResult(success=True, message_id=None)
+            if rich_retry_after is not None:
+                # Flood control on the rich endpoint: propagate the wait so
+                # the caller cools down instead of falling back to legacy
+                # sendMessageDraft, which would just spend another call in
+                # the same flood-control window for this frame.
+                return SendResult(
+                    success=False,
+                    error=f"flood_control:{rich_retry_after:.0f}",
+                    retryable=True,
+                    retry_after=rich_retry_after,
+                )
 
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
@@ -4918,13 +4974,79 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Drafts have no message_id; we report success without one
                     # so the caller knows the animation frame landed.
                     return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
+                # ok=False: Bot API rejected the frame (typing action expired,
+                # unsupported client, etc.) with no exception detail.  This is
+                # a normal miss, not flood control — it counts toward
+                # _MAX_DRAFT_FAILURES like any other rejection, so a run of
+                # real rejections still trips the consecutive-failure
+                # fallback to edit-based delivery instead of being silently
+                # invisible forever.
+                logger.debug(
+                    "[%s] sendMessageDraft ok=False (chat=%s draft_id=%s)",
+                    self.name, chat_id, draft_id,
+                )
+                return SendResult(success=False, error="rejected")
             except Exception as e:
-                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
-                # is recoverable: retry once as plain text.  Any other failure
-                # (chat doesn't allow drafts, transient hiccup) — or a failure
-                # on the plain-text attempt — propagates to the caller, which
-                # treats it as "fall back to edit-based for this response".
+                # Short flood-control wait (≤5s): sleep inline and retry the
+                # same frame so this single hiccup is invisible to the caller.
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after is not None:
+                    wait = float(retry_after)
+                    if wait <= 5.0:
+                        logger.debug(
+                            "[%s] sendMessageDraft flood control %.1fs, retrying "
+                            "(chat=%s draft_id=%s)",
+                            self.name, wait, chat_id, draft_id,
+                        )
+                        await asyncio.sleep(wait)
+                        try:
+                            ok = await self._bot.send_message_draft(**kwargs)
+                            if ok:
+                                return SendResult(success=True, message_id=None)
+                            logger.debug(
+                                "[%s] sendMessageDraft ok=False after retry "
+                                "(chat=%s draft_id=%s)",
+                                self.name, chat_id, draft_id,
+                            )
+                            return SendResult(success=False, error="rejected")
+                        except Exception as e2:
+                            retry_after2 = getattr(e2, "retry_after", None)
+                            if retry_after2 is not None:
+                                wait2 = float(retry_after2)
+                                logger.debug(
+                                    "[%s] sendMessageDraft flood control %.1fs on "
+                                    "retry (chat=%s draft_id=%s)",
+                                    self.name, wait2, chat_id, draft_id,
+                                )
+                                return SendResult(
+                                    success=False,
+                                    error=f"flood_control:{wait2:.0f}",
+                                    retryable=True,
+                                    retry_after=wait2,
+                                )
+                            # Retry raised a non-flood error — a normal miss,
+                            # not masked as success, so repeated hard failures
+                            # (capability/permission errors) still trip the
+                            # consecutive-failure fallback.
+                            logger.debug(
+                                "[%s] sendMessageDraft retry failed "
+                                "(chat=%s draft_id=%s): %s",
+                                self.name, chat_id, draft_id, e2,
+                            )
+                            return SendResult(success=False, error=str(e2))
+                    # Long wait — signal retryable so the caller doesn't count
+                    # this against the permanent-disable threshold.
+                    logger.debug(
+                        "[%s] sendMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                        self.name, wait, chat_id, draft_id,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait:.0f}",
+                        retryable=True,
+                        retry_after=wait,
+                    )
+                # MarkdownV2 parse failure: retry once as plain text.
                 if use_markdown and self._is_bad_request_error(e):
                     logger.debug(
                         "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
@@ -4932,13 +5054,20 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, chat_id, draft_id, _redact_telegram_error_text(e),
                     )
                     continue
+                # Any other failure (unsupported chat, network hiccup,
+                # plain-text retry failure): a normal miss.  Not flood
+                # control, so it counts toward _MAX_DRAFT_FAILURES like any
+                # other rejection — a real/permanent problem (bot blocked,
+                # chat gone, etc.) should still trip the existing
+                # consecutive-failure fallback rather than being silently
+                # invisible forever.
                 logger.debug(
                     "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
                     self.name, chat_id, draft_id, e,
                 )
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
 
-        return SendResult(success=False, error="draft_rejected")
+        return SendResult(success=True, message_id=None)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id

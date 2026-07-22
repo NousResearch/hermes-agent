@@ -9609,22 +9609,16 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    # A Desktop runtime id is only a volatile transport handle. Bind every
-    # submit to the durable conversation the composer intended before touching
-    # transport, busy queues, history, or persistence. This is the server-side
-    # fence for stale/cross-wired Desktop runtime caches (#54527).
-    expected_key_present = "expected_stored_session_id" in params
-    expected_key = str(params.get("expected_stored_session_id") or "").strip()
-    actual_key = str(session.get("session_key") or "").strip()
-    if not expected_key_present or not expected_key:
-        if _session_source(session) == "desktop":
-            return _err(
-                rid,
-                4260,
-                "Desktop upgrade required: prompt.submit must include its durable session target",
-            )
-    elif expected_key != actual_key:
-        return _err(rid, 4091, "prompt target mismatch; reload the conversation and retry")
+    # A Desktop runtime id is only a volatile transport handle. New Desktop
+    # clients bind each submit to the durable conversation the composer
+    # intended; reject a stale/cross-wired binding before touching transport,
+    # busy queues, history, or persistence (#54527). Omission remains accepted
+    # for expand-compatible rollout with Desktop clients predating this field.
+    if "expected_stored_session_id" in params:
+        expected_key = str(params.get("expected_stored_session_id") or "").strip()
+        actual_key = str(session.get("session_key") or "").strip()
+        if expected_key != actual_key:
+            return _err(rid, 4091, "prompt target mismatch; reload the conversation and retry")
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps

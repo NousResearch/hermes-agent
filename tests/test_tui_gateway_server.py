@@ -281,18 +281,19 @@ def test_desktop_prompt_submit_rejects_mismatched_durable_target_before_mutation
     assert mutations == []
 
 
-def test_desktop_prompt_submit_requires_durable_target_from_current_clients():
-    session = _session(source="desktop", session_key="stored-session")
+def test_legacy_desktop_prompt_submit_accepts_omitted_durable_target(monkeypatch):
+    session = _session(source="desktop", session_key="stored-session", running=True)
     server._sessions["runtime-session"] = session
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
     try:
         response = server.handle_request({
             "id": "legacy-desktop-submit", "method": "prompt.submit",
-            "params": {"session_id": "runtime-session", "text": "unsafe legacy send"},
+            "params": {"session_id": "runtime-session", "text": "compatible legacy send"},
         })
     finally:
         server._sessions.pop("runtime-session", None)
-    assert response["error"]["code"] == 4260
-    assert "upgrade" in response["error"]["message"].lower()
+    assert response["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == "compatible legacy send"
     assert session["history"] == []
 
 

@@ -91,6 +91,43 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
 
+class TestFeishuApplyYamlConfig(unittest.TestCase):
+    """``_apply_yaml_config`` is the sole owner of feishu: YAML translation
+    (apply_yaml_config_fn contract, #24849). group_rules/admins/
+    default_group_policy are structured values read straight from
+    PlatformConfig.extra by FeishuAdapter._load_settings() — unlike
+    allow_bots, they have no env var, so this hook must return them for the
+    dispatcher to merge into extra."""
+
+    def test_bridges_group_access_fields_into_seeded_extra(self):
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        feishu_cfg = {
+            "group_rules": {"oc_workbench": {"policy": "open", "require_mention": False}},
+            "admins": ["ou_admin"],
+            "default_group_policy": "allowlist",
+        }
+        seeded = _apply_yaml_config({"feishu": feishu_cfg}, feishu_cfg)
+
+        self.assertEqual(seeded, feishu_cfg)
+
+    def test_omits_group_access_fields_when_absent(self):
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config({"feishu": {"require_mention": True}}, {"require_mention": True})
+
+        self.assertIsNone(seeded)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_still_bridges_allow_bots_to_env(self):
+        from plugins.platforms.feishu.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config({"feishu": {"allow_bots": True}}, {"allow_bots": True})
+
+        self.assertEqual(os.environ["FEISHU_ALLOW_BOTS"], "true")
+        self.assertIsNone(seeded)
+
+
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message

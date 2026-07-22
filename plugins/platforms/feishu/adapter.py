@@ -5663,15 +5663,28 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """Translate config.yaml feishu: keys into FEISHU_* env vars.
+    """Translate config.yaml feishu: keys into FEISHU_* env vars and extras.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
-    Env vars take precedence over YAML. Returns None — flows through env.
+    Env vars take precedence over YAML.
+
+    ``group_rules``, ``admins``, and ``default_group_policy`` are structured
+    values consumed directly from ``PlatformConfig.extra`` by
+    ``FeishuAdapter._load_settings()`` (not via env vars), so — unlike
+    ``allow_bots`` above — they are returned here for the dispatcher to merge
+    into extra, rather than being translated into an env var. Only forward a
+    key when it is explicitly present, so "no group_rules" stays observably
+    distinct from "empty group_rules".
     """
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+    seeded = {
+        key: feishu_cfg[key]
+        for key in ("group_rules", "admins", "default_group_policy")
+        if key in feishu_cfg
+    }
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

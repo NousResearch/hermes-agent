@@ -610,6 +610,57 @@ class TestLoadGatewayConfig:
             config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
         )
 
+    def test_bridges_top_level_feishu_group_access_fields_to_adapter_extra(self, tmp_path, monkeypatch):
+        """Top-level Feishu group access settings must reach the adapter unchanged."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "feishu:\n"
+            "  group_rules:\n"
+            "    oc_workbench:\n"
+            "      policy: open\n"
+            "      require_mention: false\n"
+            "  admins:\n"
+            "    - ou_admin\n"
+            "  default_group_policy: allowlist\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+        extra = config.platforms[Platform.FEISHU].extra
+
+        assert extra["group_rules"] == {
+            "oc_workbench": {"policy": "open", "require_mention": False},
+        }
+        assert extra["admins"] == ["ou_admin"]
+        assert extra["default_group_policy"] == "allowlist"
+
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(extra)
+        assert settings.group_rules["oc_workbench"].policy == "open"
+        assert settings.group_rules["oc_workbench"].require_mention is False
+        assert settings.admins == frozenset({"ou_admin"})
+        assert settings.default_group_policy == "allowlist"
+
+    def test_omits_feishu_group_access_extra_when_not_configured(self, tmp_path, monkeypatch):
+        """Missing structured Feishu settings must not become empty adapter overrides."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "feishu:\n  require_mention: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+        extra = config.platforms[Platform.FEISHU].extra
+
+        assert "group_rules" not in extra
+        assert "admins" not in extra
+        assert "default_group_policy" not in extra
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable

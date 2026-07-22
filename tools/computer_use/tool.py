@@ -175,6 +175,22 @@ def _get_backend() -> ComputerUseBackend:
         return _backend
 
 
+def _get_task_desktop_backend(task_id: Optional[str]) -> Optional[ComputerUseBackend]:
+    """Use the terminal environment's paired CUA backend when available."""
+    if not task_id:
+        return None
+    try:
+        from tools.environments.compute_provider import ComputerCapableEnvironment
+        from tools.terminal_tool import get_active_env
+
+        environment = get_active_env(task_id)
+        if isinstance(environment, ComputerCapableEnvironment):
+            return environment.get_computer_backend()
+    except Exception:
+        logger.debug("Task desktop backend unavailable", exc_info=True)
+    return None
+
+
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
     global _backend
@@ -296,7 +312,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 
     # Dispatch to backend.
     try:
-        backend = _get_backend()
+        backend = _get_task_desktop_backend(kwargs.get("task_id")) or _get_backend()
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",

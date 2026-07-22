@@ -158,6 +158,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "desktop_sandbox": {
+        "description": "Shared leased desktop sandbox: terminal, files, and computer-use on one task-scoped environment",
+        "tools": ["desktop_sandbox"],
+        "includes": ["terminal", "file", "computer_use"],
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

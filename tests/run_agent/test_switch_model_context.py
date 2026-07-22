@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 from agent.agent_init import _normalize_route_base_url
 from agent.context_compressor import ContextCompressor
@@ -47,6 +49,41 @@ def test_route_url_normalization_preserves_malformed_trailing_slash():
     assert _normalize_route_base_url(
         "http://[bad/v1/"
     ) != _normalize_route_base_url("http://[bad/v1")
+
+
+@pytest.mark.parametrize(
+    ("configured", "active"),
+    [
+        ("http://EXAMPLE.COM:80/v1/", "http://example.com/v1"),
+        (
+            "https://EXAMPLE.COM:443/v1/#configured-fragment",
+            "https://example.com/v1#active-fragment",
+        ),
+        ("http://[2001:DB8::1]:80/v1/", "http://[2001:db8::1]/v1"),
+    ],
+)
+def test_route_url_normalization_accepts_isolated_safe_equivalences(
+    configured, active
+):
+    """Default ports, fragments, and IPv6 hex case do not change HTTP routes."""
+    assert _normalize_route_base_url(configured) == _normalize_route_base_url(active)
+
+
+@pytest.mark.parametrize(
+    ("configured", "active"),
+    [
+        ("https://example.com/V1", "https://example.com/v1"),
+        ("https://example.com:8443/v1", "https://example.com/v1"),
+        ("https://example.com/v1?tenant=large", "https://example.com/v1"),
+        ("http://example.com/v1", "https://example.com/v1"),
+        ("https://example.com:notaport/v1", "https://example.com/v1"),
+    ],
+)
+def test_route_url_normalization_preserves_significant_components(
+    configured, active
+):
+    """Path case, route data, schemes, and ambiguous ports stay distinct."""
+    assert _normalize_route_base_url(configured) != _normalize_route_base_url(active)
 
 
 def _make_direct_start_agent(

@@ -22,10 +22,16 @@ const CANNED_REPLY = 'Hello from the mock inference server! The full boot chain 
 /**
  * Start the mock server on an ephemeral port.
  *
- * @returns a handle with `port`, `url`, and `close()`.
+ * @returns a handle with `port`, `url`, received user prompts, and `close()`.
  */
-export function startMockServer(): Promise<{ port: number; url: string; close: () => Promise<void> }> {
+export function startMockServer(): Promise<{
+  port: number
+  url: string
+  receivedPrompts: string[]
+  close: () => Promise<void>
+}> {
   return new Promise((resolve, reject) => {
+    const receivedPrompts: string[] = []
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
       // don't hurt and make the server usable from a browser context too.
@@ -73,6 +79,14 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
             parsed = JSON.parse(body)
           } catch {
             // malformed JSON — treat as non-streaming with defaults
+          }
+
+          const lastUserMessage = [...(parsed.messages ?? [])]
+            .reverse()
+            .find((message: { role?: unknown }) => message?.role === 'user')
+
+          if (typeof lastUserMessage?.content === 'string') {
+            receivedPrompts.push(lastUserMessage.content)
           }
 
           const stream = parsed.stream === true
@@ -187,6 +201,7 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
       resolve({
         port,
         url,
+        receivedPrompts,
         close: () =>
           new Promise((resolveClose, rejectClose) => {
             server.close((err) => {

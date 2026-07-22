@@ -64,6 +64,7 @@ import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
+import { sessionContextDrift } from '../session-context-drift'
 
 import {
   appendLiveSessionProjection,
@@ -339,7 +340,6 @@ export function useSessionActions({
 
   const createBackendSessionForSend = useCallback(
     async (preview: string | null = null): Promise<string | null> => {
-      const startingActiveSessionId = activeSessionIdRef.current
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
 
@@ -362,11 +362,24 @@ export function useSessionActions({
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id ?? null
 
-        if (
-          activeSessionIdRef.current !== startingActiveSessionId ||
-          selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-          getRouteToken() !== startingRouteToken
-        ) {
+        // Only a genuine move to a DIFFERENT chat mid-create should orphan the
+        // session we just minted. The active runtime ref is deliberately not a
+        // prong: background gateway events retarget it while other sessions
+        // stream (#47709 class), and the seconds-long session.create round-trip
+        // (server-side agent + MCP init) makes that churn near-certain — every
+        // genuine user switch retargets selection AND route synchronously
+        // anyway. submitTargetStoredId is the just-created stored session, so
+        // our own upcoming re-home onto it never reads as drift.
+        const drift = sessionContextDrift({
+          startRouteToken: startingRouteToken,
+          nowRouteToken: getRouteToken(),
+          startSelectedStoredId: startingStoredSessionId,
+          nowSelectedStoredId: selectedStoredSessionIdRef.current,
+          submitTargetStoredId: stored
+        })
+
+        if (drift) {
+          console.warn('[submit-drift-abort]', drift, { phase: 'mid-create' })
           await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
 
           return null

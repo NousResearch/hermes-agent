@@ -545,11 +545,75 @@ class ComputeHost:
             if route_name == "reload.mcp":
                 self._handle_reload_mcp({**frame, "type": "reload_mcp"})
                 return
+            if route_name == "session.save":
+                response = server._methods["session.save"](
+                    request_id,
+                    {"session_id": sid},
+                )
+                if "error" in response:
+                    self.emit(
+                        {
+                            "type": "control.error",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "message": str(response["error"].get("message") or "session save failed"),
+                        }
+                    )
+                    return
+                self.emit(
+                    {
+                        "type": "control.ack",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "route_name": route_name,
+                        "result": response.get("result") or {},
+                    }
+                )
+                return
+            if route_name == "session.compress":
+                command = str(frame.get("command") or "")
+                focus_topic = command.removeprefix("/compress").strip()
+                response = server._methods["session.compress"](
+                    request_id,
+                    {
+                        "session_id": sid,
+                        **({"focus_topic": focus_topic} if focus_topic else {}),
+                    },
+                )
+                if "error" in response:
+                    self.emit(
+                        {
+                            "type": "control.error",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "message": str(response["error"].get("message") or "session compression failed"),
+                        }
+                    )
+                    return
+                with session["history_lock"]:
+                    session_key = str(session.get("session_key") or "")
+                    history_version = int(session.get("history_version", 0))
+                    message_count = len(session.get("history") or [])
+                self.emit(
+                    {
+                        "type": "control.ack",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "route_name": route_name,
+                        "result": response.get("result") or {},
+                        "session_key": session_key,
+                        "history_version": history_version,
+                        "message_count": message_count,
+                        "session_info": server._session_info(session.get("agent"), session),
+                    }
+                )
+                return
             command = str(frame.get("command") or "")
             output = ""
             if command:
                 output = server._mirror_slash_side_effects(sid, session, command)
             with session["history_lock"]:
+                messages = server._history_to_messages(list(session.get("history") or []))
                 history_version = int(session.get("history_version", 0))
                 message_count = len(session.get("history") or [])
                 session_key = str(session.get("session_key") or "")
@@ -563,6 +627,7 @@ class ComputeHost:
                     "session_key": session_key,
                     "history_version": history_version,
                     "message_count": message_count,
+                    "messages": messages,
                     "session_info": server._session_info(session.get("agent"), session),
                 }
             )

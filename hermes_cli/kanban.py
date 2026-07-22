@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.i18n import t
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name
@@ -743,6 +744,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nrm.add_argument("--chat-id", required=True)
     p_nrm.add_argument("--thread-id", default=None)
 
+    p_nretry = sub.add_parser(
+        "notify-retry",
+        help=t("gateway.kanban.notify_retry.help"),
+        description=t("gateway.kanban.notify_retry.help"),
+    )
+    p_nretry.add_argument(
+        "task_id",
+        help=t("gateway.kanban.notify_retry.task_id"),
+    )
+
     # --- log ---
     p_log = sub.add_parser(
         "log",
@@ -1019,6 +1030,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "notify-subscribe":   _cmd_notify_subscribe,
             "notify-list":        _cmd_notify_list,
             "notify-unsubscribe": _cmd_notify_unsubscribe,
+            "notify-retry":       _cmd_notify_retry,
             "context":  _cmd_context,
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
@@ -2647,6 +2659,21 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
         print("(no such subscription)", file=sys.stderr)
         return 1
     print(f"Unsubscribed from {args.task_id}")
+    return 0
+
+
+def _cmd_notify_retry(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        requeued = kb.requeue_dead_letter_notifications(
+            conn,
+            task_id=args.task_id,
+        )
+    key = (
+        "gateway.kanban.notify_retry.requeued_one"
+        if requeued == 1
+        else "gateway.kanban.notify_retry.requeued_many"
+    )
+    print(t(key, count=requeued, task_id=args.task_id))
     return 0
 
 

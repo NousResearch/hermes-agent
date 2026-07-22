@@ -3,6 +3,7 @@ import pytest
 
 from pathlib import Path
 from types import SimpleNamespace
+from gateway.platforms.base import SendResult
 from hermes_cli import kanban_db as kb
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,6 +52,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="m-1")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -111,6 +113,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="m-1")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -144,8 +147,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     )
     assert int(subs[0]["last_event_id"]) >= 1, (
         "Cursor should have advanced past the delivered event "
-        "(claim_unseen_events_for_sub advances atomically inside the "
-        "same write txn as the read)."
+        "(outbox staging advances atomically with the durable send action)."
     )
 
 
@@ -166,6 +168,7 @@ async def test_notifier_second_blocked_delivers(kanban_home):
 
     async def _capture_send(chat_id, msg, metadata=None):
         delivered_msgs.append(msg)
+        return SendResult(success=True, message_id=f"m-{len(delivered_msgs)}")
 
     fake_adapter = MagicMock()
     fake_adapter.send = AsyncMock(side_effect=_capture_send)
@@ -416,6 +419,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="m-1")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -550,6 +554,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     async def _send(chat_id, msg, metadata=None):
         sends.append((chat_id, msg))
         runner._running = False
+        return SendResult(success=True, message_id="m-1")
 
     async def _send_images(chat_id, images, metadata=None, **_kw):
         images_uploaded.extend(p for p, _ in images)
@@ -631,6 +636,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     async def _send(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="m-1")
 
     async def _send_document(chat_id, file_path, metadata=None, **_kw):
         documents_uploaded.append(file_path)

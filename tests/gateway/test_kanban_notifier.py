@@ -3,8 +3,11 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+
+_REAL_ASYNCIO_SLEEP = asyncio.sleep
 
 
 class RecordingAdapter:
@@ -13,6 +16,7 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SendResult(success=True, message_id="m-1")
 
 
 class DisconnectedAdapters(dict):
@@ -23,13 +27,11 @@ class DisconnectedAdapters(dict):
 
 
 async def _run_one_notifier_tick(monkeypatch, runner):
-    real_sleep = asyncio.sleep
-
     async def fake_sleep(delay):
         if delay == 5:
             return None
         runner._running = False
-        await real_sleep(0)
+        await _REAL_ASYNCIO_SLEEP(0)
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     await runner._kanban_notifier_watcher(interval=1)
@@ -105,7 +107,9 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     assert adapter2.sent == []
 
 
-def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):
+def test_kanban_notifier_leaves_events_unstaged_until_an_adapter_reconnects(
+    tmp_path, monkeypatch,
+):
     db_path = tmp_path / "adapter-disconnect.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
@@ -118,7 +122,25 @@ def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypa
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+    conn = kb.connect()
+    try:
+        sub = kb.list_notify_subs(conn, tid)[0]
+        row = conn.execute(
+            "SELECT 1 FROM kanban_notification_outbox "
+            "WHERE subscription_id = ?",
+            (sub["subscription_id"],),
+        ).fetchone()
+        assert int(sub["last_event_id"]) == 0
+        assert row is None
+    finally:
+        conn.close()
+
+    reconnected_adapter = RecordingAdapter()
+    runner.adapters = {Platform.TELEGRAM: reconnected_adapter}
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(reconnected_adapter.sent) == 1
 
 
 def test_kanban_db_path_is_test_isolated_from_real_home():
@@ -148,13 +170,11 @@ class FailingAdapter:
         raise RuntimeError("simulated send failure")
 
 
-def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
-    """A raising adapter rewinds the claim so the next tick can retry.
+def test_kanban_notifier_persists_retry_on_send_exception(tmp_path, monkeypatch):
+    """A raising adapter leaves a pending outbox item for the next tick.
 
-    This is the second rewind path (distinct from the adapter-disconnect path
-    in test_kanban_notifier_rewinds_claim_if_adapter_disconnects). Here the
-    adapter is connected and the send call actually fires; the claim must
-    still rewind so the event isn't lost when send() raises mid-tick.
+    Unlike the adapter-disconnect path, the send call actually starts, so this
+    consumes one durable attempt before returning the item to pending.
     """
     db_path = tmp_path / "send-failure.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -166,11 +186,22 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    # Send was attempted (so we exercised the failure path, not just the
-    # disconnect path) and the claim was rewound — the unseen-events query
-    # still returns the event for retry on the next tick.
+    # The cursor stays advanced because the outbox, not a cursor rewind, owns
+    # the durable retry obligation.
     assert adapter.attempts >= 1, "send should have been attempted at least once"
-    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+    conn = kb.connect()
+    try:
+        sub = kb.list_notify_subs(conn, tid)[0]
+        row = conn.execute(
+            "SELECT state, attempts FROM kanban_notification_outbox "
+            "WHERE subscription_id = ?",
+            (sub["subscription_id"],),
+        ).fetchone()
+        assert int(sub["last_event_id"]) > 0
+        assert row["state"] == "pending"
+        assert row["attempts"] == 1
+    finally:
+        conn.close()
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
@@ -235,19 +266,10 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     assert "crashed" in adapter.sent[1]["text"].lower()
 
 
-def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypatch):
-    """A subscription owned by a secondary profile whose profile-adapter
-    registry entry EXISTS but lacks this platform must NOT fall back to the
-    default profile's same-platform adapter — the notifier must route through
-    the shared ``_authorization_adapter`` chokepoint, which forbids that
-    fallback (gateway/authz_mixin.py). Delivering via the default profile's bot
-    is the exact cross-profile mis-delivery this whole change exists to fix
-    (`[230002] Bot can NOT be out of the chat`).
-
-    Mutation check: reverting kanban_watchers.py's adapter selection to the old
-    inline ``if adapter is None: adapter = self.adapters.get(plat)`` fallback
-    makes this test FAIL (the default adapter receives the delivery).
-    """
+def test_notifier_owning_profile_adapter_never_falls_back_to_default(
+    tmp_path, monkeypatch,
+):
+    """An unavailable owning route remains unstaged until it reconnects."""
     db_path = tmp_path / "profile-no-fallback.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
@@ -268,14 +290,11 @@ def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypat
     other_adapter = RecordingAdapter()
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
+    runner._kanban_notifier_profile = "default"
     # Default profile has a telegram adapter …
     runner.adapters = {Platform.TELEGRAM: default_adapter}
-    # … and profile "beta" HAS a non-empty registry entry (so it passes the
-    # notifier's upstream skip-filter, which only skips owning profiles with NO
-    # adapter at all), but that entry does NOT contain a telegram adapter — beta
-    # connected a different platform (discord). The telegram sub owned by beta
-    # must therefore resolve to NO adapter, not silently borrow the default
-    # profile's telegram bot.
+    # Profile "beta" has a different adapter but no Telegram route. Its
+    # Telegram subscription must not borrow the default profile's bot.
     runner._profile_adapters = {"beta": {Platform.DISCORD: other_adapter}}
     runner._kanban_sub_fail_counts = {}
 
@@ -289,9 +308,98 @@ def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypat
     assert other_adapter.sent == [], (
         f"beta's discord adapter must not receive a telegram sub; got {other_adapter.sent!r}"
     )
-    # The claim is rewound (adapter resolved to None → treated as disconnected),
-    # so the event is still unseen and will deliver once beta's adapter connects.
-    assert [ev.kind for ev in _unseen_terminal_events_for(tid, "chat-beta")] == ["completed"]
+    conn = kb.connect()
+    try:
+        sub = kb.list_notify_subs(conn, tid)[0]
+        row = conn.execute(
+            "SELECT 1 FROM kanban_notification_outbox "
+            "WHERE subscription_id = ?",
+            (sub["subscription_id"],),
+        ).fetchone()
+        assert int(sub["last_event_id"]) == 0
+        assert row is None
+    finally:
+        conn.close()
+
+    beta_telegram_adapter = RecordingAdapter()
+    runner._profile_adapters["beta"][Platform.TELEGRAM] = beta_telegram_adapter
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert default_adapter.sent == []
+    assert len(beta_telegram_adapter.sent) == 1
+
+
+def test_notifier_delivers_through_a_secondary_profile_only_adapter(tmp_path, monkeypatch):
+    db_path = tmp_path / "secondary-only-adapter.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="owned by beta", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="discord",
+            chat_id="chat-beta",
+            notifier_profile="beta",
+        )
+        kb.complete_task(conn, task_id, summary="done")
+    finally:
+        conn.close()
+
+    default_adapter = RecordingAdapter()
+    beta_adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_notifier_profile = "default"
+    runner.adapters = {Platform.TELEGRAM: default_adapter}
+    runner._profile_adapters = {"beta": {Platform.DISCORD: beta_adapter}}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert default_adapter.sent == []
+    assert len(beta_adapter.sent) == 1
+    assert beta_adapter.sent[0]["chat_id"] == "chat-beta"
+
+
+def test_notifier_routes_secondary_default_profile_when_active_profile_is_named(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "secondary-default-adapter.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="owned by default", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="chat-default",
+            notifier_profile="default",
+        )
+        kb.complete_task(conn, task_id, summary="done")
+    finally:
+        conn.close()
+
+    active_beta_adapter = RecordingAdapter()
+    secondary_default_adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_notifier_profile = "beta"
+    runner.adapters = {Platform.DISCORD: active_beta_adapter}
+    runner._profile_adapters = {
+        "default": {Platform.TELEGRAM: secondary_default_adapter},
+    }
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert active_beta_adapter.sent == []
+    assert len(secondary_default_adapter.sent) == 1
+    assert secondary_default_adapter.sent[0]["chat_id"] == "chat-default"
 
 
 def _unseen_terminal_events_for(tid, chat_id):

@@ -84,6 +84,7 @@ import sys
 import threading
 import logging
 import time
+import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -136,6 +137,18 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+
+# A lease is deliberately short: gateway notifier ticks are frequent and a
+# single platform send should not monopolize an item after a crash. Attempts
+# are durable and bounded so a poison destination cannot spin forever.
+NOTIFICATION_LEASE_SECONDS = 60
+NOTIFICATION_MAX_ATTEMPTS = 3
+NOTIFICATION_OUTBOX_STATES = (
+    "pending",
+    "leased",
+    "acknowledged",
+    "dead_letter",
+)
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -1253,6 +1266,7 @@ CREATE TABLE IF NOT EXISTS task_attachments (
 -- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
 -- the original requester so human-in-the-loop workflows close the loop.
 CREATE TABLE IF NOT EXISTS kanban_notify_subs (
+    subscription_id TEXT,
     task_id       TEXT NOT NULL,
     platform      TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
@@ -1262,6 +1276,25 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Durable notification delivery state. Cursor advancement and insertion of
+-- these rows happen in one write transaction, so a gateway crash can never
+-- leave an event marked consumed without a recoverable delivery obligation.
+CREATE TABLE IF NOT EXISTS kanban_notification_outbox (
+    subscription_id TEXT NOT NULL,
+    event_id       INTEGER NOT NULL,
+    action         TEXT NOT NULL,
+    payload        TEXT NOT NULL,
+    state          TEXT NOT NULL DEFAULT 'pending',
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    lease_token    TEXT,
+    lease_until    INTEGER,
+    last_error     TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    PRIMARY KEY (subscription_id, event_id, action),
+    CHECK (state IN ('pending', 'leased', 'acknowledged', 'dead_letter'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -1274,6 +1307,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
+    ON kanban_notification_outbox(state, lease_until, event_id);
 """
 
 
@@ -2361,6 +2396,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        if "subscription_id" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "subscription_id", "subscription_id TEXT"
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2433,6 +2472,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
     _rebuild_drifted_tables(conn)
+    _ensure_notify_subscription_identity(conn)
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -2482,12 +2522,15 @@ _REBUILD_SPECS = {
     ),
     "kanban_notify_subs": (
         "CREATE TABLE kanban_notify_subs ("
-        " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
+        " subscription_id TEXT, task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
         " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
         " notifier_profile TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
-        ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
+        (
+            "CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",
+            "CREATE UNIQUE INDEX idx_notify_subscription_id ON kanban_notify_subs(subscription_id)",
+        ),
     ),
 }
 
@@ -2556,6 +2599,17 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
                     f"SELECT {cols_csv} FROM {table}_legacy"
                 )
             conn.execute(f"DROP TABLE {table}_legacy")
+            if table == "kanban_notify_subs":
+                # The rebuilt table may contain empty identities from a
+                # partially migrated mixed-version writer. Normalize those
+                # rows before recreating the unique index; waiting for
+                # _ensure_notify_subscription_identity() below would make two
+                # empty strings fail this migration first.
+                conn.execute(
+                    "UPDATE kanban_notify_subs "
+                    "SET subscription_id = lower(hex(randomblob(16))) "
+                    "WHERE subscription_id IS NULL OR subscription_id = ''"
+                )
             for index_sql in index_sqls:
                 conn.execute(index_sql)
         conn.execute("COMMIT")
@@ -2565,6 +2619,75 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
         raise
+
+
+def _ensure_notify_subscription_identity(conn: sqlite3.Connection) -> None:
+    """Make every notification subscription addressable by the durable outbox.
+
+    Older Hermes processes insert only the original route columns.  The
+    identity column was added later and remains nullable in SQLite because
+    ``ALTER TABLE ... ADD COLUMN`` cannot add a non-constant generated value.
+    Backfill existing rows under one write transaction, then retain two
+    database triggers so a mixed-version writer cannot create an
+    unaddressable subscription after migration completes.
+
+    The backfill predicate is deliberately repeated in the UPDATE.  Even if a
+    different writer assigns an identity between discovery and the write, this
+    migration never replaces that writer's value.
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'kanban_notify_subs'"
+    ).fetchone()
+    if table_exists is None:
+        return
+
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+    }
+    if "subscription_id" not in columns:
+        return
+
+    with write_txn(conn):
+        conn.execute(
+            """
+            UPDATE kanban_notify_subs
+               SET subscription_id = lower(hex(randomblob(16)))
+             WHERE subscription_id IS NULL OR subscription_id = ''
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_notify_subscription_id "
+            "ON kanban_notify_subs(subscription_id)"
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_notify_subs_assign_id_insert
+            AFTER INSERT ON kanban_notify_subs
+            FOR EACH ROW
+            WHEN NEW.subscription_id IS NULL OR NEW.subscription_id = ''
+            BEGIN
+                UPDATE kanban_notify_subs
+                   SET subscription_id = lower(hex(randomblob(16)))
+                 WHERE rowid = NEW.rowid
+                   AND (subscription_id IS NULL OR subscription_id = '');
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_notify_subs_assign_id_update
+            AFTER UPDATE OF subscription_id ON kanban_notify_subs
+            FOR EACH ROW
+            WHEN NEW.subscription_id IS NULL OR NEW.subscription_id = ''
+            BEGIN
+                UPDATE kanban_notify_subs
+                   SET subscription_id = lower(hex(randomblob(16)))
+                 WHERE rowid = NEW.rowid
+                   AND (subscription_id IS NULL OR subscription_id = '');
+            END
+            """
+        )
 
 
 def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
@@ -5920,6 +6043,11 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM kanban_notification_outbox WHERE subscription_id IN "
+            "(SELECT subscription_id FROM kanban_notify_subs WHERE task_id = ?)",
+            (task_id,),
+        )
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
@@ -5943,6 +6071,11 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM kanban_notification_outbox WHERE subscription_id IN "
+            "(SELECT subscription_id FROM kanban_notify_subs WHERE task_id = ?)",
+            (task_id,),
+        )
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
@@ -9103,18 +9236,29 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
-) -> None:
+) -> str:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    The returned identity is stable for the lifetime of this subscription and
+    is the durable outbox key. Removing and recreating the same route produces
+    a fresh identity, so old acknowledged/dead-letter rows cannot collide with
+    a new subscription lifecycle.
+    """
     now = int(time.time())
+    candidate_id = uuid.uuid4().hex
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (subscription_id, task_id, platform, chat_id, thread_id,
+                 user_id, notifier_profile, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                candidate_id, task_id, platform, chat_id, thread_id or "",
+                user_id, notifier_profile, now,
+            ),
         )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
@@ -9128,6 +9272,15 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+        row = conn.execute(
+            "SELECT subscription_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None or not row["subscription_id"]:
+            raise RuntimeError("notification subscription identity was not persisted")
+        subscription_id = str(row["subscription_id"])
+    return subscription_id
 
 
 def list_notify_subs(
@@ -9151,12 +9304,522 @@ def remove_notify_sub(
     thread_id: Optional[str] = None,
 ) -> bool:
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT subscription_id FROM kanban_notify_subs WHERE task_id = ? "
+            "AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is not None and row["subscription_id"]:
+            conn.execute(
+                "DELETE FROM kanban_notification_outbox WHERE subscription_id = ?",
+                (row["subscription_id"],),
+            )
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id = ? "
             "AND platform = ? AND chat_id = ? AND thread_id = ?",
             (task_id, platform, chat_id, thread_id or ""),
         )
     return cur.rowcount > 0
+
+
+def remove_notify_sub_if_settled(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+) -> bool:
+    """Remove a terminal subscription only after every outbox row is acknowledged.
+
+    This differs from the explicit unsubscribe path above: it is used by the
+    notifier's automatic terminal cleanup.  A single lease is capped at 100
+    rows, so deleting the subscription merely because that first batch was
+    acknowledged would discard any later pending or dead-letter actions.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            """
+            SELECT s.subscription_id
+              FROM kanban_notify_subs AS s
+              JOIN tasks AS t ON t.id = s.task_id
+             WHERE s.subscription_id = ? AND s.task_id = ? AND s.platform = ?
+               AND s.chat_id = ? AND s.thread_id = ?
+               AND t.status IN ('done', 'archived')
+            """,
+            (subscription_id, task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return False
+        outstanding = conn.execute(
+            "SELECT 1 FROM kanban_notification_outbox "
+            "WHERE subscription_id = ? AND state != 'acknowledged' LIMIT 1",
+            (subscription_id,),
+        ).fetchone()
+        if outstanding is not None:
+            return False
+        conn.execute(
+            "DELETE FROM kanban_notification_outbox WHERE subscription_id = ?",
+            (subscription_id,),
+        )
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_subs WHERE task_id = ? AND platform = ? "
+            "AND chat_id = ? AND thread_id = ? AND subscription_id = ?",
+            (task_id, platform, chat_id, thread_id or "", subscription_id),
+        )
+    return cur.rowcount == 1
+
+
+def stage_notification_batch(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    new_cursor: int,
+    actions: Iterable[dict],
+) -> int:
+    """Persist notification actions and advance their subscription cursor.
+
+    Both writes share one ``BEGIN IMMEDIATE`` transaction. Replaying a batch
+    after a cursor rewind is harmless because the outbox primary key is
+    ``(subscription_id, event_id, action)``.
+    """
+    now = int(time.time())
+    inserted = 0
+    with write_txn(conn):
+        sub = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs WHERE subscription_id = ?",
+            (subscription_id,),
+        ).fetchone()
+        if sub is None:
+            return 0
+        for item in actions:
+            event_id = int(item["event_id"])
+            action = str(item["action"])
+            payload = json.dumps(
+                item.get("payload") or {},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO kanban_notification_outbox
+                    (subscription_id, event_id, action, payload, state,
+                     attempts, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+                """,
+                (subscription_id, event_id, action, payload, now, now),
+            )
+            inserted += max(0, int(cur.rowcount or 0))
+        conn.execute(
+            "UPDATE kanban_notify_subs "
+            "SET last_event_id = MAX(last_event_id, ?) WHERE subscription_id = ?",
+            (int(new_cursor), subscription_id),
+        )
+    return inserted
+
+
+def stage_unseen_notifications_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    kinds: Iterable[str],
+    action_kinds: Iterable[str],
+) -> tuple[int, int]:
+    """Snapshot unseen events into the outbox and advance the cursor atomically.
+
+    The snapshot retains the event payload and the task fields used by the
+    notifier, so retries do not depend on mutable task state. Event rows whose
+    kind is not in ``action_kinds`` advance the cursor without creating a send
+    action; this preserves the existing silent archived/unblocked behavior.
+    """
+    kind_list = list(kinds)
+    action_kind_set = set(action_kinds)
+    if not kind_list:
+        return 0, 0
+    now = int(time.time())
+    with write_txn(conn):
+        sub = conn.execute(
+            "SELECT task_id, last_event_id FROM kanban_notify_subs "
+            "WHERE subscription_id = ?",
+            (subscription_id,),
+        ).fetchone()
+        if sub is None:
+            return 0, 0
+        old_cursor = int(sub["last_event_id"])
+        rows = conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
+            "AND kind IN (" + ",".join("?" for _ in kind_list) + ") "
+            "ORDER BY id ASC",
+            [sub["task_id"], old_cursor, *kind_list],
+        ).fetchall()
+        if not rows:
+            return old_cursor, old_cursor
+        task = conn.execute(
+            "SELECT title, assignee, result FROM tasks WHERE id = ?",
+            (sub["task_id"],),
+        ).fetchone()
+        task_snapshot = dict(task) if task is not None else None
+        new_cursor = old_cursor
+        for row in rows:
+            event_id = int(row["id"])
+            new_cursor = max(new_cursor, event_id)
+            if row["kind"] not in action_kind_set:
+                continue
+            try:
+                event_payload = json.loads(row["payload"]) if row["payload"] else None
+            except (TypeError, ValueError):
+                event_payload = None
+            if isinstance(event_payload, dict):
+                payload_fields = {
+                    "completed": ("summary", "artifacts"),
+                    "blocked": ("reason",),
+                    "gave_up": ("error",),
+                    "timed_out": ("limit_seconds",),
+                    "status": ("status",),
+                }.get(row["kind"], ())
+                event_payload = {
+                    field: event_payload[field]
+                    for field in payload_fields
+                    if field in event_payload
+                }
+            snapshot = {
+                "kind": row["kind"],
+                "event_payload": event_payload,
+                "task": task_snapshot,
+            }
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO kanban_notification_outbox
+                    (subscription_id, event_id, action, payload, state,
+                     attempts, created_at, updated_at)
+                VALUES (?, ?, 'message', ?, 'pending', 0, ?, ?)
+                """,
+                (
+                    subscription_id,
+                    event_id,
+                    json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE subscription_id = ?",
+            (new_cursor, subscription_id),
+        )
+    return old_cursor, new_cursor
+
+
+def lease_notification_outbox(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    lease_seconds: int = NOTIFICATION_LEASE_SECONDS,
+    subscription_ids: Optional[Iterable[str]] = None,
+    limit: int = 100,
+    enforce_subscription_order: bool = False,
+) -> list[dict]:
+    """Atomically lease due notification actions for delivery.
+
+    Expired leases are recoverable after restart. Every claim receives a new
+    token; acknowledgements and failures use that token as a CAS guard so a
+    late sender from an expired lease cannot overwrite a newer owner's state.
+
+    Leasing is deliberately not a delivery attempt. A process can crash after
+    claiming a batch but before it sends the tail, so retry accounting is
+    charged only by :func:`fail_notification_delivery` after a real platform
+    send returns an explicit failure.
+
+    Set ``enforce_subscription_order`` for a consumer that must not send a
+    later event while an earlier action for the same subscription is still
+    pending, leased, or dead-lettered.
+    """
+    claimed_at = int(time.time()) if now is None else int(now)
+    lease_until = claimed_at + max(1, int(lease_seconds))
+    selected_ids = list(subscription_ids) if subscription_ids is not None else None
+    if selected_ids is not None and not selected_ids:
+        return []
+
+    with write_txn(conn):
+        conn.execute(
+            """
+            UPDATE kanban_notification_outbox
+               SET state = 'dead_letter', lease_token = NULL,
+                   lease_until = NULL, updated_at = ?
+             WHERE attempts >= ?
+               AND (state = 'pending'
+                    OR (state = 'leased' AND COALESCE(lease_until, 0) <= ?))
+            """,
+            (claimed_at, NOTIFICATION_MAX_ATTEMPTS, claimed_at),
+        )
+        where_ids = ""
+        params: list[Any] = [claimed_at, NOTIFICATION_MAX_ATTEMPTS]
+        if selected_ids is not None:
+            where_ids = (
+                " AND o.subscription_id IN ("
+                + ",".join("?" for _ in selected_ids)
+                + ")"
+            )
+            params.extend(selected_ids)
+        order_guard = ""
+        if enforce_subscription_order:
+            order_guard = """
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM kanban_notification_outbox AS prior
+                     WHERE prior.subscription_id = o.subscription_id
+                       AND prior.state != 'acknowledged'
+                       AND (
+                            prior.event_id < o.event_id
+                            OR (prior.event_id = o.event_id AND prior.action < o.action)
+                       )
+               )
+            """
+        params.append(max(1, int(limit)))
+        rows = conn.execute(
+            """
+            SELECT o.subscription_id, o.event_id, o.action, o.payload,
+                   o.attempts, s.task_id, s.platform, s.chat_id, s.thread_id,
+                   s.user_id, s.notifier_profile
+              FROM kanban_notification_outbox AS o
+              JOIN kanban_notify_subs AS s
+                ON s.subscription_id = o.subscription_id
+             WHERE (o.state = 'pending'
+                    OR (o.state = 'leased' AND COALESCE(o.lease_until, 0) <= ?))
+               AND o.attempts < ?
+            """
+            + where_ids
+            + order_guard
+            + " ORDER BY o.event_id ASC, o.action ASC LIMIT ?",
+            params,
+        ).fetchall()
+        claimed: list[dict] = []
+        for row in rows:
+            lease_token = uuid.uuid4().hex
+            cur = conn.execute(
+                """
+                UPDATE kanban_notification_outbox
+                   SET state = 'leased', lease_token = ?, lease_until = ?,
+                       updated_at = ?
+                 WHERE subscription_id = ? AND event_id = ? AND action = ?
+                   AND (state = 'pending'
+                        OR (state = 'leased' AND COALESCE(lease_until, 0) <= ?))
+                """,
+                (
+                    lease_token, lease_until, claimed_at,
+                    row["subscription_id"], row["event_id"], row["action"],
+                    claimed_at,
+                ),
+            )
+            if cur.rowcount != 1:
+                continue
+            item = dict(row)
+            item["attempts"] = int(row["attempts"])
+            item["lease_token"] = lease_token
+            item["lease_until"] = lease_until
+            try:
+                item["payload"] = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                item["payload"] = {}
+            claimed.append(item)
+    return claimed
+
+
+def renew_notification_lease(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    event_id: int,
+    action: str,
+    lease_token: str,
+    now: Optional[int] = None,
+    lease_seconds: int = NOTIFICATION_LEASE_SECONDS,
+) -> bool:
+    """Extend a live delivery lease only when its token still owns the row."""
+    renewed_at = int(time.time()) if now is None else int(now)
+    lease_until = renewed_at + max(1, int(lease_seconds))
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE kanban_notification_outbox
+               SET lease_until = ?, updated_at = ?
+             WHERE subscription_id = ? AND event_id = ? AND action = ?
+               AND state = 'leased' AND lease_token = ?
+            """,
+            (
+                lease_until,
+                renewed_at,
+                subscription_id,
+                int(event_id),
+                action,
+                lease_token,
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def ack_notification_delivery(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    event_id: int,
+    action: str,
+    lease_token: str,
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE kanban_notification_outbox
+               SET state = 'acknowledged', lease_token = NULL,
+                   lease_until = NULL, last_error = NULL, updated_at = ?
+             WHERE subscription_id = ? AND event_id = ? AND action = ?
+               AND state = 'leased' AND lease_token = ?
+            """,
+            (int(time.time()), subscription_id, int(event_id), action, lease_token),
+        )
+    return cur.rowcount == 1
+
+
+def fail_notification_delivery(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    event_id: int,
+    action: str,
+    lease_token: str,
+    error: str = "",
+) -> Optional[str]:
+    """Record a real send failure, dead-lettering at the durable attempt cap.
+
+    ``attempts`` counts observed platform failures, not leases. This means an
+    expired lease from a crash or cancellation before the sender receives a
+    platform result remains retryable and cannot exhaust the retry budget.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT attempts FROM kanban_notification_outbox "
+            "WHERE subscription_id = ? AND event_id = ? AND action = ? "
+            "AND state = 'leased' AND lease_token = ?",
+            (subscription_id, int(event_id), action, lease_token),
+        ).fetchone()
+        if row is None:
+            return None
+        next_attempts = int(row["attempts"]) + 1
+        state = (
+            "dead_letter"
+            if next_attempts >= NOTIFICATION_MAX_ATTEMPTS
+            else "pending"
+        )
+        conn.execute(
+            """
+            UPDATE kanban_notification_outbox
+               SET state = ?, attempts = ?, lease_token = NULL,
+                   lease_until = NULL, last_error = ?, updated_at = ?
+             WHERE subscription_id = ? AND event_id = ? AND action = ?
+               AND state = 'leased' AND lease_token = ?
+            """,
+            (
+                state, next_attempts, redact_notification_error(error), int(time.time()),
+                subscription_id, int(event_id), action, lease_token,
+            ),
+        )
+    return state
+
+
+def redact_notification_error(error: object) -> Optional[str]:
+    """Return a durable-safe delivery error without credentials or URL secrets."""
+    if error is None:
+        return None
+    text = str(error).strip()
+    if not text:
+        return None
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(
+            text,
+            force=True,
+            redact_url_credentials=True,
+        )[:500]
+    except Exception:
+        # Persisting a generic diagnostic is safer than retaining unredacted
+        # adapter text when the shared redactor is unexpectedly unavailable.
+        return "notification delivery failed"
+
+
+def release_notification_lease(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: str,
+    event_id: int,
+    action: str,
+    lease_token: str,
+) -> bool:
+    """Release a lease when no platform send started, preserving the budget."""
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE kanban_notification_outbox
+               SET state = 'pending', lease_token = NULL,
+                   lease_until = NULL, updated_at = ?
+             WHERE subscription_id = ? AND event_id = ? AND action = ?
+               AND state = 'leased' AND lease_token = ?
+            """,
+            (int(time.time()), subscription_id, int(event_id), action, lease_token),
+        )
+    return cur.rowcount == 1
+
+
+def notification_outbox_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    counts = {state: 0 for state in NOTIFICATION_OUTBOX_STATES}
+    rows = conn.execute(
+        "SELECT state, COUNT(*) AS n FROM kanban_notification_outbox GROUP BY state"
+    ).fetchall()
+    for row in rows:
+        if row["state"] in counts:
+            counts[row["state"]] = int(row["n"])
+    return counts
+
+
+def notification_subscription_is_settled(
+    conn: sqlite3.Connection, subscription_id: str,
+) -> bool:
+    """True when no retryable or recoverable action remains for a subscription."""
+    row = conn.execute(
+        "SELECT 1 FROM kanban_notification_outbox "
+        "WHERE subscription_id = ? AND state != 'acknowledged' LIMIT 1",
+        (subscription_id,),
+    ).fetchone()
+    return row is None
+
+
+def requeue_dead_letter_notifications(
+    conn: sqlite3.Connection,
+    *,
+    subscription_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> int:
+    """Explicitly recover durable dead letters for another bounded retry cycle."""
+    with write_txn(conn):
+        sql = (
+            "UPDATE kanban_notification_outbox "
+            "SET state = 'pending', attempts = 0, lease_token = NULL, "
+            "lease_until = NULL, last_error = NULL, updated_at = ? "
+            "WHERE state = 'dead_letter'"
+        )
+        params: list[Any] = [int(time.time())]
+        if subscription_id is not None:
+            sql += " AND subscription_id = ?"
+            params.append(subscription_id)
+        if task_id is not None:
+            sql += (
+                " AND subscription_id IN ("
+                "SELECT subscription_id FROM kanban_notify_subs WHERE task_id = ?)"
+            )
+            params.append(task_id)
+        cur = conn.execute(sql, params)
+    return max(0, int(cur.rowcount or 0))
 
 
 def unseen_events_for_sub(

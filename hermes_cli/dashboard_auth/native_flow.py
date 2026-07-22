@@ -84,6 +84,13 @@ _CODE_TTL_SECONDS = 120  # 2 minutes — generous for a slow local hop.
 # concurrent-login count for a single desktop user.
 _MAX_ENTRIES = 256
 
+# Per-IP cap on concurrent PENDING authorizations. /auth/native/authorize is a
+# public (pre-auth) route, so without this a single unauthenticated spammer
+# could fill the global store (600s TTL each) and lock out legitimate native
+# logins for the pending window. A real desktop runs at most a couple of
+# concurrent sign-ins from one address; 8 is generous.
+_MAX_PENDING_PER_IP = 8
+
 _lock = threading.Lock()
 
 
@@ -98,6 +105,7 @@ class _Pending:
     code_challenge: str  # the DESKTOP's S256 challenge (cc_d), base64url no-pad
     redirect_uri: str  # the desktop's loopback redirect (127.0.0.1:<port>/...)
     client_state: str  # the desktop's own ``state`` (echoed back on redirect)
+    client_ip: str  # requester IP at authorize time (per-IP pending cap)
     expires_at: int
 
 
@@ -157,6 +165,7 @@ def register_pending(
     code_challenge: str,
     redirect_uri: str,
     client_state: str,
+    client_ip: str = "",
     now: Optional[int] = None,
 ) -> str:
     """Stash a pending native authorization; return an opaque ``broker_state``.
@@ -165,12 +174,17 @@ def register_pending(
     S256 challenge (``cc_d``) — we never see the verifier until redemption.
     ``redirect_uri`` is the desktop's loopback callback and ``client_state`` is
     the desktop's own CSRF ``state`` (echoed verbatim on the final redirect).
+    ``client_ip`` is the requester's address, used only for the per-IP pending
+    cap below.
 
     The returned ``broker_state`` is what the gateway threads through its OWN
     upstream PKCE round trip (inside the ``hermes_session_pkce`` cookie), so the
     callback can find this entry again via :func:`complete_pending`.
 
-    Raises ``NativeFlowError`` if the store is at capacity (fail closed).
+    Raises ``NativeFlowError`` if the store is at capacity or the caller's IP
+    already holds ``_MAX_PENDING_PER_IP`` live pending entries (fail closed —
+    this is a public pre-auth route, so one spammer must not be able to fill
+    the global store and deny sign-in to everyone else).
     """
     now = int(time.time()) if now is None else now
     broker_state = secrets.token_urlsafe(32)
@@ -178,10 +192,18 @@ def register_pending(
         _gc_locked(now)
         if not _capacity_ok_locked():
             raise NativeFlowError("native-flow authorization store at capacity")
+        if client_ip and (
+            sum(1 for v in _pending.values() if v.client_ip == client_ip)
+            >= _MAX_PENDING_PER_IP
+        ):
+            raise NativeFlowError(
+                "too many pending native authorizations from this address"
+            )
         _pending[broker_state] = _Pending(
             code_challenge=code_challenge,
             redirect_uri=redirect_uri,
             client_state=client_state,
+            client_ip=client_ip,
             expires_at=now + _PENDING_TTL_SECONDS,
         )
     return broker_state

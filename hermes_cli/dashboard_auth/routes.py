@@ -255,7 +255,10 @@ def _validate_loopback_redirect_uri(raw: str) -> str:
 
     RFC 8252 §7.3 restricts native-app redirects to the loopback interface.
     We accept only ``http://127.0.0.1[:port]/...`` and ``http://[::1][:port]/...``
-    (and the literal ``localhost`` host, which some OS browsers normalise).
+    — literal loopback IPs. ``localhost`` is deliberately NOT accepted
+    (RFC 8252 §8.3: the name can resolve to a non-loopback address via the
+    hosts file or a hostile resolver, so clients "SHOULD use loopback IP
+    literals"; the desktop always sends ``127.0.0.1``).
     A non-loopback host would let an attacker who can reach ``/auth/native/
     authorize`` (a public route) turn the gateway's authenticated callback
     into an open redirect that leaks a live authorization code to an
@@ -272,10 +275,13 @@ def _validate_loopback_redirect_uri(raw: str) -> str:
             detail="native redirect_uri must be http:// on the loopback interface",
         )
     host = (parsed.hostname or "").lower()
-    if host not in ("127.0.0.1", "::1", "localhost"):
+    if host not in ("127.0.0.1", "::1"):
         raise HTTPException(
             status_code=400,
-            detail="native redirect_uri host must be loopback (127.0.0.1 / ::1)",
+            detail=(
+                "native redirect_uri host must be a loopback IP literal "
+                "(127.0.0.1 / ::1)"
+            ),
         )
     return raw
 
@@ -338,6 +344,7 @@ async def auth_native_authorize(
             code_challenge=code_challenge,
             redirect_uri=redirect_uri,
             client_state=state,
+            client_ip=_client_ip(request),
         )
     except native_flow.NativeFlowError as e:
         raise HTTPException(status_code=503, detail=str(e))

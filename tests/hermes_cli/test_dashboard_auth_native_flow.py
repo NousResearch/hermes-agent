@@ -190,6 +190,44 @@ def test_broker_capacity_fails_closed():
         )
 
 
+def test_broker_per_ip_pending_cap():
+    """One address cannot hog the pending store (public pre-auth route)."""
+    _verifier, challenge = _make_pkce()
+    for _ in range(native_flow._MAX_PENDING_PER_IP):
+        native_flow.register_pending(
+            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
+            client_state="s", client_ip="203.0.113.7",
+        )
+    # The capped IP is refused...
+    with pytest.raises(native_flow.NativeFlowError):
+        native_flow.register_pending(
+            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
+            client_state="s", client_ip="203.0.113.7",
+        )
+    # ...while a different address still signs in fine.
+    assert native_flow.register_pending(
+        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
+        client_state="s", client_ip="198.51.100.9",
+    )
+
+
+def test_broker_per_ip_cap_frees_on_expiry():
+    """Expired pending entries stop counting against the per-IP cap."""
+    _verifier, challenge = _make_pkce()
+    now = int(time.time())
+    for _ in range(native_flow._MAX_PENDING_PER_IP):
+        native_flow.register_pending(
+            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
+            client_state="s", client_ip="203.0.113.7", now=now,
+        )
+    # Past the pending TTL the old entries are GC'd and the IP can retry.
+    assert native_flow.register_pending(
+        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
+        client_state="s", client_ip="203.0.113.7",
+        now=now + native_flow._PENDING_TTL_SECONDS + 1,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Route-level E2E against StubAuthProvider
 # ---------------------------------------------------------------------------
@@ -307,6 +345,24 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "redirect_uri": "https://evil.example.com/steal",
+            "state": "s",
+        },
+    )
+    assert r.status_code == 400
+    assert "loopback" in r.json()["detail"].lower()
+
+
+def test_native_authorize_rejects_localhost_name(gated_client):
+    """RFC 8252 §8.3 — loopback IP literals only; `localhost` can be
+    re-pointed via the hosts file / a hostile resolver."""
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "provider": "stub",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://localhost:53999/cb",
             "state": "s",
         },
     )

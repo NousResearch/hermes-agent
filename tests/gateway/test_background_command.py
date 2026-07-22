@@ -130,6 +130,7 @@ class TestHandleBackgroundCommand:
             source=source,
             message_id="463",
             reply_to_message_id="462",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
         )
 
         with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
@@ -138,6 +139,9 @@ class TestHandleBackgroundCommand:
         assert "Background task started" in result
         runner._run_background_task.assert_called_once()
         assert runner._run_background_task.call_args.kwargs["event_message_id"] == "463"
+        assert runner._run_background_task.call_args.kwargs[
+            "ephemeral_user_context"
+        ] == "Location: 40.4168, -3.7038"
 
     @pytest.mark.asyncio
     async def test_prompt_truncated_in_preview(self):
@@ -265,7 +269,12 @@ class TestRunBackgroundTask:
             mock_agent_instance.run_conversation.return_value = mock_result
             MockAgent.return_value = mock_agent_instance
 
-            await runner._run_background_task("say hello", source, "bg_test")
+            await runner._run_background_task(
+                "say hello",
+                source,
+                "bg_test",
+                ephemeral_user_context="Location: 40.4168, -3.7038",
+            )
 
         # Should have sent the result
         mock_adapter.send.assert_called_once()
@@ -278,6 +287,11 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
+        mock_agent_instance.run_conversation.assert_called_once_with(
+            user_message="say hello",
+            task_id="bg_test",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
+        )
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

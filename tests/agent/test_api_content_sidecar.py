@@ -580,6 +580,51 @@ class TestWireInvariant:
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
 
+    def test_volatile_context_is_current_turn_only_and_never_persisted(
+        self, wire_env
+    ):
+        """Coordinates reach the current provider call but not durable history."""
+        make_agent, handler, db, sid = wire_env
+        volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+        agent = make_agent()
+        handler.response_queue.append(
+            _tc_resp("read_file", '{"file_path": "/nonexistent-path"}')
+        )
+        handler.response_queue.append(_text_resp("done"))
+
+        agent.run_conversation(
+            "where am I?",
+            conversation_history=[],
+            task_id="volatile-1",
+            ephemeral_user_context=volatile,
+        )
+
+        requests = _chat_requests(handler)
+        assert len(requests) == 2
+        expected = f"where am I?\n\nPLUGIN-CTX\n\n{volatile}"
+        for request in requests:
+            current = _user_messages(request)[0]["content"]
+            assert current == expected
+            assert current.count(volatile) == 1
+
+        history = db.get_messages_as_conversation(sid)
+        assert history[0]["content"] == "where am I?"
+        assert history[0]["api_content"] == "where am I?\n\nPLUGIN-CTX"
+        assert volatile not in json.dumps(history)
+
+        # The next request rebuilds history from the clean sidecar. It must
+        # not resurrect coordinates from a prior provider request.
+        handler.captured_requests = []
+        make_agent().run_conversation(
+            "second question",
+            conversation_history=history,
+            task_id="volatile-2",
+        )
+        historical, current = _user_messages(_chat_requests(handler)[0])
+        assert historical["content"] == "where am I?\n\nPLUGIN-CTX"
+        assert volatile not in historical["content"]
+        assert current["content"] == "second question\n\nPLUGIN-CTX"
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override

@@ -2349,6 +2349,7 @@ class GatewaySlashCommandsMixin:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            ephemeral_user_context=event.ephemeral_user_context,
         )
         
         # Let the normal message handler process it
@@ -2790,6 +2791,7 @@ class GatewaySlashCommandsMixin:
                 event_message_id=event_message_id,
                 media_urls=media_urls,
                 media_types=media_types,
+                ephemeral_user_context=event.ephemeral_user_context,
             )
         )
         self._background_tasks.add(_task)

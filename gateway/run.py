@@ -1103,6 +1103,12 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+def _event_has_ephemeral_user_context(event: "MessageEvent") -> bool:
+    """Whether an event carries volatile context that needs a turn boundary."""
+    context = getattr(event, "ephemeral_user_context", None)
+    return isinstance(context, str) and bool(context.strip())
+
+
 # Tool results can contain literal MEDIA: examples in docs, logs, or other
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
@@ -6014,6 +6020,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
+                and not _event_has_ephemeral_user_context(event)
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
@@ -6024,6 +6031,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as exc:
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
+            elif _event_has_ephemeral_user_context(event):
+                logger.debug(
+                    "Queueing steer-mode follow-up with API-only context for %s",
+                    session_key,
+                )
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
@@ -10543,6 +10555,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_is_own_message=event.reply_to_is_own_message,
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
+                        ephemeral_user_context=event.ephemeral_user_context,
                         internal=event.internal,
                         timestamp=event.timestamp,
                     )
@@ -10572,9 +10585,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            ephemeral_user_context=event.ephemeral_user_context,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
+                if _event_has_ephemeral_user_context(event):
+                    # ``steer()`` stores its text inside the live agent turn.
+                    # Volatile platform context must instead use the next
+                    # turn's API-only injection path.
+                    adapter = self._adapter_for_source(source)
+                    if adapter:
+                        queued_event = MessageEvent(
+                            text=steer_text,
+                            message_type=MessageType.TEXT,
+                            source=event.source,
+                            message_id=event.message_id,
+                            channel_prompt=event.channel_prompt,
+                            ephemeral_user_context=event.ephemeral_user_context,
+                        )
+                        self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    return "Volatile platform context requires a new turn — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
@@ -10594,6 +10624,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        ephemeral_user_context=event.ephemeral_user_context,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -10782,7 +10813,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # is empty, the agent lacks steer(), or steer() rejects.
                 steer_text = (event.text or "").strip()
                 steered = False
-                if steer_text and hasattr(running_agent, "steer"):
+                if (
+                    steer_text
+                    and not _event_has_ephemeral_user_context(event)
+                    and hasattr(running_agent, "steer")
+                ):
                     try:
                         steered = bool(running_agent.steer(steer_text))
                     except Exception as exc:
@@ -13077,6 +13112,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                ephemeral_user_context=event.ephemeral_user_context,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -14842,6 +14878,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> None:
         """Profile-scoping wrapper around the background agent task.
 
@@ -14852,13 +14889,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._run_background_task_inner(
-                prompt, source, task_id, event_message_id, media_urls, media_types,
+                prompt,
+                source,
+                task_id,
+                event_message_id,
+                media_urls,
+                media_types,
+                ephemeral_user_context,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
         with _profile_runtime_scope(profile_home):
             return await self._run_background_task_inner(
-                prompt, source, task_id, event_message_id, media_urls, media_types,
+                prompt,
+                source,
+                task_id,
+                event_message_id,
+                media_urls,
+                media_types,
+                ephemeral_user_context,
             )
 
     async def _run_background_task_inner(
@@ -14869,6 +14918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -14966,6 +15016,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return agent.run_conversation(
                         user_message=enriched_prompt,
                         task_id=task_id,
+                        ephemeral_user_context=ephemeral_user_context,
                     )
                 finally:
                     self._cleanup_agent_resources(agent)
@@ -18682,7 +18733,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "messages": api_messages,
             "stream": True,
         }
-
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
         _scfg = getattr(getattr(self, "config", None), "streaming", None)
@@ -18908,6 +18958,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -18926,7 +18977,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
+                channel_prompt=channel_prompt,
+                ephemeral_user_context=ephemeral_user_context,
+                moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -18937,7 +18990,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
+                channel_prompt=channel_prompt,
+                ephemeral_user_context=ephemeral_user_context,
+                moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -19058,6 +19113,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -21078,6 +21134,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                if isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip():
+                    _conversation_kwargs["ephemeral_user_context"] = ephemeral_user_context
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
@@ -22068,6 +22126,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_ephemeral_user_context = None
                 next_session_key = session_key
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
@@ -22100,6 +22159,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_ephemeral_user_context = getattr(
+                        pending_event, "ephemeral_user_context", None
+                    )
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -22141,6 +22203,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    ephemeral_user_context=next_ephemeral_user_context,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

@@ -423,6 +423,33 @@ class TestBusySessionAck:
         assert "Steered" not in content
 
     @pytest.mark.asyncio
+    async def test_steer_mode_queues_event_with_volatile_context(self):
+        """API-only context cannot enter agent.steer(), which is persisted as
+        live-turn text; retain the whole event for the next turn instead."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="use my current position")
+        event.ephemeral_user_context = "Location: 1.0, 2.0"
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+        assert (
+            adapter._pending_messages[sk].ephemeral_user_context
+            == "Location: 1.0, 2.0"
+        )
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
         """If agent is still starting (sentinel), steer mode falls back to queue."""
         runner, sentinel = _make_runner()

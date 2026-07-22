@@ -1823,6 +1823,13 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    # Per-turn user-side context for volatile platform data.  Appended last to
+    # preserve the positional constructor order of the existing event fields.
+    # The gateway injects it into the current API user message while persisting
+    # only the original event text, so it cannot alter the cached system prefix
+    # or enter durable transcript replay.
+    ephemeral_user_context: Optional[str] = None
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -2125,6 +2132,20 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
             delattr(event, attr)
 
 
+def _pending_event_sender_key(event: MessageEvent) -> Optional[tuple[str, ...]]:
+    """Return an identity key only when the event names a stable individual."""
+    source = getattr(event, "source", None)
+    user_id = str(getattr(source, "user_id", "") or "").strip()
+    if not user_id:
+        return None
+    return (
+        str(getattr(source, "platform", "") or ""),
+        str(getattr(source, "profile", "") or ""),
+        str(getattr(source, "chat_id", "") or ""),
+        user_id,
+    )
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2145,6 +2166,21 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        # Volatile context belongs to an individual, even when several people
+        # intentionally share one downstream group/thread session. Never let a
+        # merge attach one sender's location to another sender's queued text.
+        same_sender = (
+            _pending_event_sender_key(existing) is not None
+            and _pending_event_sender_key(existing)
+            == _pending_event_sender_key(event)
+        )
+        incoming_context = getattr(event, "ephemeral_user_context", None)
+        existing_context = getattr(existing, "ephemeral_user_context", None)
+        if not same_sender and (existing_context or incoming_context):
+            existing.ephemeral_user_context = None
+        elif isinstance(incoming_context, str) and incoming_context.strip():
+            existing.ephemeral_user_context = incoming_context
+
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)

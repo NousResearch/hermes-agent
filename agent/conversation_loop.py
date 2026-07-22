@@ -102,6 +102,33 @@ _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
 
+def _append_ephemeral_user_context(content: Any, user_context: Optional[str]) -> Any:
+    """Return an API-only copy of a user message with volatile context appended.
+
+    ``messages`` is Hermes' canonical transcript and must never contain this
+    context.  This helper therefore operates only on the API message copy
+    assembled in :func:`run_conversation`.  Native image turns use OpenAI-style
+    content lists, so preserve their image blocks while extending the first
+    text block (or append one when no text block exists).
+    """
+    context = user_context.strip() if isinstance(user_context, str) else ""
+    if not context:
+        return content
+
+    suffix = f"\n\n{context}"
+    if isinstance(content, str):
+        return f"{content}{suffix}"
+
+    if isinstance(content, list):
+        copied = [dict(part) if isinstance(part, dict) else part for part in content]
+        for part in copied:
+            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
+                part["text"] = f"{part.get('text', '')}{suffix}"
+                return copied
+        return copied + [{"type": "text", "text": context}]
+
+    return content
+
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
@@ -596,6 +623,7 @@ def run_conversation(
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    ephemeral_user_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -614,6 +642,9 @@ def run_conversation(
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
                 or queuing follow-up prefetch work.
+        ephemeral_user_context: Volatile platform context appended only to the
+            API representation of the current user turn. It is never added to
+            canonical conversation messages or transcript persistence.
 
     Returns:
         Dict: Complete conversation result with final response and message history
@@ -864,6 +895,13 @@ def run_conversation(
         from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
         repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
+            # Repair can delete or merge entries before the live user turn.
+            # Re-anchor both trackers before deciding which API copy receives
+            # current-turn-only context or which DB row gets the clean override.
+            current_turn_user_idx = reanchor_current_turn_user_idx(
+                messages, user_message
+            )
+            agent._persist_user_message_idx = current_turn_user_idx
             request_logger.info(
                 "Repaired %s message-alternation violations before request (session=%s)",
                 repaired_seq,
@@ -873,6 +911,7 @@ def run_conversation(
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
+            is_user = msg.get("role") == "user"
 
             # api_content is the persistence sidecar carrying the exact bytes
             # sent to the API for this message when they differ from the clean
@@ -881,13 +920,13 @@ def run_conversation(
             # outgoing copy.
             _api_content = api_msg.pop("api_content", None)
 
-            # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
-            # API-call-time only — the original message in `messages` is
-            # never mutated beyond the api_content stamp, so nothing leaks
-            # into the clean transcript content.
-            if idx == current_turn_user_idx and msg.get("role") == "user":
+            # Inject context into the current turn's API user message.
+            # Memory prefetch and plugin context are replayable and therefore
+            # use the persisted api_content sidecar. Platform context is truly
+            # volatile: append it only after sidecar substitution/composition,
+            # so it never enters canonical messages or the persisted sidecar.
+            is_current_user = idx == current_turn_user_idx and is_user
+            if is_current_user:
                 if isinstance(_api_content, str) and _api_content:
                     # Stamped by the prologue from the same composition —
                     # reuse it so the persisted sidecar and the wire cannot
@@ -919,6 +958,15 @@ def run_conversation(
                 # would rewrite on reload — see the capture in
                 # ``_flush_messages_to_session_db``).
                 api_msg["content"] = _api_content
+
+            # Platform context is intentionally current-turn-only. Apply it
+            # after the persisted api_content sidecar has been substituted so
+            # exact coordinates never become durable transcript data.
+            if is_current_user:
+                api_msg["content"] = _append_ephemeral_user_context(
+                    api_msg.get("content", ""),
+                    ephemeral_user_context,
+                )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
@@ -1215,6 +1263,14 @@ def run_conversation(
             conversation_history = conversation_history_after_compression(
                 agent, messages
             )
+            # The compressor rebuilds ``messages`` and may move the surviving
+            # current user turn.  Re-anchor before the next loop rebuilds the
+            # API copy; otherwise volatile current-turn context can be omitted
+            # or attached to a historical user row at the stale index.
+            current_turn_user_idx = reanchor_current_turn_user_idx(
+                messages, user_message
+            )
+            agent._persist_user_message_idx = current_turn_user_idx
             api_call_count -= 1
             agent._api_call_count = api_call_count
             agent.iteration_budget.refund()
@@ -5185,6 +5241,13 @@ def run_conversation(
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
+                    # Like pre-API and overflow compression, this rebuild can
+                    # move the surviving live user turn. Keep both consumers
+                    # anchored before the next loop composes API-only context.
+                    current_turn_user_idx = reanchor_current_turn_user_idx(
+                        messages, user_message
+                    )
+                    agent._persist_user_message_idx = current_turn_user_idx
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

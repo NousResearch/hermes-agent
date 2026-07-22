@@ -1,10 +1,10 @@
 /** New ids first, then ids still present in the persisted order. */
 export function reconcileFreshFirst(currentIds: string[], orderIds: string[]): string[] {
   const current = new Set(currentIds)
-  const retained = orderIds.filter(id => current.has(id))
+  const retained = [...new Set(orderIds.filter(id => current.has(id)))]
   const retainedSet = new Set(retained)
 
-  return [...currentIds.filter(id => !retainedSet.has(id)), ...retained]
+  return [...new Set(currentIds.filter(id => !retainedSet.has(id))), ...retained]
 }
 
 export function resolveManualSessionOrderIds(currentIds: string[], orderIds: string[], manual: boolean): string[] {
@@ -35,7 +35,7 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
   for (const id of orderIds) {
     const item = byId.get(id)
 
-    if (item) {
+    if (item && !seen.has(id)) {
       ordered.push(item)
       seen.add(id)
     }
@@ -46,7 +46,14 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
   // these at the TOP instead of burying them beneath the saved order —
   // otherwise a brand-new session sinks to the bottom of the sidebar and reads
   // as "my latest session never showed up".
-  const fresh = items.filter(item => !seen.has(getId(item)))
+  const fresh: T[] = []
+  for (const item of items) {
+    const itemId = getId(item)
+    if (!seen.has(itemId)) {
+      fresh.push(item)
+      seen.add(itemId)
+    }
+  }
 
   return fresh.length ? [...fresh, ...ordered] : ordered
 }
@@ -58,7 +65,7 @@ export function reconcileOrderIds(currentIds: string[], orderIds: string[]): str
   }
 
   if (!orderIds.length) {
-    return currentIds
+    return [...new Set(currentIds)]
   }
 
   return reconcileFreshFirst(currentIds, orderIds)

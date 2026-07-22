@@ -84,9 +84,15 @@ const isWindowsPath = (path: string): boolean =>
  * Segments for identity comparison: Windows paths fold case (and separators, via
  * {@link segments}) so `C:\Work` and `c:/work` are one lane; POSIX stays
  * case-sensitive. Comparison-only — emitted ids/labels keep their spelling.
+ *
+ * Segments are NFC-normalized before comparing: the same on-disk folder can
+ * reach us as NFC (typed paths, backend cwd) or NFD (macOS file pickers,
+ * HFS+/APFS round-trips), and case folding does not unify the two forms — an
+ * accented project folder would otherwise render empty (#65014). Mirrors
+ * `_comparison_segments` in `tui_gateway/project_tree.py`.
  */
 const comparisonSegments = (path: string): string[] => {
-  const segs = segments(path)
+  const segs = segments(path).map(seg => seg.normalize('NFC'))
 
   return isWindowsPath(path) ? segs.map(seg => seg.toLowerCase()) : segs
 }

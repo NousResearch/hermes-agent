@@ -527,6 +527,24 @@ describe('liveSessionProjectId', () => {
       '/work/notes'
     )
   })
+
+  it('matches NFD and NFC spellings of the same accented folder (#65014)', () => {
+    // The same on-disk folder can reach us as NFC (typed paths, backend cwd)
+    // or NFD (macOS file pickers) — byte-different, visually identical.
+    const nfc = '/projects/sv/bist\u00e5nd'
+    const nfd = nfc.normalize('NFD')
+
+    expect(nfd).not.toBe(nfc) // premise: distinct byte strings
+    expect(liveSessionProjectId(makeSession(nfd), [makeProject('p_bistand', [nfc])])).toBe('p_bistand')
+  })
+
+  it('matches a Windows cwd differing in both case and normalization form (#65014)', () => {
+    const id = liveSessionProjectId(makeSession('d:/projects/sv/bist\u00e5nd'.normalize('NFD')), [
+      makeProject('p_sv', ['D:\\Projects\\SV\\Bist\u00e5nd'.normalize('NFC')])
+    ])
+
+    expect(id).toBe('p_sv')
+  })
 })
 
 describe('sessionProjectColor', () => {

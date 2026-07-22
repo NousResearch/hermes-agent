@@ -329,6 +329,17 @@ def _run_agent(
 
     cfg = load_config()
 
+    # Mirror interactive CLI prompt resolution: the ephemeral env overlay wins,
+    # then agent.system_prompt from config. Empty values mean no overlay.
+    agent_cfg = cfg.get("agent") or {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    ephemeral_system_prompt = (
+        os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        or agent_cfg.get("system_prompt", "")
+        or None
+    )
+
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
     if isinstance(model_cfg, str):
@@ -419,6 +430,7 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            ephemeral_system_prompt=ephemeral_system_prompt,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

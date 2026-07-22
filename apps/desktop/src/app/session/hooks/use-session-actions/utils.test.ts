@@ -327,6 +327,37 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  it('drops local optimistic user messages when server text includes image attachment notices', () => {
+    const previous = [
+      msg('1-user', 'user', 'First, the voice SUCKS.'),
+      msg('2-assistant', 'assistant', 'HOW TO USE THEM'),
+      msg('user-optimistic-1', 'user', 'Nothing happens.'),
+      msg('user-optimistic-2', 'user', 'Nothing happens when I click Create')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'First, the voice SUCKS.\n[Image attached at: C:\\path\\shot.png]'),
+      msg('2-assistant-stored', 'assistant', 'HOW TO USE THEM'),
+      msg('3-user-stored', 'user', 'Nothing happens.\n[Image attached at: C:\\path\\shot2.png]'),
+      msg('4-user-stored', 'user', 'Nothing happens when I click Create')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('drops local optimistic user messages if content matches anywhere in nextMessages even if ordinals shifted', () => {
+    const previous = [
+      msg('user-optimistic-1', 'user', 'First, the voice SUCKS.')
+    ]
+
+    const next = [
+      msg('0-sys', 'system', 'System prompt'),
+      msg('1-user-stored', 'user', 'First, the voice SUCKS.\n[Image attached at: C:\\path\\shot.png]')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

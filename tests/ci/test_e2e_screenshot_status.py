@@ -14,7 +14,7 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
 
-def test_status_includes_only_explicit_screenshots_and_counts_diffs(tmp_path):
+def test_status_selects_only_new_explicit_screenshots_and_all_diffs(tmp_path):
     for name in (
         "explicit-proof.png",
         "test-finished-1.png",
@@ -24,25 +24,34 @@ def test_status_includes_only_explicit_screenshots_and_counts_diffs(tmp_path):
     ):
         (tmp_path / name).write_bytes(b"png")
 
-    status = _mod.build_status(tmp_path, "https://github.test/artifacts/1")
+    base_manifest = tmp_path / "main-manifest.json"
+    base_manifest.write_text('{"screenshot_names":["already-on-main.png"]}', encoding="utf-8")
+    (tmp_path / "already-on-main.png").write_bytes(b"png")
+
+    selection = _mod.select_evidence(tmp_path, base_manifest)
+    status = _mod.build_status(selection, "https://github.test/artifacts/1")
 
     result = status[0]["results"][0]
     assert result["kind"] == "info"
-    assert result["summary"] == "1 screenshot captured; 1 visual diff."
-    assert "<details>" in result["detail"]
-    assert "explicit-proof.png" in result["detail"]
-    assert "test-finished-1.png" not in result["detail"]
-    assert "visual-actual.png" not in result["detail"]
-    assert "https://github.test/artifacts/1" in result["detail"]
+    assert result["summary"] == "1 new screenshot vs main; 1 visual diff."
+    assert _mod.EVIDENCE_START in result["detail"]
+    assert "already-on-main.png" not in result["detail"]
+    assert result["link"] == "https://github.test/artifacts/1"
 
 
 def test_cli_output_ends_with_newline_for_github_output_delimiter(tmp_path, monkeypatch):
     output = tmp_path / "review-status.json"
+    manifest = tmp_path / "main-manifest.json"
+    evidence_dir = tmp_path / "evidence"
     monkeypatch.setattr(sys, "argv", [
         "e2e_screenshot_status.py",
         "--results-dir", str(tmp_path),
+        "--manifest-output", str(manifest),
+        "--evidence-dir", str(evidence_dir),
         "--output", str(output),
     ])
 
     assert _mod.main() == 0
     assert output.read_text(encoding="utf-8") == "[]\n"
+    assert manifest.read_text(encoding="utf-8") == '{"screenshot_names": [], "version": 1}\n'
+    assert evidence_dir.joinpath("e2e-evidence.json").is_file()

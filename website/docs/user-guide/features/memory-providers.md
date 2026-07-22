@@ -613,11 +613,11 @@ hermes memory setup
 
 ### YantrikDB
 
-Self-maintaining local memory with contradiction tracking, agent-authored skills, benchmarked self-tuning recall, and explainable ranking (every result carries a `why_retrieved` reason list). Embedded by default — no server, no token, no GPU — with an optional HTTP backend for cluster deployments.
+Self-maintaining local memory with contradiction tracking, agent-authored skills, benchmarked self-tuning recall, and explainable ranking (every result carries a `why_retrieved` reason list). Optionally **self-directing**: the memory turns questions it repeatedly fails to answer into durable tasks and opens the next session with its own agenda. Embedded by default — no server, no token, no GPU — with an optional HTTP backend for cluster deployments.
 
 | | |
 |---|---|
-| **Best for** | Long-running agents that need to surface contradictions, ground their own ranking, reuse procedural skills, and see what their memory is missing |
+| **Best for** | Long-running agents that need to surface contradictions, ground their own ranking, reuse procedural skills, see what their memory is missing — and act on it without being told |
 | **Requires** | `pip install yantrikdb-hermes-plugin` + `yantrikdb-hermes install` |
 | **Data storage** | Local SQLite (embedded mode) or `yantrikdb-server` cluster (HTTP mode) |
 | **Cost** | Free |
@@ -625,6 +625,10 @@ Self-maintaining local memory with contradiction tracking, agent-authored skills
 **Tools (18 base + 3 optional skills):** `yantrikdb_remember` / `yantrikdb_recall` (explainable `why_retrieved` recall, opt-in self-tuning via `reinforce`) / `yantrikdb_forget`, `yantrikdb_think` (consolidate + conflict scan + pattern mining), `yantrikdb_conflicts` / `yantrikdb_resolve_conflict` (surface and close contradictions), `yantrikdb_relate` (knowledge-graph edges), `yantrikdb_stats` / `yantrikdb_observability`, the trigger consumers `yantrikdb_pending_triggers` / `_acknowledge_trigger` / `_dismiss_trigger` / `_act_on_trigger`, `yantrikdb_extraction_stats`, `yantrikdb_hygiene` (engine-backed stale scan + consolidate/forget), `yantrikdb_knowledge_gaps` (what the memory is missing), `yantrikdb_recent_turns` (verbatim conversation buffer that survives compression), and `yantrikdb_tasks` (durable, namespace-scoped chore store). Opt-in via `YANTRIKDB_SKILLS_ENABLED=true`: `yantrikdb_skill_search` / `_skill_define` / `_skill_outcome` (agent-authored procedural skills with an append-only outcome ledger).
 
 **Architecture:** The engine ships as a Rust crate with Python bindings. The default backend is in-process (~10 MB install, bundled potion-2M embedder, no separate server). HTTP mode points at `yantrikdb-server` for cluster deployments and shares the same tool surface. Every recall returns ranking-reason lists inline — no separate "explain" call, no second LLM round-trip. `think()` runs canonicalization, conflict detection, and pattern mining as a single maintenance pass, auto-called on session end. Recall quality is tracked by a reproducible in-repo benchmark.
+
+**Self-directing memory (opt-in):** On session end the provider aggregates the recall log for queries that recur often *and* keep scoring poorly, and converts each into a durable task; the next session opens with a compact "your memory's agenda" block, and the task closes once the gap is answered. The gate is demand-aggregated rather than per-recall — a single low-confidence miss never creates a task — and new tasks are capped, deduplicated, and namespace-scoped. Enable with `YANTRIKDB_AUTO_GAP_TASKS` + `YANTRIKDB_SURFACE_AGENDA`.
+
+**Exactly-once writes:** `yantrikdb_remember` accepts an optional `idempotency_key`, so a retried write returns the original record instead of creating a duplicate, and a same-key/different-text write surfaces an explicit conflict rather than silently overwriting. Identical semantics in embedded and HTTP mode.
 
 **Setup:**
 ```bash
@@ -643,8 +647,10 @@ hermes config set memory.provider yantrikdb
 | `YANTRIKDB_NAMESPACE` | `hermes` | Namespace/shard for this agent's memories |
 | `YANTRIKDB_SKILLS_ENABLED` | `false` | Enable the agent-authored skills tools |
 | `YANTRIKDB_SELF_TUNING_RECALL` | `false` | Rank reinforced memories higher over time |
+| `YANTRIKDB_AUTO_GAP_TASKS` | `false` | Turn recurring, poorly-answered queries into durable tasks on session end |
+| `YANTRIKDB_SURFACE_AGENDA` | `false` | Open each session with the memory's own open tasks and top gaps |
 
-Requires `yantrikdb>=0.9.0`.
+Requires `yantrikdb>=0.10.0`.
 
 ---
 
@@ -661,7 +667,7 @@ Requires `yantrikdb>=0.9.0`.
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
-| **YantrikDB** | Local/Cloud | Free | 18 | `yantrikdb-hermes-plugin` | Contradiction tracking + explainable recall + benchmarked self-tuning |
+| **YantrikDB** | Local/Cloud | Free | 18 | `yantrikdb-hermes-plugin` | Contradiction tracking + explainable recall + self-directing gap→task loop |
 
 ## Profile Isolation
 

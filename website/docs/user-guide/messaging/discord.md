@@ -177,11 +177,15 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 :::
 
 1. In the left sidebar, click **Installation**.
-2. Under **Installation Contexts**, enable **Guild Install**.
+2. Under **Installation Contexts**, enable **Guild Install** and **User Install** if you want slash commands to work in both servers and DMs.
 3. For **Install Link**, select **Discord Provided Link**.
 4. Under **Default Install Settings** for Guild Install:
    - **Scopes**: select `bot` and `applications.commands`
    - **Permissions**: select the permissions listed below.
+
+:::warning[Important: installation contexts are separate authorizations]
+If you enabled both **Guild Install** and **User Install**, you must complete **both** installs. Open the install link once to add the bot to your server (Guild Install), then open it again to add the app to your own account (User Install). If you only complete one install, the other context may not show the full slash-command autocomplete experience. That means users may not be able to discover installed Hermes skill commands by typing `/` and searching, which makes everyday use much harder.
+:::
 
 ### Option B: Manual URL
 
@@ -227,6 +231,10 @@ You need the **Manage Server** permission on the Discord server to invite a bot.
 :::
 
 After authorizing, the bot will appear in your server's member list (it will show as offline until you start the Hermes gateway).
+
+:::warning[Post-install security hardening]
+After you finish installation, go back to **Bot → Authorization Flow** and set **Public Bot** back to **OFF**. Existing installs remain active. Leaving Public Bot ON makes your app discoverable and installable by anyone with the application ID.
+:::
 
 ## Step 7: Find Your Discord User ID
 
@@ -637,6 +645,8 @@ Hermes automatically registers installed skills as **native Discord Application 
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 
+If skill commands do not appear in autocomplete, double-check the dual-install flow in [Step 5: Generate the Invite URL](#step-5-generate-the-invite-url), then see ["Unknown integration" when running slash commands](#unknown-integration-when-running-slash-commands).
+
 ### Disabling Slash Command Registration
 
 If you run multiple Hermes gateways against the same Discord application (e.g. staging + production), only one of them should own the global slash-command registration — otherwise the last startup wins and the registrations flap. Turn slash registration off on the "follower" gateway:
@@ -826,6 +836,16 @@ Hermes 0.18 intentionally fails closed on externally reachable adapters. A Disco
 **Cause**: The bot is missing required permissions.
 
 **Fix**: Re-invite the bot with the correct permissions using the URL from Step 5, or manually adjust the bot's role permissions in Server Settings → Roles.
+
+### "Unknown integration" when running slash commands
+
+**Cause**: The app was installed in only one context (server or user account). The other context can miss expected slash-command behavior, including command discovery/autocomplete for installed Hermes skills, and may return **Unknown integration** for some interactions.
+
+**Fix**: In the Developer Portal, ensure both **Guild Install** and **User Install** are enabled, then run the install link twice:
+1. complete **Guild Install** (add to server)
+2. complete **User Install** (add to your apps)
+
+After both installs, users get the expected slash-command experience in both DMs and servers, including better discovery of installed Hermes skills via autocomplete.
 
 ### Bot is offline
 

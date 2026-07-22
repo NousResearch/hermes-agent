@@ -8,6 +8,7 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- POST /v1/mcp/reload              — reconnect already-materialized MCP configuration
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
@@ -1000,6 +1001,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # background=True) must NOT promise delivery on this path — see
     # ``async_delivery_supported()``.
     supports_async_delivery: bool = False
+    MCP_RELOAD_CONTRACT_VERSION = "1"
 
     # Same statelessness applies to the startup auto-resume prompt: no client
     # is waiting to answer "session restored — what next?", so a resumed turn
@@ -1559,6 +1561,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/v1/capabilities", self._handle_capabilities),
+            ("POST", "/v1/mcp/reload", self._handle_mcp_reload),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
             ("GET", "/api/sessions", self._handle_list_sessions),
@@ -2123,12 +2126,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "mcp_reload": True,
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "mcp_reload": {
+                    "method": "POST",
+                    "path": "/v1/mcp/reload",
+                    "caller_must_quiesce_new_work": True,
+                },
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -2148,6 +2157,91 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
+        })
+
+    async def _handle_mcp_reload(self, request: "web.Request") -> "web.Response":
+        """POST /v1/mcp/reload — safely reconnect materialized MCP config.
+
+        This is deliberately a control operation, not a configuration API.
+        It accepts no URL, header, credential, or server name: the owning
+        control plane must atomically materialize the already-approved config
+        and secret delivery handle before calling this endpoint.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        # Do not silently accept an arbitrary configuration payload. The
+        # control plane writes config/grants through its own protected prepare
+        # boundary; this endpoint only applies that already-materialized state.
+        try:
+            if (await request.read()).strip():
+                return web.json_response(
+                    _openai_error("MCP reload does not accept a request body", code="mcp_reload_body_forbidden"),
+                    status=400,
+                )
+        except Exception:
+            return web.json_response(_openai_error("Invalid request body", code="invalid_request"), status=400)
+
+        # Refuse when work is already active rather than deliberately mutate
+        # tool snapshots beneath an in-flight turn. The owning control plane
+        # must also quiesce new-work admission for the reload duration.
+        # Read the whole gateway count when available so an API control caller
+        # cannot reload while a separate messaging-platform turn is active.
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        if runner is None or not callable(getattr(runner, "try_reload_mcp_servers", None)):
+            return web.json_response(
+                _openai_error("MCP reload control is unavailable", code="mcp_reload_unavailable"),
+                status=503,
+            )
+
+        try:
+            active_work = max(0, int(runner._active_work_count()))
+        except Exception:
+            # Fail closed when the runner cannot report an authoritative count.
+            return web.json_response(
+                _openai_error("MCP reload activity state is unavailable", code="mcp_reload_unavailable"),
+                status=503,
+            )
+        if active_work:
+            return web.json_response(
+                _openai_error("MCP reload requires no active agent work", code="mcp_reload_busy"),
+                status=409,
+                headers={"Retry-After": "1"},
+            )
+        try:
+            result = await runner.try_reload_mcp_servers()
+            if result is None:
+                return web.json_response(
+                    _openai_error("MCP reload is already in progress", code="mcp_reload_busy"),
+                    status=409,
+                    headers={"Retry-After": "1"},
+                )
+        except Exception as exc:
+            # MCP config errors can contain provider-specific details. Keep
+            # them out of the control-plane response and avoid logging a raw
+            # exception value that might include a materialized grant.
+            logger.warning("MCP control reload failed: %s", type(exc).__name__)
+            return web.json_response(
+                _openai_error("MCP reload failed", code="mcp_reload_failed"),
+                status=503,
+            )
+
+        def safe_count(value: Any) -> int:
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+
+        server_count = safe_count(result.get("server_count", 0))
+        tool_count = safe_count(result.get("tool_count", 0))
+
+        return web.json_response({
+            "object": "hermes.mcp_reload",
+            "status": "reloaded",
+            "contract_version": self.MCP_RELOAD_CONTRACT_VERSION,
+            "server_count": server_count,
+            "tool_count": tool_count,
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":

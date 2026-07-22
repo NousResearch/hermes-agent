@@ -4367,7 +4367,7 @@ def _interrupted_call_result() -> str:
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _interpolate_env_vars(value):
+def _interpolate_env_vars(value, secret_overrides: Optional[Dict[str, str]] = None):
     """Recursively resolve ``${VAR}`` placeholders.
 
     Both ``${VAR}`` and Cursor-style ``${env:VAR}`` are accepted — the
@@ -4376,19 +4376,23 @@ def _interpolate_env_vars(value):
     scope when multiplexing is on (so an MCP server config's ``${API_KEY}``
     picks up the routed profile's value, not the process-global ``os.environ``
     which may hold another profile's), falling back to ``os.environ``
-    otherwise. Unset vars keep the literal placeholder, as before.
+    otherwise. ``secret_overrides`` may supply a freshly parsed profile
+    ``.env`` mapping during hot reload; it wins over a stale process value.
+    Unset vars keep the literal placeholder, as before.
     """
     from agent.secret_scope import get_secret as _get_secret
 
     if isinstance(value, str):
         def _replace(m):
             name = _env_ref_name(m.group(1))
+            if secret_overrides is not None and name in secret_overrides:
+                return secret_overrides[name]
             return _get_secret(name, m.group(0)) or m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, secret_overrides) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, secret_overrides) for v in value]
     return value
 
 
@@ -4440,15 +4444,27 @@ def _load_mcp_config() -> Dict[str, dict]:
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
             return {}
-        # Ensure .env vars are available for interpolation
+        # Ensure .env vars are available for interpolation. Also parse the
+        # current profile file into an isolated mapping: python-dotenv updates
+        # process state, but a long-lived gateway may still have an older
+        # credential in its active secret resolution path during hot reload.
+        # The fresh mapping is used only for this config read and is never
+        # copied into logs or returned to callers.
+        secret_overrides: Dict[str, str] = {}
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
+            from agent.secret_scope import build_profile_secret_scope
+            from hermes_constants import get_process_hermes_home
             load_hermes_dotenv()
+            # MCP discovery/reload mutates a process-global registry, so its
+            # credential source must be the process home written by the
+            # control plane, never a request-local profile override.
+            secret_overrides = build_profile_secret_scope(get_process_hermes_home())
         except Exception:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
-            interpolated = _interpolate_env_vars(cfg)
+            interpolated = _interpolate_env_vars(cfg, secret_overrides)
             if isinstance(interpolated, dict):
                 safe_servers[name] = interpolated
         return safe_servers

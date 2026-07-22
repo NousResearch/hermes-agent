@@ -174,3 +174,27 @@ async def test_reload_mcp_preserves_per_agent_toolset_overrides():
     assert captured_calls, "get_tool_definitions was never called to refresh the cache"
     assert captured_calls[0]["enabled_toolsets"] == ["safe"]
     assert captured_calls[0]["disabled_toolsets"] == ["terminal"]
+
+
+@pytest.mark.asyncio
+async def test_control_reload_rechecks_active_work_under_shared_lock():
+    """A queued control reload must not change global MCP state after work starts."""
+    runner = _make_runner_with_cached_agents(num_agents=0)
+    runner._active_work_count = lambda: 1
+
+    with patch("tools.mcp_tool.shutdown_mcp_servers") as shutdown:
+        result = await runner.try_reload_mcp_servers()
+
+    assert result is None
+    shutdown.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_interactive_reload_never_reflects_mcp_error_details():
+    runner = _make_runner_with_cached_agents(num_agents=0)
+    secret = "Bearer materialized-grant-must-not-escape"
+
+    with patch("tools.mcp_tool.shutdown_mcp_servers", side_effect=RuntimeError(secret)):
+        result = await runner._execute_mcp_reload(_make_event())
+
+    assert secret not in result

@@ -659,6 +659,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/v1/mcp/reload", adapter._handle_mcp_reload)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -1042,7 +1043,13 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["mcp_reload"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["endpoints"]["mcp_reload"] == {
+                "method": "POST",
+                "path": "/v1/mcp/reload",
+                "caller_must_quiesce_new_work": True,
+            }
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
@@ -1061,6 +1068,141 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# /v1/mcp/reload control endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestMcpReloadEndpoint:
+    @pytest.mark.asyncio
+    async def test_reload_requires_api_bearer_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload")
+            assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_reload_fails_closed_without_control_runner(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 503
+            assert (await response.json())["error"]["code"] == "mcp_reload_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_reload_fails_closed_when_activity_cannot_be_read(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.side_effect = RuntimeError("state unavailable")
+        runner.try_reload_mcp_servers = AsyncMock()
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 503
+            assert (await response.json())["error"]["code"] == "mcp_reload_unavailable"
+        runner.try_reload_mcp_servers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reload_rejects_active_work_without_calling_runner(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 1
+        runner.try_reload_mcp_servers = AsyncMock()
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 409
+            assert (await response.json())["error"]["code"] == "mcp_reload_busy"
+            assert response.headers["Retry-After"] == "1"
+        runner.try_reload_mcp_servers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reload_rejects_configuration_payload(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 0
+        runner.try_reload_mcp_servers = AsyncMock()
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/mcp/reload",
+                data='{"url":"https://attacker.invalid/mcp","headers":{"Authorization":"Bearer secret"}}',
+                headers={"Authorization": "Bearer sk-secret", "Content-Type": "application/json"},
+            )
+            assert response.status == 400
+            assert (await response.json())["error"]["code"] == "mcp_reload_body_forbidden"
+        runner.try_reload_mcp_servers.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reload_returns_only_safe_counts(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 0
+        runner.try_reload_mcp_servers = AsyncMock(return_value={
+            "server_count": 1,
+            "tool_count": 3,
+            "added": {"circle"},
+            "removed": set(),
+            "reconnected": set(),
+        })
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 200
+            assert await response.json() == {
+                "object": "hermes.mcp_reload",
+                "status": "reloaded",
+                "contract_version": "1",
+                "server_count": 1,
+                "tool_count": 3,
+            }
+        runner.try_reload_mcp_servers.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_reload_defaults_malformed_counts_after_a_successful_reload(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 0
+        runner.try_reload_mcp_servers = AsyncMock(return_value={
+            "server_count": None,
+            "tool_count": "not-a-count",
+        })
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 200
+            body = await response.json()
+            assert body["server_count"] == 0
+            assert body["tool_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_reload_returns_busy_when_another_control_reload_has_claimed_it(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 0
+        runner.try_reload_mcp_servers = AsyncMock(return_value=None)
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 409
+            assert (await response.json())["error"]["code"] == "mcp_reload_busy"
+        runner.try_reload_mcp_servers.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_reload_fails_closed_when_runner_raises(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 0
+        runner.try_reload_mcp_servers = AsyncMock(side_effect=RuntimeError("Bearer raw-grant-must-not-escape"))
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 503
+            body = await response.json()
+            assert body["error"]["code"] == "mcp_reload_failed"
+            assert "raw-grant-must-not-escape" not in str(body)
 
 
 # ---------------------------------------------------------------------------

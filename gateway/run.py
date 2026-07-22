@@ -15737,6 +15737,100 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    def _get_mcp_reload_lock(self) -> "asyncio.Lock":
+        """Return the gateway-wide MCP reconnect lock (also works in tests)."""
+        lock = getattr(self, "_mcp_reload_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mcp_reload_lock = lock
+        return lock
+
+    async def try_reload_mcp_servers(self) -> Optional[Dict[str, Any]]:
+        """Start a control-plane reload, or return ``None`` when one is live.
+
+        The boolean claim is deliberately set before the first await, making a
+        same-loop double submit deterministic.  The lower-level lock still
+        serializes this operation with interactive ``/reload-mcp`` calls.
+        """
+        if getattr(self, "_mcp_control_reload_claimed", False):
+            return None
+        self._mcp_control_reload_claimed = True
+        try:
+            async with self._get_mcp_reload_lock():
+                # Re-check at the point the process-global registry is about
+                # to change. The API handler performs the first fast-fail;
+                # this avoids reloading after a queued interactive reload, but
+                # control-plane callers must still quiesce new-work admission.
+                if self._active_work_count() > 0:
+                    return None
+                return await self._reload_mcp_servers_locked()
+        finally:
+            self._mcp_control_reload_claimed = False
+
+    async def reload_mcp_servers(self) -> Dict[str, Any]:
+        """Serialize all MCP reconnect paths against the process-global registry."""
+        async with self._get_mcp_reload_lock():
+            return await self._reload_mcp_servers_locked()
+
+    async def _reload_mcp_servers_locked(self) -> Dict[str, Any]:
+        """Reconnect configured MCP servers and refresh cached agent tools.
+
+        This is the non-interactive primitive shared by the user-facing
+        ``/reload-mcp`` command and trusted control planes.  It reads only the
+        already-materialized Hermes configuration: callers cannot provide an
+        MCP URL, header, or any other config value.  Returned server names are
+        intentionally for local gateway presentation only; API callers must
+        expose counts, never configuration-derived identifiers.
+        """
+        loop = asyncio.get_running_loop()
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+
+        # Capture old server names before shutdown.
+        with _lock:
+            old_servers = set(_servers.keys())
+
+        # Discovery reloads the on-disk config after every old connection has
+        # been closed, so a rotated connection credential never leaves the
+        # former client live beside the replacement.
+        await loop.run_in_executor(None, shutdown_mcp_servers)
+        new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+
+        with _lock:
+            connected_servers = set(_servers.keys())
+
+        added = connected_servers - old_servers
+        removed = old_servers - connected_servers
+        reconnected = connected_servers & old_servers
+
+        # Refresh cached agents so their next turn sees the new tool surface.
+        # Keep each agent's build-time toolset restrictions intact.
+        try:
+            from tools.mcp_tool import refresh_agent_mcp_tools
+            _cache = getattr(self, "_agent_cache", None)
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            if _cache_lock is not None and _cache:
+                with _cache_lock:
+                    for _sess_key, _entry in list(_cache.items()):
+                        try:
+                            _agent = _entry[0] if isinstance(_entry, tuple) else _entry
+                        except Exception:
+                            continue
+                        if _agent is not None:
+                            refresh_agent_mcp_tools(_agent, quiet_mode=True)
+        except Exception as exc:
+            # The server connections have already been safely replaced. A
+            # cache refresh failure is observable in logs but must not roll the
+            # connection back into a half-reloaded state.
+            logger.debug("Failed to update cached agent tools after MCP reload: %s", type(exc).__name__)
+
+        return {
+            "added": added,
+            "removed": removed,
+            "reconnected": reconnected,
+            "server_count": len(connected_servers),
+            "tool_count": len(new_tools),
+        }
+
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
@@ -15744,28 +15838,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         wrapper can invoke the same path whether the user confirmed via
         button, text reply, or has the confirm gate disabled.
         """
-        loop = asyncio.get_running_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
-
-            # Capture old server names before shutdown
-            with _lock:
-                old_servers = set(_servers.keys())
-
-            # Read new config before shutting down, so we know what will be added/removed
-            # Shutdown existing connections
-            await loop.run_in_executor(None, shutdown_mcp_servers)
-
-            # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
-
-            # Compute what changed
-            with _lock:
-                connected_servers = set(_servers.keys())
-
-            added = connected_servers - old_servers
-            removed = old_servers - connected_servers
-            reconnected = connected_servers & old_servers
+            result = await self.reload_mcp_servers()
+            added = result["added"]
+            removed = result["removed"]
+            reconnected = result["reconnected"]
+            connected_servers = result["server_count"]
+            new_tools = result["tool_count"]
 
             lines = [t("gateway.reload_mcp.header")]
             if reconnected:
@@ -15777,42 +15856,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not connected_servers:
                 lines.append(t("gateway.reload_mcp.none_connected"))
             else:
-                lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
-
-            # Refresh cached agents so existing sessions see new MCP tools on
-            # their next turn — without this, the user has to `/new` (which
-            # discards conversation history) to pick up tools from a server
-            # that was just added or reconnected. The user has already
-            # consented to the prompt-cache invalidation via the slash-confirm
-            # gate in _handle_reload_mcp_command before we reach this point.
-            try:
-                from tools.mcp_tool import refresh_agent_mcp_tools
-                _cache = getattr(self, "_agent_cache", None)
-                _cache_lock = getattr(self, "_agent_cache_lock", None)
-                if _cache_lock is not None and _cache:
-                    with _cache_lock:
-                        for _sess_key, _entry in list(_cache.items()):
-                            try:
-                                _agent = _entry[0] if isinstance(_entry, tuple) else _entry
-                            except Exception:
-                                continue
-                            if _agent is None:
-                                continue
-                            # Preserve each cached agent's build-time toolset
-                            # selection EXACTLY: a gateway session built with a
-                            # restricted enabled_toolsets (e.g. ["safe"]) must
-                            # NOT silently gain tools after a reload. This is the
-                            # opposite of the interactive CLI/TUI /reload-mcp,
-                            # which is a single user re-applying their own config
-                            # edit; gateway agents are per-session and may be
-                            # deliberately locked down. (Contract is asserted by
-                            # test_reload_mcp_preserves_per_agent_toolset_overrides.)
-                            refresh_agent_mcp_tools(_agent, quiet_mode=True)
-            except Exception as _exc:
-                logger.debug(
-                    "Failed to update cached agent tools after MCP reload: %s",
-                    _exc,
-                )
+                lines.append(t("gateway.reload_mcp.tools_available", tools=new_tools, servers=connected_servers))
 
             # Inject a message at the END of the session history so the
             # model knows tools changed on its next turn.  Appended after
@@ -15824,7 +15868,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 change_parts.append(f"Removed servers: {', '.join(sorted(removed))}")
             if reconnected:
                 change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
-            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
+            tool_summary = f"{new_tools} MCP tool(s) now available" if new_tools else "No MCP tools available"
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             reload_msg = {
                 "role": "user",
@@ -15840,9 +15884,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             return "\n".join(lines)
 
-        except Exception as e:
-            logger.warning("MCP reload failed: %s", e)
-            return t("gateway.reload_mcp.failed", error=e)
+        except Exception as exc:
+            # A config or transport exception can include materialized MCP
+            # connection details. Keep the interactive command diagnostic
+            # useful without reflecting that value into chat or logs.
+            logger.warning("MCP reload failed: %s", type(exc).__name__)
+            return t("gateway.reload_mcp.failed", error="an internal error")
 
 
 

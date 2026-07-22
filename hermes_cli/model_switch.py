@@ -20,7 +20,9 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
+import http.client
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
@@ -197,6 +199,40 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
         auth_type="api_key",
         source="model-config",
     )
+
+
+_MODEL_DISCOVERY_ERRORS = (
+    ImportError,
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    TypeError,
+    ValueError,
+    http.client.HTTPException,
+)
+
+
+def _fetch_picker_live_models(
+    api_key: str,
+    api_url: str,
+    native_catalog_provider: str,
+    preserve_native_models: bool,
+    headers: dict[str, str] | None = None,
+) -> list[str] | None:
+    """Fetch live picker models while preserving explicit local Ollama lists."""
+    from hermes_cli.models import (
+        fetch_api_models,
+        fetch_ollama_local_models,
+        should_use_ollama_native_catalog,
+    )
+
+    if should_use_ollama_native_catalog(
+        native_catalog_provider, api_url, headers=headers
+    ):
+        return [] if preserve_native_models else fetch_ollama_local_models(
+            api_url, headers=headers
+        )
+    return fetch_api_models(api_key, api_url, headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -2725,16 +2761,21 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
+                    native_catalog_provider = (
+                        ep_name
+                        if str(ep_name or "").strip().lower() == "ollama"
+                        else "custom"
+                    )
+                    live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
-                        timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
+                        native_catalog_provider,
+                        has_explicit_models,
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
                         models_list = live_models
-                except Exception:
+                except _MODEL_DISCOVERY_ERRORS:
                     pass
 
             results.append({
@@ -2795,16 +2836,18 @@ def list_authenticated_providers(
         _models = [current_model] if current_model else []
         if refresh or probe_current_custom_provider:
             try:
-                from hermes_cli.models import fetch_api_models
-
-                _live_models = fetch_api_models(
+                # ``current_model`` is the active selection, not an explicit
+                # catalog restriction. Let local Ollama refresh the complete
+                # native catalog while ordinary custom endpoints keep /models.
+                _live_models = _fetch_picker_live_models(
                     "",
                     str(current_base_url).strip().rstrip("/"),
-                    timeout=1.5 if for_picker else 5.0,  # picker: fail fast on a slow current endpoint
+                    "custom",
+                    False,
                 )
                 if _live_models:
                     _models = _live_models
-            except Exception:
+            except _MODEL_DISCOVERY_ERRORS:
                 pass
         results.append({
             "slug": "custom",
@@ -3039,12 +3082,11 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(
+                    live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
-                        timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
+                        "custom",
+                        bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
@@ -3056,7 +3098,7 @@ def list_authenticated_providers(
                         _save_discovered_models_to_config(
                             api_url, live_models
                         )
-                except Exception:
+                except _MODEL_DISCOVERY_ERRORS:
                     pass
             results.append({
                 "slug": slug,

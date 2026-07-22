@@ -14,6 +14,8 @@ def test_default_config_keeps_gateway_health_export_disabled():
     assert cfg["warning_error_events_enabled"] is True
     assert cfg["export_interval_seconds"] == 60
     assert cfg["logs_export_interval_seconds"] == 5
+    assert cfg["resource_attributes"]["deployment.environment.name"] == "production"
+    assert "deployment.environment" not in cfg["resource_attributes"]
     # Redaction is always-on and deliberately NOT configurable.
     assert "redaction" not in cfg
 
@@ -59,11 +61,12 @@ def test_gateway_health_snapshot_maps_runtime_status_to_low_cardinality_metrics(
     active = next(m for m in snapshot.metrics if m.name == "hermes.gateway.active_agents")
     assert active.value == 2
     assert active.attributes == {
-        "hermes.profile": "default",
-        "service.instance.id": "install-1",
+        "service.instance.id": active.attributes["service.instance.id"],
         "service.version": "2026.7.test",
         "hermes.supervision_mode": "manual",
     }
+    assert active.attributes["service.instance.id"].startswith("sha256:")
+    assert "install-1" not in active.attributes["service.instance.id"]
 
     busy = next(m for m in snapshot.metrics if m.name == "hermes.gateway.busy")
     drainable = next(m for m in snapshot.metrics if m.name == "hermes.gateway.drainable")
@@ -183,6 +186,7 @@ def test_runtime_status_transition_emits_lifecycle_and_platform_events(monkeypat
     lifecycle = next(e for e in captured if e["name"] == "gateway.lifecycle")
     assert lifecycle["old_state"] == "starting"
     assert lifecycle["new_state"] == "running"
+    assert lifecycle["exit_reason"] is None
     platform = next(e for e in captured if e["name"] == "platform.state_change")
     assert platform["old_state"] == "running"
     assert platform["new_state"] == "fatal"
@@ -198,8 +202,21 @@ def test_runtime_status_transition_emits_startup_failed_and_exit():
     old = emitter.emit
     emitter.emit = lambda event: captured.append(event.to_dict())  # type: ignore[assignment]
     try:
-        emit_runtime_status_transition({"gateway_state": "starting"}, {"gateway_state": "startup_failed", "exit_reason": "startup token ***"})
-        emit_runtime_status_transition({"gateway_state": "running"}, {"gateway_state": "stopped", "exit_reason": "shutdown", "restart_requested": True})
+        emit_runtime_status_transition(
+            {"gateway_state": "starting"},
+            {
+                "gateway_state": "startup_failed",
+                "exit_reason": "Bearer top-secret-token rejected for user@example.com",
+            },
+        )
+        emit_runtime_status_transition(
+            {"gateway_state": "running"},
+            {
+                "gateway_state": "stopped",
+                "exit_reason": "shutdown requested by user@example.com",
+                "restart_requested": True,
+            },
+        )
     finally:
         emitter.emit = old  # type: ignore[assignment]
 
@@ -208,8 +225,11 @@ def test_runtime_status_transition_emits_startup_failed_and_exit():
     assert "gateway.exit" in names
     failed = next(e for e in captured if e["name"] == "gateway.startup_failed")
     assert "***" not in failed["redacted_message"]
+    lifecycle = next(e for e in captured if e["name"] == "gateway.lifecycle")
+    assert lifecycle["exit_reason"] == "auth_failed"
     exit_event = next(e for e in captured if e["name"] == "gateway.exit")
     assert exit_event["restart_requested"] is True
+    assert exit_event["exit_reason"] == "restart_requested"
 
 
 def test_otlp_attrs_include_gateway_transition_fields():
@@ -228,6 +248,72 @@ def test_otlp_attrs_include_gateway_transition_fields():
     assert attrs["hermes.new_state"] == "running"
     assert attrs["hermes.exit_reason"] == "restart"
     assert attrs["hermes.restart_requested"] is True
+
+
+def test_otlp_attrs_redact_strings_and_never_export_profile():
+    from agent.monitoring.otlp_exporter import _span_attrs
+
+    attrs = _span_attrs({
+        "event": "gateway_health",
+        "name": "gateway.lifecycle",
+        "profile": "user@example.com",
+        "exit_reason": "Bearer top-secret-token for user@example.com",
+    })
+
+    assert "hermes.profile" not in attrs
+    assert "top-secret-token" not in str(attrs)
+    assert "user@example.com" not in str(attrs)
+
+
+def test_resource_attributes_are_allowlisted_and_sanitized():
+    from agent.monitoring.gateway_health_export import _safe_resource_attributes
+
+    attrs = _safe_resource_attributes({
+        "service.name": "hermes-gateway",
+        "service.instance.id": "install-1",
+        "deployment.environment.name": "staging",
+        "user.email": "user@example.com",
+        "authorization": "Bearer top-secret-token",
+        "custom.request.id": "unbounded",
+    })
+
+    assert attrs == {
+        "service.name": "hermes-gateway",
+        "service.instance.id": attrs["service.instance.id"],
+        "deployment.environment.name": "staging",
+    }
+    assert attrs["service.instance.id"].startswith("sha256:")
+    assert "install-1" not in attrs["service.instance.id"]
+
+
+def test_instance_id_hash_is_stable_and_distinguishes_instances():
+    from agent.monitoring.gateway_health import _safe_instance_id
+
+    first = _safe_instance_id("install-1")
+    repeat = _safe_instance_id("install-1")
+    second = _safe_instance_id("install-2")
+
+    assert first == repeat
+    assert first != second
+    assert first.startswith("sha256:")
+    assert "install-1" not in first
+
+
+def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
+    from agent.monitoring.gateway_health_export import _diagnostic_log_attributes
+
+    attrs = _diagnostic_log_attributes({
+        "event": "gateway_diagnostic",
+        "name": "platform.fatal",
+        "subsystem": "platform.slack",
+        "profile": "user@example.com",
+        "error_code": "Bearer top-secret-token",
+        "custom": "must-not-egress",
+    })
+
+    assert "hermes.profile" not in attrs
+    assert "hermes.custom" not in attrs
+    assert "top-secret-token" not in str(attrs)
 
 
 def test_gateway_health_export_start_is_fail_open_when_otlp_missing(monkeypatch):
@@ -259,6 +345,7 @@ def test_gateway_health_export_streams_only_gateway_events(monkeypatch):
 
     monkeypatch.setattr(gateway_health_export, "_start_metric_provider", lambda *a, **k: None)
     monkeypatch.setattr(gateway_health_export, "_require_metrics_sdk", lambda *a, **k: {})
+    monkeypatch.setattr(gateway_health_export, "_start_diagnostic_log_streamer", lambda *a, **k: object())
     monkeypatch.setattr(gateway_health_export, "_attach_log_handler", lambda *a, **k: None)
     monkeypatch.setattr(gateway_health_export, "_emit_snapshot_events", lambda *a, **k: None)
     monkeypatch.setattr(gateway_health_export, "_start_snapshot_thread", lambda *a, **k: None)
@@ -299,6 +386,65 @@ def test_gateway_health_export_metric_failure_does_not_start_streamer(monkeypatc
     assert runtime.enabled is False
     assert runtime.reason == "metrics_start_failed"
     assert started == []
+
+
+def test_gateway_health_export_diagnostic_partial_start_cleans_up(monkeypatch):
+    from agent.monitoring import emitter, gateway_health_export, otlp_exporter
+
+    class Streamer:
+        def __call__(self, _batch):
+            pass
+
+        def shutdown(self):
+            pass
+
+    streamer = Streamer()
+    monkeypatch.setattr(gateway_health_export, "_require_metrics_sdk", lambda *a, **k: {})
+    monkeypatch.setattr(gateway_health_export, "_start_metric_provider", lambda *a, **k: None)
+    monkeypatch.setattr(otlp_exporter, "start_streaming", lambda *a, **k: streamer)
+    monkeypatch.setattr(
+        gateway_health_export,
+        "_start_diagnostic_log_streamer",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    emitter.get_emitter().subscribe(streamer)
+
+    runtime = gateway_health_export.start_gateway_health_export({
+        "monitoring": {
+            "gateway_health_export": {"enabled": True, "metrics_enabled": False},
+            "export": {"otlp": {"enabled": True, "endpoint": "http://collector:4318/v1/traces"}},
+        }
+    })
+
+    assert runtime.enabled is False
+    assert runtime.reason == "diagnostics_start_failed"
+    assert streamer not in emitter.get_emitter()._subscribers
+
+
+def test_gateway_health_export_shutdown_is_bounded():
+    import threading
+    import time
+
+    from agent.monitoring.gateway_health_export import GatewayHealthExportRuntime
+
+    release = threading.Event()
+
+    class Blocking:
+        def shutdown(self):
+            release.wait(10)
+
+    runtime = GatewayHealthExportRuntime(
+        enabled=True,
+        streamer=Blocking(),
+        log_streamer=Blocking(),
+        metric_provider=Blocking(),
+    )
+    started = time.monotonic()
+    runtime.shutdown()
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert elapsed < 2.5
 
 
 def test_otlp_streamer_shutdown_unsubscribes(monkeypatch):

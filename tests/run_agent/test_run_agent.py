@@ -2214,9 +2214,13 @@ class TestBuildAssistantMessage:
         assert result["reasoning_details"][0]["text"] == "step1"
 
     def test_empty_content(self, agent):
+        # Textless assistant turns are padded to a single space: strict
+        # providers (Moonshot/Kimi via OpenRouter) reject empty assistant
+        # content with HTTP 400 ("message ... with role 'assistant' must
+        # not be empty") on replay, permanently poisoning the session.
         msg = _mock_assistant_msg(content=None)
         result = agent._build_assistant_message(msg, "stop")
-        assert result["content"] == ""
+        assert result["content"] == " "
 
     def test_streaming_only_reasoning_promoted_to_reasoning_content(self, agent):
         """Refs #16844 / #16884. Streaming-only providers (glm, MiniMax,
@@ -2345,7 +2349,9 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert "<think>" not in result["content"]
         assert "reasoning that never closes" not in result["content"]
-        assert result["content"] == ""
+        # Stripped-to-empty textless turns are padded to a single space
+        # (Moonshot/Kimi reject empty assistant content on replay).
+        assert result["content"] == " "
 
 
 class TestFormatToolsForSystemMessage:

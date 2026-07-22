@@ -1079,6 +1079,30 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
+        # Pad a textless assistant turn's empty content to a single space.
+        # Strict providers (Moonshot/Kimi via OpenRouter: "the message at
+        # position N with role 'assistant' must not be empty") reject the
+        # replay with HTTP 400 — and the session is poisoned for every
+        # subsequent turn.  This is the DURABLE repair for ALREADY-poisoned
+        # persisted sessions: the partial-stream-stub rows older builds
+        # wrote (content:'' finish_reason:'length') are rebuilt to '' on
+        # every reload — ``_rows_to_conversation`` strips whitespace, so a
+        # DB-side pad can't survive — and only a SEND-time pad repairs
+        # them.  It must run AFTER the whitespace-normalization pass above
+        # (which would strip the pad back to '') and after
+        # _drop_thinking_only_and_merge_users (which can leave a textless
+        # turn).  Tool-call turns are exempt: ``content: ''`` alongside
+        # ``tool_calls`` is accepted everywhere and normalizing it would
+        # alter prompt-cache keys.
+        for am in api_messages:
+            if (
+                am.get("role") == "assistant"
+                and not am.get("tool_calls")
+                and isinstance(am.get("content"), str)
+                and not am["content"].strip()
+            ):
+                am["content"] = " "
+
         # One image-stripped message estimate feeds both figures. Was: a
         # str(msg) char walk (re-serialized base64 every call) + a second
         # messages walk inside estimate_request_tokens_rough. Tools added
@@ -2031,10 +2055,27 @@ def run_conversation(
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
-                            interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                            messages.append(interim_msg)
-                            if assistant_message.content:
-                                truncated_response_parts.append(assistant_message.content)
+                            # An EMPTY partial-stream stub (stream dropped
+                            # mid tool-call before any text was delivered)
+                            # must not be appended as an interim assistant
+                            # message: it would serialize as
+                            # {"role": "assistant", "content": ""}, and
+                            # strict providers (Moonshot/Kimi via OpenRouter)
+                            # reject empty assistant content with HTTP 400
+                            # ("message ... with role 'assistant' must not be
+                            # empty") on the very next replay — permanently
+                            # poisoning the session history.  There is no
+                            # partial text to continue from anyway, so only
+                            # the continuation user-message is appended.
+                            _is_empty_partial_stub = (
+                                getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                                and not getattr(assistant_message, "content", None)
+                            )
+                            if not _is_empty_partial_stub:
+                                interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                                messages.append(interim_msg)
+                                if assistant_message.content:
+                                    truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 4:
                                 _is_partial_stream_stub = (

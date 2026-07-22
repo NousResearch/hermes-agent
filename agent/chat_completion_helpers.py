@@ -1311,6 +1311,21 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         from agent.redact import redact_sensitive_text
         _san_content = redact_sensitive_text(_san_content)
 
+    # Defence-in-depth: never serialize a TEXTLESS assistant turn with an
+    # empty content string.  Providers with strict validation (Moonshot/Kimi
+    # via OpenRouter: "the message at position N with role 'assistant' must
+    # not be empty") reject the replay with HTTP 400, which permanently
+    # poisons the persisted session — every subsequent turn re-sends the
+    # offending message.  Reachable via the partial-stream-stub path when a
+    # stream drops before delivering any text (the loop now skips that case,
+    # but other callers of this builder get the same guarantee).  A single
+    # space satisfies non-empty validation without fabricating content —
+    # the same trick the reasoning_content pad uses above (#15250, #17400).
+    # Tool-call turns are exempt: ``content: ""`` alongside ``tool_calls``
+    # is accepted everywhere and normalizing it would alter cache keys.
+    if not _san_content and not assistant_tool_calls:
+        _san_content = " "
+
     msg = {
         "role": "assistant",
         "content": _san_content,

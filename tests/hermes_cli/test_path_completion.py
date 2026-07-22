@@ -206,6 +206,22 @@ class TestIntegration:
         # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
 
+    def test_context_completion_triggers_fuzzy_file_search(self, completer, tmp_path, monkeypatch):
+        file_path = tmp_path / "test_file.py"
+        file_path.touch()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            monkeypatch.setattr(completer, "_get_project_files", lambda: ["test_file.py"])
+            doc = Document("check @test", cursor_position=11)
+            event = MagicMock()
+            completions = list(completer.get_completions(doc, event))
+            names = _display_names(completions)
+            assert "test_file.py" in names
+        finally:
+            os.chdir(old_cwd)
+
 
 class TestFileSizeLabel:
     def test_bytes(self, tmp_path):

@@ -407,7 +407,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--sort",
         default=None,
         choices=sorted(kb.VALID_SORT_ORDERS.keys()),
-        help="Sort order for listed tasks (default: priority)",
+        help="Sort order for listed tasks (default: priority; "
+             "'completed-desc' when --status done and no --sort given)",
     )
     p_list.add_argument(
         "--workflow-template-id",

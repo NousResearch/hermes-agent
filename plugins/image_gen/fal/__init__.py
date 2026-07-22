@@ -75,6 +75,11 @@ class FalImageGenProvider(ImageGenProvider):
                 "speed": meta.get("speed", ""),
                 "strengths": meta.get("strengths", ""),
                 "price": meta.get("price", ""),
+                "modalities": ["text", "image"] if meta.get("edit_endpoint") else ["text"],
+                "max_reference_images": int(meta.get("max_reference_images") or 1)
+                if meta.get("edit_endpoint") else 0,
+                "supports_seed": "seed" in (meta.get("supports") or ())
+                or "seed" in (meta.get("edit_supports") or ()),
             }
             for model_id, meta in _it.FAL_MODELS.items()
         ]
@@ -107,13 +112,24 @@ class FalImageGenProvider(ImageGenProvider):
         try:
             _model_id, meta = _it._resolve_fal_model()
         except Exception:  # noqa: BLE001
-            return {"modalities": ["text"], "max_reference_images": 0}
+            return {
+                "modalities": ["text"],
+                "max_reference_images": 0,
+                "supports_model_override": True,
+            }
         if meta.get("edit_endpoint"):
             return {
                 "modalities": ["text", "image"],
                 "max_reference_images": int(meta.get("max_reference_images") or 1),
+                "supports_seed": "seed" in (meta.get("supports") or ())
+                or "seed" in (meta.get("edit_supports") or ()),
+                "supports_model_override": True,
             }
-        return {"modalities": ["text"], "max_reference_images": 0}
+        return {
+            "modalities": ["text"],
+            "max_reference_images": 0,
+            "supports_model_override": True,
+        }
 
     def generate(
         self,
@@ -143,6 +159,7 @@ class FalImageGenProvider(ImageGenProvider):
                 "num_images",
                 "output_format",
                 "seed",
+                "model",
             )
             if key in kwargs and kwargs[key] is not None
         }
@@ -192,7 +209,9 @@ class FalImageGenProvider(ImageGenProvider):
         response.setdefault("aspect_ratio", aspect)
         # Annotate model best-effort — the legacy pipeline resolves it
         # internally, so query it after the fact for the response shape.
-        if "model" not in response:
+        if "model" not in response and passthrough.get("model"):
+            response["model"] = passthrough["model"]
+        elif "model" not in response:
             try:
                 model_id, _meta = _it._resolve_fal_model()
                 response["model"] = model_id

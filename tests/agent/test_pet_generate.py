@@ -1,8 +1,8 @@
 """Tests for pet generation: deterministic atlas ops, store register, orchestration.
 
-No network/API calls — image generation is mocked with synthetic strips so the
-whole pipeline (segmentation → compose → validate → register → adopt) is
-exercised hermetically.
+No network/API calls — image generation is mocked with synthetic one/two-pose
+assets so the whole pipeline (strict extraction → compose → validate → register
+→ adopt) is exercised hermetically.
 """
 
 from __future__ import annotations
@@ -39,6 +39,22 @@ def _strip(n_blobs: int, *, transparent: bool = True, bg=(0, 255, 0, 255), size=
         color = (40 + i * 30 % 200, 80, 200 - i * 20 % 180, 255)
         draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
     return img
+
+
+def _pose_segment(expected: int, *, extra_subject: bool = False, touch_edge: bool = False) -> Image.Image:
+    """A provider-shaped asset satisfying the production one/two-pose contract."""
+    assert expected in (1, 2)
+    size = (512, 320) if expected == 2 else (320, 320)
+    image = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    boxes = [(74, 52, 194, 274), (318, 52, 438, 274)] if expected == 2 else [(100, 52, 220, 274)]
+    if touch_edge:
+        boxes[0] = (0, 52, 120, 274)
+    for index, box in enumerate(boxes):
+        draw.ellipse(box, fill=(80 + index * 90, 130, 220 - index * 80, 255))
+    if extra_subject:
+        draw.ellipse((224, 100, 284, 220), fill=(230, 180, 60, 255))
+    return image
 
 
 # ───────────────────────── frame extraction ─────────────────────────
@@ -202,6 +218,34 @@ def test_extract_components_method_raises_when_too_few():
     ImageDraw.Draw(img).ellipse((10, 10, 100, 100), fill=(255, 0, 0, 255))
     with pytest.raises(ValueError):
         atlas.extract_strip_frames(img, 6, method="components")
+
+
+def test_extract_pose_segment_accepts_exact_isolated_pair():
+    frames = atlas.extract_pose_segment(_pose_segment(2), 2)
+
+    assert len(frames) == 2
+    assert all(frame.getbbox() is not None for frame in frames)
+    assert all(frame.width == 121 for frame in frames)
+
+
+def test_extract_pose_segment_rejects_extra_subject():
+    with pytest.raises(atlas.PoseSegmentError, match="3 substantial subjects"):
+        atlas.extract_pose_segment(_pose_segment(2, extra_subject=True), 2)
+
+
+def test_extract_pose_segment_rejects_edge_contact():
+    with pytest.raises(atlas.PoseSegmentError, match="image edge"):
+        atlas.extract_pose_segment(_pose_segment(1, touch_edge=True), 1)
+
+
+def test_extract_pose_segment_rejects_pair_without_center_gutter():
+    image = Image.new("RGBA", (512, 320), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((90, 52, 264, 274), fill=(80, 130, 220, 255))
+    draw.ellipse((248, 52, 422, 274), fill=(170, 130, 140, 255))
+
+    with pytest.raises(atlas.PoseSegmentError, match="exactly 2"):
+        atlas.extract_pose_segment(image, 2)
 
 
 # ───────────────────────── atlas compose / validate ─────────────────────────
@@ -405,11 +449,12 @@ def test_generate_base_drafts_hardens_opaque_background(monkeypatch, tmp_path):
     """A provider that ignores background=transparent still yields a cutout."""
     from agent.pet.generate import imagegen, orchestrate
 
+    source = tmp_path / "pet_base_opaque.webp"
+
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         # Solid-green backdrop with a blob — i.e. the provider painted a backdrop.
-        p = tmp_path / f"{prefix}_opaque.png"
-        _strip(1, transparent=False, bg=(0, 255, 0, 255)).save(p)
-        return [p]
+        _strip(1, transparent=False, bg=(0, 255, 0, 255)).save(source)
+        return [source]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
     monkeypatch.setattr(imagegen, "generate", fake_generate)
@@ -423,6 +468,7 @@ def test_generate_base_drafts_hardens_opaque_background(monkeypatch, tmp_path):
     assert rgba.getpixel((0, 0))[3] == 0
     # The pet blob in the center is still opaque.
     assert rgba.getpixel((rgba.width // 2, rgba.height // 2))[3] > 0
+    assert not source.exists()
 
 
 def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
@@ -433,12 +479,15 @@ def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     base = tmp_path / "base.png"
     _strip(1).save(base)
 
+    calls: list[tuple[str, str, str]] = []
+    generated_paths: list = []
+
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
-        # Return a synthetic row strip; frame count is inferable from the spec.
-        state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        expected = 2 if "exactly TWO" in prompt else 1
+        calls.append((prefix, aspect_ratio, str(reference_images[0])))
         p = tmp_path / f"{prefix}.png"
-        _strip(count).save(p)
+        _pose_segment(expected).save(p)
+        generated_paths.append(p)
         return [p]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
@@ -456,14 +505,21 @@ def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
 
     assert result.slug == "mocky"
     assert result.validation["ok"]
+    assert result.validation["poseSegments"] == 25
     assert set(result.states) == {s for s, _, _ in atlas_mod.ROW_SPECS}
     assert ("compose", "") in events
+    pose_events = [event for event in events if event[0] == "pose"]
+    assert len(pose_events) == 25
+    assert len(calls) == 25
+    assert all(reference == str(base) for _prefix, _aspect, reference in calls)
+    assert sum(aspect == "square" for _prefix, aspect, _reference in calls) == 1
+    assert generated_paths and all(not path.exists() for path in generated_paths)
     # The pet is on disk and adoptable.
     assert store.load_pet("mocky").exists
 
 
-def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
-    from agent.pet.generate import atlas as atlas_mod
+def test_hatch_pet_rejects_failed_pose_without_partial_install(monkeypatch, tmp_path):
+    from agent.pet import store
     from agent.pet.generate import imagegen, orchestrate
     from agent.pet.generate.imagegen import GenerationError
 
@@ -471,23 +527,21 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
     _strip(1).save(base)
 
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
-        if prefix == "pet_row_idle":
+        if prefix == "pet_pose_idle_0":
             raise GenerationError("boom")
-        state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
         p = tmp_path / f"{prefix}.png"
-        _strip(count).save(p)
+        _pose_segment(2 if "exactly TWO" in prompt else 1).save(p)
         return [p]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
     monkeypatch.setattr(imagegen, "generate", fake_generate)
 
-    result = orchestrate.hatch_pet(base_image=base, slug="fallbacky", concept="a fox")
-    assert "idle" in result.states  # filled by the base-image fallback
+    with pytest.raises(GenerationError, match="idle pose segment 1"):
+        orchestrate.hatch_pet(base_image=base, slug="fallbacky", concept="a fox")
+    assert store.load_pet("fallbacky") is None
 
 
-def test_hatch_pet_rejects_missing_required_animation_rows(monkeypatch, tmp_path):
-    from agent.pet.generate import atlas as atlas_mod
+def test_hatch_pet_rejects_missing_required_animation_segment(monkeypatch, tmp_path):
     from agent.pet.generate import imagegen, orchestrate
     from agent.pet.generate.imagegen import GenerationError
 
@@ -495,19 +549,49 @@ def test_hatch_pet_rejects_missing_required_animation_rows(monkeypatch, tmp_path
     _strip(1).save(base)
 
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
-        if prefix == "pet_row_running-right":
-            raise GenerationError("bad row")
-        state = prefix.replace("pet_row_", "")
-        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        if prefix == "pet_pose_running-right_0":
+            raise GenerationError("bad segment")
         p = tmp_path / f"{prefix}.png"
-        _strip(count).save(p)
+        _pose_segment(2 if "exactly TWO" in prompt else 1).save(p)
         return [p]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
     monkeypatch.setattr(imagegen, "generate", fake_generate)
 
-    with pytest.raises(GenerationError, match="running-right"):
+    with pytest.raises(GenerationError, match="running-right pose segment 1"):
         orchestrate.hatch_pet(base_image=base, slug="broken", concept="a fox")
+
+
+def test_hatch_pet_retries_only_the_malformed_pose_with_correction(monkeypatch, tmp_path):
+    from collections import Counter
+
+    from agent.pet.generate import imagegen, orchestrate
+
+    base = tmp_path / "base.png"
+    _strip(1).save(base)
+    calls = Counter()
+    retry_prompts: list[str] = []
+
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
+        calls[prefix] += 1
+        if calls[prefix] > 1:
+            retry_prompts.append(prompt)
+        expected = 2 if "exactly TWO" in prompt else 1
+        image = _pose_segment(expected, extra_subject=prefix == "pet_pose_waving_0" and calls[prefix] == 1)
+        p = tmp_path / f"{prefix}_{calls[prefix]}.png"
+        image.save(p)
+        return [p]
+
+    monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
+    monkeypatch.setattr(imagegen, "generate", fake_generate)
+
+    result = orchestrate.hatch_pet(base_image=base, slug="retry-pet", concept="a fox")
+
+    assert calls["pet_pose_waving_0"] == 2
+    assert sum(calls.values()) == 26
+    assert len(retry_prompts) == 1
+    assert "CORRECTION" in retry_prompts[0]
+    assert result.validation["states"]["waving"]["attempts"] == 3
 
 
 def test_resolve_provider_errors_without_backend(monkeypatch):
@@ -540,10 +624,12 @@ def test_resolve_provider_honors_available_preference(monkeypatch):
     monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: registry.get(name))
 
     assert imagegen.resolve_provider(prefer="openrouter").name == "openrouter"
-    # An unavailable / unknown preference is ignored — fall back to the active one.
+    # Explicit choices are strict and never spend on the active fallback.
     registry["openrouter"]._available = False
-    assert imagegen.resolve_provider(prefer="openrouter").name == "openai"
-    assert imagegen.resolve_provider(prefer="not-a-provider").name == "openai"
+    with pytest.raises(imagegen.GenerationError, match="not configured or available"):
+        imagegen.resolve_provider(prefer="openrouter")
+    with pytest.raises(imagegen.GenerationError, match="Unknown image provider"):
+        imagegen.resolve_provider(prefer="not-a-provider")
 
 
 def test_list_sprite_providers_marks_default(monkeypatch):

@@ -334,6 +334,9 @@ export const ja = defineLocale({
           'アプリ上に浮かぶ petdex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
         restartHint:
           'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
+        createTitle: 'ペットを作成',
+        createDesc: '設定済みの画像プロバイダーでカスタムアニメーションペットを生成します。',
+        generatePet: '生成',
         scaleTitle: 'サイズ',
         scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
         roamTitle: '散歩',
@@ -1104,7 +1107,7 @@ export const ja = defineLocale({
       hatching: 'ペットを孵化しています…',
       hatchingSub: '命を吹き込んでいます…',
       hatched: '孵化しました！',
-      hatchRow: (_state, done, total) => `フレームを描画中… ${done}/${total}`,
+      hatchPose: (_state, done, total) => `ポーズを描画中… ${done}/${total}`,
       hatchComposing: 'まとめています…',
       hatchSaving: 'もうすぐです…',
       namePlaceholder: 'ペットに名前を付ける',
@@ -1118,7 +1121,16 @@ export const ja = defineLocale({
       referenceImageTooLarge: '参照画像が大きすぎます。16 MB 未満の画像を使ってください。',
       referenceImageInvalid: '参照画像を読み込めませんでした。PNG/JPG/WebP/GIF を試してください。',
       adopt: '迎え入れる',
-      startOver: 'やり直す'
+      startOver: 'やり直す',
+      advanced: '高度な生成オプション',
+      style: 'スタイル',
+      model: 'モデル',
+      seed: 'シード',
+      drafts: '下書き',
+      concurrency: '並列処理',
+      poseAttempts: 'ポーズの試行回数',
+      auto: '自動',
+      random: 'ランダム'
     },
     installTheme: {
       title: 'テーマをインストール…',

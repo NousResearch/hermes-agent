@@ -1,9 +1,8 @@
-"""Prompt builders for pet generation.
+"""Prompt builders for quality-first pet generation.
 
-Two prompt shapes: a *base* prompt (prompt-only, produces the canonical look the
-user picks between) and per-*state* *row* prompts (grounded on the chosen base,
-produce one horizontal strip of N poses). Prompts stay concise and
-sprite-production oriented; the identity lock and "one transparent row" framing
+The user selects a canonical base look, then reference-grounded one/two-pose
+production assets supply the animation. Prompts stay concise and sprite-oriented;
+identity, exact subject count, complete silhouettes, and empty isolation gutters
 matter more than flowery description.
 
 We generate the full petdex/Codex nine-state set (see
@@ -41,6 +40,79 @@ STATE_ACTIONS: dict[str, str] = {
         "leaning in, concentrating, busy 'thinking / processing / typing' energy"
     ),
     "review": "careful inspection: a focused lean, head tilt, studying something intently",
+}
+
+# Exact animation phases used by the quality-first hatch pipeline.  Large
+# 4–8-pose strips are unreliable across providers: subjects are omitted, merged,
+# or allowed to cross their imaginary cell boundaries.  Generating these phases
+# in pairs keeps the provider's layout task small and lets local extraction
+# require one subject in each half before any pixels reach the atlas.
+POSE_PHASES: dict[str, tuple[str, ...]] = {
+    "idle": (
+        "neutral relaxed stance",
+        "gentle inhale with the chest slightly raised",
+        "breath crest with a tiny ear, tail, or wing response",
+        "soft exhale",
+        "small blink and subtle tail response",
+        "return to the exact neutral stance",
+    ),
+    "running-right": (
+        "right-facing run contact pose, front foot landing",
+        "right-facing run recoil pose",
+        "right-facing low passing pose",
+        "right-facing airborne pose",
+        "opposite foot contact pose",
+        "opposite recoil pose",
+        "opposite passing pose",
+        "second airborne pose that loops cleanly to the first",
+    ),
+    "waving": (
+        "friendly ready stance",
+        "one paw, hand, or wing raised to begin a wave",
+        "wave at its highest cheerful peak",
+        "relaxed return toward neutral",
+    ),
+    "jumping": (
+        "anticipation crouch",
+        "strong takeoff",
+        "high celebratory apex",
+        "soft landing compression",
+        "upright recovery",
+    ),
+    "failed": (
+        "noticing a harmless mistake",
+        "surprised reaction",
+        "small backward wobble",
+        "disappointed slump",
+        "brief disappointed hold",
+        "steadying the body",
+        "recovering confidence",
+        "calm return with no injury or gore",
+    ),
+    "waiting": (
+        "patient neutral stance",
+        "quiet glance to the side",
+        "tiny weight shift",
+        "single relaxed blink",
+        "soft breath",
+        "return to patient neutral, awake and calm",
+    ),
+    "running": (
+        "focused work-in-place stance",
+        "energetic forward lean without travelling",
+        "active tool-free processing gesture",
+        "peak energetic work pose",
+        "small recoil",
+        "return to the focused stance on the same pivot",
+    ),
+    "review": (
+        "focused review stance",
+        "eyes scanning slightly left",
+        "eyes scanning slightly right",
+        "thoughtful consideration",
+        "small approving nod",
+        "return to focused review with no external prop",
+    ),
 }
 
 _STYLE_HINTS: dict[str, str] = {
@@ -123,15 +195,19 @@ def build_base_prompt(concept: str, *, style: str | None = "auto", variation: st
     concept = (concept or "a distinctive mascot creature").strip()
     nudge = f" Make this design distinct: {variation}." if variation else ""
     return (
-        f"A stylized mascot pet character: {concept}. "
+        "CANONICAL CHARACTER IDENTITY SOURCE. "
+        f"Exactly one cohesive stylized mascot pet based on: {concept}. "
+        "Interpret comma-separated animals as traits of one hybrid, never as separate creatures. "
         "Honor the requested tone and mood exactly (cute, eerie, scary, menacing, whimsical, etc.) "
         "while staying non-graphic. "
         "Compact, whole-body silhouette that reads clearly at small size, "
-        "clear readable facial features, simple consistent palette. "
-        # A neutral, symmetric, at-rest stance makes the cleanest identity anchor
-        "Neutral front-facing standing pose, upright and symmetric, arms/limbs "
-        "relaxed at the sides, feet together on the ground, any cape/accessories "
-        "hanging straight and still."
+        "clear readable facial features, symmetrical anatomy, simple consistent palette, "
+        "and no duplicate anatomy or extra creature. "
+        # A directional but quiet anchor gives locomotion edits useful anatomy
+        # while remaining stable for front-facing reaction poses.
+        "Neutral standing pose facing right in a clean side or slight three-quarter game view, "
+        "arms/limbs relaxed, feet together on the same invisible pivot, and any cape/accessories "
+        "hanging straight and still. Show the entire body with generous empty padding."
         f"{nudge} "
         f"{_BACKGROUND}{style_hint(style)}"
     )
@@ -181,3 +257,57 @@ def build_row_prompt(state: str, frame_count: int, concept: str, *, style: str |
         "pose is cropped at the strip edges. "
         f"{_BACKGROUND}{style_hint(style)}"
     )
+
+
+def build_pose_segment_prompt(
+    state: str,
+    phases: tuple[str, ...],
+    concept: str,
+    *,
+    style: str | None = "auto",
+    retry_reason: str = "",
+) -> str:
+    """Build a strict one/two-pose reference edit prompt.
+
+    The selected draft is the immutable identity anchor.  A pair is deliberately
+    specified as two independent halves rather than as a sprite sheet: this
+    produces a real empty center gutter that local QA can verify without ever
+    guessing where one pose ends and its neighbour begins.
+    """
+    if not 1 <= len(phases) <= 2:
+        raise ValueError("pose segment must contain one or two phases")
+
+    identity = (
+        "Use the attached reference as the exact same single character: preserve "
+        "its species, face, anatomy, proportions, palette, markings, accessories, "
+        "camera, emotional tone, and pixel-art treatment. "
+    )
+    restrictions = (
+        "Show every limb, wing, horn, ear, tail, cape, and foot completely. Keep "
+        "the whole silhouette inside its assigned area with generous empty padding. "
+        "Use one perfectly flat, uniform chroma-key field behind everything, matching "
+        "the reference background. Draw no floor, ground line, cast shadow, glow, "
+        "motion trail, scenery, prop, text, label, panel, border, divider, duplicate "
+        "anatomy, or extra creature. The background color must not appear on the character."
+    )
+    retry = f" CORRECTION: {retry_reason.strip()}" if retry_reason.strip() else ""
+    concept_lock = (
+        f" The character represents one cohesive pet based on {concept.strip() or 'the selected concept'}; "
+        "comma-separated animals are traits of that one hybrid, never separate creatures."
+    )
+
+    if len(phases) == 1:
+        layout = (
+            "Render exactly ONE complete full-body pose, centered in the image with "
+            f"generous empty space on every side. Motion phase: {phases[0]}."
+        )
+    else:
+        layout = (
+            "Render exactly TWO complete full-body poses total in one horizontal image. "
+            "Pose A is centered wholly inside the LEFT half; pose B is centered wholly "
+            "inside the RIGHT half. Leave a wide, completely empty chroma-key gutter "
+            "through the center. The two silhouettes must never touch, overlap, share an "
+            f"effect, or cross the midpoint. Pose A: {phases[0]}. Pose B: {phases[1]}."
+        )
+
+    return f"POSE PRODUCTION ASSET. {identity}{layout}{concept_lock} {restrictions}{style_hint(style)}{retry}"

@@ -100,8 +100,10 @@ def _load_xai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """Decide which model to use and return ``(model_id, meta)``."""
+    if explicit and explicit in _MODELS:
+        return explicit, _MODELS[explicit]
     env_override = os.environ.get("XAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -209,6 +211,7 @@ class XAIImageGenProvider(ImageGenProvider):
             "modalities": ["text", "image"],
             "max_reference_images": 2,
             "max_source_images": 3,
+            "supports_model_override": True,
         }
 
     def generate(
@@ -239,7 +242,7 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
-        model_id, meta = _resolve_model()
+        model_id, meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()

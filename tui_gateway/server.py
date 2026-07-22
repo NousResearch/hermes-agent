@@ -8067,6 +8067,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("pet.generate.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Whether pet generation is possible right now.
 
@@ -8098,6 +8099,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("pet.generate")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Generate candidate base looks for a new pet (the draft/variant step).
 
@@ -8112,10 +8114,23 @@ def _(rid, params: dict) -> dict:
     if not prompt and not ref_raw:
         return _err(rid, 4004, "missing prompt")
     try:
-        count = max(1, min(4, int(params.get("count") or 4)))
+        count = int(params["count"]) if "count" in params else 4
     except (TypeError, ValueError):
-        count = 4
+        return _err(rid, 4004, "count must be an integer between 1 and 8")
+    if not 1 <= count <= 8:
+        return _err(rid, 4004, "count must be between 1 and 8")
     style = str(params.get("style") or "auto").strip() or "auto"
+    model = str(params.get("model") or "").strip() or None
+    try:
+        seed = int(params["seed"]) if params.get("seed") not in (None, "") else None
+    except (TypeError, ValueError):
+        return _err(rid, 4004, "seed must be an integer")
+    try:
+        concurrency = int(params["concurrency"]) if "concurrency" in params else 4
+    except (TypeError, ValueError):
+        return _err(rid, 4004, "concurrency must be an integer between 1 and 4")
+    if not 1 <= concurrency <= 4:
+        return _err(rid, 4004, "concurrency must be between 1 and 4")
 
     try:
         import shutil
@@ -8148,7 +8163,9 @@ def _(rid, params: dict) -> dict:
         sprite = None
         if provider_name:
             try:
-                sprite = resolve_provider(require_references=bool(reference_images), prefer=provider_name)
+                sprite = resolve_provider(
+                    require_references=bool(reference_images), prefer=provider_name, model=model
+                )
             except GenerationError as exc:
                 _pet_cancel_release(token)
                 return _err(rid, 5031, str(exc))
@@ -8184,8 +8201,7 @@ def _(rid, params: dict) -> dict:
                 logger.debug("pet.generate progress emit failed: %s", exc)
 
         try:
-            generate_base_drafts(
-                concept,
+            generation_kwargs = dict(
                 n=count,
                 style=style,
                 reference_images=reference_images,
@@ -8193,6 +8209,13 @@ def _(rid, params: dict) -> dict:
                 on_draft=_on_draft,
                 is_cancelled=lambda: _pet_is_cancelled(token),
             )
+            if model:
+                generation_kwargs["model"] = model
+            if seed is not None:
+                generation_kwargs["seed"] = seed
+            if "concurrency" in params:
+                generation_kwargs["concurrency"] = concurrency
+            generate_base_drafts(concept, **generation_kwargs)
         except GenerationError as exc:
             _pet_cancel_release(token)
             return _err(rid, 5031, str(exc))
@@ -8211,6 +8234,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("pet.hatch")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Turn a chosen base draft into a full pet — installed but NOT yet active.
 
@@ -8220,8 +8244,9 @@ def _(rid, params: dict) -> dict:
     untouched. Adopt with ``pet.select`` or throw it away with ``pet.remove``.
 
     Params: ``token`` + ``index`` (from ``pet.generate``), ``name`` (required),
-    ``description`` (optional), ``prompt`` (optional concept for row prompts),
-    ``style`` (optional). Returns ``{ok, slug, displayName, warnings, pet}`` where
+    ``description`` (optional), ``prompt`` (optional concept for pose prompts),
+    ``style`` (optional), and ``poseAttempts`` (1–3; legacy ``rowAttempts`` is
+    accepted). Returns ``{ok, slug, displayName, warnings, pet}`` where
     ``pet`` is the renderer payload. Heavy (network + raster): worker pool.
     """
     token = str(params.get("token") or "").strip()
@@ -8240,6 +8265,21 @@ def _(rid, params: dict) -> dict:
         index = int(index)
     except (TypeError, ValueError):
         index = 0
+    model = str(params.get("model") or "").strip() or None
+    try:
+        seed = int(params["seed"]) if params.get("seed") not in (None, "") else None
+    except (TypeError, ValueError):
+        return _err(rid, 4004, "seed must be an integer")
+    try:
+        concurrency = int(params["concurrency"]) if "concurrency" in params else 4
+        attempts_value = params.get("poseAttempts", params.get("rowAttempts", 2))
+        pose_attempts = int(attempts_value)
+    except (TypeError, ValueError):
+        return _err(rid, 4004, "concurrency and poseAttempts must be integers")
+    if not 1 <= concurrency <= 4:
+        return _err(rid, 4004, "concurrency must be between 1 and 4")
+    if not 1 <= pose_attempts <= 3:
+        return _err(rid, 4004, "poseAttempts must be between 1 and 3")
 
     try:
         from agent.pet import store
@@ -8255,7 +8295,7 @@ def _(rid, params: dict) -> dict:
         sprite = None
         if provider_name:
             try:
-                sprite = resolve_provider(require_references=True, prefer=provider_name)
+                sprite = resolve_provider(require_references=True, prefer=provider_name, model=model)
             except GenerationError as exc:
                 return _err(rid, 5031, str(exc))
 
@@ -8263,20 +8303,26 @@ def _(rid, params: dict) -> dict:
         slug = store.unique_slug(name)
 
         def _on_progress(event: str, detail: str) -> None:
-            # Row progress is encoded as "<state>:<done>:<total>" so the egg
+            # Pose progress is encoded as "<state>:<done>:<total>" so the egg
             # screen can show "Drawing <state>… (n/total)"; other phases
             # (compose, save) pass through as-is. Best-effort streaming.
-            payload: dict = {"event": event, "detail": detail}
-            if event == "row" and detail.count(":") == 2:
+            payload: dict = {"token": cancel_token, "event": event, "detail": detail}
+            if event in {"pose", "row"} and detail.count(":") == 2:
                 state, done, total = detail.split(":")
-                payload = {"event": "row", "state": state, "done": done, "total": total}
+                payload = {
+                    "token": cancel_token,
+                    "event": event,
+                    "state": state,
+                    "done": done,
+                    "total": total,
+                }
             try:
                 _emit("pet.hatch.progress", "", payload)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("pet.hatch progress emit failed: %s", exc)
 
         try:
-            result = hatch_pet(
+            hatch_kwargs = dict(
                 base_image=base,
                 slug=slug,
                 display_name=name,
@@ -8287,6 +8333,15 @@ def _(rid, params: dict) -> dict:
                 on_progress=_on_progress,
                 is_cancelled=lambda: _pet_is_cancelled(cancel_token),
             )
+            if model:
+                hatch_kwargs["model"] = model
+            if seed is not None:
+                hatch_kwargs["seed"] = seed
+            if "concurrency" in params:
+                hatch_kwargs["concurrency"] = concurrency
+            if "poseAttempts" in params or "rowAttempts" in params:
+                hatch_kwargs["pose_attempts"] = pose_attempts
+            result = hatch_pet(**hatch_kwargs)
         except GenerationError as exc:
             return _err(rid, 5031, str(exc))
         finally:

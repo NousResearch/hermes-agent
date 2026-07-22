@@ -1,4 +1,4 @@
-"""Deterministic spritesheet assembly — generated row strips → Hermes atlas.
+"""Deterministic spritesheet assembly — generated poses → Hermes atlas.
 
 Image-generation models are good at *drawing* a row of poses but bad at exact
 grid geometry, so the model never owns the atlas layout: it produces one loose
@@ -70,6 +70,24 @@ _NORMALIZE_PAD = 14
 # small separated horizontal lobe beside the real subject; keep sizeable lobes so
 # we don't punish a legitimate wide pose.
 _SIDE_LOBE_RATIO = 0.18
+
+# Runtime registration contract.  The bottom pivot matches petdex/Hatchframe;
+# the asymmetric rectangle leaves room below the feet and above jump poses while
+# guaranteeing a real transparent gutter between atlas cells.
+PIVOT_X = 96
+PIVOT_Y = 194
+SAFE_LEFT = 13
+SAFE_RIGHT = CELL_WIDTH - 13
+SAFE_TOP = 8
+SAFE_BOTTOM = PIVOT_Y
+MAX_POSE_WIDTH = SAFE_RIGHT - SAFE_LEFT
+MAX_POSE_HEIGHT = 174
+MIN_NORMALIZED_HEIGHT = 112
+JUMP_OFFSETS = (0, -24, -52, -30, 0)
+
+
+class PoseSegmentError(ValueError):
+    """A generated one/two-pose asset failed deterministic local QA."""
 
 
 # ───────────────────────── background removal ─────────────────────────
@@ -143,6 +161,38 @@ def _defringe(rgba):
     return rgba
 
 
+def _soft_chroma_edges(rgba, key: tuple[int, int, int]):
+    """Build a soft key-distance matte and suppress saturated edge spill.
+
+    Providers often antialias the subject against the requested magenta/green
+    field.  A binary key leaves that blended ring behind; a global erosion alone
+    makes fine pixel-art details brittle.  This C-level Pillow pipeline fades the
+    key-distance band and neutralizes the key's dominant channel only where the
+    matte says a pixel is contaminated.
+    """
+    from PIL import Image, ImageChops
+
+    channels = rgba.split()
+    differences = [
+        ImageChops.difference(channel, Image.new("L", rgba.size, value))
+        for channel, value in zip(channels[:3], key)
+    ]
+    distance = ImageChops.lighter(ImageChops.lighter(differences[0], differences[1]), differences[2])
+    matte = distance.point(lambda value: max(0, min(255, round((value - 28) * 255 / 82))))
+    alpha = ImageChops.darker(channels[3], matte)
+
+    r, g, b = channels[:3]
+    if key[1] > key[0] + 70 and key[1] > key[2] + 70:  # green key
+        neutral_g = ImageChops.lighter(r, b)
+        cleaned = Image.merge("RGB", (r, neutral_g, b))
+    else:  # normal hot-magenta key
+        neutral_rb = ImageChops.darker(r, b)
+        cleaned = Image.merge("RGB", (neutral_rb, g, neutral_rb))
+    rgb = Image.composite(cleaned, rgba.convert("RGB"), ImageChops.invert(matte))
+    out = Image.merge("RGBA", (*rgb.split(), alpha))
+    return _defringe(out)
+
+
 def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, threshold: float = 90.0):
     """Return *image* (RGBA) with its flat background keyed out to transparent.
 
@@ -172,15 +222,11 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
         return a > _ALPHA_FLOOR and _color_distance(r, g, b, key) <= threshold
 
     # Fast path for strongly-saturated chroma keys (our normal sprite prompts use
-    # hot magenta): remove all near-key opaque pixels with C-level channel ops.
-    # This clears both border-connected backdrop and enclosed triangular pockets
-    # between connected limbs/capes, without a Python flood over ~1.5M pixels.
+    # hot magenta): build a soft distance matte with C-level channel ops. This
+    # clears both the backdrop and enclosed triangular pockets while removing the
+    # antialiased key-colour ring instead of exporting it around every pose.
     if max(key) - min(key) >= 120:
-        near = _near_key_mask(rgba, key)  # L mask, 255 where near key
-        opaque = rgba.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0)
-        remove_mask = ImageChops.darker(near, opaque)
-        keyed = Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, remove_mask)
-        return _defringe(keyed)
+        return _soft_chroma_edges(rgba, key)
 
     visited = bytearray(w * h)
     # Mark removals in a flat mask and apply them in one C composite at the end —
@@ -769,6 +815,83 @@ def _significant_subject_boxes(image) -> list[tuple[int, int, int, int]]:
     return _merge_related_boxes([box for box, mass in comps if mass >= max(32, max_mass * 0.12)])
 
 
+def extract_pose_segment(
+    image,
+    expected: int,
+    *,
+    chroma_key: tuple[int, int, int] | None = None,
+) -> list:
+    """Extract exactly one or two isolated, padded subjects from a generated asset.
+
+    Unlike :func:`extract_strip_frames`, this production path has no slot or
+    gutter-severing fallback.  A pair request is a strict spatial contract: one
+    complete subject in each half and a genuinely empty center gutter.  Any
+    ambiguity is reported to the caller so only that segment can be regenerated.
+    """
+    from PIL import Image
+
+    if expected not in (1, 2):
+        raise ValueError("pose segment must expect one or two subjects")
+    if isinstance(image, (str, Path)):
+        with Image.open(image) as opened:
+            source = opened.convert("RGBA")
+    else:
+        source = image.convert("RGBA")
+
+    source = _erase_long_axis_lines(remove_background(source, chroma_key=chroma_key))
+    comps = _component_boxes(source)
+    if not comps:
+        raise PoseSegmentError("The previous image contained no usable full-body pose.")
+
+    max_mass = max(mass for _box, mass in comps)
+    # Detached antialiasing specks and tiny particles are noise.  Everything of
+    # meaningful subject mass participates in the exact-count contract.
+    boxes = _merge_related_boxes(
+        [box for box, mass in comps if mass >= max(64, round(max_mass * 0.10))]
+    )
+    boxes.sort(key=lambda box: (box[0] + box[2]) / 2)
+    if len(boxes) != expected:
+        raise PoseSegmentError(
+            f"The previous image contained {len(boxes)} substantial subjects; render exactly {expected}."
+        )
+
+    w, h = source.size
+    min_x = max(6, round(w * 0.012))
+    min_y = max(6, round(h * 0.015))
+    for left, top, right, bottom in boxes:
+        if left < min_x or top < min_y or w - right < min_x or h - bottom < min_y:
+            raise PoseSegmentError(
+                "A pose touched or nearly touched the image edge; center every complete body with generous padding."
+            )
+
+    if expected == 2:
+        midpoint = w / 2
+        left_box, right_box = boxes
+        required_gap = max(16, round(w * 0.025))
+        gap = right_box[0] - left_box[2]
+        if (left_box[0] + left_box[2]) / 2 >= midpoint or (right_box[0] + right_box[2]) / 2 <= midpoint:
+            raise PoseSegmentError("Place one pose in the left half and one pose in the right half.")
+        if gap < required_gap or left_box[2] > midpoint or right_box[0] < midpoint:
+            raise PoseSegmentError(
+                "The two poses crossed the midpoint or lacked a clean center gutter; separate them completely."
+            )
+
+    heights = [bottom - top for _left, top, _right, bottom in boxes]
+    if len(heights) == 2 and max(heights) / max(1, min(heights)) > 1.65:
+        raise PoseSegmentError("The two poses used inconsistent character scales; keep both the same size.")
+
+    frames = []
+    for left, top, right, bottom in boxes:
+        # Copy only the accepted subject rectangle.  This is the hard isolation
+        # boundary: pixels from the other half can never enter the returned frame.
+        frame = Image.new("RGBA", (right - left, bottom - top), (0, 0, 0, 0))
+        frame.alpha_composite(source.crop((left, top, right, bottom)), (0, 0))
+        if frame.getbbox() is None:
+            raise PoseSegmentError("A required pose became empty during local extraction.")
+        frames.append(_clear_transparent_rgb(frame))
+    return frames
+
+
 def _validate_extracted_frames(frames: list, frame_count: int) -> None:
     """Reject rows where one "frame" is really multiple poses.
 
@@ -881,7 +1004,9 @@ def _column_profile(image) -> list[int]:
     """Per-column alpha mass — collapse the frame to a 1px-tall strip (fast in C)."""
     from PIL import Image
 
-    return list(image.getchannel("A").resize((image.width, 1), Image.BILINEAR).getdata())
+    flattened = image.getchannel("A").resize((image.width, 1), Image.BILINEAR)
+    get_data = getattr(flattened, "get_flattened_data", flattened.getdata)
+    return list(get_data())
 
 
 def _best_shift(ref: list[int], prof: list[int], window: int) -> int:
@@ -906,99 +1031,92 @@ def _best_shift(ref: list[int], prof: list[int], window: int) -> int:
 
 
 def normalize_cells(frames_by_state: dict[str, list], *, pad: int = _NORMALIZE_PAD) -> dict[str, list]:
-    """Register every frame into a 192x208 cell — the deterministic anti-jitter math.
+    """Register accepted subjects onto one fixed bottom-center runtime pivot.
 
-    A per-frame "crop→scale→center" pipeline jitters because a moving limb/cape
-    shifts the bbox (or even the centroid) and a per-frame scale pulses the size.
-    The rigorous fix, matching image-registration practice (phase correlation)
-    and AI-sprite pipelines (perfectpixel-studio / sprite-gen):
-
-    1. **Cross-correlate** each frame's column profile against the per-state
-       *median* profile to find the integer shift that locks the **body** in
-       place — robust to limbs/cape because the body dominates the profile.
-    2. **Union-crop** through one shared state window, then scale every state by a
-       single global factor keyed to its median pose height, so the character is
-       the same on-screen size in every row while a jump's lift still fits.
+    Every frame is tightly isolated before this function runs.  We choose one
+    apparent median height for the entire pet, one scale per state, and the same
+    scale for every frame in that state.  Horizontal profile correlation locks
+    the body despite moving limbs; vertical placement is deterministic rather
+    than inherited from the model's arbitrary source canvas.
     """
     from PIL import Image
 
     blank = lambda: Image.new("RGBA", (CELL_WIDTH, CELL_HEIGHT), (0, 0, 0, 0))
-    med = lambda vs: sorted(vs)[len(vs) // 2]  # robust center; ignores a limb/cape outlier
-
+    med = lambda values: sorted(values)[len(values) // 2]
     out: dict[str, list] = {}
-    prepared: dict[str, tuple[list, tuple[int, int, int, int], tuple[int, int]]] = {}
-    # Fill the cell — real petdex pets sit ~pad from the edges; the K cap below
-    # keeps a tall pose (a jump's lift) from clipping.
-    target_w = CELL_WIDTH - pad
-    target_h = CELL_HEIGHT - pad
+    prepared: dict[str, dict] = {}
 
     for state, frames in frames_by_state.items():
-        rgba = [f.convert("RGBA") for f in frames]
-        if not any(f.getbbox() for f in rgba):
+        crops = []
+        for frame in frames:
+            rgba = _clear_transparent_rgb(frame.convert("RGBA"))
+            bbox = rgba.getbbox()
+            if bbox is not None:
+                crops.append(rgba.crop(bbox))
+        if not crops:
             out[state] = [blank() for _ in frames]
             continue
 
-        # Pad every frame to a common canvas so column profiles are comparable.
-        w0 = max(f.width for f in rgba)
-        h0 = max(f.height for f in rgba)
+        widths = [frame.width for frame in crops]
+        heights = [frame.height for frame in crops]
+        median_h = max(1, med(heights))
+
+        # Center every tight crop on a shared analysis canvas, then correlate its
+        # alpha profile with the per-state median.  The returned dx follows the
+        # body mass instead of the outer bbox of a waving limb or cape.
+        window = max(8, max(widths) // 5)
+        analysis_w = max(widths) + window * 2
         canvas = []
-        for f in rgba:
-            if f.size != (w0, h0):
-                c = Image.new("RGBA", (w0, h0), (0, 0, 0, 0))
-                c.alpha_composite(f, (0, 0))
-                f = c
-            canvas.append(f)
-
-        # Register horizontally: shift each frame to lock the body (xcorr).
+        for frame in crops:
+            aligned = Image.new("RGBA", (analysis_w, frame.height), (0, 0, 0, 0))
+            aligned.alpha_composite(frame, ((analysis_w - frame.width) // 2, 0))
+            canvas.append(aligned)
         profiles = [_column_profile(f) for f in canvas]
-        ref = [sorted(p[x] for p in profiles)[len(profiles) // 2] for x in range(w0)]
-        window = max(8, w0 // 5)
-        margin = window
-        aligned = []
-        for f, prof in zip(canvas, profiles):
-            shifted = Image.new("RGBA", (w0 + 2 * margin, h0), (0, 0, 0, 0))
-            shifted.alpha_composite(f, (margin + _best_shift(ref, prof, window), 0))
-            aligned.append(shifted)
-
-        # Shared window over the registered set; scale is resolved against a
-        # common apparent-character target below.
-        boxes = [b for b in (a.getbbox() for a in aligned) if b]
-        left = min(b[0] for b in boxes)
-        top = min(b[1] for b in boxes)
-        right = max(b[2] for b in boxes)
-        bottom = max(b[3] for b in boxes)
-        prepared[state] = (
-            aligned,
-            (left, top, right, bottom),
-            (med([b[2] - b[0] for b in boxes]), med([b[3] - b[1] for b in boxes])),
-        )
+        ref = [med([profile[x] for profile in profiles]) for x in range(analysis_w)]
+        shifts = [_best_shift(ref, profile, window) for profile in profiles]
+        prepared[state] = {
+            "frames": crops,
+            "median_h": median_h,
+            "shifts": shifts,
+        }
 
     if not prepared:
         return out
 
-    # Uniform apparent size: scale each state by K / pose_h, so a row the model
-    # drew small renders as big as one it drew large. K is the one global cap that
-    # keeps the tallest/widest motion envelope (a jump's lift) inside the cell —
-    # for a still row union ≈ pose so its term ≈ target_h (full fill).
-    K = target_h
-    for (_aligned, (left, top, right, bottom), (_pose_w, pose_h)) in prepared.values():
-        uw, uh = right - left, bottom - top
-        K = min(K, target_h * pose_h / max(1, uh), target_w * pose_h / max(1, uw))
+    # One global apparent height keeps state transitions from pulsing.  Cap it by
+    # every real frame's width/height and the deterministic jump lift; malformed
+    # outliers are rejected rather than shrinking the pet to a postage stamp.
+    apparent_h = float(MAX_POSE_HEIGHT)
+    safe_h = SAFE_BOTTOM - SAFE_TOP
+    for state, item in prepared.items():
+        median_h = item["median_h"]
+        offsets = JUMP_OFFSETS if state == "jumping" else (0,) * len(item["frames"])
+        for index, frame in enumerate(item["frames"]):
+            lift = abs(offsets[index]) if index < len(offsets) else 0
+            apparent_h = min(
+                apparent_h,
+                MAX_POSE_WIDTH * median_h / max(1, frame.width),
+                max(1, safe_h - lift) * median_h / max(1, frame.height),
+            )
+    if apparent_h < MIN_NORMALIZED_HEIGHT:
+        raise ValueError(
+            f"pose geometry would shrink the pet below {MIN_NORMALIZED_HEIGHT}px; regenerate the malformed segment"
+        )
 
-    for state, (aligned, (left, top, right, bottom), (_pose_w, pose_h)) in prepared.items():
-        uw, uh = right - left, bottom - top
-        scale = K / max(1, pose_h)
-        sw, sh = max(1, round(uw * scale)), max(1, round(uh * scale))
-        px, py = round((CELL_WIDTH - sw) / 2), round((CELL_HEIGHT - pad // 2) - sh)
-
+    for state, item in prepared.items():
+        scale = apparent_h / item["median_h"]
+        offsets = JUMP_OFFSETS if state == "jumping" else (0,) * len(item["frames"])
         cells = []
-        for a in aligned:
-            crop = a.crop((left, top, right, bottom))
-            if crop.size != (sw, sh):
-                # NEAREST keeps the pixel-art edges crisp; LANCZOS blurred them.
-                crop = crop.resize((sw, sh), Image.Resampling.NEAREST)
+        for index, (frame, shift) in enumerate(zip(item["frames"], item["shifts"])):
+            sw = max(1, round(frame.width * scale))
+            sh = max(1, round(frame.height * scale))
+            resized = frame.resize((sw, sh), Image.Resampling.NEAREST) if frame.size != (sw, sh) else frame
+            px = round(PIVOT_X - sw / 2 + shift * scale)
+            px = max(SAFE_LEFT, min(SAFE_RIGHT - sw, px))
+            lift = offsets[index] if index < len(offsets) else 0
+            py = PIVOT_Y - sh + lift
             cell = blank()
-            cell.alpha_composite(crop, (px, py))
+            cell.alpha_composite(resized, (px, py))
             cells.append(cell)
         out[state] = cells
     return out
@@ -1008,11 +1126,10 @@ def normalize_cells(frames_by_state: dict[str, list], *, pad: int = _NORMALIZE_P
 
 
 def single_frame(image, *, fit: bool = True):
-    """One frame from a standalone image (e.g. the base look).
+    """Convert one standalone image into a keyed frame.
 
-    Used as an idle fallback so a pet always renders even if the idle row
-    generation failed. *fit* yields a finished 192x208 cell; ``fit=False`` yields
-    the raw keyed sprite for :func:`normalize_cells` to place with the rest.
+    *fit* yields a finished 192x208 cell; ``fit=False`` yields the raw keyed
+    sprite for :func:`normalize_cells` to place with other accepted poses.
     """
     from PIL import Image
 
@@ -1111,6 +1228,17 @@ def validate_atlas(atlas) -> dict:
             bbox = cell.getbbox()
             if bbox is not None:
                 boxes.append(bbox)
+                left_box, top_box, right_box, bottom_box = bbox
+                if (
+                    left_box < SAFE_LEFT
+                    or right_box > SAFE_RIGHT
+                    or top_box < SAFE_TOP
+                    or bottom_box > SAFE_BOTTOM
+                ):
+                    errors.append(
+                        f"state '{state}' frame {col} enters the cell safety gutter "
+                        f"({left_box},{top_box},{right_box},{bottom_box})"
+                    )
         if row_pixels > 0:
             filled_states.append(state)
             cell_boxes_by_state[state] = boxes
@@ -1139,7 +1267,7 @@ def validate_atlas(atlas) -> dict:
         global_med_w = all_widths[len(all_widths) // 2]
         median_h = all_heights[len(all_heights) // 2]
         global_med_h = median_h
-        min_h = max(56, round(CELL_HEIGHT * 0.28))
+        min_h = MIN_NORMALIZED_HEIGHT
         if median_h < min_h:
             errors.append(f"atlas sprites are too small after normalization (median frame height {median_h}px)")
 

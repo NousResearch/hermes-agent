@@ -94,8 +94,10 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
+    if explicit and explicit in _MODELS:
+        return explicit, _MODELS[explicit]
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -213,7 +215,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
     def capabilities(self) -> Dict[str, Any]:
         # gpt-image-2 supports editing via images.edit() with up to 16 source
         # images.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 16,
+            "supports_model_override": True,
+        }
 
     def generate(
         self,
@@ -257,7 +263,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
+        tier_id, meta = _resolve_model(kwargs.get("model"))
         size = _SIZES.get(aspect, _SIZES["square"])
 
         # Collect source images (primary + references) for image-to-image.

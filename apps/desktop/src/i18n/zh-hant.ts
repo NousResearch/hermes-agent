@@ -323,6 +323,9 @@ export const zhHant = defineLocale({
         intro:
           '領養一隻懸浮在應用上的 petdex 動畫寵物，它會根據 Hermes 的狀態做出反應——工具執行時奔跑、成功時歡呼、出錯時沮喪。',
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
+        createTitle: '建立寵物',
+        createDesc: '使用已設定的圖片供應商生成自訂動畫寵物。',
+        generatePet: '生成',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
         roamTitle: '漫遊',
@@ -1072,7 +1075,7 @@ export const zhHant = defineLocale({
       hatching: '正在孵化你的寵物……',
       hatchingSub: '正在注入生命……',
       hatched: '孵化成功！',
-      hatchRow: (_state, done, total) => `正在繪製畫面…… ${done}/${total}`,
+      hatchPose: (_state, done, total) => `正在繪製姿勢…… ${done}/${total}`,
       hatchComposing: '正在拼合……',
       hatchSaving: '快好了……',
       namePlaceholder: '為寵物命名',
@@ -1086,7 +1089,16 @@ export const zhHant = defineLocale({
       referenceImageTooLarge: '參考圖片過大。請使用小於 16 MB 的圖片。',
       referenceImageInvalid: '無法讀取該參考圖片。請嘗試 PNG、JPG、WebP 或 GIF。',
       adopt: '領養',
-      startOver: '重新開始'
+      startOver: '重新開始',
+      advanced: '進階生成選項',
+      style: '風格',
+      model: '模型',
+      seed: '種子',
+      drafts: '草稿數',
+      concurrency: '平行工作',
+      poseAttempts: '姿勢嘗試次數',
+      auto: '自動',
+      random: '隨機'
     },
     installTheme: {
       title: '安裝主題…',

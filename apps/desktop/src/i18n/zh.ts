@@ -434,6 +434,9 @@ export const zh: Translations = {
         intro:
           '领养一只悬浮在应用上的 petdex 动画宠物，它会根据 Hermes 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
         restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Hermes，然后回到此处。',
+        createTitle: '创建宠物',
+        createDesc: '使用已配置的图像提供商生成自定义动画宠物。',
+        generatePet: '生成',
         scaleTitle: '大小',
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
         roamTitle: '漫游',
@@ -1320,7 +1323,7 @@ export const zh: Translations = {
       hatching: '正在孵化你的宠物……',
       hatchingSub: '正在注入生命……',
       hatched: '孵化成功！',
-      hatchRow: (_state, done, total) => `正在绘制画面…… ${done}/${total}`,
+      hatchPose: (_state, done, total) => `正在绘制姿势…… ${done}/${total}`,
       hatchComposing: '正在拼合……',
       hatchSaving: '马上就好……',
       namePlaceholder: '给宠物起个名字',
@@ -1334,7 +1337,16 @@ export const zh: Translations = {
       referenceImageTooLarge: '参考图过大。请使用小于 16 MB 的图片。',
       referenceImageInvalid: '无法读取该参考图。请尝试 PNG、JPG、WebP 或 GIF。',
       adopt: '领养',
-      startOver: '重新开始'
+      startOver: '重新开始',
+      advanced: '高级生成选项',
+      style: '风格',
+      model: '模型',
+      seed: '种子',
+      drafts: '草图数',
+      concurrency: '并行任务',
+      poseAttempts: '姿势尝试次数',
+      auto: '自动',
+      random: '随机'
     },
     installTheme: {
       title: '安装主题…',

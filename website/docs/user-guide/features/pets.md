@@ -107,21 +107,24 @@ it opens the Cmd+K pet palette.
 
 Beyond installing pre-made pets from the gallery, Hermes can **generate a brand-new pet** from a text description — its own AI sprite-generation pipeline.
 
-- CLI/TUI: `/hatch <description>` (alias `/generate-pet`), or `hermes pets` → the generate flow.
-- Desktop app: the Pokédex-style **generate** UI — an animated egg, hatch FX, and a draft picker.
+- CLI/TUI: `/hatch <description>` (alias `/generate-pet`). Run `/hatch --help`
+  for provider, model, style, seed, draft-count, reference-image, concurrency,
+  retry, naming, and adoption controls.
+- Desktop app: **Settings → Appearance → Pet → Generate** opens the animated
+  egg, draft picker, and the same advanced run-scoped controls.
 
-How generation works (a two-step, cost-bounded flow):
+How generation works (a two-step, quality-first flow):
 
 1. **Base drafts** — a handful of cheap, prompt-only "what should this pet look like" variants are generated. You pick one, or remix/retry for a fresh round.
-2. **Hatch** — the chosen base is used as a reference image to generate one grounded animation row per Hermes state (idle, thinking, tool use, etc.), which are deterministically sliced into frames and packed into a standard petdex/Codex atlas (8×9 grid of 192×208 cells). The result is a valid spritesheet you keep — and could `petdex submit`.
+2. **Hatch** — the chosen base grounds 25 small one/two-pose edits rather than a few crowded sprite strips. Hermes requires the exact pose count, complete padded bodies, and a clean center gutter; a malformed pair retries by itself and can never fall through to an approximate slice. Accepted poses share fixed pivots and safe cell gutters, the left run is mirrored from the approved right run, and all states must pass local atlas validation before anything is installed. This costs more image calls, but prevents character bleed, clipping, scale pulsing, and partial pets.
 
 ### Image backend
 
-Generation uses the active [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
+Generation uses the active [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends include **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), **OpenAI Codex**, **xAI**, compatible **FAL.ai** models, and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
 
-- Resolution order prefers Nous Portal → OpenAI → OpenRouter.
+- Hermes resolves providers by their advertised image-editing capability, while preserving a stable quality-first preference when more than one is available.
 - If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery pets needs no image backend.)
-- Override the backend with the `HERMES_PET_IMAGE_PROVIDER` env var (e.g. `HERMES_PET_IMAGE_PROVIDER=openrouter`).
+- Provider/model/seed overrides are scoped to one hatch run and never rewrite the active global image-generation configuration.
 
 ## Desktop app
 
@@ -129,8 +132,9 @@ In the desktop app you can manage the pet two ways:
 
 - **Cmd+K → "Pets…"** — browse, search, adopt, and toggle pets without leaving
   the keyboard (mirrors the theme picker).
-- **Settings → Appearance** — the same gallery plus a **size slider** that
-  resizes the floating mascot live as you drag.
+- **Settings → Appearance** — the same gallery, a Generate action, and a
+  **size slider** that resizes the
+  floating mascot live as you drag.
 
 Both adopt/toggle/resize the floating mascot in place — size changes apply
 instantly; adopting a new pet lights it up within a moment.

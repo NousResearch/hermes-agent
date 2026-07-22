@@ -21,6 +21,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $petGenDrafts,
+  $petGenerateAboveRouteOverlay,
   $petGenerateOpen,
   $petGenError,
   $petGenStatus,
@@ -34,6 +35,7 @@ export function PetGenerateOverlay() {
   const { t } = useI18n()
   const { requestGateway } = useGatewayRequest()
   const open = useStore($petGenerateOpen)
+  const aboveRouteOverlay = useStore($petGenerateAboveRouteOverlay)
   const status = useStore($petGenStatus)
   const error = useStore($petGenError)
   const drafts = useStore($petGenDrafts)
@@ -41,7 +43,7 @@ export function PetGenerateOverlay() {
   // Yield the screen to a full-screen route overlay (e.g. /settings while the
   // user adds an image-gen key) without tearing down — the store keeps us open,
   // and we reappear + re-check on return.
-  if (useRouteOverlayActive()) {
+  if (useRouteOverlayActive() && !aboveRouteOverlay) {
     return null
   }
 

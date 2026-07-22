@@ -11,7 +11,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
+import { Download, Loader2, PawPrint, Pencil, Plus, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { $petInfo, $petRoam, setPetRoam } from '@/store/pet'
@@ -34,6 +34,7 @@ import {
   setPetEnabled,
   setPetScale
 } from '@/store/pet-gallery'
+import { openPetGenerate } from '@/store/pet-generate'
 import { $gatewayState } from '@/store/session'
 
 import { ListRow, SectionHeading } from './primitives'
@@ -126,6 +127,18 @@ export function PetSettings() {
       )}
 
       <div className="mt-2">
+        <ListRow
+          action={
+            <div className="flex items-center gap-2">
+              <Button onClick={() => openPetGenerate({ aboveRouteOverlay: true })} size="sm" type="button">
+                <Plus className="size-3.5" />
+                {copy.generatePet}
+              </Button>
+            </div>
+          }
+          description={copy.createDesc}
+          title={copy.createTitle}
+        />
         <ListRow
           below={
             <>

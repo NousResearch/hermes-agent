@@ -5,9 +5,9 @@ import { Check, ChevronDown } from '@/lib/icons'
 import { $petGenProvider, $petGenProviders, setPetGenProvider } from '@/store/pet-generate'
 
 // Image-backend picker for pet generation — the composer's model-pill pattern:
-// a quiet trigger + a dropdown of options. No per-option notes: every backend
-// resolves to the same faithful OpenAI image model, so there's no tradeoff to
-// describe. Hidden unless there are 2+ reference-capable backends (nothing to pick).
+// a quiet trigger + a dropdown of reference-capable options. Model-specific
+// choices live in the advanced controls so this menu stays compact. Hidden
+// unless there are 2+ compatible backends (nothing to pick).
 export function ProviderPicker() {
   const providers = useStore($petGenProviders)
   const picked = useStore($petGenProvider)

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -7,24 +7,34 @@ import { SETTINGS_ROUTE } from '@/app/routes'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GenerateButton } from '@/components/ui/generate-button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Egg, ImageIcon } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $petGenAvailable,
+  $petGenConcurrency,
+  $petGenDraftCount,
   $petGenDrafts,
   $petGenError,
   $petGenInput,
+  $petGenModel,
+  $petGenPoseAttempts,
   $petGenPreview,
+  $petGenProvider,
+  $petGenProviders,
   $petGenRefImage,
   $petGenRefName,
   $petGenRemixConfirmed,
+  $petGenSeed,
   $petGenSelected,
   $petGenStage,
   $petGenStatus,
+  $petGenStyle,
   adoptHatched,
   cancelGenerate,
   checkPetGenAvailable,
@@ -34,7 +44,8 @@ import {
   discardHatched,
   generateDrafts,
   hatchSelected,
-  markRemixConfirmed
+  markRemixConfirmed,
+  yieldPetGenerateToRouteOverlay
 } from '@/store/pet-generate'
 
 import { DraftGrid } from './components/draft-grid'
@@ -64,6 +75,21 @@ export function PetGenerateContent() {
   const selected = useStore($petGenSelected)
   const preview = useStore($petGenPreview)
   const stage = useStore($petGenStage)
+  const providers = useStore($petGenProviders)
+  const providerName = useStore($petGenProvider)
+  const model = useStore($petGenModel)
+  const style = useStore($petGenStyle)
+  const seed = useStore($petGenSeed)
+  const draftCount = useStore($petGenDraftCount)
+  const concurrency = useStore($petGenConcurrency)
+  const poseAttempts = useStore($petGenPoseAttempts)
+
+  const provider =
+    providers.find(item => item.name === providerName) ?? providers.find(item => item.default) ?? providers[0]
+
+  const models = provider?.models ?? []
+  const selectedModel = models.find(item => item.id === model)
+  const supportsSeed = selectedModel?.supportsSeed ?? provider?.supportsSeed ?? false
 
   // Inputs live in atoms so they survive a close/reopen (and background runs).
   const prompt = useStore($petGenInput)
@@ -73,6 +99,7 @@ export function PetGenerateContent() {
 
   // The draft awaiting the one-time "remix regenerates" confirmation.
   const [remixPending, setRemixPending] = useState<{ dataUri: string } | null>(null)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   // Probe backend availability on open — and again whenever the content
   // remounts (e.g. after returning from the providers settings), so adding a
@@ -97,7 +124,15 @@ export function PetGenerateContent() {
 
   const generate = () => {
     if ((prompt.trim() || refImage) && !busy) {
-      void generateDrafts(requestGateway, { prompt: prompt.trim(), referenceImage: refImage ?? undefined })
+      void generateDrafts(requestGateway, {
+        prompt: prompt.trim(),
+        referenceImage: refImage ?? undefined,
+        style,
+        count: draftCount,
+        model: model || undefined,
+        seed: seed.trim() ? Number(seed) : undefined,
+        concurrency
+      })
     }
   }
 
@@ -142,13 +177,28 @@ export function PetGenerateContent() {
   // One-click an example prompt straight into a draft round.
   const runExample = (example: string) => {
     $petGenInput.set(example)
-    void generateDrafts(requestGateway, { prompt: example })
+    void generateDrafts(requestGateway, {
+      prompt: example,
+      style,
+      count: draftCount,
+      model: model || undefined,
+      seed: seed.trim() ? Number(seed) : undefined,
+      concurrency
+    })
   }
 
   // A remix re-runs generation grounded on an existing draft — same prompt, stay
   // on step 2 — so the user explores variations without starting over.
   const runRemix = (draft: { dataUri: string }) => {
-    void generateDrafts(requestGateway, { prompt: prompt.trim(), referenceImage: draft.dataUri })
+    void generateDrafts(requestGateway, {
+      prompt: prompt.trim(),
+      referenceImage: draft.dataUri,
+      style,
+      count: draftCount,
+      model: model || undefined,
+      seed: seed.trim() ? Number(seed) : undefined,
+      concurrency
+    })
   }
 
   // Slow, and it replaces the current drafts — so confirm once, then remember it.
@@ -178,7 +228,15 @@ export function PetGenerateContent() {
       cancelGenerate()
     }
 
-    void hatchSelected(requestGateway, { name: cleanPetName(prompt), prompt: prompt.trim() })
+    void hatchSelected(requestGateway, {
+      name: cleanPetName(prompt),
+      prompt: prompt.trim(),
+      style,
+      model: model || undefined,
+      seed: seed.trim() ? Number(seed) : undefined,
+      concurrency,
+      poseAttempts
+    })
   }
 
   const adopt = (finalName: string) => {
@@ -196,7 +254,10 @@ export function PetGenerateContent() {
 
   // Send the user to set up a key without closing — the overlay yields to the
   // settings route (useRouteOverlayActive) and reappears + re-checks on return.
-  const setupImageGen = () => navigate(`${SETTINGS_ROUTE}?tab=providers`)
+  const setupImageGen = () => {
+    yieldPetGenerateToRouteOverlay()
+    navigate(`${SETTINGS_ROUTE}?tab=providers`)
+  }
 
   // Prompt input only belongs on the describe/draft screens (and never when
   // there's no backend to generate with).
@@ -257,6 +318,72 @@ export function PetGenerateContent() {
                   <ImageIcon className="size-3" />
                   Add a reference
                 </button>
+              )}
+            </div>
+
+            <div className="border-t border-(--ui-stroke-tertiary) pt-2">
+              <button
+                className="flex items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:text-foreground"
+                onClick={() => setAdvancedOpen(open => !open)}
+                type="button"
+              >
+                <DisclosureCaret open={advancedOpen} />
+                {copy.advanced}
+              </button>
+              {advancedOpen && (
+                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <PetOption label={copy.style}>
+                    <Input
+                      onChange={event => $petGenStyle.set(event.target.value)}
+                      placeholder={copy.auto}
+                      size="xs"
+                      value={style}
+                    />
+                  </PetOption>
+                  {models.length > 0 && (
+                    <PetOption label={copy.model}>
+                      <Select onValueChange={$petGenModel.set} value={model}>
+                        <SelectTrigger size="xs">
+                          <SelectValue placeholder={copy.auto} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {models.map(item => (
+                            <SelectItem key={item.id} value={item.id}>
+                              {item.display || item.id}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </PetOption>
+                  )}
+                  {supportsSeed && (
+                    <PetOption label={copy.seed}>
+                      <Input
+                        min={0}
+                        onChange={event => $petGenSeed.set(event.target.value)}
+                        placeholder={copy.random}
+                        size="xs"
+                        type="number"
+                        value={seed}
+                      />
+                    </PetOption>
+                  )}
+                  <PetNumberOption label={copy.drafts} max={8} min={1} set={$petGenDraftCount.set} value={draftCount} />
+                  <PetNumberOption
+                    label={copy.concurrency}
+                    max={4}
+                    min={1}
+                    set={$petGenConcurrency.set}
+                    value={concurrency}
+                  />
+                  <PetNumberOption
+                    label={copy.poseAttempts}
+                    max={3}
+                    min={1}
+                    set={$petGenPoseAttempts.set}
+                    value={poseAttempts}
+                  />
+                </div>
               )}
             </div>
 
@@ -332,5 +459,41 @@ export function PetGenerateContent() {
         title={copy.remixConfirmTitle}
       />
     </>
+  )
+}
+
+function PetOption({ children, label }: { children: ReactNode; label: string }) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-[0.625rem] text-(--ui-text-tertiary)">
+      {label}
+      {children}
+    </label>
+  )
+}
+
+function PetNumberOption({
+  label,
+  max,
+  min,
+  set,
+  value
+}: {
+  label: string
+  max: number
+  min: number
+  set: (value: number) => void
+  value: number
+}) {
+  return (
+    <PetOption label={label}>
+      <Input
+        max={max}
+        min={min}
+        onChange={event => set(Math.max(min, Math.min(max, Number(event.target.value) || min)))}
+        size="xs"
+        type="number"
+        value={value}
+      />
+    </PetOption>
   )
 }

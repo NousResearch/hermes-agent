@@ -1132,18 +1132,54 @@ class CLICommandsMixin:
         """Generate ("hatch") a brand-new petdex pet from a description.
 
         ``/hatch <description>`` runs the full pet pipeline in-process: a base
-        look, then one grounded animation row per state, sliced + normalized into
-        a spritesheet, then adopted as the active mascot. Progress streams inline
-        (it's ~a minute of image-model calls). In the desktop app this command
+        look, then validated one/two-pose edits packed into a spritesheet and
+        adopted as the active mascot. Progress streams inline; a default hatch
+        makes 25 billable pose calls before retries and can take many minutes.
+        In the desktop app this command
         opens the richer generate overlay instead; here we run it directly.
         """
         from agent.pet import store
         from agent.pet.generate import orchestrate
-        from agent.pet.generate.imagegen import GenerationError
+        from agent.pet.generate.imagegen import GenerationError, resolve_provider
         from hermes_cli.pets import _set_active
+        import argparse
+        import shlex
 
-        parts = cmd.split(maxsplit=1)
-        concept = parts[1].strip() if len(parts) > 1 else ""
+        parser = argparse.ArgumentParser(prog="/hatch", add_help=False)
+        parser.add_argument("concept", nargs="*")
+        parser.add_argument("--provider")
+        parser.add_argument("--model")
+        parser.add_argument("--style", default="auto")
+        parser.add_argument("--seed", type=int)
+        parser.add_argument("--drafts", type=int, default=1)
+        parser.add_argument("--concurrency", type=int, default=4)
+        parser.add_argument("--pose-attempts", "--row-attempts", dest="pose_attempts", type=int, default=2)
+        parser.add_argument("--reference")
+        parser.add_argument("--name")
+        parser.add_argument("--no-adopt", action="store_true")
+        parser.add_argument("-h", "--help", action="store_true")
+        try:
+            args = parser.parse_args(shlex.split(cmd)[1:])
+        except (ValueError, SystemExit):
+            print("(o_o) Invalid /hatch options. Run /hatch --help for usage.")
+            return
+        if args.help:
+            print(
+                "Usage: /hatch [description] [--provider NAME] [--model ID] "
+                "[--style STYLE] [--seed N] [--drafts 1-8] [--reference PATH] "
+                "[--name NAME] [--concurrency 1-4] [--pose-attempts 1-3] [--no-adopt]"
+            )
+            return
+        if not 1 <= args.drafts <= 8:
+            print("(o_o) --drafts must be between 1 and 8.")
+            return
+        if not 1 <= args.concurrency <= 4:
+            print("(o_o) --concurrency must be between 1 and 4.")
+            return
+        if not 1 <= args.pose_attempts <= 3:
+            print("(o_o) --pose-attempts must be between 1 and 3.")
+            return
+        concept = " ".join(args.concept).strip()
 
         if not concept:
             try:
@@ -1157,12 +1193,41 @@ class CLICommandsMixin:
             return
 
         # A short, friendly display name from the first few words of the concept.
-        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        display_name = (args.name or " ".join(w.capitalize() for w in concept.split()[:3]))[:28].strip() or "Pet"
         slug = store.slugify(display_name) or store.slugify(concept) or "pet"
 
-        print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
+        reference_images = None
+        if args.reference:
+            from pathlib import Path
+
+            reference = Path(args.reference).expanduser()
+            if not reference.is_file():
+                print(f"(x_x) Reference image not found: {reference}")
+                return
+            reference_images = [reference]
+
         try:
-            drafts = orchestrate.generate_base_drafts(concept, n=1)
+            sprite = resolve_provider(
+                require_references=True,
+                prefer=args.provider,
+                model=args.model,
+            )
+        except GenerationError as exc:
+            print(f"(x_x) Couldn't select an image provider: {exc}")
+            return
+
+        print(f"(o_o) Designing '{concept}'… (25 billable pose calls before retries)")
+        try:
+            drafts = orchestrate.generate_base_drafts(
+                concept,
+                n=args.drafts,
+                style=args.style,
+                reference_images=reference_images,
+                provider=sprite,
+                model=args.model,
+                seed=args.seed,
+                concurrency=args.concurrency,
+            )
         except GenerationError as exc:
             print(f"(x_x) Couldn't generate a base look: {exc}")
             return
@@ -1172,29 +1237,49 @@ class CLICommandsMixin:
             return
 
         def _progress(event: str, detail: str) -> None:
-            if event == "row":
-                # detail is "<state>:<done>:<total>"; show the state name.
-                state = detail.split(":", 1)[0]
-                print(f"  ┊ drawing {state}…")
+            if event in {"pose", "row"}:
+                state, done, total = (detail.split(":") + ["", ""])[:3]
+                suffix = f" ({done}/{total})" if done and total else ""
+                print(f"  ┊ drawing {state}…{suffix}")
             elif event == "compose":
                 print("  ┊ composing spritesheet…")
             elif event == "save":
                 print("  ┊ saving…")
 
+        selected = 0
+        if len(drafts) > 1:
+            print("  ┊ drafts:")
+            for index, draft in enumerate(drafts, 1):
+                print(f"    {index}. {draft}")
+            try:
+                choice = input(f"(o_o) Hatch which draft? [1-{len(drafts)}] (1): ").strip()
+                selected = max(0, min(len(drafts) - 1, int(choice or "1") - 1))
+            except (EOFError, KeyboardInterrupt, ValueError):
+                selected = 0
+
         try:
             result = orchestrate.hatch_pet(
-                base_image=drafts[0],
+                base_image=drafts[selected],
                 slug=slug,
                 display_name=display_name,
                 concept=concept,
+                style=args.style,
+                provider=sprite,
+                model=args.model,
+                seed=args.seed,
+                concurrency=args.concurrency,
+                pose_attempts=args.pose_attempts,
                 on_progress=_progress,
             )
         except GenerationError as exc:
             print(f"(x_x) Hatch failed: {exc}")
             return
 
-        _set_active(result.slug)
-        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
+        if args.no_adopt:
+            print(f"(^_^)b {result.display_name} hatched as '{result.slug}' (not adopted).")
+        else:
+            _set_active(result.slug)
+            print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""

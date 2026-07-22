@@ -148,6 +148,8 @@ class ImageGenProvider(abc.ABC):
             {
                 "modalities": ["text", "image"],   # which inputs the backend accepts
                 "max_reference_images": 9,          # cap for reference_image_urls
+                "supports_seed": True,              # deterministic seed override
+                "supports_model_override": True,     # one-call model override
             }
 
         ``modalities`` declares whether the active backend/model supports
@@ -156,6 +158,9 @@ class ImageGenProvider(abc.ABC):
         model knows when ``image_url`` is honored. Used by ``hermes tools``
         for the picker too. Default: text-only (backward compatible — a
         provider that doesn't override this advertises text-to-image only).
+        Providers with model-specific capabilities may also attach these keys
+        to entries returned by :meth:`list_models`; consumers should prefer the
+        model entry and fall back to this provider-wide declaration.
         """
         return {
             "modalities": ["text"],

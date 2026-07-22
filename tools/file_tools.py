@@ -1106,6 +1106,22 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
+def _is_host_local_env(task_id: str = "default") -> bool:
+    """Return True iff this task's file I/O runs on the host filesystem.
+
+    Read-dedup, staleness detection and the cross-agent file-state registry
+    all compare host-side os.path.getmtime values.  Those only describe the
+    file actually read when the terminal backend is local; on
+    docker/singularity/ssh/modal/daytona the file lives inside the sandbox,
+    so a host mtime belongs to an unrelated (or absent) path and must not
+    drive dedup/staleness.  Defers to _terminal_env_type_for_task so a
+    delegate_task subagent — whose env is registered under the collapsed
+    "default" container key — is classified by the container it actually
+    shares instead of falling back to the global config default.
+    """
+    return _terminal_env_type_for_task(task_id) == "local"
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -1227,7 +1243,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if cached_mtime is not None and _is_host_local_env(task_id):
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1374,7 +1390,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # isn't nested under ours.
         try:
             _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
+            file_state.record_read(
+                task_id, resolved_str, partial=_partial,
+                host_mtime=_is_host_local_env(task_id),
+            )
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -1511,6 +1530,9 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     the last read_file call for this task), or None if the file is fresh
     or was never read.  Does not block — the write still proceeds.
     """
+    # Host mtimes only describe the file when the backend is local.
+    if not _is_host_local_env(task_id):
+        return None
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
@@ -1620,7 +1642,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         with file_state.lock_path(_resolved):
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
-            cross_warning = file_state.check_stale(task_id, _resolved)
+            _host_local = _is_host_local_env(task_id)
+            cross_warning = file_state.check_stale(
+                task_id, _resolved, host_mtime=_host_local
+            )
             stale_warning = _check_file_staleness(path, task_id)
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
@@ -1642,7 +1667,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
-                file_state.note_write(task_id, _resolved)
+                file_state.note_write(task_id, _resolved, host_mtime=_host_local)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1743,13 +1768,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # then per-task tracker as a fallback.
             stale_warnings: list[str] = []
             _path_to_resolved: dict[str, str] = {}
+            _host_local = _is_host_local_env(task_id)
             for _p in _paths_to_check:
                 try:
                     _r = str(_resolve_path_for_task(_p, task_id))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
-                _cross = file_state.check_stale(task_id, _r) if _r else None
+                _cross = (
+                    file_state.check_stale(task_id, _r, host_mtime=_host_local)
+                    if _r else None
+                )
                 _sw = _cross or _check_file_staleness(_p, task_id)
                 if not _sw and _r:
                     # Workspace-divergence warning (worktree-cwd bug): relative
@@ -1799,7 +1828,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
                     if _r:
-                        file_state.note_write(task_id, _r)
+                        file_state.note_write(task_id, _r, host_mtime=_host_local)
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
                 # the same path starts the escalation cycle fresh.

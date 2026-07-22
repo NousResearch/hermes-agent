@@ -871,3 +871,267 @@ class TestSilentFileMisplacementE2E:
             "file silently misplaced into config default (the #26211 bug)"
 
         tt.clear_session_cwd(task_id)
+
+
+class TestIsHostLocalEnv:
+    """_is_host_local_env gates read-dedup and staleness detection to the
+    local backend only. Host os.path.getmtime is meaningless for a file
+    living inside a docker/singularity/ssh/modal/daytona sandbox, so those
+    backends must never be reported as host-local."""
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_true_when_active_env_is_local(self, mock_active):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_tools import _is_host_local_env
+
+        mock_active["default"] = MagicMock(spec=LocalEnvironment)
+        assert _is_host_local_env("default") is True
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_false_when_active_env_is_not_local(self, mock_active):
+        from tools.environments.docker import DockerEnvironment
+        from tools.file_tools import _is_host_local_env
+
+        mock_active["default"] = MagicMock(spec=DockerEnvironment)
+        assert _is_host_local_env("default") is False
+
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_falls_back_to_config_when_no_active_env(self, mock_active, mock_config):
+        from tools.file_tools import _is_host_local_env
+
+        mock_config.return_value = {"env_type": "local"}
+        assert _is_host_local_env("default") is True
+
+        mock_config.return_value = {"env_type": "docker"}
+        assert _is_host_local_env("default") is False
+
+    @patch("tools.terminal_tool._get_env_config")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_falls_back_to_terminal_env_when_config_raises(
+        self, mock_active, mock_config, monkeypatch
+    ):
+        from tools.file_tools import _is_host_local_env
+
+        mock_config.side_effect = RuntimeError("no config available")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        assert _is_host_local_env("default") is False
+
+        # Nothing configured anywhere: no remote backend exists to be wrong
+        # about, so the host filesystem is the right assumption.
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert _is_host_local_env("default") is True
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_false_for_subagent_sharing_parent_container(self, mock_active, monkeypatch):
+        """A delegate_task subagent registers no env of its own — it shares
+        the parent's container under the collapsed "default" key.  Looking up
+        the raw subagent id finds nothing and would fall back to the global
+        config default ("local"), silently re-enabling host mtimes for a file
+        that only exists inside the container."""
+        from tools.environments.docker import DockerEnvironment
+        from tools.file_tools import _is_host_local_env
+
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        mock_active["default"] = MagicMock(spec=DockerEnvironment)
+        assert _is_host_local_env("subagent_1") is False
+
+
+class TestReadDedupHostLocalGate:
+    """Regression guard: read-dedup must only stub out a re-read when the
+    terminal backend is local. On a remote backend a host mtime "match" is
+    meaningless — skipping the real read would silently serve stale content
+    for a file the agent never actually re-checked."""
+
+    @staticmethod
+    def _seed_dedup(task_id, resolved_path, offset, limit, mtime):
+        from tools.file_tools import _read_tracker, _read_tracker_lock
+        with _read_tracker_lock:
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0,
+                "read_history": set(), "dedup": {},
+                "dedup_hits": {}, "read_timestamps": {},
+            })
+            task_data["dedup"][(resolved_path, offset, limit)] = mtime
+
+    @patch("tools.file_tools._is_host_local_env", return_value=True)
+    @patch("tools.file_tools._get_file_ops")
+    def test_dedup_stub_fires_on_local_env(self, mock_get, mock_is_local, tmp_path):
+        from tools.file_tools import read_file_tool, _read_tracker
+
+        f = tmp_path / "a.txt"
+        f.write_text("hello\n")
+        task_id = "dedup-local"
+        _read_tracker.pop(task_id, None)
+        self._seed_dedup(task_id, str(f), 1, 500, f.stat().st_mtime)
+
+        result = json.loads(read_file_tool(str(f), 1, 500, task_id))
+
+        assert result.get("dedup") is True
+        assert result.get("status") == "unchanged"
+        mock_get.assert_not_called()
+        _read_tracker.pop(task_id, None)
+
+    @patch("tools.file_tools._is_host_local_env", return_value=False)
+    @patch("tools.file_tools._get_file_ops")
+    def test_dedup_skipped_on_remote_env_even_with_matching_mtime(
+        self, mock_get, mock_is_local, tmp_path
+    ):
+        from tools.file_tools import read_file_tool, _read_tracker
+
+        f = tmp_path / "b.txt"
+        f.write_text("hello\n")
+        task_id = "dedup-remote"
+        _read_tracker.pop(task_id, None)
+        self._seed_dedup(task_id, str(f), 1, 500, f.stat().st_mtime)
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "hello"
+        result_obj.to_dict.return_value = {"content": "hello", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        result = json.loads(read_file_tool(str(f), 1, 500, task_id))
+
+        assert result.get("dedup") is not True
+        assert result.get("content") == "hello"
+        mock_get.assert_called_once()
+        _read_tracker.pop(task_id, None)
+
+
+class TestCheckFileStalenessHostLocalGate:
+    """Regression guard: staleness warnings on write/patch must only compare
+    host mtimes when the backend is local. On a remote backend the host-side
+    mtime of a same-named path is unrelated to the sandboxed file, so a
+    "changed" comparison would be a false positive."""
+
+    @patch("tools.file_tools._is_host_local_env", return_value=False)
+    def test_returns_none_on_remote_env_even_when_mtime_differs(self, mock_is_local, tmp_path):
+        from tools.file_tools import _check_file_staleness, _read_tracker
+
+        f = tmp_path / "c.txt"
+        f.write_text("v1\n")
+        task_id = "staleness-remote"
+        _read_tracker[task_id] = {"read_timestamps": {str(f): -1.0}}  # deliberately stale
+
+        assert _check_file_staleness(str(f), task_id) is None
+        _read_tracker.pop(task_id, None)
+
+    @patch("tools.file_tools._is_host_local_env", return_value=True)
+    def test_warns_on_local_env_when_mtime_differs(self, mock_is_local, tmp_path):
+        from tools.file_tools import _check_file_staleness, _read_tracker
+
+        f = tmp_path / "d.txt"
+        f.write_text("v1\n")
+        task_id = "staleness-local"
+        _read_tracker[task_id] = {"read_timestamps": {str(f): -1.0}}  # older than real mtime
+
+        warning = _check_file_staleness(str(f), task_id)
+
+        assert warning is not None
+        assert "modified since you last read it" in warning
+        _read_tracker.pop(task_id, None)
+
+
+class TestFileStateRegistryRemoteGate:
+    """Public-tool coverage for the cross-agent registry on remote backends.
+
+    read_file → write_file and read_file → patch_tool run the registry, which
+    stamps a host mtime on read and re-stats the host path before the write.
+    On a remote backend that path is not the file the tools actually touched
+    — either a same-named host twin (ssh) or nothing at all (container) — so
+    those mtimes must not drive warnings.  The backend-agnostic half of the
+    registry (per-path locks, sibling-write coordination) must keep working.
+    """
+
+    @staticmethod
+    def _file_ops():
+        mock_ops = MagicMock()
+        read_obj = MagicMock()
+        read_obj.content = "sandbox v1"
+        read_obj.to_dict.return_value = {"content": "sandbox v1", "total_lines": 1}
+        mock_ops.read_file.return_value = read_obj
+        for _attr in ("write_file", "patch_replace"):
+            _obj = MagicMock()
+            _obj.to_dict.return_value = {"success": True}
+            getattr(mock_ops, _attr).return_value = _obj
+        return mock_ops
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_read_then_write_ignores_host_twin_mtime(self, mock_active, mock_get, tmp_path):
+        import os
+        from tools import file_state
+        from tools.environments.ssh import SSHEnvironment
+        from tools.file_tools import read_file_tool, write_file_tool
+
+        file_state.get_registry().clear()
+        mock_active["default"] = MagicMock(spec=SSHEnvironment)
+        mock_get.return_value = self._file_ops()
+
+        # ssh resolves host-style paths, so a same-named file on the host is
+        # stat-able — and completely unrelated to the file over the wire.
+        twin = tmp_path / "app.py"
+        twin.write_text("host twin v1\n")
+        task_id = "remote-read-write"
+
+        read_file_tool(str(twin), 1, 500, task_id)
+        os.utime(twin, (0, 0))  # host-side churn on the twin only
+
+        result = json.loads(write_file_tool(str(twin), "sandbox v2", task_id))
+
+        assert "_warning" not in result, result.get("_warning")
+        file_state.get_registry().clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_read_then_patch_ignores_host_twin_mtime(self, mock_active, mock_get, tmp_path):
+        import os
+        from tools import file_state
+        from tools.environments.ssh import SSHEnvironment
+        from tools.file_tools import patch_tool, read_file_tool
+
+        file_state.get_registry().clear()
+        mock_active["default"] = MagicMock(spec=SSHEnvironment)
+        mock_get.return_value = self._file_ops()
+
+        twin = tmp_path / "mod.py"
+        twin.write_text("host twin v1\n")
+        task_id = "remote-read-patch"
+
+        read_file_tool(str(twin), 1, 500, task_id)
+        os.utime(twin, (0, 0))
+
+        result = json.loads(patch_tool(
+            mode="replace", path=str(twin), old_string="sandbox v1",
+            new_string="sandbox v2", task_id=task_id,
+        ))
+
+        assert "_warning" not in result, result.get("_warning")
+        file_state.get_registry().clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_sibling_write_coordination_survives_on_container_backend(
+        self, mock_active, mock_get, tmp_path
+    ):
+        """The gate must not disable the registry: a container path never
+        stats on the host, so dropping the read/write records entirely would
+        leave two subagents editing the same sandbox file unwarned."""
+        from tools import file_state
+        from tools.environments.docker import DockerEnvironment
+        from tools.file_tools import read_file_tool, write_file_tool
+
+        file_state.get_registry().clear()
+        mock_active["default"] = MagicMock(spec=DockerEnvironment)
+        mock_get.return_value = self._file_ops()
+
+        target = "/workspace/shared.py"  # exists only inside the container
+        read_file_tool(target, 1, 500, "agent-A")
+        write_file_tool(target, "sibling edit", "agent-B")
+
+        result = json.loads(write_file_tool(target, "stale edit", "agent-A"))
+
+        assert "sibling subagent" in result.get("_warning", ""), result
+        file_state.get_registry().clear()

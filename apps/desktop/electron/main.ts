@@ -7587,9 +7587,18 @@ async function startHermes() {
     attemptedRemote = primaryBackendIsRemote()
     const remote = await resolveRemoteBackend(primaryProfileKey())
 
+    if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
+      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+    }
+
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
+
+      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
+        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+      }
+
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',

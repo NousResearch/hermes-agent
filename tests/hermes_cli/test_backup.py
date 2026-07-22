@@ -1497,6 +1497,9 @@ class TestSafeCopyDb:
                 # temporarily increasing the remaining-page count.
                 progress(sqlite3.SQLITE_OK, 25, 30)
                 progress(sqlite3.SQLITE_OK, 20, 30)
+                # SQLITE_OK means pages were copied even if concurrent writes
+                # leave the reported remaining-page count unchanged.
+                progress(sqlite3.SQLITE_OK, 20, 30)
                 progress(sqlite3.SQLITE_BUSY, 20, 30)
                 progress(sqlite3.SQLITE_DONE, 0, 30)
 
@@ -1509,7 +1512,7 @@ class TestSafeCopyDb:
         monkeypatch.setattr(
             backup_mod.sqlite3, "connect", lambda *_args, **_kwargs: next(connections)
         )
-        clock = iter((0.0, 20.0, 40.0, 55.0, 70.0, 95.0))
+        clock = iter((0.0, 20.0, 40.0, 55.0, 70.0, 105.0, 130.0))
         monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
 
         assert backup_mod._safe_copy_db(src, dst) is True

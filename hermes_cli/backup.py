@@ -274,24 +274,21 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst), timeout=0.0)
         last_progress_at = time.monotonic()
-        previous_remaining = None
 
-        def _check_progress(status: int, remaining: int, _total: int) -> None:
-            nonlocal last_progress_at, previous_remaining
+        def _check_progress(status: int, _remaining: int, _total: int) -> None:
+            nonlocal last_progress_at
             if status == sqlite3.SQLITE_DONE:
                 return
 
             now = time.monotonic()
             if status == sqlite3.SQLITE_OK:
-                made_progress = (
-                    previous_remaining is None or remaining != previous_remaining
-                )
-                previous_remaining = remaining
-                if made_progress:
-                    last_progress_at = now
-                    return
+                # SQLite returns OK only after successfully copying pages.
+                last_progress_at = now
+                return
 
-            if now - last_progress_at >= _SQLITE_BACKUP_STALL_TIMEOUT_SECONDS:
+            if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and (
+                now - last_progress_at >= _SQLITE_BACKUP_STALL_TIMEOUT_SECONDS
+            ):
                 raise TimeoutError(
                     "SQLite backup timed out after "
                     f"{_SQLITE_BACKUP_STALL_TIMEOUT_SECONDS:g}s without page progress"

@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -2639,7 +2639,7 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection):
+def write_txn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a

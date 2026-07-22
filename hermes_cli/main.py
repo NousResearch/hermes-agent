@@ -422,6 +422,7 @@ from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -4555,6 +4556,13 @@ def cmd_config(args):
     from hermes_cli.config import config_command
 
     config_command(args)
+
+
+def cmd_skin(args):
+    """Skin management (list / use / set)."""
+    from hermes_cli.skin_cmd import skin_command
+
+    skin_command(args)
 
 
 def cmd_backup(args):
@@ -13935,6 +13943,11 @@ def main():
     # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
+
+    # =========================================================================
+    # skin command  (parser built in hermes_cli/subcommands/skin.py)
+    # =========================================================================
+    build_skin_parser(subparsers, cmd_skin=cmd_skin)
 
     # =========================================================================
     # console command  (parser built in hermes_cli/subcommands/console.py)

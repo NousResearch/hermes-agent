@@ -87,6 +87,60 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "1.0M" in info
 
+    def test_custom_context_is_scoped_to_active_runtime_route(self, runner, tmp_path):
+        config = """
+model:
+  default: shared-model
+  provider: custom
+custom_providers:
+  - name: large-route
+    base_url: https://example.com/v1//
+    models:
+      shared-model:
+        context_length: 1048576
+"""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config,
+            "shared-model",
+            {
+                "provider": "custom",
+                "base_url": "https://example.com/v1",
+                "api_key": "k",
+            },
+        )
+
+        with p1, p2, p3:
+            info = runner._format_session_info()
+
+        assert "1.0M" not in info
+        assert "(config)" not in info
+
+    def test_global_context_is_scoped_to_active_runtime_route(self, runner, tmp_path):
+        config = """
+model:
+  default: shared-model
+  provider: custom
+  base_url: https://large.example/v1
+  context_length: 1048576
+"""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config,
+            "shared-model",
+            {
+                "provider": "custom",
+                "base_url": "https://small.example/v1",
+                "api_key": "k",
+            },
+        )
+
+        with p1, p2, p3:
+            info = runner._format_session_info()
+
+        assert "1.0M" not in info
+        assert "(config)" not in info
+
     def test_missing_config(self, runner, tmp_path):
         """No config.yaml should not crash."""
         p1, p2, p3 = _patch_info(tmp_path, None,  # don't create config
@@ -107,3 +161,51 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "4K" in info
         assert "config" in info
+
+
+class TestResetNoticeSessionInfo:
+    """#59003: the auto-reset banner must report the serving profile's config,
+    not the multiplexer's base config."""
+
+    _RUNTIME = {"provider": "", "base_url": "", "api_key": ""}
+
+    def _source(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", user_id="u1",
+            profile="planner",
+        )
+
+    def _homes(self, tmp_path):
+        base = tmp_path / "base"
+        profile = tmp_path / "profiles" / "planner"
+        profile.mkdir(parents=True)
+        base.mkdir()
+        base.joinpath("config.yaml").write_text(
+            "model:\n  default: base-model\n  provider: custom\n  context_length: 1000\n")
+        profile.joinpath("config.yaml").write_text(
+            "model:\n  default: profile-model\n  provider: anthropic\n  context_length: 2000\n")
+        return base, profile
+
+    def test_multiplex_uses_profile_config(self, runner, tmp_path):
+        from types import SimpleNamespace
+        base, profile = self._homes(tmp_path)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        with patch("gateway.run._hermes_home", base), \
+             patch.object(GatewayRunner, "_resolve_profile_home_for_source", return_value=profile), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
+            info = runner._reset_notice_session_info(self._source())
+        assert "profile-model" in info
+        assert "anthropic" in info
+        assert "base-model" not in info
+
+    def test_single_profile_uses_base_config(self, runner, tmp_path):
+        from types import SimpleNamespace
+        base, _profile = self._homes(tmp_path)
+        runner.config = SimpleNamespace(multiplex_profiles=False)
+        with patch("gateway.run._hermes_home", base), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
+            info = runner._reset_notice_session_info(self._source())
+        assert "base-model" in info
+        assert "profile-model" not in info

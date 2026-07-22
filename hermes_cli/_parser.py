@@ -112,6 +112,17 @@ def build_top_level_parser():
             "auto-bypassed. Intended for scripts / pipes."
         ),
     )
+    parser.add_argument(
+        "--usage-file",
+        metavar="PATH",
+        default=None,
+        help=(
+            "One-shot mode only: after the run, write a JSON usage report "
+            "(estimated cost, token counts, model, api_calls) to PATH. "
+            "The report is written even when the run fails, so pipelines "
+            "can always account for spend. No effect outside -z/--oneshot."
+        ),
+    )
     # --model / --provider are accepted at the top level so they can pair
     # with -z without needing the `chat` subcommand.  If neither -z nor a
     # subcommand consumes them, they fall through harmlessly as None.
@@ -148,6 +159,12 @@ def build_top_level_parser():
         metavar="SESSION",
         default=None,
         help="Resume a previous session by ID or title",
+    )
+    parser.add_argument(
+        "--no-restore-cwd",
+        action="store_true",
+        default=False,
+        help="Don't cd into a resumed session's recorded working directory.",
     )
     parser.add_argument(
         "--continue",
@@ -260,12 +277,27 @@ def build_top_level_parser():
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
     )
+    # `default=argparse.SUPPRESS` on flags that are ALSO declared on the
+    # top-level parser: when the user writes `hermes -m foo chat`, argparse
+    # first sets `args.model = "foo"` from the top-level parser, then
+    # dispatches to the chat subparser. Without SUPPRESS the chat subparser's
+    # own default (`None`) would silently clobber the top-level value because
+    # the subparser shares the same namespace and `dest`. SUPPRESS keeps the
+    # subparser action a no-op unless the user actually passes the flag after
+    # the subcommand. Matches the pattern already used for `-s/--skills` and
+    # the relaunch-inherited flags `-r/--resume`, `-c/--continue`,
+    # `-w/--worktree`, `--yolo`, etc. (see tests/hermes_cli/
+    # test_argparse_flag_propagation.py).
     _inherited_flag(
         chat_parser,
-        "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)",
+        "-m", "--model",
+        default=argparse.SUPPRESS,
+        help="Model to use (e.g., anthropic/claude-sonnet-4)",
     )
     chat_parser.add_argument(
-        "-t", "--toolsets", help="Comma-separated toolsets to enable"
+        "-t", "--toolsets",
+        default=argparse.SUPPRESS,
+        help="Comma-separated toolsets to enable",
     )
     _inherited_flag(
         chat_parser,
@@ -282,7 +314,7 @@ def build_top_level_parser():
         # are also valid values, and runtime resolution (resolve_runtime_provider)
         # handles validation/error reporting consistently with the top-level
         # `--provider` flag.
-        default=None,
+        default=argparse.SUPPRESS,
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
@@ -304,6 +336,12 @@ def build_top_level_parser():
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)",
+    )
+    chat_parser.add_argument(
+        "--no-restore-cwd",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Don't cd into a resumed session's recorded working directory.",
     )
     chat_parser.add_argument(
         "--continue",
@@ -390,14 +428,14 @@ def build_top_level_parser():
         chat_parser,
         "--tui",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Launch the modern TUI instead of the classic REPL",
     )
     _inherited_flag(
         chat_parser,
         "--cli",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
     )
     _inherited_flag(
@@ -405,7 +443,7 @@ def build_top_level_parser():
         "--dev",
         dest="tui_dev",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
 

@@ -31,8 +31,6 @@ const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance,
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
 const INV_OFF = `${ESC}[27m`
-const DIM = `${ESC}[2m`
-const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
@@ -41,7 +39,33 @@ const MULTI_CLICK_MS = 500
 type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
-const dim = (s: string) => DIM + s + DIM_OFF
+
+// Placeholder styling is EXPLICIT truecolor only — never SGR dim/inverse:
+// both are terminal-interpreted relative to the default fg/bg, and on
+// transparent profiles (terminal.background #00000000) they composite
+// against a black RGB the user never sees — the hint rendered as a slab.
+const HINT_FALLBACK = '#808080'
+
+const hintRgb = (hex?: string): [number, number, number] => {
+  const n = parseInt((/^#([0-9a-f]{6})$/i.exec(hex ?? '')?.[1] ?? HINT_FALLBACK.slice(1)) as string, 16)
+
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
+}
+
+const colorizeHint = (s: string, hex?: string) => {
+  const [r, g, b] = hintRgb(hex)
+
+  return `${ESC}[38;2;${r};${g};${b}m${s}${ESC}[39m`
+}
+
+/** Synthetic placeholder cursor: a hint-colored chip with luminance-picked
+ *  ink, standing in for the hidden hardware cursor (bubbles pattern). */
+const hintCursorCell = (ch: string, hex?: string) => {
+  const [r, g, b] = hintRgb(hex)
+  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '0;0;0' : '255;255;255'
+
+  return `${ESC}[48;2;${r};${g};${b}m${ESC}[38;2;${ink}m${ch}${ESC}[39m${ESC}[49m`
+}
 
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
@@ -264,6 +288,81 @@ const ASCII_PRINTABLE_RE = /^[\x20-\x7e]+$/
  * length 1 but are still produced by IME compositions and must not be
  * fast-echoed.
  */
+/**
+ * Resolves which cursor position `cursorLayout` should be computed from.
+ *
+ * The fast-echo path defers the React `setCur` by 16ms to batch
+ * re-renders during heavy typing. If an unrelated render flushes this
+ * component during that window and the layout used the stale `cur`
+ * React state, the layout effect inside `useDeclaredCursor` would
+ * publish a stale cursor declaration and clobber the Ink-level bump
+ * from `noteCursorAdvance(...)` (the cursor-drift regression closed by
+ * PR #26717's Copilot follow-up). `curRef.current` is always
+ * up-to-date, so it — never the possibly-stale `cur` state — must be
+ * the source of truth here.
+ *
+ * Extracted as a pure function (rather than inlining `curRef.current`
+ * directly at the call site) so the invariant is unit-testable without
+ * mounting Ink/React: construct a scenario where `cur` and
+ * `curRefCurrent` genuinely diverge and assert the layout matches the
+ * fresh ref value, not the stale state.
+ */
+export function resolveCursorLayout(display: string, cur: number, curRefCurrent: number, columns: number) {
+  void cur // intentionally unused for layout — see doc comment above
+
+  return cursorLayout(display, curRefCurrent, columns)
+}
+
+/**
+ * Pure computation for the fast-echo backspace bypass: given the
+ * current value/cursor (already validated by `canFastBackspaceShape`),
+ * returns what the new value/cursor should be, the exact stdout write
+ * ("\b \b"), and the delta to report to Ink's `noteCursorAdvance`.
+ *
+ * Bundling the write + notifier delta into a single return value means
+ * the "every fast-echo write must be paired with a matching
+ * noteCursorAdvance call" invariant is enforced by the return shape
+ * itself (a caller can't apply `write` without also having
+ * `advanceDelta` in hand) rather than by two independent call sites
+ * that happen to sit near each other in source.
+ */
+export function fastBackspaceEffect(
+  current: string,
+  cursor: number
+): { advanceDelta: number; newCursor: number; newValue: string; removed: string; write: string } {
+  const t = prevPos(current, cursor)
+  const removed = current.slice(t, cursor)
+
+  return {
+    advanceDelta: -1,
+    newCursor: t,
+    newValue: current.slice(0, t) + current.slice(cursor),
+    removed,
+    write: '\b \b'
+  }
+}
+
+/**
+ * Pure computation for the fast-echo append bypass: given the current
+ * value/cursor (already validated by `canFastAppendShape`) and the
+ * inserted text, returns the new value/cursor, the exact stdout write
+ * (the inserted text itself), and the delta to report to Ink's
+ * `noteCursorAdvance`. See `fastBackspaceEffect` for why write + delta
+ * are bundled into one return value.
+ */
+export function fastAppendEffect(
+  current: string,
+  cursor: number,
+  text: string
+): { advanceDelta: number; newCursor: number; newValue: string; write: string } {
+  return {
+    advanceDelta: text.length,
+    newCursor: cursor + text.length,
+    newValue: current.slice(0, cursor) + text + current.slice(cursor),
+    write: text
+  }
+}
+
 export function canFastAppendShape(
   current: string,
   cursor: number,
@@ -465,6 +564,7 @@ export function TextInput({
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
+  placeholderColor,
   focus = true
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
@@ -517,19 +617,29 @@ export function TextInput({
   // for layout. The cursorLayout call is cheap (one wrap-text pass
   // over a single-line string in the common case), so dropping useMemo
   // is fine.
-  const layout = cursorLayout(display, curRef.current, columns)
+  const layout = resolveCursorLayout(display, cur, curRef.current, columns)
 
   const boxRef = useDeclaredCursor({
     line: layout.line,
     column: layout.column,
-    active: focus && termFocus && !selected
+    // The placeholder state draws a synthetic cursor (see `rendered`), so the
+    // hardware cursor must not also be declared there — hosts paint it with
+    // their own cursor colors as a solid slab over the first glyph.
+    active: focus && termFocus && !selected && !(!display && !!placeholder)
   })
 
   // Hide the hardware cursor while a selection is active (prevents
   // auto-wrap onto the next row when inverted text fills the column
-  // exactly) or when the terminal loses focus (suppresses the hollow-rect
-  // ghost most terminals draw at the parked position).
-  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+  // exactly), when the terminal loses focus (suppresses the hollow-rect
+  // ghost most terminals draw at the parked position), or while the
+  // placeholder is showing: hosts draw block cursors with their OWN
+  // cursor/cursorAccent colors, which can render as a solid slab that
+  // swallows the first placeholder glyph ("sk me anything…"). The
+  // placeholder state draws its own synthetic cursor instead (the
+  // bubbletea/bubbles textinput pattern: the cursor cell renders the first
+  // placeholder character, styled), so the hint is always fully legible.
+  const placeholderShowing = focus && !display && !!placeholder
+  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus || placeholderShowing)
 
   useEffect(() => {
     if (!hideHardwareCursor || !stdout) {
@@ -545,17 +655,21 @@ export function TextInput({
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
-  // Placeholder text is just a hint, not a selection — render it dim
-  // without inverse styling. In a TTY the hardware cursor parks at column
-  // 0 and visually marks the input start. Non-TTY surfaces still need the
-  // synthetic inverse first-char to draw a cursor at all.
+  // Placeholder text is just a hint, not a selection — render it in the
+  // theme's muted color (SGR dim as fallback). The cursor over an empty
+  // input is SYNTHETIC (bubbles textinput pattern): the first placeholder
+  // character rendered inverse-muted, so the glyph stays legible under the
+  // "cursor" and the block never renders as a host-colored solid slab. The
+  // hardware cursor is hidden for this state (see hideHardwareCursor).
   const rendered = useMemo(() => {
     if (!focus) {
-      return display || dim(placeholder)
+      return display || colorizeHint(placeholder, placeholderColor)
     }
 
     if (!display && placeholder) {
-      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return (
+        hintCursorCell(placeholder[0] ?? ' ', placeholderColor) + colorizeHint(placeholder.slice(1), placeholderColor)
+      )
     }
 
     if (selected) {
@@ -563,7 +677,7 @@ export function TextInput({
     }
 
     return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, selected])
+  }, [cur, display, focus, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
     if (self.current) {
@@ -1080,16 +1194,16 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
         } else if (canFastBackspace(v, c)) {
-          const t = prevPos(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
-          stdout!.write('\b \b')
+          const effect = fastBackspaceEffect(v, c)
+          v = effect.newValue
+          c = effect.newCursor
+          stdout!.write(effect.write)
           // The "\b \b" sequence ends with the cursor one column to the
           // LEFT of where Ink last parked it. Tell Ink so its `displayCursor`
           // (and log-update's relative-move basis on the next frame) stays
           // in sync — otherwise the cursor parks one cell to the right of
           // the caret on the next unrelated re-render.
-          noteCursorAdvance(-1)
+          noteCursorAdvance(effect.advanceDelta)
           commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
 
           return
@@ -1184,12 +1298,15 @@ export function TextInput({
             c = inserted.cursor
           } else {
             const simpleAppend = canFastAppend(v, c, text)
+            const preInsertValue = v
+            const preInsertCursor = c
 
             v = inserted.value
             c = inserted.cursor
 
             if (simpleAppend) {
-              stdout!.write(text)
+              const effect = fastAppendEffect(preInsertValue, preInsertCursor, text)
+              stdout!.write(effect.write)
               // ASCII-printable text advances the physical cursor by exactly
               // text.length cells (canFastAppendShape rejects non-ASCII,
               // wide chars, newlines). Notify Ink so the cached displayCursor
@@ -1197,7 +1314,7 @@ export function TextInput({
               // any unrelated re-render that happens before the 16ms
               // setCur/setParent flush parks the cursor text.length cells
               // too far right (#cursor-drift).
-              noteCursorAdvance(text.length)
+              noteCursorAdvance(effect.advanceDelta)
               commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
 
               return
@@ -1309,6 +1426,8 @@ interface TextInputProps {
   ) => { cursor: number; value: string } | Promise<{ cursor: number; value: string } | null> | null
   onSubmit?: (v: string) => void
   placeholder?: string
+  /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
+  placeholderColor?: string
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

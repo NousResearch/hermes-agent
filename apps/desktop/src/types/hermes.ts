@@ -387,7 +387,7 @@ export interface EnvVarInfo {
   url: null | string
 }
 
-export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'select' | 'text'
 
 export interface MemoryProviderFieldOption {
   description: string
@@ -397,6 +397,9 @@ export interface MemoryProviderFieldOption {
 
 export interface MemoryProviderField {
   description: string
+  group: string
+  info?: string
+  inline: boolean
   is_set: boolean
   key: string
   kind: MemoryProviderFieldKind
@@ -407,9 +410,53 @@ export interface MemoryProviderField {
 }
 
 export interface MemoryProviderConfig {
+  docs_url: string
   fields: MemoryProviderField[]
   label: string
   name: string
+}
+
+export interface CustomEndpoint {
+  api_key_preview?: null | string
+  base_url: string
+  context_length?: null | number
+  discover_models: boolean
+  has_api_key: boolean
+  id: string
+  is_current?: boolean
+  model: string
+  models: string[]
+  name: string
+  source?: string
+}
+
+export interface CustomEndpointsResponse {
+  current: {
+    base_url: string
+    model: string
+    provider: string
+  }
+  endpoints: CustomEndpoint[]
+  id?: string
+  ok?: boolean
+}
+
+export interface CustomEndpointUpdate {
+  api_key?: string
+  base_url: string
+  context_length?: number
+  discover_models?: boolean
+  id?: string
+  make_default?: boolean
+  model: string
+  name: string
+}
+
+export interface CustomEndpointValidationResponse {
+  message: string
+  models: string[]
+  ok: boolean
+  reachable: boolean
 }
 
 export interface MessagingEnvVarInfo {
@@ -476,6 +523,12 @@ export interface HermesConfig {
   display?: {
     personality?: string
     skin?: string
+    interim_assistant_messages?: boolean
+  }
+  desktop?: {
+    repo_scan_enabled?: boolean
+    repo_scan_roots?: string[]
+    repo_scan_exclude_paths?: string[]
   }
   terminal?: {
     cwd?: string
@@ -570,6 +623,7 @@ export interface PaginatedSessions {
 
 export interface RpcEvent<T = unknown> {
   payload?: T
+  profile?: string
   session_id?: string
   type: string
 }
@@ -652,20 +706,34 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  inflight?: null | {
+    assistant?: string
+    streaming?: boolean
+    user?: string
+  }
+  queued?: null | {
+    user?: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
   resumed: string
+  running?: boolean
   session_id: string
+  session_key?: string
+  started_at?: number
+  status?: string
 }
 
 export interface SessionRuntimeInfo {
+  approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  install_warning?: string
   model?: string
   personality?: string
   provider?: string
@@ -776,7 +844,15 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary
     top_skills: AnalyticsSkillEntry[]
   }
+  /** Per-tool-name call counts. Absent on older backends. */
+  tools?: AnalyticsToolEntry[]
   totals: AnalyticsTotals
+}
+
+export interface AnalyticsToolEntry {
+  count: number
+  percentage: number
+  tool: string
 }
 
 export interface AnalyticsSkillEntry {
@@ -812,9 +888,12 @@ export interface CronJob {
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  model?: null | string
   name?: null | string
   next_run_at?: null | string
+  no_agent?: boolean
   prompt?: null | string
+  provider?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
@@ -823,8 +902,10 @@ export interface CronJob {
 
 export interface CronJobCreatePayload {
   deliver?: string
+  model?: string
   name?: string
   prompt: string
+  provider?: string
   schedule: string
 }
 
@@ -837,8 +918,10 @@ export interface CronJobSchedule {
 export interface CronJobUpdates {
   deliver?: string
   enabled?: boolean
+  model?: null | string
   name?: string
   prompt?: string
+  provider?: null | string
   schedule?: string
 }
 
@@ -907,6 +990,10 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  /** Total observed activity (use + view + patch). Absent on older backends. */
+  usage?: number
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
+  provenance?: 'agent' | 'bundled' | 'hub'
 }
 
 export interface ToolsetInfo {
@@ -926,6 +1013,10 @@ export interface ToolEnvVar {
   is_set: boolean
 }
 
+/** Server-computed readiness for a provider picker row. Absent on older
+ *  backends that predate the truthful-readiness endpoint. */
+export type ToolProviderStatus = 'ready' | 'needs_setup' | 'needs_auth' | 'needs_keys'
+
 export interface ToolProvider {
   name: string
   badge: string
@@ -936,7 +1027,25 @@ export interface ToolProvider {
   /** True when this is the provider currently written to config (mirrors the
    *  CLI `hermes tools` active-provider detection). */
   is_active: boolean
+  /** Honest readiness computed server-side (keys ∧ Nous entitlement ∧
+   *  post-setup install state). Optional for older backends. */
+  status?: ToolProviderStatus
+  /** Web toolset only: the backend key written to web.*backend config
+   *  (e.g. 'searxng'). Absent on other toolsets and older backends. */
+  web_backend?: string
+  /** TTS toolset only: the provider key written to tts.provider when this row
+   *  is selected (e.g. 'openai'). Doubles as the config section that holds the
+   *  provider's voice/model settings (tts.<key>.*). Absent on other toolsets
+   *  and older backends. */
+  tts_provider?: string
+  /** Web toolset only: capabilities this backend can serve. Search-only
+   *  providers (ddgs, brave-free) report ['search']. */
+  capabilities?: WebCapability[]
 }
+
+/** A web toolset capability — the runtime dispatches web_search and
+ *  web_extract to independently configurable backends. */
+export type WebCapability = 'search' | 'extract'
 
 export interface ToolsetConfig {
   name: string
@@ -944,6 +1053,35 @@ export interface ToolsetConfig {
   providers: ToolProvider[]
   /** Name of the currently active provider, or null if none is configured. */
   active_provider: string | null
+  /** Web toolset only: backend the web_search tool resolves to right now
+   *  (web.search_backend → web.backend → credential auto-detect). */
+  active_search_backend?: string | null
+  /** Web toolset only: backend the web_extract tool resolves to right now. */
+  active_extract_backend?: string | null
+}
+
+/** Health status of a terminal execution backend row.
+ *
+ *  `ready` — usable now; `needs_setup` — selectable but missing a dependency
+ *  or credential (detail says which); `unavailable` — the probe itself failed. */
+export type TerminalBackendStatus = 'ready' | 'needs_setup' | 'unavailable'
+
+/** One row from `GET /api/tools/terminal/backends`. */
+export interface TerminalBackendInfo {
+  name: string
+  label: string
+  description: string
+  /** True when this backend is the current `terminal.backend` config value. */
+  active: boolean
+  status: TerminalBackendStatus
+  /** Setup guidance / probe detail for non-ready rows (empty when ready). */
+  detail: string
+}
+
+/** Shape of `GET /api/tools/terminal/backends`. */
+export interface TerminalBackendsResponse {
+  active: string
+  backends: TerminalBackendInfo[]
 }
 
 /** One model row from a toolset backend's catalog (image/video gen). */
@@ -1108,6 +1246,8 @@ export interface AuxiliaryModelsResponse {
 export interface MoaModelSlot {
   provider: string
   model: string
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string
 }
 
 export interface MoaConfigResponse {
@@ -1122,6 +1262,10 @@ export interface MoaConfigResponse {
       max_tokens: number
       reference_models: MoaModelSlot[]
       reference_temperature: number
+      /** Optional advisor output cap — round-tripped, not edited here. */
+      reference_max_tokens?: number | null
+      /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+      fanout?: string
     }
   >
   aggregator: MoaModelSlot
@@ -1161,6 +1305,9 @@ export interface SkillHubSource {
   label: string
   available?: boolean
   rate_limited?: boolean
+  // False when the centralized index already covers this source, so the UI's
+  // per-source search fan-out skips it (avoids redundant external API calls).
+  searchable?: boolean
 }
 
 /** A searchable/installable hub skill from `GET /api/skills/hub/search`. */

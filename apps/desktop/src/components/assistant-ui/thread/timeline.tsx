@@ -16,7 +16,7 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 const HOVER_CLOSE_MS = 140
 
 const ROW_CLASS =
-  'relative flex w-full min-w-0 max-w-full cursor-pointer select-none overflow-hidden rounded-md px-2 py-1 text-left outline-hidden transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none'
+  'row-hover relative flex w-full min-w-0 max-w-full select-none overflow-hidden rounded-md px-2 py-1 text-left outline-hidden'
 
 // Surface (border-color/bg/shadow/blur) comes from the shared
 // `[data-slot='thread-timeline-popover']` rule in styles.css, so it's 1:1 with
@@ -206,7 +206,13 @@ export const ThreadTimeline: FC = () => {
       }
     }
 
-    compute()
+    // Initial compute rides the same rAF batching as scroll. A sync call here
+    // reads getBoundingClientRect for every user message while other commit
+    // effects are still writing styles — on a session switch that interleaving
+    // forces a full reflow per read on a large transcript. One rAF later the
+    // reads batch into a single layout pass, and back-to-back entries updates
+    // (prefetch paint, then resume reconcile) coalesce into one compute.
+    onScroll()
     viewport.addEventListener('scroll', onScroll, { passive: true })
 
     return () => {

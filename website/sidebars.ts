@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/secrets/index',
             'user-guide/secrets/bitwarden',
+            'user-guide/secrets/onepassword',
           ],
         },
         'user-guide/sessions',
@@ -143,7 +144,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/apple/apple-apple-reminders',
                     'user-guide/skills/bundled/apple/apple-findmy',
                     'user-guide/skills/bundled/apple/apple-imessage',
-                    'user-guide/skills/bundled/apple/apple-macos-computer-use',
                   ],
                 },
                 {
@@ -156,6 +156,15 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'computer-use',
+                  key: 'skills-bundled-computer-use',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/computer-use/computer-use-computer-use',
                   ],
                 },
                 {
@@ -225,6 +234,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'hermes-desktop-plugins',
+                  key: 'skills-bundled-hermes-desktop-plugins',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/hermes-desktop-plugins/hermes-desktop-plugins-hermes-desktop-plugins',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'media',
                   key: 'skills-bundled-media',
                   collapsed: true,
@@ -266,14 +284,17 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
                     'user-guide/skills/bundled/productivity/productivity-maps',
                     'user-guide/skills/bundled/productivity/productivity-nano-pdf',
                     'user-guide/skills/bundled/productivity/productivity-notion',
                     'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
+                    'user-guide/skills/bundled/productivity/productivity-pdf',
                     'user-guide/skills/bundled/productivity/productivity-petdex',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
+                    'user-guide/skills/bundled/productivity/productivity-xlsx',
                   ],
                 },
                 {
@@ -388,6 +409,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
                     'user-guide/skills/optional/creative/creative-pixel-art',
+                    'user-guide/skills/optional/creative/creative-unreal-mcp',
                   ],
                 },
                 {
@@ -464,6 +486,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/mcp/mcp-fastmcp',
+                    'user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway',
                     'user-guide/skills/optional/mcp/mcp-mcporter',
                   ],
                 },
@@ -569,6 +592,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/security/security-godmode',
                     'user-guide/skills/optional/security/security-oss-forensics',
                     'user-guide/skills/optional/security/security-sherlock',
+                    'user-guide/skills/optional/security/security-unbroker',
                     'user-guide/skills/optional/security/security-web-pentest',
                   ],
                 },
@@ -589,6 +613,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-web-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
                   ],
                 },
@@ -690,7 +715,6 @@ const sidebars: SidebarsConfig = {
         'guides/use-mcp-with-hermes',
         'guides/use-soul-with-hermes',
         'guides/use-voice-mode-with-hermes',
-        'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
         'guides/cron-script-only',
         'guides/automation-blueprints',
@@ -715,6 +739,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'developer-guide/contributing',
+        'developer-guide/worktree-ui-dev',
         {
           type: 'category',
           label: 'Architecture',
@@ -736,13 +761,23 @@ const sidebars: SidebarsConfig = {
             'developer-guide/adding-tools',
             'developer-guide/adding-providers',
             'developer-guide/adding-platform-adapters',
-            'developer-guide/memory-provider-plugin',
-            'developer-guide/context-engine-plugin',
-            'developer-guide/model-provider-plugin',
-            'developer-guide/image-gen-provider-plugin',
-            'developer-guide/video-gen-provider-plugin',
-            'developer-guide/web-search-provider-plugin',
-            'developer-guide/plugin-llm-access',
+            {
+              type: 'category',
+              label: 'Plugins',
+              link: {type: 'doc', id: 'developer-guide/plugins/index'},
+              items: [
+                'developer-guide/plugin-llm-access',
+                'developer-guide/desktop-plugin-sdk',
+                'developer-guide/memory-provider-plugin',
+                'developer-guide/context-engine-plugin',
+                'developer-guide/secret-source-plugin',
+                'developer-guide/model-provider-plugin',
+                'developer-guide/image-gen-provider-plugin',
+                'developer-guide/video-gen-provider-plugin',
+                'developer-guide/web-search-provider-plugin',
+                'developer-guide/browser-provider-plugin',
+              ],
+            },
             'developer-guide/creating-skills',
             'developer-guide/extending-the-cli',
           ],

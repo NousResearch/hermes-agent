@@ -96,7 +96,7 @@ npm run test:watch
 - `types.ts` — `SlashCommand` interface and `SlashRunCtx` execution context (gateway rpc, transcript helpers, session refs, stale-guard)
 - `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → billing → credits → session → ops → setup → debug) and exposes `findSlashCommand(name)` for case-insensitive lookup
 - `commands/core.ts` — general TUI commands
-- `commands/billing.ts` — `/billing`: manage Nous terminal billing — buy credits, auto-reload, limits
+- `commands/billing.ts` — `/billing`: manage Nous remote spending — buy credits, auto-reload, limits
 - `commands/credits.ts` — `/credits`
 - `commands/session.ts` — session and agent commands
 - `commands/ops.ts` — operations commands
@@ -231,7 +231,7 @@ The following commands are handled directly by the TUI client. Unrecognized comm
 `/status`, `/title`, `/fortune`, `/redraw`, `/terminal-setup`
 
 ### Billing (`billing.ts`)
-`/billing` — manage Nous terminal billing — buy credits, auto-reload, limits
+`/billing` — manage Nous remote spending — buy credits, auto-reload, limits
 
 ### Session (`session.ts`)
 `/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
@@ -287,7 +287,9 @@ Primary event types the client handles today:
 | `clarify.request`          | `{ question, choices?, request_id }`                                        |
 | `approval.request`         | `{ command, description, allow_permanent? }`                                |
 | `sudo.request`             | `{ request_id }`                                                            |
+| `sudo.expire`              | `{ request_id }` clears a timed-out sudo prompt                             |
 | `secret.request`           | `{ prompt, env_var, request_id }`                                           |
+| `secret.expire`            | `{ request_id }` clears a timed-out secret prompt                           |
 | `background.complete`      | `{ task_id, text }`                                                         |
 | `billing.step_up.verification` | `{ verification_url, user_code }`                                       |
 | `review.summary`           | `{ text }`                                                                  |
@@ -364,7 +366,7 @@ ui-tui/
         types.ts                    SlashCommand interface and SlashRunCtx execution context
         registry.ts                 SLASH_COMMANDS assembly and findSlashCommand lookup
         commands/
-          billing.ts                /billing — manage Nous terminal billing
+          billing.ts                /billing — manage Nous remote spending
           core.ts                   general TUI commands
           credits.ts                /credits
           debug.ts                  /heapdump, /mem

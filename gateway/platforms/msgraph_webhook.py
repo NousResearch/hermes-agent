@@ -34,6 +34,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
 DEFAULT_MAX_SEEN_RECEIPTS = 5000
+DEFAULT_MAX_BODY_BYTES = 1_048_576
 NotificationScheduler = Callable[[Dict[str, Any], MessageEvent], Awaitable[None] | None]
 
 
@@ -62,6 +63,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._client_state: Optional[str] = self._string_or_none(extra.get("client_state"))
         self._max_seen_receipts = max(
             1, int(extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS))
+        )
+        self._max_body_bytes = max(
+            1, int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
         )
         self._allowed_source_networks: list[ipaddress._BaseNetwork] = (
             self._parse_allowed_source_cidrs(extra.get("allowed_source_cidrs"))
@@ -152,7 +156,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             )
             return False
 
-        app = web.Application()
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
         app.router.add_post(self._webhook_path, self._handle_notification)
@@ -229,8 +233,24 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(text=validation_token, content_type="text/plain")
 
         try:
-            body = await request.json()
+            content_length = request.content_length
         except Exception:
+            content_length = None
+        if content_length is not None and content_length > self._max_body_bytes:
+            return web.Response(status=413)
+
+        try:
+            raw_body = await request.read()
+        except Exception:
+            return web.Response(status=400)
+        if len(raw_body) > self._max_body_bytes:
+            return web.Response(status=413)
+
+        try:
+            body = json.loads(raw_body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return web.Response(status=400)
+        if not isinstance(body, dict):
             return web.Response(status=400)
 
         notifications = body.get("value")
@@ -338,7 +358,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False
-        return hmac.compare_digest(provided, expected)
+        # Compare as bytes: ``compare_digest`` raises TypeError on a str with
+        # non-ASCII characters, and clientState comes from the request body.
+        return hmac.compare_digest(provided.encode(), expected.encode())
 
     def _has_seen_receipt(self, receipt_key: str) -> bool:
         return receipt_key in self._seen_receipts

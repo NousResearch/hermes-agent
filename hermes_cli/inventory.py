@@ -52,6 +52,7 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    excluded_providers: list = None
 
     def with_overrides(
         self,
@@ -96,12 +97,14 @@ def load_picker_context() -> ConfigContext:
         current_provider = ""
         current_base_url = ""
     raw = cfg.get("providers")
+    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
+        excluded_providers=excluded if isinstance(excluded, list) else [],
     )
 
 
@@ -111,6 +114,7 @@ def load_picker_context() -> ConfigContext:
 def build_models_payload(
     ctx: ConfigContext,
     *,
+    explicit_only: bool = False,
     include_unconfigured: bool = False,
     picker_hints: bool = False,
     canonical_order: bool = False,
@@ -118,12 +122,18 @@ def build_models_payload(
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
     refresh: bool = False,
+    probe_custom_providers: bool = True,
+    probe_current_custom_provider: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
 
     Flags:
+    - ``explicit_only``: keep only providers the user explicitly configured
+      (current provider, providers from config, or providers backed by
+      provider-specific env vars). This hides ambient / auto-seeded
+      credentials from desktop chat pickers.
     - ``include_unconfigured``: append ``CANONICAL_PROVIDERS`` rows that
       ``list_authenticated_providers`` didn't emit (TUI uses this to show
       the full provider universe in the picker).
@@ -149,6 +159,15 @@ def build_models_payload(
       re-fetches its live catalog. Set only for an explicit user-triggered
       "refresh models" action; normal picker opens leave it false to stay
       snappy on the 1h cache.
+    - ``probe_custom_providers``: allow saved custom/provider endpoints to
+      run live ``/models`` discovery while building the payload. GUI picker
+      opens should leave this false unless the user explicitly refreshes; the
+      row can still render its configured model immediately, and slow/offline
+      local endpoints no longer block the dialog.
+    - ``probe_current_custom_provider``: when ``probe_custom_providers`` is
+      false, still live-probe the current custom endpoint. This keeps normal
+      GUI/TUI picker opens fast while making the active custom provider's model
+      list match the classic CLI picker.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -161,11 +180,25 @@ def build_models_payload(
         force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
         refresh=refresh,
+        probe_custom_providers=probe_custom_providers,
+        probe_current_custom_provider=probe_current_custom_provider,
+        excluded_providers=ctx.excluded_providers or [],
     )
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
         rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
+    if explicit_only:
+        rows = _filter_explicit_provider_rows(rows, ctx)
+        # Desktop chat pickers request the explicit subset without the full
+        # unconfigured provider universe. If the configured current provider
+        # has lost its credential, list_authenticated_providers() omits it;
+        # keep that one row visible so the UI can show the saved selection and
+        # a re-auth affordance instead of appearing to jump to another provider.
+        rows = list(rows) + _append_unconfigured_rows(
+            rows, ctx, current_only=True
+        )
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -271,15 +304,61 @@ def _apply_capabilities(rows: list[dict]) -> None:
 # ─── Internal: row post-processing ──────────────────────────────────────
 
 
-def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
-    """Build skeleton rows for canonical providers missing from ``rows``."""
+def _append_unconfigured_rows(
+    rows: list[dict],
+    ctx: ConfigContext,
+    *,
+    current_only: bool = False,
+) -> list[dict]:
+    """Build fallback rows for canonical providers missing from ``rows``.
+
+    Most missing canonical providers become empty setup skeletons. The one
+    exception is the *current* configured provider: if config.yaml still points
+    at it but credentials are presently unavailable, keep a visible row carrying
+    the saved model so GUI pickers don't silently snap to some other provider.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
+    cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if current_only and entry.slug.lower() != cur:
+            continue
+        if entry.slug.lower() == cur:
+            cfg = PROVIDER_REGISTRY.get(entry.slug)
+            auth_type = cfg.auth_type if cfg else "api_key"
+            key_env = (
+                cfg.api_key_env_vars[0]
+                if (cfg and cfg.api_key_env_vars)
+                else ""
+            )
+            warning = (
+                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
+                "Showing the saved model only."
+                if auth_type == "api_key" and key_env
+                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
+                "Showing the saved model only."
+            )
+            extras.append(
+                {
+                    "slug": entry.slug,
+                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+                    "is_current": True,
+                    "is_user_defined": False,
+                    "models": [cur_model] if cur_model else [],
+                    "total_models": 1 if cur_model else 0,
+                    "source": "configured-current",
+                    "authenticated": False,
+                    "auth_type": auth_type,
+                    "key_env": key_env,
+                    "warning": warning,
+                }
+            )
             continue
         extras.append(
             {
@@ -293,6 +372,85 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
             }
         )
     return extras
+
+
+def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+    """Keep only rows backed by explicit user configuration.
+
+    ``list_authenticated_providers`` intentionally discovers ambient / auto-
+    seeded credentials (for example GitHub CLI -> Copilot). Desktop chat model
+    pickers want the narrower subset the user explicitly configured for Hermes.
+    """
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    current_slug = str(ctx.current_provider or "").strip().lower()
+    kept: list[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        if not slug:
+            continue
+        if row.get("is_user_defined"):
+            kept.append(row)
+            continue
+        if current_slug and slug == current_slug:
+            kept.append(row)
+            continue
+        if slug == "moa":
+            # MoA is a virtual routing mode, not an independently configured
+            # provider. Hide it from explicit-only pickers unless it is the
+            # current provider (handled above) or the user explicitly wrote an
+            # enabled MoA preset into config.yaml. Use raw config so the
+            # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
+            if _raw_config_has_enabled_moa_preset():
+                kept.append(row)
+            continue
+        if is_provider_explicitly_configured(slug):
+            kept.append(row)
+    return kept
+
+
+def _raw_config_has_enabled_moa_preset() -> bool:
+    """Return True when the user's raw config explicitly enables MoA.
+
+    ``load_config()`` includes ``DEFAULT_CONFIG["moa"].presets.default`` for
+    everyone. Explicit-only model pickers must not treat that default as a user
+    choice, but they should keep MoA visible once the user has saved at least
+    one enabled preset (or an older flat MoA config) in their own config.yaml.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+    except Exception:
+        return False
+
+    if not isinstance(raw, dict):
+        return False
+    moa = raw.get("moa")
+    if not isinstance(moa, dict):
+        return False
+
+    presets = moa.get("presets")
+    if isinstance(presets, dict):
+        for name, preset in presets.items():
+            if not str(name or "").strip():
+                continue
+            if not isinstance(preset, dict):
+                return True
+            if preset.get("enabled", True):
+                return True
+        return False
+
+    legacy_keys = {
+        "reference_models",
+        "aggregator",
+        "reference_temperature",
+        "aggregator_temperature",
+        "max_tokens",
+        "reference_max_tokens",
+        "fanout",
+    }
+    return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:

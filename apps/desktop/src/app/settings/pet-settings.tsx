@@ -8,6 +8,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
@@ -143,7 +144,7 @@ export function PetSettings() {
                     {copy.unreachable}
                   </p>
                 ) : shown.length === 0 ? (
-                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  <p className="wrap-anywhere text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                     {copy.noMatch(query)}
                   </p>
                 ) : (
@@ -370,17 +371,18 @@ function PetAction({
   onClick: () => void
 }) {
   return (
-    <button
-      aria-label={label}
-      className={cn(
-        'grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) backdrop-blur-sm transition',
-        danger ? 'hover:text-(--ui-red)' : 'hover:text-foreground'
-      )}
-      onClick={onClick}
-      title={label}
-      type="button"
-    >
-      {icon}
-    </button>
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className={cn(
+          'grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) backdrop-blur-sm transition',
+          danger ? 'hover:text-(--ui-red)' : 'hover:text-foreground'
+        )}
+        onClick={onClick}
+        type="button"
+      >
+        {icon}
+      </button>
+    </Tip>
   )
 }

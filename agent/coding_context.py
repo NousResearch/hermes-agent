@@ -55,12 +55,12 @@ import json
 import logging
 import os
 import re
-import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_git_probe
 
 logger = logging.getLogger("hermes.coding_context")
 
@@ -412,10 +412,18 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     """
     current = cwd.resolve()
     home = _home()
+    # Shared world-writable temp roots are never project roots: a stray
+    # manifest in /tmp (left by any process) must not flip every session
+    # whose cwd lives under the temp dir into the coding posture. Same
+    # reasoning as the $HOME skip below.
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
     for depth, parent in enumerate([current, *current.parents]):
         if depth > 6:
             break
-        if parent == home:
+        if parent == home or (temp_root is not None and parent == temp_root):
             continue
         for marker in _PROJECT_MARKERS:
             if (parent / marker).exists():
@@ -680,18 +688,14 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            **_popen_kwargs,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure.
+
+    Uses the shared :func:`bounded_git_probe` so the post-kill cleanup is bounded
+    on Windows — a plain ``subprocess.run(timeout=...)`` here deadlocked the agent
+    turn inside ``build_coding_workspace_block`` when a killed git left a suspended
+    descendant holding the pipe handles (issue #66037).
+    """
+    return bounded_git_probe(["git", "-C", str(cwd), *args], timeout=_GIT_TIMEOUT)
 
 
 def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:

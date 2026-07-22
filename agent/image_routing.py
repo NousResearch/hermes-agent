@@ -267,10 +267,12 @@ def _resolve_inference_base_url(
 ) -> str:
     """Best-effort base URL for the active inference provider."""
     try:
-        from agent.auxiliary_client import _RUNTIME_MAIN_BASE_URL
+        from agent.auxiliary_client import _runtime_main_value
 
-        runtime = str(_RUNTIME_MAIN_BASE_URL or "").strip()
-        if runtime:
+        runtime = str(_runtime_main_value("base_url") or "").strip()
+        runtime_provider = str(_runtime_main_value("provider") or "").strip().lower()
+        requested_provider = str(provider or "").strip().lower()
+        if runtime and (not requested_provider or requested_provider == runtime_provider):
             return runtime
     except Exception:
         pass
@@ -632,6 +634,17 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     caller reports those paths in ``skipped`` and the rest of the turn
     proceeds.
     """
+    try:
+        from agent.file_safety import raise_if_read_blocked
+
+        raise_if_read_blocked(str(path))
+    except ValueError as exc:
+        logger.warning("image_routing: blocked local image attachment %s -- %s", path, exc)
+        return None
+    except Exception:
+        # Keep attachment routing best-effort if the guard itself is unavailable.
+        pass
+
     try:
         raw = path.read_bytes()
     except Exception as exc:

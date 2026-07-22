@@ -8,6 +8,47 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
+    """A saved provider must not resolve as another authenticated provider."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "deepseek", "default": "deepseek-v4-pro"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda _provider: {
+            "provider": "deepseek",
+            "api_key": "",
+            "base_url": "https://api.deepseek.com/v1",
+            "source": "default",
+        },
+    )
+
+    with pytest.raises(rp.AuthError, match="No usable credentials.*deepseek"):
+        rp.resolve_runtime_provider()
+
+
+def test_noauth_lmstudio_still_resolves(monkeypatch):
+    """The fail-closed key guard preserves LM Studio's no-auth contract."""
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda _provider: {
+            "provider": "lmstudio",
+            "api_key": "lmstudio-noauth",
+            "base_url": "http://localhost:1234/v1",
+            "source": "default",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_key"]
+
+
 def _fake_invoke_jwt(ttl_seconds=3600):
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(
@@ -1111,6 +1152,25 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert resolved["api_key"] == "nous-runtime-key"
     assert resolved["requested_provider"] == "nous"
+
+
+def test_disabled_named_custom_provider_is_not_compatibility_fallback(monkeypatch):
+    """Disabled modern entries stay unavailable through the legacy projection."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "route-key": {
+                    "name": "Route Key",
+                    "api": "https://disabled.example/v1",
+                    "enabled": False,
+                }
+            }
+        },
+    )
+
+    assert rp._get_named_custom_provider("custom:route-key") is None
 
 
 def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):

@@ -196,6 +196,17 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.gmi-serving.com/v1",
         base_url_env_var="GMI_BASE_URL",
     ),
+    "fireworks": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("FIREWORKS_API_KEY",),
+        base_url_override="https://api.fireworks.ai/inference/v1",
+    ),
+    "upstage": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("UPSTAGE_API_KEY",),
+        base_url_override="https://api.upstage.ai/v1",
+        base_url_env_var="UPSTAGE_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
@@ -343,6 +354,13 @@ ALIASES: Dict[str, str] = {
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
 
+    # fireworks
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
+
+    # upstage
+    "solar": "upstage",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -367,6 +385,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "upstage": "Upstage Solar",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
@@ -530,44 +549,60 @@ def is_routing_aggregator(provider: str) -> bool:
     return is_aggregator(provider_norm)
 
 
+def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
+    """Return the wire protocol a specific endpoint *requires*, or None.
+
+    Some hosts only accept one API mode and reject the others outright:
+      - api.openai.com only accepts the Responses API for its (reasoning)
+        models when tools + reasoning are in play (chat/completions 400s).
+      - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
+      - Kimi's ``/coding`` endpoint speaks native Messages.
+      - AWS Bedrock runtime hosts speak Converse.
+
+    These are *mandatory* — a session carrying a stale api_mode (e.g. a
+    /model switch that kept the previous provider's ``chat_completions``)
+    must be overridden to the host's required mode, not merely filled in
+    when empty. Generic / unknown endpoints return None so an explicitly
+    configured api_mode on them is never clobbered.
+    """
+    if not base_url:
+        return None
+    url_lower = base_url.rstrip("/").lower()
+    hostname = base_url_hostname(base_url)
+    # Exact-hostname matching only — never bare substring — so lookalike hosts
+    # (api.openai.com.attacker.test) and path-segment spoofs
+    # (proxy.test/api.openai.com/v1) are NOT treated as the real endpoint. (#32243)
+    if hostname == "api.kimi.com" and "/coding" in url_lower:
+        return "anthropic_messages"
+    if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
+        return "anthropic_messages"
+    if hostname == "api.openai.com":
+        return "codex_responses"
+    if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
+        return "bedrock_converse"
+    return None
+
+
 def determine_api_mode(provider: str, base_url: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
     Resolution order:
-      1. Known provider → transport → TRANSPORT_TO_API_MODE.
-      2. URL heuristics for unknown / custom providers.
-      3. Default: 'chat_completions'.
+      1. Host-mandated mode (special endpoints that only accept one protocol).
+      2. Known provider → transport → TRANSPORT_TO_API_MODE.
+      3. Direct provider checks (bedrock).
+      4. Default: 'chat_completions'.
     """
+    mandated = host_mandated_api_mode(base_url)
+    if mandated is not None:
+        return mandated
+
     pdef = get_provider(provider)
     if pdef is not None:
-        # Even for known providers, check URL heuristics for special endpoints
-        # (e.g. kimi /coding endpoint needs anthropic_messages even on 'custom')
-        if base_url:
-            url_lower = base_url.rstrip("/").lower()
-            if "api.kimi.com/coding" in url_lower:
-                return "anthropic_messages"
-            if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
-                return "anthropic_messages"
-            if "api.openai.com" in url_lower:
-                return "codex_responses"
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
     # Direct provider checks for providers not in HERMES_OVERLAYS
     if provider == "bedrock":
         return "bedrock_converse"
-
-    # URL-based heuristics for custom / unknown providers
-    if base_url:
-        url_lower = base_url.rstrip("/").lower()
-        hostname = base_url_hostname(base_url)
-        if url_lower.endswith("/anthropic") or hostname == "api.anthropic.com":
-            return "anthropic_messages"
-        if hostname == "api.kimi.com" and "/coding" in url_lower:
-            return "anthropic_messages"
-        if hostname == "api.openai.com":
-            return "codex_responses"
-        if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
-            return "bedrock_converse"
 
     return "chat_completions"
 
@@ -729,6 +764,36 @@ def resolve_provider_full(
         user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
+
+    # 0.5 Exact Hermes provider IDs must win over LOSSY alias collapsing.
+    # Example: kimi-coding-cn should stay distinct from kimi-coding instead of
+    # normalizing through the shared models.dev alias "kimi-for-coding".
+    # A collapse is lossy only when MULTIPLE distinct registry providers
+    # normalize to the same canonical name — resolving through the alias
+    # would then lose which one the caller meant. Single-entry rewrites
+    # (e.g. "copilot" → "github-copilot") are correct routing and must keep
+    # resolving through the built-in chain below so overlay transports apply.
+    if canonical != raw:
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+            _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
+            if _pcfg is not None:
+                _collapsed_siblings = [
+                    _rid
+                    for _rid in _AUTH_PROVIDER_REGISTRY
+                    if normalize_provider(_rid) == canonical
+                ]
+                if len(_collapsed_siblings) > 1:
+                    return ProviderDef(
+                        id=_pcfg.id,
+                        name=_pcfg.name,
+                        transport="openai_chat",
+                        api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()),
+                        base_url=_pcfg.inference_base_url or "",
+                        source="hermes-auth-registry",
+                    )
+        except Exception:
+            pass
 
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)

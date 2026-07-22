@@ -1069,6 +1069,58 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
+# ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
+#
+# The durable source of truth for "which directory is THIS session working
+# in". Keyed by the raw session/task key (NOT the collapsed container id):
+# the terminal env is shared across sessions, so any cwd state stored on the
+# env is a global mutable timeshared between sessions — the root cause of the
+# wrong-worktree bug class (env.cwd_owner stamping, _last_known_cwd, and the
+# ownership ladder in file_tools are all patches over that misplacement).
+#
+# Step 1 (this change): dual-write only. Every site that learns a session's
+# live cwd (post-command tracking, cwd-override registration) also records it
+# here. Readers still use the legacy env.cwd ladder. Later steps flip
+# file_tools and _resolve_command_cwd to read this store, then delete the
+# env-side tracking + ownership guards.
+_session_cwd: Dict[str, str] = {}
+_session_cwd_lock = threading.Lock()
+
+
+def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
+    """Record *cwd* as the working directory of *session_key*.
+
+    Called wherever a session's live cwd becomes known: after a terminal
+    command completes (the env's post-command tracking has just parsed the
+    resulting cwd) and when a surface registers a workspace cwd override.
+    Empty/None session keys collapse to ``"default"`` (single-session CLI).
+    Non-string / empty cwds are ignored.
+    """
+    if not isinstance(cwd, str) or not cwd.strip():
+        return
+    key = str(session_key or "default")
+    with _session_cwd_lock:
+        if _session_cwd.get(key) != cwd:
+            _session_cwd[key] = cwd
+
+
+def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
+    """Return the recorded working directory for *session_key*, if any.
+
+    No fallback chain here on purpose: callers decide what an absent record
+    means (config default, TERMINAL_CWD seed, process cwd). ``None``/empty
+    keys read the ``"default"`` record.
+    """
+    key = str(session_key or "default")
+    with _session_cwd_lock:
+        return _session_cwd.get(key)
+
+
+def clear_session_cwd(session_key: str) -> None:
+    """Drop a session's cwd record (session teardown)."""
+    with _session_cwd_lock:
+        _session_cwd.pop(session_key, None)
+
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
@@ -1090,15 +1142,14 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
-    # mid-session via ``session/load`` / ``session/resume``) must take effect on
-    # the cached env too. ``terminal_tool`` resolves the per-command cwd as
-    # ``workdir > env.cwd > config/override cwd`` so that ordinary in-session
-    # ``cd`` state is preserved; without syncing here the override would sit
-    # below the (already-set) ``env.cwd`` and be silently ignored once any
-    # command has run. Pushing it onto the live env keeps ``cd`` tracking intact
-    # while letting an explicit ACP cwd change win, as the client expects.
+    # mid-session via ``session/load`` / ``session/resume``) must take effect
+    # immediately. The session record is what commands resolve against;
+    # the live env's cwd is also updated so env-side seeding stays consistent.
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
+        # A registered workspace cwd IS the session's working directory until
+        # a `cd` changes it.
+        record_session_cwd(task_id, new_cwd)
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
         # isolation-keyed rollouts. Try the raw id first, then the container id,
@@ -1118,6 +1169,7 @@ def clear_task_env_overrides(task_id: str):
     Called during cleanup to avoid stale entries accumulating.
     """
     _task_env_overrides.pop(task_id, None)
+    clear_session_cwd(task_id)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1216,6 +1268,22 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
 
+def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
+    """Return True when *cwd* is a tilde path that the remote SSH shell must
+    expand itself, so the Hermes host/container must NOT ``expanduser`` it.
+
+    SSH ``cwd`` is interpreted by the *remote* shell (``cd ~`` / ``cd ~/x``
+    over ``ssh ... bash -c``). Expanding ``~`` locally would rewrite it to the
+    Hermes host HOME (often ``/opt/data`` under Docker) and inject a
+    nonexistent path into the remote session. Only ``~`` / ``~/...`` on the
+    ``ssh`` backend qualify; absolute remote paths still pass through
+    unchanged, and every other backend keeps expanding locally.
+    """
+    if (backend or "").strip().lower() != "ssh":
+        return False
+    return cwd == "~" or cwd.startswith("~/")
+
+
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """Return True if *cwd* is a host/relative path that won't work as the
     working directory inside a container sandbox.
@@ -1237,10 +1305,52 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+# One-shot guard for the config-fallback bridge below.  Purely an
+# optimization: after the first attempt either TERMINAL_ENV is set (bridge
+# succeeded — merged config always carries terminal.backend) or the import
+# failed and retrying every call would be wasted work.
+_terminal_config_bridge_attempted = False
+
+
+def _ensure_terminal_env_bridged() -> None:
+    """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
+
+    terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*).
+    The CLI (cli.py ``env_mappings``), the gateway (gateway/run.py
+    ``_terminal_env_map``), and TUI/dashboard PTY launches
+    (``apply_terminal_config_to_env``) bridge ``terminal.*`` config into env
+    vars at startup — but processes that skip all of those paths (``hermes
+    serve`` / the Desktop app backend's in-process agents, the desktop cron
+    ticker, ACP) used to silently fall back to the local backend even when
+    config.yaml selects ``terminal.backend: docker``, running commands on the
+    host the user intended to sandbox (#63141, #54449, #61115, #65696).
+
+    Explicit env always wins: when TERMINAL_ENV is already set (a launcher's
+    bridge or the user's .env made a deliberate choice) this is a no-op.  The
+    config bridge only fills the unset case, so it changes an accidental
+    default — never an explicit selection.
+    """
+    global _terminal_config_bridge_attempted
+    if "TERMINAL_ENV" in os.environ or _terminal_config_bridge_attempted:
+        return
+    _terminal_config_bridge_attempted = True
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        # env=None targets os.environ inside the helper; override=False keeps
+        # any already-set TERMINAL_* values (e.g. from .env) authoritative.
+        apply_terminal_config_to_env(env=None, override=False)
+    except Exception:
+        # Never let a config problem take the terminal tool down — the
+        # historical local default still applies.
+        logger.debug("terminal config → env fallback bridge failed", exc_info=True)
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
+    _ensure_terminal_env_bridged()
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
@@ -1286,7 +1396,7 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if cwd:
+    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
@@ -1341,6 +1451,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
@@ -1401,6 +1512,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
     docker_extra_args = cc.get("docker_extra_args", [])
+    docker_network = cc.get("docker_network", True)
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -1423,6 +1535,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             forward_env=docker_forward_env,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
+            network=docker_network,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
         )
@@ -1967,25 +2080,21 @@ def _resolve_notification_flag_conflict(
 def _resolve_command_cwd(
     *,
     workdir: Optional[str],
-    env: Any,
     default_cwd: str,
+    session_key: Optional[str] = None,
 ) -> str:
-    """Return the cwd for a command, preferring the live session cwd.
+    """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
-    ``terminal_tool`` historically re-sent the init-time/config cwd on every
-    call. That broke session-local ``cd`` state: the environment tracked the
-    new directory in ``env.cwd``, but foreground/background calls kept forcing
-    the old cwd back through ``env.execute(..., cwd=...)``. Explicit
-    ``workdir=`` must still override everything.
+    Otherwise the session's own cwd RECORD (``get_session_cwd``) wins — it is
+    written after every completed command for this session, so it IS the
+    session's ``cd`` state, with no shared-env ambiguity: another session's
+    ``cd`` lands in another record and can't affect us. A session with no
+    record yet (first command) runs in ``default_cwd`` (config/override cwd),
+    which is also what seeds a fresh environment.
     """
     if workdir:
         return workdir
-
-    live_cwd = getattr(env, "cwd", None)
-    if isinstance(live_cwd, str) and live_cwd.strip():
-        return live_cwd
-
-    return default_cwd
+    return get_session_cwd(session_key) or default_cwd
 
 
 def terminal_tool(
@@ -2074,7 +2183,7 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
         # A per-task cwd override (registered by the gateway/TUI for workspace
         # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
         # config["cwd"] was already sanitized for container backends in
@@ -2127,6 +2236,7 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
+        env = None
         with _env_lock:
             # Prefer the collapsed container id, but fall back to an env cached
             # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
@@ -2192,6 +2302,7 @@ def terminal_tool(
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                                 "docker_extra_args": config.get("docker_extra_args", []),
+                                "docker_network": config.get("docker_network", True),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
                             }
@@ -2227,6 +2338,16 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
+        if env is None:
+            # Unreachable in practice (either the cached branch or the creation
+            # branch assigned env above); guard for type-safety and so a future
+            # refactor of the branches can't fall through to an AttributeError.
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "Terminal environment unavailable (creation raced cleanup)",
+            }, ensure_ascii=False)
+
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
         # gateway process itself. The restart would SIGTERM the gateway, which
@@ -2253,6 +2374,11 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        # True when the user explicitly approved this run (or pre-confirmed via
+        # force).  Drives the clean-interrupt-slate clear before env.execute so
+        # an approved command can't be SIGINT-killed by a bit that landed during
+        # the approval-wait (see clear_current_thread_interrupt).
+        _approved_run = bool(force)
         if not force:
             approval = _check_all_guards(
                 command, env_type,
@@ -2270,6 +2396,8 @@ def terminal_tool(
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
+                        "smart_denied": approval.get("smart_denied", False),
+                        "allow_permanent": approval.get("allow_permanent", True),
                     }, ensure_ascii=False)
                 # Command was blocked
                 desc = approval.get("description", "command flagged")
@@ -2287,6 +2415,7 @@ def terminal_tool(
             if approval.get("user_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command required approval ({desc}) and was approved by the user."
+                _approved_run = True
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
@@ -2316,20 +2445,13 @@ def terminal_tool(
                 "EOF."
             )
 
-        # Claim the (shared "default") terminal env for the session driving this
-        # command. File tools read env.cwd_owner to decide whether the env's live
-        # cwd is THIS session's `cd` or a different worktree session's — without
-        # it, two open worktree sessions sharing the env route each other's edits
-        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
-        # cross tool-worker threads, so fall back to the raw task_id (which IS the
-        # session_key for the top-level agent) — a stable, thread-safe anchor.
+        # The session key that drives cwd records: get_current_session_key()'s
+        # contextvar doesn't cross tool-worker threads, so fall back to the raw
+        # task_id (which IS the session_key for the top-level agent) — a
+        # stable, thread-safe anchor.
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
-        try:
-            env.cwd_owner = session_key
-        except Exception:
-            pass
 
         if background:
             # Spawn a tracked background process via the process registry.
@@ -2339,8 +2461,8 @@ def terminal_tool(
 
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
-                env=env,
                 default_cwd=cwd,
+                session_key=session_key,
             )
             try:
                 if env_type == "local":
@@ -2368,6 +2490,9 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                # Background spawns detached and returns exit_code 0 immediately;
+                # it never inline-polls is_interrupted(), so the stale-bit kill
+                # cannot occur here and this note never co-occurs with rc=130.
                 if approval_note:
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:
@@ -2498,9 +2623,10 @@ def terminal_tool(
                         watch_patterns = None
                         result_data["notify_on_complete"] = False
                         result_data["notify_unsupported"] = (
-                            "notify_on_complete / watch_patterns are not available on "
-                            "this endpoint (stateless HTTP API — no channel to deliver "
-                            "an async completion after the turn ends). The process is "
+                            "notify_on_complete / watch_patterns are not available in "
+                            "this session — it cannot receive an async completion after "
+                            "the turn ends (a one-shot runner such as `hermes -z` or a "
+                            "cron job, or a stateless HTTP endpoint). The process is "
                             "running in the background; retrieve its result with "
                             "process(action='poll') or process(action='wait')."
                         )
@@ -2581,17 +2707,33 @@ def terminal_tool(
             retry_count = 0
             result = None
             command_cwd = None
-            
+
+            # Clean interrupt slate for an approved command, ONCE before the
+            # retry loop: drop a stale bit that landed on this thread during the
+            # approval-wait so it can't SIGINT the just-approved run.  Do NOT
+            # re-clear inside the loop -- a genuine interrupt arriving during the
+            # backoff sleep between retries must survive and abort the command
+            # (caught by the next attempt's _wait_for_process poll loop -> 130).
+            if _approved_run:
+                from tools.interrupt import clear_current_thread_interrupt
+                clear_current_thread_interrupt()
+
             while retry_count <= max_retries:
                 try:
                     command_cwd = _resolve_command_cwd(
                         workdir=workdir,
-                        env=env,
                         default_cwd=cwd,
+                        session_key=session_key,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
+                        # Foreground model-facing output: cap retention while
+                        # streaming (head/tail window) so a verbose command
+                        # can't OOM the gateway before truncation (#64435).
+                        # Internal env.execute() consumers (file ops cat
+                        # reads, RPC reads) intentionally stay unbounded.
+                        "bounded_capture": True,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2622,7 +2764,15 @@ def terminal_tool(
                 
                 # Got a result
                 break
-            
+
+            # Dual-write (cwd rearch step 1): the env's post-command tracking
+            # (marker parse / local sync) has just updated env.cwd with the
+            # directory this command finished in. That cwd belongs to THIS
+            # session — record it under the session key so the durable record
+            # never depends on the shared env surviving or on who drives the
+            # env next.
+            record_session_cwd(session_key, getattr(env, "cwd", None))
+
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
@@ -2643,9 +2793,10 @@ def terminal_tool(
                         "command."
                     )
 
-            # Foreground terminal output canonicalization seam: plugins receive
-            # the full output string before default truncation and may only
-            # replace it by returning a string from transform_terminal_output.
+            # Foreground terminal output canonicalization seam: process capture
+            # is already bounded by BaseEnvironment before sudo checks and hooks
+            # run. Plugins may replace that bounded string; replacements are
+            # still subject to the final output limit below.
             # The hook is fail-open, and the first valid string return wins.
             try:
                 from hermes_cli.plugins import invoke_hook
@@ -2723,7 +2874,19 @@ def terminal_tool(
             except Exception:
                 logger.debug("verification evidence recording failed", exc_info=True)
             if approval_note:
-                result_dict["approval"] = approval_note
+                # Treat rc=130 as an interrupt only when the executor's marker is
+                # present.  A command can legitimately exit 130 on its own
+                # (e.g. `bash -c 'exit 130'`); _wait_for_process returns the
+                # child's natural returncode there with no marker, and that must
+                # NOT be relabelled as a user interrupt in the audit note.
+                if returncode == 130 and "[Command interrupted]" in output:
+                    # Approved command was interrupted mid-run by a genuine Stop.
+                    # Keep the audit trail but never imply success: the bare
+                    # "...approved by the user." note must not co-occur with the
+                    # interrupt exit code (satisfies the 3-part-signature DONE).
+                    result_dict["approval"] = approval_note.rstrip(".") + ", then interrupted."
+                else:
+                    result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
             if sudo_auth_failed:

@@ -514,24 +514,28 @@ class TestSlackThreadContext:
         assert "<@U_BOT>" not in context
 
     @pytest.mark.asyncio
-    async def test_skips_bot_messages(self):
-        """Self-bot child replies are skipped to avoid circular context,
-        but non-self bots (e.g. cron posts, third-party integrations) are kept.
+    async def test_includes_self_bot_replies_as_assistant_on_cold_start(self):
+        """Cold-start contract (issue #38861): self-bot replies in the thread
+        must be included in the context, labelled with an ``[assistant]``
+        prefix so the agent can reconstruct its own prior turns. This method
+        only runs on the cold-start path (guarded at the call site by
+        ``_has_active_session_for_thread``) — when an active session exists,
+        the session history already carries those replies, so there is no
+        risk of circular duplication.
 
-        Regression guard for the fix in _fetch_thread_context: previously ALL
-        bot messages were dropped, which lost context when the bot was replying
-        to a cron-posted thread parent."""
+        Third-party bots (e.g. deploy notifications) must still be kept,
+        attributed to their display name."""
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]
         mock_client.conversations_replies = AsyncMock(return_value={
             "messages": [
                 {"ts": "1000.0", "user": "U1", "text": "Parent"},
-                # Self-bot reply -> must be skipped (circular)
+                # Self-bot reply -> kept on cold-start, prefixed [assistant]
                 {
                     "ts": "1000.1",
                     "bot_id": "B_SELF",
                     "user": "U_BOT",
-                    "text": "Previous bot self-reply (should be skipped)",
+                    "text": "Previous bot self-reply",
                 },
                 # Third-party bot child -> kept (useful context)
                 {
@@ -552,10 +556,13 @@ class TestSlackThreadContext:
             channel_id="C1", thread_ts="1000.0", current_ts="1000.2", team_id="T1"
         )
 
-        assert "Previous bot self-reply" not in context
         assert "Alice: Parent" in context
-        # Third-party bot message must now be included
+        # Self-bot reply must now be included with [assistant] label
+        assert "[assistant] Previous bot self-reply" in context
+        # Third-party bot message must still be included
         assert "Deploy succeeded" in context
+        # The [assistant] label must NOT leak to user messages
+        assert "[assistant] Alice" not in context
 
     @pytest.mark.asyncio
     async def test_empty_thread(self):
@@ -751,14 +758,19 @@ class TestSlackThreadContext:
 
         assert "Incident triggered" in text
         assert "https://example.example/incident/42" in text
-        """Parent (non-self bot) is kept, self-bot child replies are dropped,
-        user replies are kept."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_context_includes_self_bot_replies_with_assistant_label(self):
+        """Cold-start: parent (non-self bot) kept with [thread parent],
+        self-bot child replies kept with [assistant] label, user replies
+        kept unchanged. The cold-start path is the ONLY caller of this
+        method; circular-context risk does not apply here (see #38861)."""
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]
         mock_client.conversations_replies = AsyncMock(return_value={
             "messages": [
                 {"ts": "1000.0", "bot_id": "B_CRON", "text": "Cron summary"},
-                # Self-bot child reply -> excluded
+                # Self-bot child reply -> kept with [assistant] label
                 {
                     "ts": "1000.1",
                     "bot_id": "B_SELF",
@@ -779,7 +791,8 @@ class TestSlackThreadContext:
 
         assert "Cron summary" in context
         assert "[thread parent]" in context
-        assert "Previous self reply" not in context
+        # Self-bot child reply is now kept with the [assistant] label
+        assert "[assistant] Previous self reply" in context
         assert "Follow-up question" in context
         assert "Current" not in context
 
@@ -808,7 +821,7 @@ class TestSlackThreadContext:
                     "team": "T2",
                     "text": "Cross-workspace bot reply",
                 },
-                # Self-bot for T2 — must be skipped
+                # Self-bot for T2 — kept with the [assistant] label
                 {
                     "ts": "2000.2",
                     "bot_id": "B_SELF_T2",
@@ -827,7 +840,12 @@ class TestSlackThreadContext:
 
         assert "Parent T2" in context
         assert "Cross-workspace bot reply" in context
-        assert "Own T2 bot reply" not in context
+        # T2's own self-bot reply is kept with the [assistant] label
+        # (cold-start path includes self-replies; see #38861). The
+        # per-workspace filter still applies: this assertion confirms
+        # we use T2's bot id, not T1's, when deciding what counts as
+        # self-bot.
+        assert "[assistant] Own T2 bot reply" in context
 
     @pytest.mark.asyncio
     async def test_fetch_thread_context_current_ts_excluded(self):

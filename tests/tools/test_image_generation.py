@@ -179,6 +179,45 @@ class TestGptImage2Presets:
         assert "seed" not in p
 
 
+class TestFluxProV11Payload:
+    """FLUX Pro v1.1 uses preset enum sizes with jpeg/sync_mode=False/
+    safety_tolerance="6"/enhance_prompt=False defaults."""
+
+    MODEL = "fal-ai/flux-pro/v1.1"
+
+    def test_landscape_uses_preset(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "landscape")
+        assert p["image_size"] == "landscape_16_9"
+
+    def test_square_uses_preset(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "square")
+        assert p["image_size"] == "square_hd"
+
+    def test_portrait_uses_preset(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "portrait")
+        assert p["image_size"] == "portrait_16_9"
+
+    def test_default_output_format_is_jpeg(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "square")
+        assert p["output_format"] == "jpeg"
+
+    def test_default_sync_mode_is_false(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "square")
+        assert p["sync_mode"] is False
+
+    def test_default_safety_tolerance_is_6(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "square")
+        assert p["safety_tolerance"] == "6"
+
+    def test_default_enhance_prompt_is_false(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "square")
+        assert p["enhance_prompt"] is False
+
+    def test_num_images_default_is_1(self, image_tool):
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "square")
+        assert p["num_images"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Supports whitelist — the main safety property
 # ---------------------------------------------------------------------------

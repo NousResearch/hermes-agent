@@ -23,6 +23,7 @@ Usage:
 """
 
 import re
+import shlex
 import fnmatch
 import hashlib
 import json
@@ -421,10 +422,6 @@ THREAT_PATTERNS = [
     (r'npm\s+install\s+(?!.*@\d)',
      "unpinned_npm_install", "medium", "supply_chain",
      "npm install without version pinning"),
-    (r'uv\s+run\s+',
-     "uv_run", "medium", "supply_chain",
-     "uv run (may auto-install unpinned dependencies)"),
-
     # ── Supply chain: remote resource fetching ──
     (r'(curl|wget|httpx?\.get|requests\.get|fetch)\s*[\(]?\s*["\']https?://',
      "remote_fetch", "medium", "supply_chain",
@@ -512,7 +509,10 @@ THREAT_PATTERNS = [
      "claims new policy/guidelines (may be social engineering)"),
 
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
+    (r'\b(include|output|print|send|share)\s+(?:\w+\s+){0,6}'
+     r'(conversation\s+history|chat\s+history|previous\s+messages|'
+     r'previous\s+conversation|context\s+window|full\s+context|'
+     r'conversation\s+context|(?:all|entire|current)\s+context)\b',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
@@ -564,6 +564,46 @@ INVISIBLE_CHARS = {
 # Scanning functions
 # ---------------------------------------------------------------------------
 
+_SHELL_COMMAND_SEPARATORS = {"&&", "||", ";"}
+_SHELL_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_UV_RUN_PROSE_FOLLOWERS = {
+    "are", "can", "cannot", "could", "has", "have", "is", "means",
+    "refers", "remains", "should", "was", "were", "will", "would",
+}
+
+
+def _line_has_uv_run_command(line: str) -> bool:
+    """Return whether ``uv run`` occurs at a real shell command position."""
+    try:
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    command_positions = [0]
+    command_positions.extend(
+        index + 1
+        for index, token in enumerate(tokens)
+        if token in _SHELL_COMMAND_SEPARATORS
+    )
+
+    for start in command_positions:
+        if start >= len(tokens):
+            continue
+        if start == 0 and tokens[start] == "$":
+            start += 1
+        while start < len(tokens) and _SHELL_ASSIGNMENT_RE.match(tokens[start]):
+            start += 1
+        if start + 2 >= len(tokens) or tokens[start:start + 2] != ["uv", "run"]:
+            continue
+        if tokens[start + 2].lower().rstrip(".,:;!?") in _UV_RUN_PROSE_FOLLOWERS:
+            continue
+        return True
+    return False
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -577,6 +617,10 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     if not rel_path:
         rel_path = file_path.name
+
+    # Never dereference a path supplied to the scanner as a symlink.
+    if file_path.is_symlink():
+        return []
 
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
@@ -610,6 +654,21 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     description=description,
                 ))
 
+    for i, line in enumerate(lines, start=1):
+        if _line_has_uv_run_command(line):
+            matched_text = line.strip()
+            if len(matched_text) > 120:
+                matched_text = matched_text[:117] + "..."
+            findings.append(Finding(
+                pattern_id="uv_run",
+                severity="medium",
+                category="supply_chain",
+                file=rel_path,
+                line=i,
+                match=matched_text,
+                description="uv run (may auto-install unpinned dependencies)",
+            ))
+
     # Invisible unicode character detection
     for i, line in enumerate(lines, start=1):
         for char in INVISIBLE_CHARS:
@@ -629,7 +688,12 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(
+    skill_path: Path,
+    source: str = "community",
+    *,
+    trust_level: str | None = None,
+) -> ScanResult:
     """
     Scan all files in a skill directory for security threats.
 
@@ -654,11 +718,24 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         ScanResult with verdict, findings, and trust metadata
     """
     skill_name = skill_path.name
-    trust_level = _resolve_trust_level(source)
+    if trust_level is None:
+        trust_level = _resolve_trust_level(source)
+    elif trust_level not in INSTALL_POLICY:
+        raise ValueError(f"invalid scan trust level: {trust_level}")
 
     all_findings: List[Finding] = []
 
-    if skill_path.is_dir():
+    if skill_path.is_symlink():
+        all_findings.append(Finding(
+            pattern_id="symlink_scan_root",
+            severity="critical",
+            category="traversal",
+            file=skill_path.name,
+            line=0,
+            match="symlinked scan target",
+            description="scan root or direct file is a symlink and was not read",
+        ))
+    elif skill_path.is_dir():
         ignore = _load_skill_ignore(skill_path)
 
         # Structural checks first (honoring the ignore list)
@@ -666,6 +743,8 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
 
         # Pattern scanning on each file
         for f in skill_path.rglob("*"):
+            if f.is_symlink():
+                continue
             if f.is_file():
                 rel = str(f.relative_to(skill_path))
                 if ignore(rel):
@@ -691,8 +770,14 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
 def _content_digest(skill_path: Path) -> str:
     """Canonical SHA-256 over relative paths and exact file bytes."""
     h = hashlib.sha256()
-    if skill_path.is_dir():
+    if skill_path.is_symlink():
+        h.update(b"symlink-scan-root\x00")
+    elif skill_path.is_dir():
         for file_path in sorted(skill_path.rglob("*")):
+            if file_path.is_symlink():
+                rel = file_path.relative_to(skill_path).as_posix()
+                h.update(rel.encode("utf-8") + b"\x00symlink\x00")
+                continue
             if file_path.is_file():
                 rel = file_path.relative_to(skill_path).as_posix()
                 h.update(rel.encode("utf-8") + b"\x00")
@@ -885,15 +970,13 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     total_size = 0
 
     for f in skill_dir.rglob("*"):
-        if not f.is_file() and not f.is_symlink():
+        if not f.is_symlink() and not f.is_file():
             continue
 
         rel = str(f.relative_to(skill_dir))
-        if ignore(rel):
-            continue
-        file_count += 1
 
-        # Symlink check — must resolve within the skill directory
+        # Symlinks are always reported and skipped before ignore handling or
+        # any stat/content read. Ignore files must not hide this boundary.
         if f.is_symlink():
             try:
                 resolved = f.resolve()
@@ -907,6 +990,16 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                         match=f"symlink -> {resolved}",
                         description="symlink points outside the skill directory",
                     ))
+                else:
+                    findings.append(Finding(
+                        pattern_id="symlink_skipped",
+                        severity="medium",
+                        category="traversal",
+                        file=rel,
+                        line=0,
+                        match="symlinked descendant",
+                        description="symlinked descendant was not read during scan",
+                    ))
             except OSError:
                 findings.append(Finding(
                     pattern_id="broken_symlink",
@@ -918,6 +1011,10 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                     description="broken or circular symlink",
                 ))
             continue
+
+        if ignore(rel):
+            continue
+        file_count += 1
 
         # Size tracking
         try:
@@ -1045,7 +1142,7 @@ def _load_skill_ignore(skill_dir: Path):
     for name in _SKILL_IGNORE_FILENAMES:
         ig = skill_dir / name
         try:
-            if ig.is_file():
+            if not ig.is_symlink() and ig.is_file():
                 for raw in ig.read_text(encoding="utf-8").splitlines():
                     line = raw.strip()
                     if not line or line.startswith("#"):

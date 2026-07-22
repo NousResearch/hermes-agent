@@ -1050,6 +1050,7 @@ Subcommands:
 | `browse` | Paginated browser for skill registries. |
 | `search` | Search skill registries. |
 | `install` | Install a skill. |
+| `scan` | Run the security scanner against a local or remote skill without installing it. |
 | `inspect` | Preview a skill without installing it. |
 | `list` | List installed skills. |
 | `check` | Check installed hub skills for upstream updates. |
@@ -1073,6 +1074,8 @@ hermes skills search react --source skills-sh
 hermes skills search https://mintlify.com/docs --source well-known
 hermes skills inspect official/security/1password
 hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
+hermes skills scan ./path/to/my-skill
+hermes skills scan official/security/1password
 hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
 hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (+ referenced support files)
@@ -1088,6 +1091,7 @@ hermes skills opt-in --sync            # undo: remove marker and re-seed now
 ```
 
 Notes:
+- `scan <identifier-or-path>` fetches remote skills into a temporary directory and never quarantines or installs them. Remote trust comes from the matched source adapter. Local `--source <label>` values cannot claim official, trusted-repository, or agent-created trust.
 - `--force` can override non-dangerous policy blocks for third-party/community skills.
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.

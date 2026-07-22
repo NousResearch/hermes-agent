@@ -488,6 +488,10 @@ class SkillSource(ABC):
         """Determine trust level for a skill from this source."""
         return "community"
 
+    def scan_trust_level_for_bundle(self, bundle: SkillBundle) -> str:
+        """Return installer-controlled trust for a bundle fetched by this adapter."""
+        return "community"
+
 
 # ---------------------------------------------------------------------------
 # GitHub source adapter
@@ -598,6 +602,11 @@ class GitHubSource(SkillSource):
             repo = f"{parts[0]}/{parts[1]}"
             if repo in TRUSTED_REPOS:
                 return "trusted"
+        return "community"
+
+    def scan_trust_level_for_bundle(self, bundle: SkillBundle) -> str:
+        if bundle.source == "github" and bundle.trust_level == "trusted":
+            return "trusted"
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -1637,6 +1646,11 @@ class SkillsShSource(SkillSource):
 
     def trust_level_for(self, identifier: str) -> str:
         return self.github.trust_level_for(self._normalize_identifier(identifier))
+
+    def scan_trust_level_for_bundle(self, bundle: SkillBundle) -> str:
+        if bundle.source == "skills.sh" and bundle.trust_level == "trusted":
+            return "trusted"
+        return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         if not query.strip():
@@ -2752,6 +2766,11 @@ class ClaudeMarketplaceSource(SkillSource):
                 return "trusted"
         return "community"
 
+    def scan_trust_level_for_bundle(self, bundle: SkillBundle) -> str:
+        if bundle.source == "claude-marketplace" and bundle.trust_level == "trusted":
+            return "trusted"
+        return "community"
+
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         results: List[SkillMeta] = []
         query_lower = query.lower()
@@ -3180,6 +3199,11 @@ class OptionalSkillSource(SkillSource):
 
     def trust_level_for(self, identifier: str) -> str:
         return "builtin"
+
+    def scan_trust_level_for_bundle(self, bundle: SkillBundle) -> str:
+        if bundle.source == "official" and bundle.trust_level == "builtin":
+            return "builtin"
+        return "community"
 
     # -- search -----------------------------------------------------------
 
@@ -3910,6 +3934,11 @@ class HermesIndexSource(SkillSource):
         for skill in index.get("skills", []):
             if skill.get("identifier") == identifier:
                 return skill.get("trust_level", "community")
+        return "community"
+
+    def scan_trust_level_for_bundle(self, bundle: SkillBundle) -> str:
+        if bundle.trust_level == "trusted":
+            return "trusted"
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:

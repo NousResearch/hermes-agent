@@ -521,6 +521,8 @@ hermes skills search kubernetes                   # Search all sources
 hermes skills search react --source skills-sh     # Search the skills.sh directory
 hermes skills search https://mintlify.com/docs --source well-known
 hermes skills inspect openai/skills/k8s           # Preview before installing
+hermes skills scan ./path/to/my-skill             # Scan local files without installing
+hermes skills scan openai/skills/k8s              # Fetch, scan, and discard a remote skill
 hermes skills install openai/skills/k8s           # Install with security scan
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
@@ -708,6 +710,8 @@ Trust level is always `community` — the same security scan runs as for every o
 ### Security scanning and `--force`
 
 All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, supply-chain signals, and other threats.
+
+Use `hermes skills scan <identifier-or-path>` to run the same guard checks without installing. Remote scans use a temporary directory that is deleted after the report, and their trust comes from the source adapter that fetched the bundle. For local scans, `--source <label>` can label community provenance but cannot elevate the result to official, trusted-repository, or agent-created trust.
 
 `hermes skills inspect ...` now also surfaces upstream metadata when available:
 - repo URL

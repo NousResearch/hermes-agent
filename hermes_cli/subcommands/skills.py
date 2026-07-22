@@ -108,6 +108,19 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Skip confirmation prompt (needed in TUI mode)",
     )
 
+    skills_scan = skills_subparsers.add_parser(
+        "scan", help="Run a skill security scan without installing"
+    )
+    skills_scan.add_argument(
+        "identifier",
+        help="Skill identifier, skill directory, or direct path to SKILL.md",
+    )
+    skills_scan.add_argument(
+        "--source",
+        default="local",
+        help="Community source label for local scan reports (cannot elevate trust)",
+    )
+
     skills_inspect = skills_subparsers.add_parser(
         "inspect", help="Preview a skill without installing"
     )

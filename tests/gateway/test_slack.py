@@ -5515,7 +5515,7 @@ class TestSlashEphemeralAck:
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
-        """_send_slash_ephemeral returns success=True even if POST fails."""
+        """Failed response_url POST falls back to normal channel delivery (#19688)."""
         import time
         from plugins.platforms.slack.adapter import _slash_user_id
 
@@ -5536,6 +5536,10 @@ class TestSlashEphemeralAck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "1234.5678", "ok": True}
+        )
+
         token = _slash_user_id.set("U1")
         try:
             with patch(
@@ -5545,8 +5549,112 @@ class TestSlashEphemeralAck:
         finally:
             _slash_user_id.reset(token)
 
-        # Still success — the user saw the initial ack already
+        # Reply must not be silently dropped: channel fallback delivered it.
         assert result.success is True
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_fallback_on_exception(self, adapter):
+        """aiohttp exception on response_url falls back to channel delivery (#19688)."""
+        import time
+        from plugins.platforms.slack.adapter import _slash_user_id
+
+        adapter._slash_command_contexts[("C1", "U1")] = {
+            "response_url": "https://hooks.slack.com/commands/timeout",
+            "ts": time.monotonic(),
+        }
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(side_effect=Exception("connection timeout"))
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "1234.5678", "ok": True}
+        )
+
+        token = _slash_user_id.set("U1")
+        try:
+            with patch(
+                "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+            ):
+                result = await adapter.send("C1", "Some response")
+        finally:
+            _slash_user_id.reset(token)
+
+        assert result.success is True
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_multichunk_delivers_all_parts(self, adapter):
+        """Long slash replies post every chunk instead of dropping the tail (#19688)."""
+        import time
+
+        adapter._slash_command_contexts[("C1", "U1")] = {
+            "response_url": "https://hooks.slack.com/commands/long",
+            "ts": time.monotonic(),
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        long_content = "A" * (adapter.MAX_MESSAGE_LENGTH + 500)
+
+        with patch(
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+        ):
+            result = await adapter._send_slash_ephemeral(
+                {"response_url": "https://hooks.slack.com/commands/long"},
+                long_content,
+            )
+
+        assert result.success is True
+        assert mock_session.post.call_count >= 2
+        # First POST replaces the ack; follow-ups append.
+        first_payload = mock_session.post.call_args_list[0][1]["json"]
+        second_payload = mock_session.post.call_args_list[1][1]["json"]
+        assert first_payload["replace_original"] is True
+        assert second_payload["replace_original"] is False
+        # No content byte is lost.
+        total_text = "".join(
+            c[1]["json"]["text"] for c in mock_session.post.call_args_list
+        )
+        assert total_text.count("A") == len(long_content)
+
+    @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_caps_posts_with_truncation_notice(self, adapter):
+        """Beyond Slack's 5-POST response_url budget, truncation is announced."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        very_long = "B" * (adapter.MAX_MESSAGE_LENGTH * 7)
+
+        with patch(
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+        ):
+            result = await adapter._send_slash_ephemeral(
+                {"response_url": "https://hooks.slack.com/commands/huge"},
+                very_long,
+            )
+
+        assert result.success is True
+        assert mock_session.post.call_count == 5
+        last_text = mock_session.post.call_args_list[-1][1]["json"]["text"]
+        assert "Reply truncated" in last_text
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_limits_error_body(self, adapter):
@@ -5601,11 +5709,21 @@ class TestSlashEphemeralAck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "plugins.platforms.slack.adapter.aiohttp.ClientSession",
-            return_value=mock_session,
-        ):
-            result = await adapter.send("C1", "Some response")
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "1234.5678", "ok": True}
+        )
+
+        from plugins.platforms.slack.adapter import _slash_user_id
+
+        token = _slash_user_id.set("U1")
+        try:
+            with patch(
+                "plugins.platforms.slack.adapter.aiohttp.ClientSession",
+                return_value=mock_session,
+            ):
+                result = await adapter.send("C1", "Some response")
+        finally:
+            _slash_user_id.reset(token)
 
         assert result.success is True
         assert response.text_calls == 0
@@ -5614,33 +5732,6 @@ class TestSlashEphemeralAck:
             == _slack_mod._SLACK_ERROR_BODY_LIMIT_BYTES + 1
         )
         assert response.released is True
-
-    @pytest.mark.asyncio
-    async def test_send_slash_ephemeral_fallback_on_exception(self, adapter):
-        """_send_slash_ephemeral returns success=True even if aiohttp raises."""
-        import time
-        from plugins.platforms.slack.adapter import _slash_user_id
-
-        adapter._slash_command_contexts[("C1", "U1")] = {
-            "response_url": "https://hooks.slack.com/commands/timeout",
-            "ts": time.monotonic(),
-        }
-
-        mock_session = AsyncMock()
-        mock_session.post = MagicMock(side_effect=Exception("connection timeout"))
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        token = _slash_user_id.set("U1")
-        try:
-            with patch(
-                "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
-            ):
-                result = await adapter.send("C1", "Some response")
-        finally:
-            _slash_user_id.reset(token)
-
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_native_slash_stashes_context_and_dispatches(self, adapter):

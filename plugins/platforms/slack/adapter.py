@@ -1180,44 +1180,66 @@ class SlackAdapter(BasePlatformAdapter):
         lets us swap the "Running /cmd…" placeholder with the real reply,
         and the message stays ephemeral ("Only visible to you").
 
-        Falls back to a simple ``True`` SendResult if the POST fails —
-        the user already saw the initial ack, so a delivery failure here
-        is non-critical.
+        Long replies are chunked: the first chunk replaces the ack, the
+        rest are posted as additional ephemeral messages.  Slack allows at
+        most 5 POSTs to a response_url, so anything beyond that is closed
+        with an explicit truncation notice instead of being silently
+        dropped (#19688).
+
+        Returns ``success=False`` on delivery failure so the caller
+        (``send()``) can fall back to normal channel delivery — the reply
+        must never be silently dropped just because the ephemeral swap
+        failed (#19688).
         """
         formatted = self.format_message(content)
         # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
-        # response_url replaces a single ephemeral ack, so multi-chunk isn't
-        # possible.  Long responses are rare for command replies.
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        text = chunks[0] if chunks else formatted
-        payload = {
-            "response_type": "ephemeral",
-            "replace_original": True,
-            "text": text,
-        }
+        if not chunks:
+            chunks = [formatted]
+        # Slack allows at most 5 POSTs per response_url. Reserve the flow:
+        # 1 replace + up to 4 follow-ups; announce anything left over.
+        _MAX_RESPONSE_URL_POSTS = 5
+        if len(chunks) > _MAX_RESPONSE_URL_POSTS:
+            dropped = len(chunks) - _MAX_RESPONSE_URL_POSTS
+            chunks = chunks[:_MAX_RESPONSE_URL_POSTS]
+            chunks[-1] = (
+                chunks[-1].rstrip()
+                + f"\n\n_[Reply truncated: {dropped} more part(s) exceeded "
+                "Slack's ephemeral reply limit.]_"
+            )
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
-                async with session.post(
-                    ctx["response_url"],
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        return SendResult(success=True, message_id=None)
-                    body = await _read_error_text_limited(resp)
-                    logger.warning(
-                        "[Slack] response_url POST returned %s: %s",
-                        resp.status,
-                        body[:200],
-                    )
+                for idx, chunk in enumerate(chunks):
+                    payload = {
+                        "response_type": "ephemeral",
+                        # Only the first chunk replaces the "Running /cmd…"
+                        # ack; the rest append as new ephemeral messages.
+                        "replace_original": idx == 0,
+                        "text": chunk,
+                    }
+                    async with session.post(
+                        ctx["response_url"],
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status != 200:
+                            body = await _read_error_text_limited(resp)
+                            logger.warning(
+                                "[Slack] response_url POST returned %s: %s",
+                                resp.status,
+                                body[:200],
+                            )
+                            return SendResult(
+                                success=False,
+                                error=f"response_url POST returned {resp.status}",
+                            )
+            return SendResult(success=True, message_id=None)
         except Exception as e:
             logger.warning(
                 "[Slack] response_url POST failed: %s",
                 e,
             )
-        # Non-fatal — the user saw the initial ack already.
-        return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error=str(e))
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
         """Nudge existing installs to reinstall when group-DM scopes are absent.
@@ -1825,9 +1847,20 @@ class SlackAdapter(BasePlatformAdapter):
             # the actual command reply ephemerally instead of posting publicly.
             slash_ctx = self._pop_slash_context(chat_id)
             if slash_ctx:
-                return await self._send_slash_ephemeral(
+                ephemeral_result = await self._send_slash_ephemeral(
                     slash_ctx,
                     content,
+                )
+                if ephemeral_result.success:
+                    return ephemeral_result
+                # Ephemeral delivery failed (#19688): fall through to normal
+                # channel delivery so the command reply is never silently
+                # dropped. The stale "Running /cmd…" ack remains, but the
+                # user still gets the actual answer.
+                logger.warning(
+                    "[Slack] Ephemeral slash reply failed (%s); falling back "
+                    "to channel delivery",
+                    ephemeral_result.error,
                 )
 
             # Convert standard markdown → Slack mrkdwn

@@ -54,6 +54,10 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
+    # vertex has no API-key env var (OAuth2 via a service-account JSON / ADC
+    # path), so recognize its credentials-path vars as auth being configured.
+    "VERTEX_CREDENTIALS_PATH",
+    "GOOGLE_APPLICATION_CREDENTIALS",
 )
 
 
@@ -882,7 +886,35 @@ def run_doctor(args):
                 if name:
                     known_providers.add("custom:" + name.lower().replace(" ", "-"))
 
-            valid_provider_ids = set(known_providers)
+            # Vertex-style providers live in the provider-profile registry
+            # (plugins/model-providers/*), not the legacy auth PROVIDER_REGISTRY,
+            # so treat those as known too. Record canonical names in
+            # known_providers (shown to the user) and aliases separately (matched
+            # but kept out of the message). Profiles whose default_aux_model is
+            # publisher-prefixed (e.g. google/...) use vendor/model slugs
+            # legitimately, so exempt them from the prefix warning below.
+            _profile_aliases: set = set()
+            _profile_prefix_providers: set = set()
+            try:
+                from providers import list_providers as _list_provider_profiles
+
+                for _profile in _list_provider_profiles():
+                    _pname = str(getattr(_profile, "name", "") or "").strip().lower()
+                    if not _pname:
+                        continue
+                    known_providers.add(_pname)
+                    _profile_ids = {_pname}
+                    for _alias in (getattr(_profile, "aliases", None) or ()):
+                        _a = str(_alias or "").strip().lower()
+                        if _a:
+                            _profile_ids.add(_a)
+                            _profile_aliases.add(_a)
+                    if "/" in str(getattr(_profile, "default_aux_model", "") or ""):
+                        _profile_prefix_providers.update(_profile_ids)
+            except Exception:
+                pass
+
+            valid_provider_ids = set(known_providers) | _profile_aliases
             provider_ids_to_accept = {provider} if provider else set()
             if _normalize_catalog_provider is not None:
                 for known_provider in known_providers:
@@ -911,6 +943,20 @@ def run_doctor(args):
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
+                if catalog_provider is None:
+                    # Profile-only providers (vertex, vertex-ai, gcp-vertex) have
+                    # no legacy ProviderDef, so resolve_provider_full returns None;
+                    # fall back to the profile registry so they resolve instead of
+                    # failing as "unknown". (google-vertex resolves via the
+                    # models.dev catalog above, so that path stays.)
+                    try:
+                        from providers import get_provider_profile as _get_provider_profile
+
+                        _prof = _get_provider_profile(provider)
+                        if _prof is not None:
+                            catalog_provider = str(getattr(_prof, "name", "") or "").strip().lower() or provider
+                    except Exception:
+                        pass
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
 
@@ -957,6 +1003,7 @@ def run_doctor(args):
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
+                or provider_policy_id in _profile_prefix_providers
                 or provider_policy_id == "custom"
                 or provider_policy_id.startswith("custom:")
             )

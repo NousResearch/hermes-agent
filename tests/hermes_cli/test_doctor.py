@@ -46,6 +46,15 @@ class TestProviderEnvDetection:
         content = "KIMI_CN_API_KEY=sk-test\n"
         assert _has_provider_env_config(content)
 
+    def test_detects_vertex_credentials_path(self):
+        # Credential-file provider (vertex): a configured SA path IS auth (#56906).
+        content = "VERTEX_CREDENTIALS_PATH=/home/u/.hermes/sa.json\n"
+        assert _has_provider_env_config(content)
+
+    def test_detects_google_application_credentials(self):
+        content = "GOOGLE_APPLICATION_CREDENTIALS=/home/u/.hermes/sa.json\n"
+        assert _has_provider_env_config(content)
+
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
@@ -612,6 +621,133 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
     assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
 
 
+@pytest.mark.parametrize("provider", ["vertex", "google-vertex", "vertex-ai", "gcp-vertex"])
+def test_run_doctor_accepts_vertex_profile_registry_provider(monkeypatch, tmp_path, provider):
+    """Regression for #56906.
+
+    Vertex ships only in the provider-profile registry (plugins/model-providers/
+    vertex), not the legacy auth PROVIDER_REGISTRY, and its OpenAI-compat models
+    are publisher-prefixed (``google/gemini-...``). doctor must recognize it as a
+    known provider (by canonical name and by alias) and must NOT emit the
+    vendor/model-slug warning for its mandatory ``google/`` prefix.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        f"  provider: {provider}\n"
+        "  default: google/gemini-3-flash-preview\n",
+        encoding="utf-8",
+    )
+    (home / ".env").write_text("VERTEX_CREDENTIALS_PATH=/tmp/sa.json\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert f"model.provider '{provider}' is not a recognised provider" not in out
+    assert f"model.provider '{provider}' is unknown" not in out
+    assert (
+        f"model.default 'google/gemini-3-flash-preview' uses a vendor/model slug "
+        f"but provider is '{provider}'"
+        not in out
+    )
+    assert f"is vendor-prefixed but model.provider is '{provider}'" not in out
+    # A configured service-account credentials path IS auth for vertex, so the
+    # generic "no API key" nudge must not false-positive on a vertex-only .env.
+    assert "No API key found in" not in out
+    assert "Run 'hermes setup' to configure API keys" not in out
+    # The provider-validation block must have run to completion. If it raised, the
+    # outer "Could not validate…" guard would swallow it and every assertion above
+    # would pass vacuously, so assert both that the guard did NOT fire and that
+    # vertex is actively accepted (named in no reported issue).
+    assert "Could not validate model/provider config" not in out
+    issues_block = out.rsplit("issue(s) to address:", 1)[-1] if "issue(s) to address:" in out else out
+    assert f"'{provider}'" not in issues_block
+    # Positive signal: the config-file check (printed right before provider
+    # validation) fired, so the validation block was actually reached. Guards
+    # against a future early-return making the negatives above pass vacuously.
+    assert "config.yaml exists" in out
+
+
+def _run_doctor_for_provider(monkeypatch, tmp_path, provider, default_model):
+    """Drive run_doctor against an isolated home for (provider, default_model)."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n" f"  provider: {provider}\n" f"  default: {default_model}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+    monkeypatch.setitem(
+        sys.modules,
+        "model_tools",
+        types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        ),
+    )
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("provider", ["totally-bogus-xyz", "not-a-real-provider"])
+def test_run_doctor_still_rejects_unknown_provider(monkeypatch, tmp_path, provider):
+    """The provider-profile fallback (#56906) must not weaken rejection of a
+    genuinely unknown provider: both the unknown-provider failure and the
+    vendor/model-slug warning (for its ``/``-prefixed default) must still fire.
+    """
+    out = _run_doctor_for_provider(monkeypatch, tmp_path, provider, "vendor/some-model")
+    assert f"model.provider '{provider}' is unknown" in out
+    assert f"is vendor-prefixed but model.provider is '{provider}'" in out
+
+
+def test_run_doctor_exempts_publisher_prefixed_profile_from_vendor_slug_warning(
+    monkeypatch, tmp_path
+):
+    """Deriving the exemption from the profile's publisher-prefixed
+    default_aux_model (#56906) intentionally also covers the other
+    aggregator-style profiles, not just vertex. novita's catalog is
+    vendor-prefixed (default_aux_model ``deepseek/…``), so a vendor/model slug
+    on it is legitimate and must not warn.
+    """
+    out = _run_doctor_for_provider(
+        monkeypatch, tmp_path, "novita", "deepseek/deepseek-v3-0324"
+    )
+    assert "uses a vendor/model slug but provider is 'novita'" not in out
+    assert "is vendor-prefixed but model.provider is 'novita'" not in out
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):

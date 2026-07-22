@@ -11722,16 +11722,44 @@ def _list_cron_jobs_sync(profile: str = "all"):
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
 
-    jobs: List[Dict[str, Any]] = []
+    # Aggregating across profiles can surface the SAME job id more than
+    # once -- e.g. a job copied into a second profile's cron/jobs.json
+    # during profile creation. Deduplicate by id, deterministically
+    # preferring the default profile's copy over per-iteration order
+    # (issue #51721): collect all jobs first, then resolve duplicates by
+    # id with default-profile priority, rather than keeping whichever
+    # copy happened to be seen first during the profile loop.
+    all_jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            all_jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
-    return jobs
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    unkeyed: List[Dict[str, Any]] = []
+    for job in all_jobs:
+        if not isinstance(job, dict):
+            continue
+        jid = job.get("id") or job.get("job_id")
+        # cron.jobs._normalize_job_record() (via _coerce_job_text) fills a
+        # missing id with the literal sentinel string "unknown" -- which is
+        # truthy, so a plain `if not jid` check here would NOT catch it and
+        # two genuinely different id-less jobs from different profiles
+        # would collapse into one under this shared sentinel key. Treat the
+        # sentinel the same as no id: never deduplicated.
+        if not jid or jid == "unknown":
+            unkeyed.append(job)
+            continue
+        existing = by_id.get(jid)
+        if existing is None or (
+            job.get("is_default_profile") and not existing.get("is_default_profile")
+        ):
+            by_id[jid] = job
+    return list(by_id.values()) + unkeyed
 
 
 async def _run_cron_dashboard_io(func, *args, **kwargs):

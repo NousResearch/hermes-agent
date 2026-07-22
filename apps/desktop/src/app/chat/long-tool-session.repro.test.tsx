@@ -9,7 +9,7 @@ import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
 import { Thread } from '@/components/assistant-ui/thread'
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
-import { $previewStatusBySession, clearPreviewArtifacts } from '@/store/preview-status'
+import { $previewStatusBySession, clearPreviewArtifacts, dismissPreviewArtifact } from '@/store/preview-status'
 
 const TARGET_CONTENT_CHARS = 650_451
 const MESSAGE_COUNT = 266
@@ -199,7 +199,15 @@ function makeMinimalTurns(count: number, withLatestHeavyTools = 0): ChatMessage[
   }).flat()
 }
 
-function Harness({ messages, onSubmit }: { messages: ChatMessage[]; onSubmit: (text: string) => boolean }) {
+function Harness({
+  messages,
+  onSubmit,
+  sessionKey = 'stored-fixture'
+}: {
+  messages: ChatMessage[]
+  onSubmit: (text: string) => boolean
+  sessionKey?: string
+}) {
   const repository = useRuntimeMessageRepository(messages)
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -213,7 +221,7 @@ function Harness({ messages, onSubmit }: { messages: ChatMessage[]; onSubmit: (t
     <MemoryRouter>
       <AssistantRuntimeProvider runtime={runtime}>
         <div style={{ height: 800, position: 'relative' }}>
-          <Thread clampToComposer sessionId="runtime-fixture" sessionKey="stored-fixture" />
+          <Thread clampToComposer sessionId="runtime-fixture" sessionKey={sessionKey} />
           <ChatBar
             busy={false}
             cwd="/workspace/synthetic"
@@ -409,6 +417,20 @@ describe('representative long tool-heavy session contract (#68467)', () => {
     )
   })
 
+  it('resets expanded history when the session key changes', async () => {
+    const messages = makeMinimalTurns(25)
+    const view = render(<Harness messages={messages} onSubmit={() => true} sessionKey="first-session" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show earlier messages' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Show earlier messages' })).toBeNull())
+    expect(view.container.querySelectorAll('[data-history-group-id]')).toHaveLength(25)
+
+    view.rerender(<Harness messages={messages} onSubmit={() => true} sessionKey="second-session" />)
+
+    expect(screen.getByRole('button', { name: 'Show earlier messages' })).toBeTruthy()
+    expect(view.container.querySelectorAll('[data-history-group-id]')).toHaveLength(20)
+  })
+
   it('keeps history and tool pagers uniquely named', () => {
     render(<Harness messages={makeMinimalTurns(25, 25)} onSubmit={() => true} />)
 
@@ -442,5 +464,118 @@ describe('representative long tool-heavy session contract (#68467)', () => {
     )
     expect(view.container.querySelector('[data-tool-page-key*="hidden-preview-tool"]')).toBeNull()
     expect(view.container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(20)
+  })
+
+  it('re-registers the same preview target after a restored timeline produces it again', async () => {
+    clearPreviewArtifacts('runtime-fixture')
+    const withPreview = makeMinimalTurns(25)
+    withPreview[1].parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'preview-before-restore',
+        toolName: 'write_file',
+        args: { path: '/workspace/restored-preview.html' },
+        argsText: JSON.stringify({ path: '/workspace/restored-preview.html' }),
+        result: { output: 'created' },
+        isError: false
+      }
+    ]
+
+    const view = render(<Harness messages={withPreview} onSubmit={() => true} />)
+
+    await waitFor(() =>
+      expect($previewStatusBySession.get()['runtime-fixture']?.map(item => item.target)).toContain(
+        '/workspace/restored-preview.html'
+      )
+    )
+
+    act(() => clearPreviewArtifacts('runtime-fixture'))
+    expect($previewStatusBySession.get()['runtime-fixture']).toBeUndefined()
+
+    const reproduced = structuredClone(withPreview)
+    const reproducedPart = reproduced[1].parts[0]
+
+    if (reproducedPart.type !== 'tool-call') {
+      throw new Error('expected the reproduced preview tool call')
+    }
+
+    reproduced[1].parts = [{ ...reproducedPart, toolCallId: 'preview-after-restore' }]
+    view.rerender(<Harness messages={reproduced} onSubmit={() => true} />)
+
+    await waitFor(() =>
+      expect($previewStatusBySession.get()['runtime-fixture']?.map(item => item.target)).toContain(
+        '/workspace/restored-preview.html'
+      )
+    )
+  })
+
+  it('registers a large historical preview set with one bounded atom update', async () => {
+    clearPreviewArtifacts('runtime-fixture')
+    const messages = makeMinimalTurns(1)
+    messages[1].parts = Array.from({ length: 101 }, (_, index) => ({
+      type: 'tool-call' as const,
+      toolCallId: `preview-${index}`,
+      toolName: 'write_file',
+      args: { path: `/workspace/preview-${index}.html` },
+      argsText: JSON.stringify({ path: `/workspace/preview-${index}.html` }),
+      result: { output: 'created' },
+      isError: false
+    }))
+    let emissions = 0
+
+    const unsubscribe = $previewStatusBySession.subscribe(() => {
+      emissions += 1
+    })
+
+    render(<Harness messages={messages} onSubmit={() => true} />)
+
+    await waitFor(() =>
+      expect($previewStatusBySession.get()['runtime-fixture']?.map(item => item.target)).toEqual([
+        '/workspace/preview-97.html',
+        '/workspace/preview-98.html',
+        '/workspace/preview-99.html',
+        '/workspace/preview-100.html'
+      ])
+    )
+    expect(emissions).toBe(2)
+    unsubscribe()
+  })
+
+  it('does not resurrect a dismissed preview when another target is produced', async () => {
+    clearPreviewArtifacts('runtime-fixture')
+    const initial = makeMinimalTurns(1)
+    initial[1].parts = [
+      {
+        type: 'tool-call',
+        toolCallId: 'dismissed-preview',
+        toolName: 'write_file',
+        args: { path: '/workspace/dismissed.html' },
+        argsText: JSON.stringify({ path: '/workspace/dismissed.html' }),
+        result: { output: 'created' },
+        isError: false
+      }
+    ]
+    const view = render(<Harness messages={initial} onSubmit={() => true} />)
+
+    await waitFor(() => expect($previewStatusBySession.get()['runtime-fixture']).toHaveLength(1))
+    act(() => dismissPreviewArtifact('runtime-fixture', '/workspace/dismissed.html'))
+
+    const appended = structuredClone(initial)
+    appended[1].parts.push({
+      type: 'tool-call',
+      toolCallId: 'new-preview',
+      toolName: 'write_file',
+      args: { path: '/workspace/new.html' },
+      argsText: JSON.stringify({ path: '/workspace/new.html' }),
+      result: { output: 'created' },
+      isError: false
+    })
+    view.rerender(<Harness messages={appended} onSubmit={() => true} />)
+
+    await waitFor(() =>
+      expect($previewStatusBySession.get()['runtime-fixture']?.map(item => item.target)).toEqual([
+        '/workspace/new.html'
+      ])
+    )
   })
 })

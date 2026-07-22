@@ -16,7 +16,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { recordPreviewArtifact } from '@/store/preview-status'
+import { getPreviewClearGeneration, recordPreviewArtifacts } from '@/store/preview-status'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -50,6 +50,7 @@ export type MessageGroup = { id: string; weight: number } & (
 const FIRST_PAINT_BUDGET = 60
 const HISTORY_PAGE_BUDGET = FIRST_PAINT_BUDGET
 export const MAX_INITIAL_GROUPS = 20
+const MAX_TRACKED_PREVIEW_SESSIONS = 20
 
 interface ThreadMessageListProps {
   clampToComposer: boolean
@@ -163,13 +164,16 @@ export function earlierGroupIndex(groups: readonly MessageGroup[], firstVisible:
 }
 
 const ToolPreviewRegistrar: FC<{ cwd: string | null; sessionId: string | null | undefined }> = ({ cwd, sessionId }) => {
-  const seenBySessionRef = useRef(new Map<string, Set<string>>())
   const targetCacheRef = useRef(new WeakMap<object, { args: unknown; result: unknown; target: string }>())
+
+  const registrationBySessionRef = useRef(
+    new Map<string, { clearGeneration: number; occurrenceKeys: Set<string> }>()
+  )
 
   const targetsSignature = useAuiState(s =>
     JSON.stringify(
       s.thread.messages.flatMap(message =>
-        message.content.flatMap(part => {
+        message.content.flatMap((part, partIndex) => {
           if (part.type !== 'tool-call' || part.result === undefined) {
             return []
           }
@@ -189,7 +193,9 @@ const ToolPreviewRegistrar: FC<{ cwd: string | null; sessionId: string | null | 
             targetCacheRef.current.set(part, { args: part.args, result: part.result, target })
           }
 
-          return target && isPreviewableTarget(target) ? [target] : []
+          return target && isPreviewableTarget(target)
+            ? [{ key: `${message.id}:${part.toolCallId || `part-${partIndex}`}:${target}`, target }]
+            : []
         })
       )
     )
@@ -200,19 +206,27 @@ const ToolPreviewRegistrar: FC<{ cwd: string | null; sessionId: string | null | 
       return
     }
 
-    let seen = seenBySessionRef.current.get(sessionId)
+    const entries = JSON.parse(targetsSignature) as Array<{ key: string; target: string }>
+    const clearGeneration = getPreviewClearGeneration(sessionId)
+    const previous = registrationBySessionRef.current.get(sessionId)
+    const occurrenceKeys = new Set(entries.map(entry => entry.key))
+    const priorKeys = previous?.clearGeneration === clearGeneration ? previous.occurrenceKeys : new Set<string>()
+    const newTargets = entries.filter(entry => !priorKeys.has(entry.key)).map(entry => entry.target)
 
-    if (!seen) {
-      seen = new Set()
-      seenBySessionRef.current.set(sessionId, seen)
-    }
+    registrationBySessionRef.current.delete(sessionId)
+    registrationBySessionRef.current.set(sessionId, { clearGeneration, occurrenceKeys })
 
-    for (const target of JSON.parse(targetsSignature) as string[]) {
-      if (!seen.has(target)) {
-        seen.add(target)
-        recordPreviewArtifact(sessionId, target, cwd || '')
+    while (registrationBySessionRef.current.size > MAX_TRACKED_PREVIEW_SESSIONS) {
+      const oldestSession = registrationBySessionRef.current.keys().next().value
+
+      if (!oldestSession) {
+        break
       }
+
+      registrationBySessionRef.current.delete(oldestSession)
     }
+
+    recordPreviewArtifacts(sessionId, newTargets, cwd || '')
   }, [cwd, sessionId, targetsSignature])
 
   return null

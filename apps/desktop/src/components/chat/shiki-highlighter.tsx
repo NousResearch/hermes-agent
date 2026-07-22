@@ -91,10 +91,14 @@ function useNearViewportHighlight(enabled: boolean) {
 }
 
 function useWorkerHighlight(code: string, enabled: boolean, language: string) {
-  const [tokens, setTokens] = useState<ShikiWorkerToken[][] | null>(null)
+  const [highlight, setHighlight] = useState<{
+    code: string
+    language: string
+    tokens: ShikiWorkerToken[][]
+  } | null>(null)
 
   useEffect(() => {
-    setTokens(null)
+    setHighlight(null)
 
     if (!enabled) {
       return
@@ -112,7 +116,7 @@ function useWorkerHighlight(code: string, enabled: boolean, language: string) {
           const result = await job.promise
 
           if (active) {
-            setTokens(result)
+            setHighlight({ code, language, tokens: result })
           }
 
           return
@@ -138,7 +142,7 @@ function useWorkerHighlight(code: string, enabled: boolean, language: string) {
     }
   }, [code, enabled, language])
 
-  return tokens
+  return enabled && highlight?.code === code && highlight.language === language ? highlight.tokens : null
 }
 
 function tokenStyle(style: Record<string, string> | undefined): CSSProperties | undefined {

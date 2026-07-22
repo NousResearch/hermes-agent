@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useLayoutEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ShikiWorkerToken } from './shiki-worker'
@@ -69,6 +69,18 @@ const components = {
   Pre: ({ node: _node, ...props }: ComponentProps<'pre'> & { node?: unknown }) => <pre {...props} />
 }
 
+function CommitProbe({ code, onCommit }: { code: string; onCommit: (visibleCode: null | string) => void }) {
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => onCommit(ref.current?.querySelector('code')?.textContent ?? null), [code, onCommit])
+
+  return (
+    <div ref={ref}>
+      <SyntaxHighlighter code={code} components={components} language="ts" />
+    </div>
+  )
+}
+
 beforeEach(() => {
   disposeHighlight.mockClear()
   startShikiHighlight.mockClear()
@@ -116,6 +128,35 @@ describe('SyntaxHighlighter viewport and worker lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: /copy code/i }))
 
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(CODE))
+  })
+
+  it('never commits tokens from the previous code after props change', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+
+    const staleTokens: ShikiWorkerToken[][] = [
+      [{ content: 'stale highlighted code', htmlStyle: { color: '#ff0000' } }]
+    ]
+
+    let resolveStaleTokens: (tokens: ShikiWorkerToken[][]) => void = () => {}
+    startShikiHighlight.mockImplementationOnce(() => ({
+      dispose: disposeHighlight,
+      promise: new Promise(resolve => {
+        resolveStaleTokens = resolve
+      })
+    }))
+    startShikiHighlight.mockImplementationOnce(() => ({
+      dispose: disposeHighlight,
+      promise: new Promise(() => {})
+    }))
+    const onCommit = vi.fn()
+    const view = render(<CommitProbe code={CODE} onCommit={onCommit} />)
+
+    await act(async () => resolveStaleTokens(staleTokens))
+    await waitFor(() => expect(view.container.querySelector('code')?.textContent).toBe('stale highlighted code'))
+
+    view.rerender(<CommitProbe code="const replacement = true" onCommit={onCommit} />)
+
+    expect(onCommit).toHaveBeenLastCalledWith('const replacement = true')
   })
 
   it('disposes the worker lease and ignores a late result after unmount', async () => {

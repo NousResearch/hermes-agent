@@ -22,6 +22,7 @@ export interface PreviewArtifact {
 }
 
 const MAX_PER_SESSION = 4
+const clearGenerationBySession = new Map<string, number>()
 
 export const $previewStatusBySession = atom<Record<string, PreviewArtifact[]>>({})
 
@@ -44,24 +45,38 @@ const writePreviews = (sid: string, items: PreviewArtifact[]) => {
 }
 
 /**
- * Record a detected artifact, newest last, capped. Idempotent: a target already
- * in the list keeps its slot (transcript reconciliation may see it repeatedly,
- * so this must not churn the atom or reorder rows).
+ * Record detected artifacts in one atom update, newest last and capped.
+ * Idempotent: a target already in the list keeps its slot (transcript
+ * reconciliation may see it repeatedly, so this must not churn or reorder).
  */
+export function recordPreviewArtifacts(sid: string, targets: readonly string[], cwd: string) {
+  if (!sid) {
+    return
+  }
+
+  let next = $previewStatusBySession.get()[sid] ?? []
+  let changed = false
+
+  for (const target of targets) {
+    const raw = target.trim()
+
+    if (!raw || next.some(item => item.id === raw)) {
+      continue
+    }
+
+    changed = true
+    next = [...next, { cwd, id: raw, label: previewName(raw), target: raw }].slice(-MAX_PER_SESSION)
+  }
+
+  if (!changed) {
+    return
+  }
+
+  writePreviews(sid, next)
+}
+
 export function recordPreviewArtifact(sid: string, target: string, cwd: string) {
-  const raw = target.trim()
-
-  if (!sid || !raw) {
-    return
-  }
-
-  const list = $previewStatusBySession.get()[sid] ?? []
-
-  if (list.some(item => item.id === raw)) {
-    return
-  }
-
-  writePreviews(sid, [...list, { cwd, id: raw, label: previewName(raw), target: raw }].slice(-MAX_PER_SESSION))
+  recordPreviewArtifacts(sid, [target], cwd)
 }
 
 export function dismissPreviewArtifact(sid: string, id: string) {
@@ -76,5 +91,10 @@ export function dismissPreviewArtifact(sid: string, id: string) {
 }
 
 export function clearPreviewArtifacts(sid: string) {
+  clearGenerationBySession.set(sid, (clearGenerationBySession.get(sid) ?? 0) + 1)
   writePreviews(sid, [])
+}
+
+export function getPreviewClearGeneration(sid: string): number {
+  return clearGenerationBySession.get(sid) ?? 0
 }

@@ -80,17 +80,13 @@ export const ToolTurnPaginationProvider: FC<PropsWithChildren<{ tools: readonly 
   const pagerKey = hiddenCount > 0 ? (tools[firstVisible]?.key ?? null) : null
 
   const revealEarlier = useCallback(() => {
-    setState(current => {
-      const normalized = current.turnKey === turnKey ? current : { expanded: false, oldestVisibleKey: null, turnKey }
-      const visibleStart = firstVisibleToolIndex(tools, normalized.oldestVisibleKey, normalized.expanded)
-      const nextStart = Math.max(0, visibleStart - TOOL_TURN_PAGE_SIZE)
-      const nextOldest = tools[nextStart]?.key ?? null
+    const visibleStart = firstVisibleToolIndex(tools, currentState.oldestVisibleKey, currentState.expanded)
+    const nextStart = Math.max(0, visibleStart - TOOL_TURN_PAGE_SIZE)
+    const nextOldest = tools[nextStart]?.key ?? null
 
-      focusAfterRevealRef.current = nextStart === 0 ? nextOldest : null
-
-      return { expanded: true, oldestVisibleKey: nextOldest, turnKey }
-    })
-  }, [tools, turnKey])
+    focusAfterRevealRef.current = nextStart === 0 ? nextOldest : null
+    setState({ expanded: true, oldestVisibleKey: nextOldest, turnKey })
+  }, [currentState.expanded, currentState.oldestVisibleKey, tools, turnKey])
 
   useLayoutEffect(() => {
     const focusKey = focusAfterRevealRef.current

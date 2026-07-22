@@ -3750,6 +3750,49 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
+        # ── Per-job profile override (multiplex support) ──────────────
+        # Under gateway.multiplex_profiles, the cron ticker runs inside the
+        # default profile's gateway process. Without a per-job override, every
+        # job loads the default profile's SOUL.md, config.yaml, .env secrets,
+        # skills, and Hindsight bank — even if the job logically belongs to a
+        # different agent profile.
+        #
+        # When a job carries a ``profile`` field (e.g. ``"profile": "antu"``),
+        # we install the same ``set_hermes_home_override`` + ``set_secret_scope``
+        # pair the multiplexer uses for inbound message routing
+        # (gateway/run.py::_profile_runtime_scope). This makes SOUL.md, config,
+        # credentials, skills, and memory resolve to the job's own profile for
+        # the duration of this run.
+        #
+        # Jobs without ``profile`` are unaffected (single-profile gateways, or
+        # default-profile jobs under multiplex) — ``_get_hermes_home()`` still
+        # resolves to the process-wide HERMES_HOME as before.
+        _job_profile = (job.get("profile") or "").strip()
+        _home_override_token = None
+        if _job_profile:
+            from pathlib import Path as _Path
+            from hermes_constants import set_hermes_home_override as _set_override
+            _profile_home = _Path(_get_hermes_home().anchor) / "root" / ".hermes" / "profiles" / _job_profile
+            # Fallback: derive from the default profile root
+            if not _profile_home.is_dir():
+                _default_root = _get_hermes_home()
+                while _default_root.name != ".hermes" and _default_root.parent != _default_root:
+                    _default_root = _default_root.parent
+                if _default_root.name == ".hermes":
+                    _profile_home = _default_root / "profiles" / _job_profile
+            if _profile_home.is_dir():
+                _home_override_token = _set_override(str(_profile_home))
+                logger.info(
+                    "Job '%s': running under profile '%s' (%s)",
+                    job.get("name", job["id"]), _job_profile, _profile_home,
+                )
+            else:
+                logger.warning(
+                    "Job '%s': profile '%s' home not found at %s — "
+                    "falling back to default profile",
+                    job.get("name", job["id"]), _job_profile, _profile_home,
+                )
+
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
         # gateway profiles / room→profile multiplexing), and cron fires from
@@ -3789,6 +3832,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             raise
         finally:
             reset_secret_scope(_scope_token)
+            if _home_override_token is not None:
+                from hermes_constants import reset_hermes_home_override as _reset_override
+                _reset_override(_home_override_token)
 
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step

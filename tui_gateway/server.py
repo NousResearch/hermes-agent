@@ -27,7 +27,7 @@ from hermes_constants import (
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
-from agent.replay_cleanup import sanitize_replay_history
+from agent.replay_cleanup import sanitize_replay_history, strip_stale_dangerous_confirmations
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -6359,6 +6359,10 @@ def _(rid, params: dict) -> dict:
         # not replay the unanswered call forever (#29086).
         prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
+        # Strip stale dangerous-confirmation text so that a high-risk
+        # confirmation phrase spoken in a previous turn does not survive
+        # a session resume and trigger the destructive action again (#59607).
+        history = strip_stale_dangerous_confirmations(history, now=time.time())
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
         # the build drops the provider ("No LLM provider configured").
@@ -6435,6 +6439,10 @@ def _(rid, params: dict) -> dict:
         # the WebUI/TUI resume path picking up the same cleanup.
         display_history_prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
+        # Strip stale dangerous-confirmation text so that a high-risk
+        # confirmation phrase spoken in a previous turn does not survive
+        # a session resume and trigger the destructive action again (#59607).
+        history = strip_stale_dangerous_confirmations(history, now=time.time())
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:

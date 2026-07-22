@@ -734,6 +734,12 @@ class TestToolHandlers:
         ))
         assert result["result"] == "Synthesized answer"
 
+    def test_reflect_passes_configured_max_tokens(self, provider_with_config):
+        p = provider_with_config(recall_max_tokens=2048)
+        p.handle_tool_call("hindsight_reflect", {"query": "summarize"})
+        call_kwargs = p._client.areflect.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 2048
+
     def test_reflect_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_reflect", {}
@@ -854,6 +860,18 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_queue_prefetch_reflect_passes_configured_max_tokens(self, provider_with_config):
+        p = provider_with_config(
+            recall_prefetch_method="reflect",
+            recall_max_tokens=1024,
+        )
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = p._client.areflect.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 1024
 
 
 # ---------------------------------------------------------------------------

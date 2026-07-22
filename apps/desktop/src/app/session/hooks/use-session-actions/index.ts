@@ -789,7 +789,7 @@ export function useSessionActions({
 
         let localSnapshot = resumedSameSelectedSession
           ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-          : $messages.get()
+          : []
 
         let prefetchApplied = false
         let prefetchedMessageCount = 0
@@ -826,7 +826,7 @@ export function useSessionActions({
             if (isCurrentResume()) {
               const previousMessages = resumedSameSelectedSession
                 ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-                : $messages.get()
+                : []
 
               localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
               prefetchApplied = true
@@ -871,7 +871,7 @@ export function useSessionActions({
             : (() => {
                 const previousMessages = resumedSameSelectedSession
                   ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
-                  : currentMessages
+                  : []
 
                 const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
 
@@ -884,7 +884,7 @@ export function useSessionActions({
         const messagesForView =
           preferredMessages === currentMessages
             ? currentMessages
-            : preserveLocalAssistantErrors(preferredMessages, currentMessages)
+            : preserveLocalAssistantErrors(preferredMessages, resumedSameSelectedSession ? currentMessages : [])
 
         if (sessionShouldHaveTranscript(stored) && messagesForView.length === 0) {
           setActiveSessionId(null)
@@ -938,7 +938,7 @@ export function useSessionActions({
 
           const previousMessages = resumedSameSelectedSession
             ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
+            : []
 
           setMessages(reconcileAuthoritativeMessages(fallback.messages, previousMessages))
         } catch (e) {

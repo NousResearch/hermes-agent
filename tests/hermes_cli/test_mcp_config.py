@@ -6,8 +6,10 @@ any actual MCP servers or API keys.
 """
 
 import argparse
+import asyncio
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -682,6 +684,12 @@ class TestProbeCapabilityGating:
             session = _Session()
             initialize_result = outer._InitResult(caps)
 
+            def __init__(self_inner):
+                # The probe now drains list_* pagination under the server's
+                # _rpc_lock (parity with the tool discovery path); the lock is
+                # created here on the MCP loop thread so it binds to that loop.
+                self_inner._rpc_lock = asyncio.Lock()
+
             async def shutdown(self_inner):
                 return None
 
@@ -724,6 +732,66 @@ class TestProbeCapabilityGating:
         # No initialize_result captured → preserve legacy always-try behaviour.
         called, _ = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, None)
         assert set(called) == {"prompts", "resources"}
+
+    def _make_paginated_server(self, prompt_pages, resource_pages, caps):
+        outer = self
+
+        class _Session:
+            async def list_prompts(self_inner, cursor=None):
+                return prompt_pages[cursor]
+
+            async def list_resources(self_inner, cursor=None):
+                return resource_pages[cursor]
+
+        class _FakeServer:
+            _tools = [outer._FakeTool()]
+            session = _Session()
+            initialize_result = outer._InitResult(caps)
+
+            def __init__(self_inner):
+                self_inner._rpc_lock = asyncio.Lock()
+
+            async def shutdown(self_inner):
+                return None
+
+        return _FakeServer()
+
+    def test_probe_counts_drain_pagination(self, monkeypatch):
+        """Prompt/resource counts must follow ``nextCursor`` so a paginated
+        server is not undercounted at page 1.
+
+        The tool count in the same probe already comes from the paginated
+        discovery (``server._tools``), so leaving prompts/resources on page 1
+        reported an inconsistent, understated capability count for any server
+        that paginates ``prompts/list`` / ``resources/list``. Mirrors the
+        nextCursor draining applied to the tools/resources/prompts discovery
+        sites in ``tools/mcp_tool.py``.
+        """
+        import hermes_cli.mcp_config as mc
+
+        caps = self._Caps(prompts=object(), resources=object())
+        # 2 prompts on page 1 (+cursor) then 1 on page 2 (no cursor) → 3 total.
+        prompt_pages = {
+            None: SimpleNamespace(prompts=[object(), object()], nextCursor="p2"),
+            "p2": SimpleNamespace(prompts=[object()], nextCursor=None),
+        }
+        # 1 resource on page 1 (+cursor) then 2 on page 2 → 3 total.
+        resource_pages = {
+            None: SimpleNamespace(resources=[object()], nextCursor="r2"),
+            "r2": SimpleNamespace(resources=[object(), object()], nextCursor=None),
+        }
+        server = self._make_paginated_server(prompt_pages, resource_pages, caps)
+
+        async def _fake_connect(name, cfg):
+            return server
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        details: dict = {}
+        mc._probe_single_server("srv", {"url": "http://x/mcp"}, details=details)
+
+        # Before the fix these were len(page-1) == 2 and 1 respectively.
+        assert details["prompts"] == 3
+        assert details["resources"] == 3
 
 
 class TestStripBearerPrefix:

@@ -133,20 +133,20 @@ torchaudio.save("sound.wav", wav[0].cpu(), sample_rate=16000)
 ```
 AudioCraft Architecture:
 ┌──────────────────────────────────────────────────────────────┐
-│                    Text Encoder (T5)                          │
-│                         │                                     │
-│                    Text Embeddings                            │
+│                    Text Encoder (T5)                         │
+│                         │                                    │
+│                    Text Embeddings                           │
 └────────────────────────┬─────────────────────────────────────┘
                          │
 ┌────────────────────────▼─────────────────────────────────────┐
-│              Transformer Decoder (LM)                         │
-│     Auto-regressively generates audio tokens                  │
-│     Using efficient token interleaving patterns               │
+│              Transformer Decoder (LM)                        │
+│     Auto-regressively generates audio tokens                 │
+│     Using efficient token interleaving patterns              │
 └────────────────────────┬─────────────────────────────────────┘
                          │
 ┌────────────────────────▼─────────────────────────────────────┐
-│                EnCodec Audio Decoder                          │
-│        Converts tokens back to audio waveform                 │
+│                EnCodec Audio Decoder                         │
+│        Converts tokens back to audio waveform                │
 └──────────────────────────────────────────────────────────────┘
 ```
 

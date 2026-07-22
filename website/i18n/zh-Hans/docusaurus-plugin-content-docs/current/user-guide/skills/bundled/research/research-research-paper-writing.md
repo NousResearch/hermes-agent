@@ -45,15 +45,15 @@ description: "为 NeurIPS/ICML/ICLR 撰写 ML 论文：设计→投稿"
 │  Phase 0: Project Setup ──► Phase 1: Literature Review      │
 │       │                          │                          │
 │       ▼                          ▼                          │
-│  Phase 2: Experiment     Phase 5: Paper Drafting ◄──┐      │
-│       Design                     │                   │      │
-│       │                          ▼                   │      │
-│       ▼                    Phase 6: Self-Review      │      │
-│  Phase 3: Execution &           & Revision ──────────┘      │
+│  Phase 2: Experiment     Phase 5: Paper Drafting ◄──┐       │
+│       Design                     │                  │       │
+│       │                          ▼                  │       │
+│       ▼                    Phase 6: Self-Review     │       │
+│  Phase 3: Execution &           & Revision ─────────┘       │
 │       Monitoring                 │                          │
 │       │                          ▼                          │
-│       ▼                    Phase 7: Submission               │
-│  Phase 4: Analysis ─────► (feeds back to Phase 2 or 5)     │
+│       ▼                    Phase 7: Submission              │
+│  Phase 4: Analysis ─────► (feeds back to Phase 2 or 5)      │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```

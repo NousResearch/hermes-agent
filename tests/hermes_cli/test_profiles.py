@@ -1192,6 +1192,32 @@ class TestExportImport:
         assert imported.is_dir()
         assert (imported / "marker.txt").read_text() == "hello"
 
+    def test_import_registers_s6_gateway_like_create(self, profile_env, tmp_path, monkeypatch):
+        """Import must register an s6 gateway slot the same way create_profile does (#69163)."""
+        from tests.hermes_cli.test_profiles_s6_hooks import _S6Manager, _patch_detect_s6
+
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+        (profile_dir / "marker.txt").write_text("hello")
+
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
+
+        import shutil
+        shutil.rmtree(profile_dir)
+
+        _patch_detect_s6(monkeypatch)
+        mgr = _S6Manager()
+        monkeypatch.setattr(
+            "hermes_cli.service_manager.get_service_manager", lambda: mgr
+        )
+
+        imported = import_profile(str(archive_path), name="coder")
+        assert imported.is_dir()
+        assert mgr.registered == ["coder"]
+        assert mgr.last_start_now is False
+
     def test_import_to_existing_name_raises(self, profile_env, tmp_path):
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")

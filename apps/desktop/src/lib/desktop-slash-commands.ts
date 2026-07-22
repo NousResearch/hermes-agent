@@ -148,7 +148,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: exec()
   },
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
-  { name: '/compress', description: 'Compress this conversation context', surface: exec() },
+  { name: '/compress', description: 'Compress this conversation context', aliases: ['/compact'], surface: exec() },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
@@ -187,10 +187,10 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   terminal: [
     '/busy',
     '/clear',
-    '/compact',
     '/config',
     '/copy',
     '/cron',
+    '/density',
     '/details',
     '/exit',
     '/footer',

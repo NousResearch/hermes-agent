@@ -70,8 +70,10 @@ class TestToolCallEnvelopeEstimate:
 
     def test_non_dict_tool_calls_do_not_crash(self):
         msg = {"role": "assistant", "content": "hi", "tool_calls": ["weird", None]}
-        # Non-dict entries are ignored (as before) without raising.
-        assert _estimate_msg_budget_tokens(msg) == len("hi") // _CHARS_PER_TOKEN + 10
+        # Non-dict entries are ignored (as before) without raising. String
+        # content now goes through estimate_tokens_rough (ceiling division),
+        # so 2 chars estimate as 1 token instead of flooring to 0.
+        assert _estimate_msg_budget_tokens(msg) == (len("hi") + 3) // _CHARS_PER_TOKEN + 10
 
 
 @pytest.fixture()

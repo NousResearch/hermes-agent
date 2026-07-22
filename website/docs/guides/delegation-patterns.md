@@ -194,7 +194,7 @@ This is often the most efficient pattern: `execute_code` handles the 10+ sequent
 
 ## Inherited Tool Access
 
-Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept a model-facing `toolsets` parameter, so delegated work cannot grant itself capabilities that the parent does not have. Configure the parent's tools before starting the conversation when a delegated task needs web, terminal, file, or other access. Hermes still strips child-blocked tools such as `clarify`, `memory`, and `execute_code`.
+Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept a model-facing `toolsets` parameter, so delegated work cannot grant itself capabilities that the parent does not have. Configure the parent's tools before starting the conversation when a delegated task needs web, terminal, file, or other access. Hermes still strips child-blocked tools such as `clarify`, `memory`, and `send_message`; children keep `execute_code` for programmatic tool calling.
 
 ---
 

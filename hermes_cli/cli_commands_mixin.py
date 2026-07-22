@@ -758,7 +758,8 @@ class CLICommandsMixin:
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
-                    self.conversation_history
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
                 )
             except Exception:
                 pass
@@ -919,7 +920,8 @@ class CLICommandsMixin:
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
-                    self.conversation_history
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
                 )
             except Exception:
                 pass
@@ -966,6 +968,7 @@ class CLICommandsMixin:
                     # replays the parent's exact wire bytes (warm provider
                     # prompt cache) instead of a full cold prefill.
                     api_content=extract_api_content_sidecar(msg),
+                    timestamp=msg.get("timestamp"),
                 )
             except Exception:
                 pass  # Best-effort copy

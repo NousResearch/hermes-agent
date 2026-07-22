@@ -750,16 +750,7 @@ def build_resume_recovery_note(
         if reason == "shutdown_timeout"
         else "a gateway interruption"
     )
-    if message:
-        resume_guidance = (
-            "Address the user's NEW message below FIRST and focus "
-            "on what the user is asking now."
-        )
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
-        )
-    elif durable_resume:
+    if durable_resume:
         resume_guidance = (
             "The triggering user request is already recorded in the conversation "
             "history. This empty event is an internal recovery signal, NOT an "
@@ -770,6 +761,15 @@ def build_resume_recovery_note(
         tail_guidance = (
             "Do NOT re-run tool calls whose results already appear in the history "
             "— resume from the first step that has no recorded result."
+        )
+    elif message:
+        resume_guidance = (
+            "Address the user's NEW message below FIRST and focus "
+            "on what the user is asking now."
+        )
+        tail_guidance = (
+            "Do NOT re-execute old tool calls — skip any "
+            "unfinished work from the conversation history."
         )
     elif interactive:
         resume_guidance = (
@@ -798,7 +798,7 @@ def build_resume_recovery_note(
         f"Any restart/shutdown command in the history has already "
         f"run — do NOT re-execute or verify it. {resume_guidance} "
         f"{tail_guidance}]"
-        + (f"\n\n{message}" if message else "")
+        + (f"\n\n{message}" if message and not durable_resume else "")
     )
 
 
@@ -3006,6 +3006,40 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+@dataclasses.dataclass(frozen=True)
+class _AgentTurnOutcome:
+    """Keep execution completion separate from adapter delivery payload.
+
+    A successful streamed reply intentionally has ``delivery_response=None``
+    because the platform already received the final body.  Intentional silence
+    similarly uses an empty delivery response.  Neither value says whether the
+    agent turn completed, so durable inbox state must consume ``completed``
+    instead of inferring success from response truthiness.
+    """
+
+    delivery_response: Any
+    completed: bool
+    terminally_handled: bool = False
+
+
+def _coerce_agent_turn_outcome(result: Any) -> _AgentTurnOutcome:
+    """Normalize legacy private-handler overrides to the explicit outcome.
+
+    Production ``_handle_message_with_agent`` always returns
+    ``_AgentTurnOutcome``.  The compatibility branch preserves the outbound
+    payload for existing private-method overrides, but deliberately cannot
+    prove durable completion; such overrides must adopt the explicit outcome
+    contract before durable rows can be consumed as successful.
+    """
+    if isinstance(result, _AgentTurnOutcome):
+        return result
+    # A raw response cannot communicate whether ``None`` means streamed
+    # success, a terminal drop, or an interrupted turn.  Preserve the delivery
+    # payload for private test/override compatibility, but fail closed for
+    # durable completion instead of reviving the old truthiness inference.
+    return _AgentTurnOutcome(delivery_response=result, completed=False)
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -3301,7 +3335,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._inbox_store = self._build_inbox_store()
         self._inbox_wakeup: Optional[asyncio.Event] = None
         self._inbox_recovered_resume_rows: Dict[str, List[Any]] = {}
-        self._inbox_uncertain_claims: Dict[str, MessageEvent] = {}
+        self._inbox_uncertain_claims: Dict[
+            str, tuple[MessageEvent, bool]
+        ] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -5142,12 +5178,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _inbox_finish_event(
         self,
         event: "MessageEvent",
-        result: Any,
         *,
+        completed: bool,
+        terminally_handled: bool = False,
         session_key: Optional[str] = None,
         run_generation: Optional[int] = None,
     ) -> bool:
-        """Commit or safely requeue a claimed row after an agent turn."""
+        """Commit or safely requeue a claimed row after an agent turn.
+
+        ``terminally_handled`` consumes deliberate drops/rejections whose user
+        notification happened before transcript persistence.  All ordinary
+        successful turns still require a durably recorded trigger.
+        """
         marker = self._inbox_marker(event)
         if marker is None or not marker.get("claim_token"):
             return False
@@ -5160,13 +5202,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event, "session generation changed"
             )
 
-        succeeded = (
-            _should_clear_resume_pending_after_turn(result)
-            if isinstance(result, dict)
-            else bool(isinstance(result, str) and result.strip())
-        )
+        if terminally_handled:
+            return await self._inbox_complete_event(event)
+
         if marker.get("resume_only"):
-            if succeeded:
+            if completed:
                 return await self._inbox_complete_event(event)
             return await self._inbox_retry_event(
                 event,
@@ -5181,10 +5221,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if uncertain is None:
                 uncertain = {}
                 self._inbox_uncertain_claims = uncertain
-            uncertain[marker["queue_id"]] = event
+            uncertain[marker["queue_id"]] = (event, bool(completed))
             self._signal_inbox_dispatcher()
             return False
-        if succeeded:
+        if completed:
             if durable:
                 return await self._inbox_complete_event(event)
             return await self._inbox_retry_event(
@@ -5205,15 +5245,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(uncertain, dict) or not uncertain:
             return 0
         reconciled = 0
-        for queue_id, event in list(uncertain.items()):
+        for queue_id, pending in list(uncertain.items()):
+            # Compatibility with process-local state created before the
+            # completion-aware representation was introduced.
+            if isinstance(pending, tuple) and len(pending) == 2:
+                event, completed = pending
+            else:
+                event, completed = pending, False
             durable = await self._inbox_trigger_is_durable(event)
             if durable is None:
                 continue
-            if await self._inbox_retry_event(
-                event,
-                "trigger durability verified after transient lookup failure",
-                resume_only=durable,
-            ):
+            if completed and durable:
+                resolved = await self._inbox_complete_event(event)
+            else:
+                resolved = await self._inbox_retry_event(
+                    event,
+                    "trigger durability verified after transient lookup failure",
+                    resume_only=durable,
+                )
+            if resolved:
                 uncertain.pop(queue_id, None)
                 reconciled += 1
         return reconciled
@@ -13094,11 +13144,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         _inbox_finished = False
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_outcome = _coerce_agent_turn_outcome(
+                await self._handle_message_with_agent(
+                    event, source, _quick_key, _run_generation
+                )
+            )
+            _delivery_response = _agent_outcome.delivery_response
             if _inbox_claimed is not None:
                 _inbox_finished = await self._inbox_finish_event(
                     event,
-                    _agent_result,
+                    completed=_agent_outcome.completed,
+                    terminally_handled=_agent_outcome.terminally_handled,
                     session_key=_quick_key,
                     run_generation=_run_generation,
                 )
@@ -13110,10 +13166,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # broken judge never breaks normal message handling.
             try:
                 _final_text = ""
-                if isinstance(_agent_result, dict):
-                    _final_text = str(_agent_result.get("final_response") or "")
-                elif isinstance(_agent_result, str):
-                    _final_text = _agent_result
+                if isinstance(_delivery_response, dict):
+                    _final_text = str(
+                        _delivery_response.get("final_response") or ""
+                    )
+                elif isinstance(_delivery_response, str):
+                    _final_text = _delivery_response
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
@@ -13130,12 +13188,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
-            return _agent_result
+            return _delivery_response
         except asyncio.CancelledError:
             if _inbox_claimed is not None and not _inbox_finished:
                 await self._inbox_finish_event(
                     event,
-                    {"interrupted": True, "failed": True},
+                    completed=False,
                     session_key=_quick_key,
                     run_generation=_run_generation,
                 )
@@ -13144,7 +13202,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _inbox_claimed is not None and not _inbox_finished:
                 await self._inbox_finish_event(
                     event,
-                    {"failed": True},
+                    completed=False,
                     session_key=_quick_key,
                     run_generation=_run_generation,
                 )
@@ -13730,7 +13788,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pinned_session_id,
             )
             if resolved_entry is None:
-                return
+                return _AgentTurnOutcome(
+                    delivery_response=None,
+                    completed=False,
+                    terminally_handled=True,
+                )
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
@@ -13797,16 +13859,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # provide a message ID. Reply/reaction routing continues to use the real
         # platform ID and is therefore unaffected.
         _inbox_marker = self._inbox_marker(event)
-        _persistence_message_id = (
+        _resume_only_inbox_turn = bool(
+            (_inbox_marker or {}).get("resume_only")
+        )
+        _inbox_trigger_identity = (
+            str((_inbox_marker or {}).get("trigger_identity") or "") or None
+        )
+        _persistence_message_id = None if _resume_only_inbox_turn else (
             str(event.message_id)
             if getattr(event, "message_id", None) is not None
-            else str((_inbox_marker or {}).get("trigger_identity") or "") or None
+            else _inbox_trigger_identity
         )
         if _inbox_marker is not None:
             await self._inbox_bind_event(
                 event,
                 session_entry.session_id,
-                _persistence_message_id,
+                _inbox_trigger_identity or _persistence_message_id,
             )
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
@@ -14585,7 +14653,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=session_key,
         )
         if message_text is None:
-            return
+            return _AgentTurnOutcome(
+                delivery_response=None,
+                completed=False,
+                terminally_handled=True,
+            )
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
@@ -14639,6 +14711,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        _turn_committed = False
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -14670,10 +14743,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
-                durable_inbox_resume=bool(
-                    (_inbox_marker or {}).get("resume_only")
-                ),
+                durable_inbox_resume=_resume_only_inbox_turn,
             )
+            _turn_completed = _should_clear_resume_pending_after_turn(agent_result)
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -14710,7 +14782,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
                     _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
-                return None
+                return _AgentTurnOutcome(delivery_response=None, completed=False)
 
             response = agent_result.get("final_response") or ""
             # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
@@ -15206,6 +15278,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._refresh_agent_cache_message_count(
                 session_key, session_entry.session_id
             )
+            _turn_committed = _turn_completed
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
@@ -15257,9 +15330,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
-                return None
+                return _AgentTurnOutcome(
+                    delivery_response=None,
+                    completed=_turn_completed,
+                )
 
-            return response
+            return _AgentTurnOutcome(
+                delivery_response=response,
+                completed=_turn_completed,
+            )
             
         except Exception as e:
             # Stop typing indicator on error too, retaining Slack thread/workspace
@@ -15363,16 +15442,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                    return _AgentTurnOutcome(
+                        delivery_response=(
+                            "⚠️ Session too large for the model's context window.\n"
+                            "Use /compact to compress the conversation, or "
+                            "/reset to start fresh."
+                        ),
+                        completed=_turn_committed,
+                        terminally_handled=True,
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
-            return (
-                f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
+            return _AgentTurnOutcome(
+                delivery_response=(
+                    f"Sorry, I encountered an unexpected error.{status_hint}\n"
+                    "Try again or use /reset to start a fresh session."
+                ),
+                completed=_turn_committed,
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -22691,7 +22777,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if _is_resume_pending or durable_inbox_resume:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _persist_user_message_override = message
+                # A resume-only inbox turn is an internal continuation, not a
+                # second copy of the triggering platform message.  Persist the
+                # generated recovery note itself (with no platform message ID)
+                # instead of the decorated empty transport envelope.
+                _persist_user_message_override = (
+                    None if durable_inbox_resume else message
+                )
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
                 # no NEW user message to address.  Guidance is adapter-aware:
@@ -23924,7 +24016,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _pending_inbox_claim is not None:
                         await self._inbox_finish_event(
                             pending_event,
-                            {"interrupted": True, "failed": True},
+                            completed=False,
                             session_key=next_session_key,
                             run_generation=run_generation,
                         )
@@ -23933,7 +24025,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _pending_inbox_claim is not None:
                         await self._inbox_finish_event(
                             pending_event,
-                            {"failed": True},
+                            completed=False,
                             session_key=next_session_key,
                             run_generation=run_generation,
                         )
@@ -23941,7 +24033,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _pending_inbox_claim is not None:
                     await self._inbox_finish_event(
                         pending_event,
-                        followup_result,
+                        completed=_should_clear_resume_pending_after_turn(
+                            followup_result
+                        ),
                         session_key=next_session_key,
                         run_generation=run_generation,
                     )

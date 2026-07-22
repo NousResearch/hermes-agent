@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.inbound_queue import GatewayInboxStore, INBOX_METADATA_KEY
@@ -161,3 +161,116 @@ def test_dispatcher_preserves_durable_resume_control_marker(tmp_path):
     runner.session_store.mark_resume_pending.assert_called_once_with(
         "session-resume", "restart_interrupted"
     )
+
+
+def test_streamed_resume_only_turn_completes_exactly_once(tmp_path):
+    """A resumed turn whose final body was already streamed must not be
+    released back into ``resume_ready`` and replayed as another empty turn.
+    """
+    runner = _runner(tmp_path)
+    event = _event("streamed-resume", "chat-streamed-resume")
+
+    async def exercise() -> None:
+        await runner._inbox_enqueue_event(event, "session-resume", origin="direct")
+        first_claim = await runner._inbox_claim_event(event)
+        assert first_claim is not None
+        assert await runner._inbox_retry_event(
+            event,
+            "gateway stopped after trigger persistence",
+            resume_only=True,
+        )
+        resumed_claim = await runner._inbox_claim_event(event)
+        assert resumed_claim is not None and resumed_claim.resume_only is True
+
+        assert await runner._inbox_finish_event(event, completed=True)
+
+    asyncio.run(exercise())
+
+    row = runner._inbox_store.get(event.metadata[INBOX_METADATA_KEY]["queue_id"])
+    assert row is not None
+    assert row.state == "completed"
+    assert row.attempts == 2
+    assert row.resume_only is True
+
+
+def test_failed_durable_turn_retries_as_resume_only(tmp_path):
+    """A non-empty user-facing error does not make an unfinished agent turn
+    successful; completion is supplied explicitly instead of inferred from text.
+    """
+    runner = _runner(tmp_path)
+    runner.session_store = MagicMock()
+    runner.session_store._db.has_platform_message_id.return_value = True
+    event = _event("failed-turn", "chat-failed")
+
+    async def exercise() -> None:
+        await runner._inbox_enqueue_event(event, "session-failed", origin="direct")
+        claimed = await runner._inbox_claim_event(event)
+        assert claimed is not None
+        assert await runner._inbox_bind_event(
+            event,
+            "session-db-failed",
+            claimed.trigger_identity,
+        )
+
+        assert await runner._inbox_finish_event(event, completed=False)
+
+    asyncio.run(exercise())
+
+    row = runner._inbox_store.get(event.metadata[INBOX_METADATA_KEY]["queue_id"])
+    assert row is not None
+    assert row.state == "resume_ready"
+    assert row.resume_only is True
+    assert row.last_error == "agent turn did not complete"
+
+
+def test_terminally_handled_turn_completes_without_durable_trigger(tmp_path):
+    """A request rejected safely before transcript persistence has already
+    received its terminal notice and must not repeat until dead-letter.
+    """
+    runner = _runner(tmp_path)
+    event = _event("terminal-rejection", "chat-terminal")
+
+    async def exercise() -> None:
+        await runner._inbox_enqueue_event(event, "session-terminal", origin="direct")
+        claimed = await runner._inbox_claim_event(event)
+        assert claimed is not None
+
+        assert await runner._inbox_finish_event(
+            event,
+            completed=False,
+            terminally_handled=True,
+        )
+
+    asyncio.run(exercise())
+
+    row = runner._inbox_store.get(event.metadata[INBOX_METADATA_KEY]["queue_id"])
+    assert row is not None
+    assert row.state == "completed"
+    assert row.attempts == 1
+
+
+def test_successful_turn_stays_completed_after_transient_durability_lookup(
+    tmp_path,
+):
+    """A temporary SessionDB lookup failure must not erase the known agent
+    completion result and convert a successful turn into a resume replay.
+    """
+    runner = _runner(tmp_path)
+    event = _event("uncertain-success", "chat-uncertain")
+    runner._inbox_trigger_is_durable = AsyncMock(side_effect=[None, True])
+
+    async def exercise() -> None:
+        await runner._inbox_enqueue_event(event, "session-uncertain", origin="direct")
+        claimed = await runner._inbox_claim_event(event)
+        assert claimed is not None
+
+        assert await runner._inbox_finish_event(event, completed=True) is False
+        assert await runner._reconcile_uncertain_inbox_claims() == 1
+
+    asyncio.run(exercise())
+
+    row = runner._inbox_store.get(event.metadata[INBOX_METADATA_KEY]["queue_id"])
+    assert row is not None
+    assert row.state == "completed"
+    assert row.attempts == 1
+    assert row.resume_only is False

@@ -303,3 +303,4 @@ async def test_resume_only_inbox_marker_reaches_agent_recovery(monkeypatch, tmp_
     await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
 
     assert runner._run_agent.await_args.kwargs["durable_inbox_resume"] is True
+    assert runner._run_agent.await_args.kwargs["event_message_id"] is None

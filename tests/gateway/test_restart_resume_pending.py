@@ -522,6 +522,30 @@ class TestResumePendingSystemNote:
         assert "do NOT ask the user to resend, restate, or clarify" in note
         assert "already appear in the history" in note
 
+    def test_durable_resume_ignores_decorated_empty_control_envelope(self):
+        """Gateway preprocessing can decorate an empty internal event with a
+        trigger header and user label.  It is still a recovery control signal,
+        not a new human message, and the decoration must not reach the model.
+        """
+        decorated_empty = (
+            "[Triggering message id: 1529440882732830761]\n\n"
+            "[stellarisw] "
+        )
+
+        note = build_resume_recovery_note(
+            "restart_interrupted",
+            decorated_empty,
+            interactive=True,
+            durable_resume=True,
+        )
+
+        assert "internal recovery signal" in note
+        assert "CONTINUE the interrupted task" in note
+        assert "NEW message" not in note
+        assert "Triggering message id" not in note
+        assert "[stellarisw]" not in note
+        assert "do NOT ask the user to resend, restate, or clarify" in note
+
     def test_new_message_guidance_identical_regardless_of_interactivity(self):
         """A real NEW user message always wins — same guidance either way."""
         a = build_resume_recovery_note("restart_timeout", "do the thing", interactive=True)

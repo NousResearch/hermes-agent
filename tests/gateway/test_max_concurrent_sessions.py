@@ -9,7 +9,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.inbound_queue import GatewayInboxStore
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL, _AgentTurnOutcome
 from gateway.session import SessionSource, build_session_key
 
 
@@ -156,15 +156,50 @@ def test_successful_durable_turn_completes_claim(monkeypatch, tmp_path):
 
     async def mock_agent_run(self_inner, ev, src, qk, generation):
         assert await self_inner._inbox_bind_event(ev, "session-db-1")
-        return {"final_response": "ok", "completed": True}
+        return _AgentTurnOutcome(delivery_response="ok", completed=True)
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_agent_run):
         result = asyncio.run(runner._handle_message(event))
 
-    assert result["final_response"] == "ok"
+    assert result == "ok"
     rows = runner._inbox_store.list_rows(states={"completed"})
     assert len(rows) == 1
     assert rows[0].trigger_identity == "platform-message-1"
+
+
+def test_streamed_durable_turn_completes_claim_without_resume_retry(
+    monkeypatch, tmp_path
+):
+    """Confirmed streaming delivery is a completed turn even though the
+    adapter-facing response is ``None`` to suppress a duplicate final send.
+    """
+    _silence_global_gateway_hooks(monkeypatch)
+    runner = _make_runner()
+    runner._inbox_store = GatewayInboxStore(hermes_home=tmp_path)
+    runner._inbox_wakeup = None
+    runner.session_store._db.has_platform_message_id.return_value = True
+    event = _make_event(chat_id="streamed")
+    event.message_id = "platform-streamed-1"
+
+    async def mock_streamed_agent_run(self_inner, ev, src, qk, generation):
+        assert await self_inner._inbox_bind_event(ev, "session-db-streamed")
+        return _AgentTurnOutcome(delivery_response=None, completed=True)
+
+    with patch.object(
+        GatewayRunner,
+        "_handle_message_with_agent",
+        mock_streamed_agent_run,
+    ):
+        result = asyncio.run(runner._handle_message(event))
+
+    assert result is None
+    completed = runner._inbox_store.list_rows(states={"completed"})
+    assert len(completed) == 1
+    assert completed[0].attempts == 1
+    assert completed[0].resume_only is False
+    assert runner._inbox_store.list_rows(
+        states={"queued", "resume_ready", "claimed", "dead_letter"}
+    ) == []
 
 
 def test_existing_active_session_uses_busy_handling_at_limit(monkeypatch):

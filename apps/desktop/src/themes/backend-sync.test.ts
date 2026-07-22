@@ -45,11 +45,23 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBe('forest')
   })
 
-  it('treats default as no-opinion: never registers or applies it', () => {
+  it('never registers default in the backend store (desktop keeps its own palette)', () => {
     ingestBackendSkin(skin('default'), { apply: true })
 
-    expect($pendingSkinApply.get()).toBeNull()
     expect($backendThemes.get().default).toBeUndefined()
+  })
+
+  it('does not apply default on the connect-time seed', () => {
+    ingestBackendSkin(skin('default'), { apply: false })
+
+    expect($pendingSkinApply.get()).toBeNull()
+  })
+
+  it('applies a runtime switch back to default (repaints the desktop to its own default)', () => {
+    ingestBackendSkin(skin('neon'), { apply: false }) // gateway.ready seed on some skin
+    ingestBackendSkin(skin('default'), { apply: true }) // Hermes switched back to default
+
+    expect($pendingSkinApply.get()).toBe('default')
   })
 
   it('does not shadow a built-in name but can still apply it', () => {

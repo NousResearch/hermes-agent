@@ -53,17 +53,14 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     return
   }
 
-  // `default` is "no opinion" — the desktop keeps its own default (nous). Record
-  // it as the baseline so a real skin authored later reads as a change.
-  if (name === 'default') {
-    lastSynced = 'default'
-
-    return
-  }
-
+  // `default` is "no opinion" on the PALETTE — the desktop keeps its own default
+  // (nous), so we never register a converted theme under `default`. It is still a
+  // valid apply TARGET though: a runtime switch back to `default` must repaint the
+  // desktop to its own default (setTheme normalizes `default` → nous). So we only
+  // skip the registry step here and let it flow through the apply logic below.
   // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
   // never shadow it, but the name is still a valid apply target.
-  if (!BUILTIN_THEMES[name]) {
+  if (name !== 'default' && !BUILTIN_THEMES[name]) {
     const theme = skinToDesktopTheme(skin as HermesSkin)
 
     if (!theme) {

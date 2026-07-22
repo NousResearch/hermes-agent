@@ -326,9 +326,14 @@ def _cmd_doctor(_args) -> None:
 def _doctor_one(spec, shell_hooks) -> int:
     problems = 0
 
-    # 1. Script exists and is executable
+    # 1. Script exists and is executable (or inline shell)
+    from agent.shell_hooks import _INLINE_SHELL_SENTINEL  # local import to avoid cycle
     if shell_hooks.script_is_executable(spec.command):
-        print("      ✓ script exists and is executable")
+        if shell_hooks._command_script_path(spec.command) == _INLINE_SHELL_SENTINEL:
+            # Inline ``sh -c '...'`` — no script file to verify.
+            print("      ✓ inline shell command (no script file to check)")
+        else:
+            print("      ✓ script exists and is executable")
     else:
         problems += 1
         print("      ✗ script missing or not executable "

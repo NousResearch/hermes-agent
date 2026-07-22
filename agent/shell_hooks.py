@@ -109,6 +109,7 @@ import difflib
 import json
 import logging
 import os
+import shutil
 import re
 import shlex
 import subprocess
@@ -804,6 +805,66 @@ _SCRIPT_EXTENSIONS: Tuple[str, ...] = (
 )
 
 
+_INLINE_SHELL_SENTINEL = "<inline-shell>"
+
+
+def _is_inline_shell_command(parts):
+    """Detect ``sh -c '<body>'`` style invocations after stripping ``sudo`` / ``env``.
+
+    Returns ``True`` when the command's runtime form is an interpreter
+    that consumes its argument as a script body rather than as a file
+    path. Mirrors what ``_spawn`` actually executes at hook-fire time.
+
+    Accepts bundled flags like ``-lc`` (login shell), ``-fc`` (force),
+    ``-lic``, ``-licf`` — anything starting with ``-`` and ending in
+    ``c`` is treated as a ``c``-flag bundle. This is permissive by
+    intent: the original report only mentioned bare ``-c`` but inline
+    hook specs frequently use the bundle form.
+    """
+    if not parts:
+        return False
+    idx = 0
+    while idx < len(parts):
+        head = parts[idx]
+        if head == "sudo":
+            idx += 1
+            continue
+        if head == "env" or head == "/usr/bin/env":
+            # env: skip the program name plus any KEY=VALUE assignments
+            idx += 1
+            while idx < len(parts) and "=" in parts[idx]:
+                tok = parts[idx]
+                eq = tok.index("=")
+                if eq > 0 and tok[:eq].replace("_", "").replace("-", "").isalnum():
+                    idx += 1
+                    continue
+                break
+            continue
+        break
+    if idx + 2 >= len(parts):
+        return False
+    interpreter = parts[idx]
+    flag = parts[idx + 1]
+    # Bundle flags: only the canonical `c`-flag combinations accepted by
+    # POSIX shells — `-c`, `-lc`, `-fc`, `-cl`, `-cf`, `-lic`, `-lcf`,
+    # `-lif`, `-cli`, etc.  Allowed letters are `l`, `i`, `f`, `c`.  No
+    # other characters (``p``, ``e``, ``s``, etc.) because they're not
+    # `c`-flag bundle components and would silently change the
+    # interpreter's behaviour (e.g. ``-pe`` adds ``-o pipefail`` /
+    # ``--errexit`` and removes ``-c`` semantics).
+    if not flag.startswith("-") or len(flag) < 2:
+        return False
+    allowed_chars = set("clicf")
+    if any(ch not in allowed_chars for ch in flag[1:]):
+        return False
+    if "c" not in flag[1:]:
+        return False
+    if interpreter in ("sh", "bash", "zsh", "dash", "ksh"):
+        return True
+    base = interpreter.rsplit("/", 1)[-1]
+    return base in ("sh", "bash", "zsh", "dash", "ksh")
+
+
 def _command_script_path(command: str) -> str:
     """Return the script path from ``command`` for doctor / drift checks.
 
@@ -811,6 +872,10 @@ def _command_script_path(command: str) -> str:
     containing ``/`` or leading ``~``, then the first token.  Handles
     ``python3 /path/hook.py``, ``/usr/bin/env bash hook.sh``, and the
     common bare-path form.
+
+    Inline-shell invocations (``sh -c '<body>'`` and friends) return
+    the sentinel ``_INLINE_SHELL_SENTINEL`` so callers can distinguish
+    them from real script paths.
     """
     try:
         parts = shlex.split(command)
@@ -818,6 +883,8 @@ def _command_script_path(command: str) -> str:
         return command
     if not parts:
         return command
+    if _is_inline_shell_command(parts):
+        return _INLINE_SHELL_SENTINEL
     for part in parts:
         if part.lower().endswith(_SCRIPT_EXTENSIONS):
             return part
@@ -892,8 +959,41 @@ def script_is_executable(command: str) -> bool:
     executable.  For interpreter-prefixed commands (``python3
     /path/hook.py``, ``/usr/bin/env bash hook.sh``) the script just has
     to be readable — the interpreter doesn't care about the ``X_OK``
-    bit.  Mirrors what ``_spawn`` would actually do at runtime."""
+    bit.  Inline-shell invocations (``sh -c '...'``, ``bash -lc '...'``
+    and friends) are healthy iff the shell interpreter itself is
+    available on ``PATH`` (resolved via ``shutil.which``); the body is
+    the script, no file to check.  Mirrors what ``_spawn`` would
+    actually do at runtime.
+    """
     path = _command_script_path(command)
+    if path == _INLINE_SHELL_SENTINEL:
+        # Inline shell: verify the interpreter itself is reachable.
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False
+        # Skip sudo/env wrappers to land on the interpreter token.
+        idx = 0
+        while idx < len(parts) and parts[idx] in ("sudo", "env"):
+            idx += 1
+        if idx >= len(parts):
+            return False
+        interpreter = parts[idx]
+        # Path form (`/bin/bash`, `~/.local/bin/zsh`) — check the file exists
+        # and is executable.  No-fallback: a missing interpreter means a
+        # broken hook.
+        if "/" in interpreter or interpreter.startswith("~"):
+            expanded = os.path.expanduser(interpreter)
+            return os.path.isfile(expanded) and os.access(expanded, os.X_OK)
+        # Bare name (`bash`, `zsh`) — look up on PATH.  Fall back to the
+        # conventional POSIX locations because some test/CI environments
+        # don't include /bin or /usr/bin in the lookup PATH.
+        if shutil.which(interpreter) is not None:
+            return True
+        for candidate in ("/bin/" + interpreter, "/usr/bin/" + interpreter):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return True
+        return False
     if not path:
         return False
     expanded = os.path.expanduser(path)

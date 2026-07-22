@@ -5743,7 +5743,8 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, "
+            "max_runtime_seconds "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -5758,6 +5759,14 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        # Children inherit the root's runtime cap; default to 600 s when
+        # the root has no explicit cap so decomposed workers cannot run
+        # indefinitely (see #54089).
+        child_max_runtime = (
+            root_row["max_runtime_seconds"]
+            if root_row["max_runtime_seconds"] is not None
+            else 600
+        )
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -5783,8 +5792,9 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, max_runtime_seconds, "
+                " created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -5793,6 +5803,7 @@ def decompose_triage_task(
                     child_ws_kind,
                     child_ws_path,
                     tenant,
+                    child_max_runtime,
                     now,
                     (author or "decomposer"),
                 ),

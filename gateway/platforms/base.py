@@ -2218,20 +2218,23 @@ def resolve_channel_prompt(
     channel_id: str,
     parent_id: str | None = None,
 ) -> str | None:
-    """Resolve a per-channel ephemeral prompt from platform config.
+    """Resolve ``channel_prompts`` from ``config.extra``, in this order:
 
-    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
-    Prefers an exact match on *channel_id*; falls back to *parent_id*
-    (useful for forum threads / child channels inheriting a parent prompt).
+    1. ``{parent_id}:{channel_id}`` (composite — disambiguates parents
+       sharing a child id; e.g. Telegram forum thread_ids collide
+       across supergroups, #13256)
+    2. ``channel_id`` (existing thread/channel-level fallback)
+    3. ``parent_id`` (existing group-level fallback)
 
-    Returns the prompt string, or None if no match is found.  Blank/whitespace-
-    only prompts are treated as absent.
+    Blank/whitespace-only values are skipped at every level. Returns
+    ``None`` if no key matches.
     """
     prompts = config_extra.get("channel_prompts") or {}
     if not isinstance(prompts, dict):
         return None
 
-    for key in (channel_id, parent_id):
+    composite = f"{parent_id}:{channel_id}" if parent_id and channel_id else None
+    for key in (composite, channel_id, parent_id):
         if not key:
             continue
         prompt = prompts.get(key)

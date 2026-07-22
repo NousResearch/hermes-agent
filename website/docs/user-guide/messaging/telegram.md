@@ -1243,6 +1243,19 @@ Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, top
 - Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt
 - Message in a group with no entry → no channel prompt applied
 
+Topic thread IDs are small integers scoped to each supergroup (the General topic is always `1`), so a bare `"42"` key will match topic 42 in *every* supergroup the bot is in. To scope a prompt to one supergroup's topic, use a `{chat_id}:{thread_id}` key:
+
+```yaml
+telegram:
+  channel_prompts:
+    "-1001234567890:42": |
+      Invoices topic in Group A.
+    "-1009876543210:42": |
+      Backend topic in Group B.
+```
+
+Composite keys win over bare `thread_id` or `chat_id` keys, so you can mix scoped and generic entries in the same config.
+
 Numeric YAML keys are automatically normalized to strings.
 
 ## Troubleshooting

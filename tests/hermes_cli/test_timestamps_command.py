@@ -96,3 +96,22 @@ def test_history_hides_timestamps_when_off():
     # label present, no [HH:MM] suffix
     first_label_line = out.split("[You #1]")[1].split("\n")[0]
     assert "[" not in first_label_line
+
+
+def test_history_sanitizes_terminal_escapes_in_stored_content():
+    """Stored history is untrusted for display: replaying a message via
+    /history must strip terminal escapes / control chars so a crafted turn
+    can't clear the screen or retitle the window (same guard as the /resume
+    and /status recaps)."""
+    # CSI clear-screen + OSC set-window-title + a bare BEL control byte.
+    esc = "\x1b[2J\x1b]0;pwned\x07"
+    hist = [
+        {"role": "user", "content": f"hello {esc} world"},
+        {"role": "assistant", "content": f"reply {esc} here"},
+    ]
+    out = _render_history(hist, show_ts=False)
+    assert "\x1b" not in out  # no ESC byte survives to the terminal
+    assert "\x07" not in out  # no bare BEL
+    # visible text is preserved
+    assert "hello" in out and "world" in out
+    assert "reply" in out and "here" in out

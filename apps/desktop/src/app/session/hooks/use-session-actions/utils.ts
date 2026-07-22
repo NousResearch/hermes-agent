@@ -177,6 +177,7 @@ export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]):
 
 export function stripAttachmentNotices(text: string): string {
   const withoutEmbedded = textWithoutEmbeddedImages(text)
+
   return withoutEmbedded
     .replace(/\n?\[Image attached(?: at)?:[\s\S]*?\]/gi, '')
     .replace(/\n?\[IMAGE:[\s\S]*?\]/gi, '')
@@ -282,6 +283,7 @@ export function preserveLocalPendingTurnMessages(
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+
     if (message.role === 'user') {
       nextUserMessages.push(message)
     }

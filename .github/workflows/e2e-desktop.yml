@@ -2,6 +2,10 @@ name: E2E Desktop
 
 on:
   workflow_call:
+    outputs:
+      review_status:
+        description: Screenshot and visual-diff status for the CI review comment.
+        value: ${{ jobs.e2e.outputs.review_status }}
 
 permissions:
   contents: read
@@ -15,6 +19,8 @@ jobs:
     name: Playwright E2E (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -58,7 +64,8 @@ jobs:
           command: uv sync --locked --python 3.11 --extra all --extra dev
 
       # ── Build desktop app ─────────────────────────────────────────────
-      - run: npm run --prefix apps/desktop build
+      # The Playwright step below runs `npm run build` before testing so
+      # dist/ is always fresh — no separate build step needed here.
 
       # ── Restore visual baseline screenshots from main ──────────────────
       # Baselines are generated on main (via --update-snapshots) and cached.
@@ -79,16 +86,18 @@ jobs:
       # xvfb runs at a fixed 1280x1024 screen so the 1220x800 Electron
       # window always has a consistent viewport for screenshot comparison.
       # On main, we run with --update-snapshots to generate baselines.
+      # `npm run test:e2e` builds dist/ as a pretest hook so the renderer
+      # is always fresh — no separate build step needed.
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
             echo "On main — generating/updating baseline screenshots"
-            xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list --update-snapshots
           else
             echo "On PR — comparing against cached baselines"
-            xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list
           fi
         env:
@@ -143,6 +152,25 @@ jobs:
           overwrite: true
           if-no-files-found: ignore
 
+      - name: Build screenshot review status
+        id: review-status
+        if: always()
+        working-directory: apps/desktop
+        env:
+          RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
+        run: |
+          python3 ../../scripts/ci/e2e_screenshot_status.py \
+            --results-dir test-results \
+            --manifest-output /tmp/e2e-screenshot-manifest.json \
+            --evidence-dir /tmp/e2e-evidence \
+            --artifact-url "$RESULTS_URL" \
+            --output /tmp/e2e-review-status.json
+          {
+            echo 'review_status<<__E2E_REVIEW_STATUS__'
+            cat /tmp/e2e-review-status.json
+            echo '__E2E_REVIEW_STATUS__'
+          } >> "$GITHUB_OUTPUT"
+
       # ── Generate step summary with visual diff info ───────────────────
       # Parse the JSON report + scan for diff images, then post a summary
       # to the GitHub Actions step output so reviewers can see what changed
@@ -156,49 +184,50 @@ jobs:
           RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
           DIFFS_URL: ${{ steps.upload-diffs.outputs.artifact-url }}
         run: |
-          echo "## Desktop E2E — Visual Diff Report" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          {
+          echo "## Desktop E2E — Visual Diff Report"
+          echo ""
 
           # Count diff images (playwright writes *-diff.png on mismatch)
           DIFF_COUNT=$(find test-results -name '*-diff.png' 2>/dev/null | wc -l)
           ACTUAL_COUNT=$(find test-results -name '*-actual.png' 2>/dev/null | wc -l)
 
           if [ "$DIFF_COUNT" -eq 0 ]; then
-            echo "✅ All $ACTUAL_COUNT screenshot(s) matched their baselines (or no baselines existed yet)." >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ All $ACTUAL_COUNT screenshot(s) matched their baselines (or no baselines existed yet)."
           else
-            echo "📸 **$DIFF_COUNT of $ACTUAL_COUNT screenshot(s) differ from baseline:**" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Test | Diff | Actual | Expected |" >> "$GITHUB_STEP_SUMMARY"
-            echo "|------|------|--------|----------|" >> "$GITHUB_STEP_SUMMARY"
+            echo "📸 **$DIFF_COUNT of $ACTUAL_COUNT screenshot(s) differ from baseline:**"
+            echo ""
+            echo "| Test | Diff | Actual | Expected |"
+            echo "|------|------|--------|----------|"
 
             # List each diff image with a link to the artifact
             for diff in $(find test-results -name '*-diff.png' 2>/dev/null | sort); do
-              base=$(echo "$diff" | sed 's/-diff\.png$//')
+              base=${diff%-diff.png}
               test_name=$(basename "$base")
-              echo "| $test_name | [diff]($diff) | [actual](${base}-actual.png) | [expected](${base}-expected.png) |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| $test_name | [diff]($diff) | [actual](${base}-actual.png) | [expected](${base}-expected.png) |"
             done
           fi
 
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "📥 **Artifacts:**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo ""
+          echo "📥 **Artifacts:**"
+          echo ""
           if [ -n "$RESULTS_URL" ]; then
-            echo "- [playwright-test-results]($RESULTS_URL) — all screenshots (actual + expected + diff) + traces" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [playwright-test-results]($RESULTS_URL) — all screenshots (actual + expected + diff) + traces"
           fi
           if [ -n "$REPORT_URL" ]; then
-            echo "- [playwright-report]($REPORT_URL) — interactive HTML report" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [playwright-report]($REPORT_URL) — interactive HTML report"
           fi
           if [ -n "$DIFFS_URL" ]; then
-            echo "- [visual-diffs]($DIFFS_URL) — just the diffed screenshots (small, fast to review)" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [visual-diffs]($DIFFS_URL) — just the diffed screenshots (small, fast to review)"
           fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`npx playwright test --update-snapshots\` locally." >> "$GITHUB_STEP_SUMMARY"
+          echo ""
+          echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`npx playwright test --update-snapshots\` locally."
 
           # Also parse the JSON report for pass/fail counts
           if [ -f playwright-report/results.json ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "### Test Results" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo ""
+            echo "### Test Results"
+            echo ""
             node -e "
               const r = require('./playwright-report/results.json');
               const stats = r.stats || {};
@@ -208,5 +237,6 @@ jobs:
               console.log('| ❌ Failed | ' + (stats.unexpected || 0) + ' |');
               console.log('| ⏭️ Skipped | ' + (stats.skipped || 0) + ' |');
               console.log('| 🔄 Flaky | ' + (stats.flaky || 0) + ' |');
-            " >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+            " 2>/dev/null || true
           fi
+          } >> "$GITHUB_STEP_SUMMARY"

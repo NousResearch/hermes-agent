@@ -73,7 +73,7 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim'] as const
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
@@ -154,7 +154,10 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.pending !== b.pending ||
     a.error !== b.error ||
     a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
+    a.branchGroupId !== b.branchGroupId ||
+    // Interim gates the action footer, so flipping it must repaint (e.g. a
+    // previewed final settling onto a sealed interim bubble restores the bar).
+    (a.interim ?? false) !== (b.interim ?? false)
   ) {
     return false
   }
@@ -311,8 +314,15 @@ export function appendLiveSessionProjection(
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+  // A turn normally persists its user row before inference begins. session.resume
+  // then returns that stored row *and* the still-live inflight projection; adding
+  // both makes a backgrounded prompt appear twice when its session is reopened.
+  // Only suppress the projection when the latest authoritative user row is the
+  // same turn — older identical prompts must not hide a newly accepted repeat.
+  const latestUser = [...messages].reverse().find(message => message.role === 'user')
+  const inflightUserAlreadyPersisted = latestUser && chatMessageText(latestUser).trim() === inflightUser
 
-  if (inflightUser) {
+  if (inflightUser && !inflightUserAlreadyPersisted) {
     projected.push({
       id: `user-inflight-${sessionId}`,
       role: 'user',

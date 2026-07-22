@@ -949,6 +949,7 @@ export interface Translations {
     ageSeconds: (seconds: number) => string
     ageMinutes: (minutes: number) => string
     ageHours: (hours: number) => string
+    ageDays: (days: number) => string
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
     tokens: (value: number | string) => string
@@ -1761,6 +1762,7 @@ export interface Translations {
     free: string
     freeTier: string
     priceTitle: string
+    wasPrice: string
   }
 
   modelVisibility: {

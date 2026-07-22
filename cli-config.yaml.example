@@ -414,6 +414,25 @@ compression:
   # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
 
+  # Per-model threshold overrides: keys are substring-matched against the model
+  # name (longest match wins). Useful when some models need different compaction
+  # points — e.g. a 1M-context model can compress later (0.30) while a 128K
+  # model needs to compress earlier (0.60). The small-context floor (75% for
+  # <512K models) still applies on top of per-model overrides.
+  # model_thresholds:
+  #   "glm-5.2": 0.40
+  #   "claude-sonnet": 0.35
+  #   "gpt-5": 0.30
+
+  # Optional absolute token cap for the compression trigger (default: null = disabled).
+  # When set, compression fires at the LOWER of the ratio-based threshold and this
+  # absolute token count — first-fires-wins. It never fires later than this count
+  # regardless of which model is active (useful when switching between models with
+  # very different context windows). Clamped to the model's context length at
+  # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
+  # Survives model switches and fallback activations.
+  # threshold_tokens: 200000
+
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true
@@ -428,6 +447,12 @@ compression:
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.
   protect_last_n: 20
+
+  # Compression retry rounds before a turn gives up with "max compression
+  # attempts reached" (default: 3, same as the previous hardcoded value).
+  # Raise (e.g. 6) for tool-schema-heavy sessions where 3 rounds cannot bring
+  # the request estimate under the threshold. Validated >= 1, hard cap 10.
+  max_attempts: 3
 
   # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
   # agent owns the real thread context on this runtime, so Hermes' summarizer
@@ -448,6 +473,16 @@ compression:
   # Default 3 preserves the system prompt plus the first three non-system
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
+
+  # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
+  # after at least this many seconds of inactivity compacts its accumulated
+  # history up front, before the first reply, so a long-lived thread you come
+  # back to later doesn't re-read its full stale context on every turn.
+  # Time-based, so it complements (does not replace) the size-based `threshold`
+  # above. It is skipped when the context is already small (at or below the
+  # post-compression target = threshold × target_ratio), so it never wastes a
+  # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
+  idle_compact_after_seconds: 0
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).

@@ -41,6 +41,7 @@ def server():
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._live_transports.clear()
 
 
 @pytest.fixture()
@@ -1289,6 +1290,101 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["model_config"] == {"_branched_from": parent_key}
 
 
+def test_session_branch_forwards_original_timestamps(server, monkeypatch):
+    """TUI /branch must copy the parent's messages WITH their original
+    timestamps — append_message otherwise stamps time.time() at INSERT and
+    the branch's whole history silently appears authored "now" (#28841).
+    """
+    append_calls = []
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            return new_key
+
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+
+    original_ts = [1_700_000_000.0, 1_700_000_020.0]
+    parent_sid = "parent02"
+    server._sessions[parent_sid] = {
+        "session_key": "20260101_000000_parent",
+        "history": [
+            {"role": "user", "content": "hello", "timestamp": original_ts[0]},
+            {"role": "assistant", "content": "hi!", "timestamp": original_ts[1]},
+        ],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {"id": "b2", "method": "session.branch", "params": {"session_id": parent_sid}}
+    )
+
+    assert "error" not in resp, resp
+    assert len(append_calls) == 2
+    assert [c.get("timestamp") for c in append_calls] == original_ts
+
+
+def test_persist_branch_seed_forwards_original_timestamps(server, monkeypatch):
+    """First-turn branch seed persist must carry each copied message's
+    original timestamp through to append_message (#28841)."""
+    import contextlib
+
+    append_calls = []
+
+    class _DB:
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield _DB()
+
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+
+    original_ts = [100.0, 200.0]
+    session = {
+        "session_key": "20260101_000002_seed00",
+        "parent_session_id": "20260101_000000_parent",
+        "history": [
+            {"role": "user", "content": "a", "timestamp": original_ts[0]},
+            {"role": "assistant", "content": "b", "timestamp": original_ts[1]},
+        ],
+        "history_lock": threading.Lock(),
+    }
+
+    server._persist_branch_seed(session)
+
+    assert session.get("_branch_seed_persisted") is True
+    assert [c.get("timestamp") for c in append_calls] == original_ts
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 
@@ -2066,3 +2162,118 @@ def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
         server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"] * 3
+
+
+# ── global-event broadcast (session-less events reach every WS client) ──
+
+
+class _RecordingTransport:
+    """Minimal Transport stand-in that records the frames written to it."""
+
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+
+    def write(self, obj: dict) -> bool:
+        self.frames.append(obj)
+        return True
+
+    def close(self) -> None:
+        pass
+
+
+def test_broadcast_global_event_reaches_registered_transports_from_background_thread(capture):
+    """The core of the bug: a session-less event emitted from a thread with no
+    contextvar-bound transport (the skin watcher) must still reach connected WS
+    clients. Before the registry it fell through to stdout and the desktop GUI
+    never repainted."""
+    server, buf = capture
+    a, b = _RecordingTransport(), _RecordingTransport()
+    server.register_live_transport(a)
+    server.register_live_transport(b)
+
+    # Emit from a background thread — no request context, no contextvar binding,
+    # exactly like the skin watcher loop.
+    t = threading.Thread(
+        target=server._broadcast_global_event,
+        args=("skin.changed", {"name": "synthwave", "colors": {"background": "#1a1030"}}),
+    )
+    t.start()
+    t.join(timeout=2)
+
+    for transport in (a, b):
+        assert len(transport.frames) == 1
+        params = transport.frames[0]["params"]
+        assert params["type"] == "skin.changed"
+        assert params["session_id"] == ""  # session-less: a surface-global announce
+        assert params["payload"]["name"] == "synthwave"
+
+    # It must NOT have leaked onto stdout when live transports exist.
+    assert buf.getvalue() == ""
+
+
+def test_broadcast_global_event_falls_back_to_stdio_without_transports(capture):
+    """With no client registered (the stdio TUI path, whose stdio transport is
+    tee'd to the dashboard WS publisher, and tests), broadcasting still emits via
+    write_json so that surface is unchanged."""
+    server, buf = capture
+    assert not server._live_transports
+
+    server._broadcast_global_event("skin.changed", {"name": "midnight"})
+
+    frame = json.loads(buf.getvalue())
+    assert frame["params"]["type"] == "skin.changed"
+    assert frame["params"]["session_id"] == ""
+    assert frame["params"]["payload"]["name"] == "midnight"
+
+
+def test_unregister_live_transport_stops_delivery(capture):
+    """A disconnected peer (unregistered in the ws finally block) receives nothing
+    — and a stale write is never attempted against its closed socket."""
+    server, buf = capture
+    a = _RecordingTransport()
+    server.register_live_transport(a)
+    server.unregister_live_transport(a)
+
+    server._broadcast_global_event("skin.changed", {"name": "x"})
+
+    assert a.frames == []
+    # No live transports left → fell back to stdio.
+    assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def test_broadcast_global_event_survives_a_wedged_peer(capture):
+    """One broken transport must never starve the others (or the watcher thread)."""
+    server, _buf = capture
+
+    class _Boom(_RecordingTransport):
+        def write(self, obj):
+            raise RuntimeError("peer gone")
+
+    boom, good = _Boom(), _RecordingTransport()
+    server.register_live_transport(boom)
+    server.register_live_transport(good)
+
+    server._broadcast_global_event("skin.changed", {"name": "x"})
+
+    assert len(good.frames) == 1  # the healthy peer still got it
+
+
+def test_skin_change_broadcasts_to_every_connected_client(server, monkeypatch):
+    """End-to-end intent: a skin move repaints ALL connected surfaces, not just
+    the one that triggered it — the whole point of the cross-surface theme SDK."""
+    desktop, dashboard = _RecordingTransport(), _RecordingTransport()
+    server.register_live_transport(desktop)
+    server.register_live_transport(dashboard)
+
+    sigs = iter([("default", 1.0), ("synthwave", 2.0)])
+    monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
+    monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
+    monkeypatch.setattr(server, "resolve_skin", lambda: {"name": "synthwave", "colors": {}})
+
+    server._broadcast_skin_if_changed()  # first move → default
+    server._broadcast_skin_if_changed()  # second move → synthwave
+
+    for transport in (desktop, dashboard):
+        types = [f["params"]["type"] for f in transport.frames]
+        assert types == ["skin.changed", "skin.changed"]
+        assert transport.frames[-1]["params"]["payload"]["name"] == "synthwave"

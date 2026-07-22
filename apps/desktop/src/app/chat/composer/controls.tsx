@@ -1,11 +1,9 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, iconSize, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
-import { formatCombo } from '@/lib/keybinds/combo'
+import { AudioLines, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
@@ -42,7 +40,6 @@ export function ComposerControls({
   autoSpeak,
   busy,
   busyAction,
-  canSteer,
   canSubmit,
   compactModelPill = false,
   conversation,
@@ -51,13 +48,11 @@ export function ComposerControls({
   state,
   voiceStatus,
   onDictate,
-  onSteer,
   onToggleAutoSpeak
 }: {
   autoSpeak: boolean
   busy: boolean
-  busyAction: 'queue' | 'stop'
-  canSteer: boolean
+  busyAction: 'steer' | 'queue' | 'stop'
   canSubmit: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
@@ -66,49 +61,24 @@ export function ComposerControls({
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
-  onSteer: () => void
   onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
   const c = t.composer
-  const steerCombo = formatCombo('mod+enter')
-  const steerLabel = `${c.steer} (${steerCombo})`
-
-  const steerTip = (
-    <span className="inline-flex items-center gap-1.5">
-      {c.steer}
-      <KbdCombo combo="mod+enter" size="sm" variant="inverted" />
-    </span>
-  )
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
+  // steer + stop both interrupt the live turn (the difference is whether a
+  // correction rides along), so they share the stop glyph; only queue differs.
+  const busyLabel = busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-      {/* While the agent runs and the user is typing, steer takes over the mic's
-          slot rather than crowding the row with an extra button. */}
-      {canSteer ? (
-        <Tip label={steerTip}>
-          <Button
-            aria-label={steerLabel}
-            className={GHOST_ICON_BTN}
-            disabled={disabled}
-            onClick={onSteer}
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            <SteeringWheel className={iconSize.sm} />
-          </Button>
-        </Tip>
-      ) : (
-        <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
-      )}
+      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>
@@ -127,9 +97,9 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}>
+        <Tip label={busy ? busyLabel : c.send}>
           <Button
-            aria-label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}
+            aria-label={busy ? busyLabel : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"

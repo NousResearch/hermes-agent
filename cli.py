@@ -772,6 +772,16 @@ def load_cli_config() -> Dict[str, Any]:
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
 
+    # Session-search index knobs (hermes_state reads the env carriers).
+    sessions_config = defaults.get("sessions", {})
+    if isinstance(sessions_config, dict):
+        if "cjk_fts" in sessions_config:
+            os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
+        if "search_slow_ms" in sessions_config:
+            os.environ["HERMES_SEARCH_SLOW_MS"] = str(
+                sessions_config["search_slow_ms"]
+            )
+
     return defaults
 
 # Load configuration at module startup
@@ -3806,7 +3816,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
         )
-        # busy_input_mode: "interrupt" (Enter interrupts current run),
+        # busy_input_mode: "interrupt" (Enter redirects current run),
         # "queue" (Enter queues for next turn), or "steer" (Enter injects
         # mid-run via /steer, arriving after the next tool call).
         _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
@@ -4195,6 +4205,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
+        self._voice_tts_stop = None  # active streaming pipeline's stop event
+        self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
@@ -9928,6 +9940,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             split_history_for_partial_compress,
             summarize_compress_preview,
         )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
 
         # Args after the command word (e.g. "/compress here 3" -> "here 3").
         raw_args = ""
@@ -10027,14 +10042,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                     force=True,
+                    defer_context_engine_notification=True,
                 )
-                # Re-append the verbatim tail after the compressed head.
-                # The split guarantees `tail` begins on a user turn, so the
-                # compressed-head -> tail boundary is normally valid
-                # (the head's compressed output ends on assistant/tool).
-                # rejoin_compressed_head_and_tail() additionally guards the
-                # seam against any illegal user->user / assistant->assistant
-                # adjacency, defending provider role-alternation rules.
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
                 self.conversation_history = compressed
@@ -10054,6 +10063,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # compressed handoff for the child session. Persist it from
                     # offset 0 so resume can recover the continuation after exit.
                     self.agent._flush_messages_to_session_db(self.conversation_history, None)
+                finalize_context_engine_compression_notification(
+                    self.agent,
+                    committed=True,
+                )
                 new_tokens = estimate_request_tokens_rough(
                     self.conversation_history,
                     system_prompt=_sys_prompt,
@@ -10078,6 +10091,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     print(f"     {summary['note']}")
 
             except Exception as e:
+                finalize_context_engine_compression_notification(
+                    self.agent,
+                    committed=False,
+                )
                 print(f"  ❌ Compression failed: {e}")
 
 
@@ -11084,6 +11101,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 time.sleep(0.15)
         threading.Thread(target=_refresh_level, daemon=True).start()
 
+    def _voice_stt_model(self) -> Optional[str]:
+        """STT model override from config, or None for the provider default."""
+        try:
+            from hermes_cli.config import load_config
+            stt_config = load_config().get("stt", {})
+            return stt_config.get("model") if isinstance(stt_config, dict) else None
+        except Exception:
+            return None
+
+    def _voice_restart_recording_async(self) -> None:
+        """Restart continuous-mode recording off-thread (start() can block)."""
+        def _restart_recording():
+            try:
+                self._voice_start_recording()
+                if hasattr(self, '_app') and self._app:
+                    self._app.invalidate()
+            except Exception as e:
+                _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+        threading.Thread(target=_restart_recording, daemon=True).start()
+
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
         # Atomic guard: only one thread can enter stop-and-transcribe.
@@ -11121,17 +11158,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._app.invalidate()
             _cprint(f"{_DIM}Transcribing...{_RST}")
 
-            # Get STT model from config
-            stt_model = None
-            try:
-                from hermes_cli.config import load_config
-                stt_config = load_config().get("stt", {})
-                stt_model = stt_config.get("model")
-            except Exception:
-                pass
-
             from tools.voice_mode import transcribe_recording
-            result = transcribe_recording(wav_path, model=stt_model)
+            result = transcribe_recording(wav_path, model=self._voice_stt_model())
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
@@ -11182,14 +11210,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # (When transcript IS submitted, process_loop handles restart
             # after chat() completes.)
             if self._voice_continuous and not submitted and not self._voice_recording:
-                def _restart_recording():
-                    try:
-                        self._voice_start_recording()
-                        if hasattr(self, '_app') and self._app:
-                            self._app.invalidate()
-                    except Exception as e:
-                        _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
-                threading.Thread(target=_restart_recording, daemon=True).start()
+                self._voice_restart_recording_async()
 
     def _voice_speak_response_async(self, text: str) -> None:
         """Schedule TTS and mark it pending before continuous recording can restart."""
@@ -11254,6 +11275,70 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         finally:
             self._voice_tts_done.set()
 
+
+    def _voice_barge_in_monitor(self, stop_event: threading.Event) -> None:
+        """VAD barge-in: cut streaming TTS the moment the user starts talking.
+
+        Runs for one turn alongside the streaming pipeline (continuous voice
+        mode only — the mic is otherwise idle during playback). On speech,
+        playback is cut immediately while the monitor KEEPS capturing (with
+        pre-roll, so the interruption is transcribed from its first syllable
+        — restarting the recorder after detection would lose the opening
+        words). ``_voice_barge_capture`` suppresses process_loop's auto-
+        restart until the captured utterance has been submitted.
+        """
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice") or {}
+            if not (isinstance(voice_cfg, dict) and voice_cfg.get("barge_in", True)):
+                return
+            from tools.voice_mode import listen_for_speech, stop_playback
+
+            def _cut_playback():
+                if not self._voice_tts_done.is_set():
+                    from tools.tts_streaming import mark_speech_interrupted
+                    mark_speech_interrupted()
+                    self._voice_barge_capture.set()
+                    stop_event.set()
+                    stop_playback()
+
+            wav_path = listen_for_speech(
+                lambda: stop_event.is_set() or self._voice_tts_done.is_set(),
+                capture=True,
+                on_trigger=_cut_playback,
+            )
+            if wav_path and self._voice_barge_capture.is_set():
+                self._voice_submit_barge_utterance(wav_path)
+            else:
+                self._voice_barge_capture.clear()
+        except Exception as e:
+            self._voice_barge_capture.clear()
+            logger.debug("Voice barge-in monitor failed: %s", e)
+
+    def _voice_submit_barge_utterance(self, wav_path: str) -> None:
+        """Transcribe a barge-captured interruption and queue it as the next turn."""
+        submitted = False
+        try:
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(wav_path, model=self._voice_stt_model())
+            transcript = (result.get("transcript") or "").strip() if result.get("success") else ""
+            if transcript:
+                self._pending_input.put(transcript)
+                submitted = True
+            elif not result.get("success"):
+                _cprint(f"\n{_DIM}Transcription failed: {result.get('error', 'Unknown error')}{_RST}")
+        except Exception as e:
+            _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+        finally:
+            try:
+                if os.path.isfile(wav_path):
+                    os.unlink(wav_path)
+            except OSError:
+                pass
+            self._voice_barge_capture.clear()
+            # No usable transcript: hand the mic back to the normal loop.
+            if not submitted and self._voice_mode and self._voice_continuous and not self._voice_recording:
+                self._voice_restart_recording_async()
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
@@ -11348,8 +11433,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             threading.Thread(target=_bg_shutdown, daemon=True).start()
             self._voice_recorder = None
 
-        # Stop any active TTS playback
+        # Stop any active TTS playback (file player + streaming pipeline)
         try:
+            if self._voice_tts_stop is not None:
+                self._voice_tts_stop.set()
             from tools.voice_mode import stop_playback
             stop_playback()
         except Exception:
@@ -12102,9 +12189,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._reasoning_shown_this_turn = False
 
             # --- Streaming TTS setup ---
-            # When ElevenLabs is the TTS provider and sounddevice is available,
-            # we stream audio sentence-by-sentence as the agent generates tokens
-            # instead of waiting for the full response.
+            # Any working TTS provider streams sentence-by-sentence as the agent
+            # generates tokens: PCM-streaming providers (ElevenLabs, OpenAI) play
+            # chunks as they arrive, everything else synthesizes per sentence.
             use_streaming_tts = False
             _streaming_box_opened = False
             text_queue = None
@@ -12115,20 +12202,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._voice_tts:
                 try:
                     from tools.tts_tool import (
-                        _load_tts_config as _load_tts_cfg,
-                        _get_provider as _get_prov,
-                        _import_elevenlabs,
                         _import_sounddevice,
+                        check_tts_requirements,
                         stream_tts_to_speaker,
                     )
-                    _tts_cfg = _load_tts_cfg()
-                    if _get_prov(_tts_cfg) == "elevenlabs":
-                        # Verify both ElevenLabs SDK and audio output are available
-                        _import_elevenlabs()
-                        _import_sounddevice()
-                        use_streaming_tts = True
-                except (ImportError, OSError):
-                    pass
+                    _import_sounddevice()
+                    use_streaming_tts = check_tts_requirements()
                 except Exception:
                     pass
 
@@ -12156,6 +12235,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     daemon=True,
                 )
                 tts_thread.start()
+                # Expose the pipeline's stop event so barge-in paths (voice
+                # key, VAD monitor) can cut playback from outside this turn.
+                self._voice_tts_stop = stop_event
+                if self._voice_continuous:
+                    threading.Thread(
+                        target=self._voice_barge_in_monitor, args=(stop_event,), daemon=True
+                    ).start()
 
                 def stream_callback(delta: str):
                     if text_queue is not None:
@@ -12218,6 +12304,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if _srn:
                     agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
+                # Barged mid-speech (VAD or record key)? Tell the model it was
+                # cut off — same one-shot, API-local note channel as above.
+                from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+                if take_speech_interrupted():
+                    agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
                 _moa_cfg = getattr(self, "_pending_moa_config", None)
                 self._pending_moa_config = None
                 if _moa_cfg is None:
@@ -13301,6 +13392,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
+        self._voice_tts_stop = None  # active streaming pipeline's stop event
+        self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
@@ -13464,6 +13557,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     _effective_mode = self.busy_input_mode
+                    redirected = False
                     if _effective_mode == "steer":
                         # Route Enter through /steer — inject mid-run after the
                         # next tool call.  Images can't ride along (steer only
@@ -13491,15 +13585,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
                     elif _effective_mode == "interrupt":
-                        self._interrupt_queue.put(payload)
-                        # Debug: log to file when message enters interrupt queue
-                        try:
-                            _dbg = _hermes_home / "interrupt_debug.log"
-                            with open(_dbg, "a", encoding="utf-8") as _f:
-                                _f.write(f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                         f"agent_running={self._agent_running}\n")
-                        except Exception:
-                            pass
+                        if not images and text:
+                            try:
+                                if (
+                                    self.agent is not None
+                                    and getattr(
+                                        self.agent,
+                                        "_supports_active_turn_redirect",
+                                        False,
+                                    )
+                                    is True
+                                    and hasattr(self.agent, "redirect")
+                                ):
+                                    redirected = bool(self.agent.redirect(text))
+                            except Exception:
+                                redirected = False
+                        if redirected:
+                            preview = text[:80] + ("..." if len(text) > 80 else "")
+                            _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
+                        else:
+                            # Compatibility path for older agents, multimodal
+                            # follow-ups, or a turn that finished in the race.
+                            self._interrupt_queue.put(payload)
+                            try:
+                                _dbg = _hermes_home / "interrupt_debug.log"
+                                with open(_dbg, "a", encoding="utf-8") as _f:
+                                    _f.write(f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                             f"agent_running={self._agent_running}\n")
+                            except Exception:
+                                pass
                     # First-touch onboarding: on the very first busy-while-running
                     # event for this install, print a one-line tip explaining the
                     # /busy knob.  Flag persists to config.yaml and never fires
@@ -13513,7 +13627,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             mark_seen,
                         )
                         if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
-                            _cprint(f"  {_DIM}{busy_input_hint_cli(self.busy_input_mode)}{_RST}")
+                            _hint_mode = "redirect" if redirected else _effective_mode
+                            _cprint(f"  {_DIM}{busy_input_hint_cli(_hint_mode)}{_RST}")
                             mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
                             CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
                     except Exception:
@@ -14067,9 +14182,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     return
 
                 # Interrupt TTS if playing, so user can start talking.
-                # stop_playback() is fast (just terminates a subprocess).
+                # stop_playback() is fast (just terminates a subprocess);
+                # the stop event drains the streaming pipeline if one is live.
                 if not cli_ref._voice_tts_done.is_set():
                     try:
+                        from tools.tts_streaming import mark_speech_interrupted
+                        mark_speech_interrupted()
+                        if cli_ref._voice_tts_stop is not None:
+                            cli_ref._voice_tts_stop.set()
                         from tools.voice_mode import stop_playback
                         stop_playback()
                         cli_ref._voice_tts_done.set()
@@ -15291,6 +15411,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                     if self._voice_tts:
                                         self._voice_tts_done.wait(timeout=60)
                                         time.sleep(0.3)
+                                    # A barge-in capture already owns the mic and
+                                    # will submit the interruption itself.
+                                    if self._voice_barge_capture.is_set():
+                                        return
                                     self._voice_start_recording()
                                     app.invalidate()
                                 except Exception as e:

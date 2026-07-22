@@ -61,10 +61,12 @@ Update semantics:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -542,6 +544,88 @@ def plan_install(
     )
 
 
+def _replace_directory_atomic(
+    dest: Path,
+    staged_entry: Path,
+    staged_root: Path,
+) -> None:
+    """Replace *dest* directory with content from *staged_entry* atomically-ish.
+
+    Instead of deleting *dest* in place (which can leave a profile partially
+    broken if ``shutil.rmtree`` fails on Windows), this helper:
+
+    1. Copies the new content to a temporary sibling directory.
+    2. Renames the existing *dest* to a backup sibling directory.
+    3. Renames the temporary directory into place.
+    4. If the rename-into-place fails, restores the backup and raises
+       :class:`DistributionError`.
+    5. Cleans up the backup on success (best-effort).
+
+    The existing ``ignore`` filter that drops top-level ``USER_OWNED_EXCLUDE``
+    names at the staged root is preserved.
+    """
+    parent = dest.parent
+    name = dest.name
+
+    # Temporary directory for the new content
+    tmp_dir = parent / f".{name}.hermes-new-{os.urandom(4).hex()}"
+    # Backup directory for the old content (if it exists)
+    backup_dir = parent / f".{name}.hermes-old-{os.urandom(4).hex()}"
+
+    staged_resolved = staged_root.resolve()
+
+    try:
+        # Step 1: copy new content into the temp directory
+        shutil.copytree(
+            staged_entry,
+            tmp_dir,
+            ignore=lambda d, names: (
+                [n for n in names if n in USER_OWNED_EXCLUDE]
+                if Path(d).resolve() == staged_resolved
+                else []
+            ),
+        )
+
+        # Step 2: if an existing destination exists, move it aside to backup
+        if dest.exists():
+            os.replace(dest, backup_dir)
+
+        # Step 3: move the new content into place
+        # On Windows, retry a few times for transient handle locks
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                os.replace(tmp_dir, dest)
+                break
+            except OSError:
+                if attempt < max_attempts - 1:
+                    time.sleep(0.1)
+                else:
+                    raise
+
+    except BaseException:
+        # Step 5: restore backup if the rename-into-place failed
+        if backup_dir.exists():
+            # dest may or may not exist at this point; remove whatever is there
+            # so we can restore cleanly
+            if dest.exists():
+                shutil.rmtree(dest)
+            os.replace(backup_dir, dest)
+        # Clean up the temp directory if it still exists
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    else:
+        # Step 6: clean up backup on success (best-effort)
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        # tmp_dir should no longer exist (it was renamed), but clean up just
+        # in case the rename failed silently
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _copy_dist_payload(
     staged: Path,
     target: Path,
@@ -571,18 +655,7 @@ def _copy_dist_payload(
 
         dest = target / name
         if entry.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            staged_resolved = staged.resolve()
-            shutil.copytree(
-                entry,
-                dest,
-                ignore=lambda d, names: (
-                    [n for n in names if n in USER_OWNED_EXCLUDE]
-                    if Path(d).resolve() == staged_resolved
-                    else []
-                ),
-            )
+            _replace_directory_atomic(dest, entry, staged)
         else:
             shutil.copy2(entry, dest)
 

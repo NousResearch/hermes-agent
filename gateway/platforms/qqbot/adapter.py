@@ -1103,6 +1103,20 @@ class QQAdapter(BasePlatformAdapter):
         if chat_type == "c2c":
             return bool(chat_id) and operator == chat_id
 
+        if chat_type == "dm":
+            # QQ c2c private chats build their session source with
+            # chat_type="dm" and chat_id == user_openid (see
+            # _handle_c2c_message), so build_session_key() yields
+            # "agent:main:qqbot:dm:<user_openid>". The operator who clicks
+            # the button is that same user, so chat_id == operator authorizes.
+            #
+            # NOTE: guild DMs (_handle_dm_message) set chat_id == guild_id,
+            # which build_session_key() does NOT pair with the user id. Their
+            # approval clicks are intentionally NOT authorized here yet; fixing
+            # guild-DM authorization requires threading the user id into the
+            # session key and is tracked separately.
+            return bool(chat_id) and operator == chat_id
+
         if chat_type in {"group", "guild"}:
             event_chat = str(event.group_openid or event.guild_id or "").strip()
             if not event_chat or event_chat != chat_id:

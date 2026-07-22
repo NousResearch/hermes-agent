@@ -1660,6 +1660,43 @@ class TestDefaultInteractionDispatch:
 
 
     @pytest.mark.asyncio
+    async def test_approval_click_dm_session_authorized(self):
+        """c2c private chats use a dm:<user_openid> session key.
+
+        QQ c2c private chats build their session source with chat_type="dm"
+        and chat_id == user_openid, so the matching user can resolve their
+        own approval.
+        """
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            # c2c dm session: chat_id == user_openid == operator
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 2,
+                "user_openid": "83BCF791EFB5DCEE94CE9F6F61122A03",
+                "data": {"resolved": {"button_data": (
+                    "approve:agent:main:qqbot:dm:"
+                    "83BCF791EFB5DCEE94CE9F6F61122A03:allow-once"
+                )}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [
+            ("agent:main:qqbot:dm:83BCF791EFB5DCEE94CE9F6F61122A03", "once", False)
+        ]
+
+    @pytest.mark.asyncio
     async def test_approval_click_rejects_unauthorized_operator(self):
         adapter = self._make_adapter()
         resolve_calls = []
@@ -1678,6 +1715,46 @@ class TestDefaultInteractionDispatch:
                 "group_openid": "g-1",
                 "group_member_openid": "attacker",
                 "data": {"resolved": {"button_data": "approve:agent:main:qqbot:group:g-1:owner:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == []
+
+    @pytest.mark.asyncio
+    async def test_approval_click_guild_dm_currently_rejected(self):
+        """Guild DMs key their session as dm:<guild_id>, not dm:<user_openid>.
+
+        _handle_dm_message builds the session source with chat_id == guild_id
+        and a separate user_id, but build_session_key() drops the user id for
+        dm sessions. The clicking operator (user_openid) never equals the
+        guild_id in the session key, so guild-DM approval clicks are NOT
+        authorized yet. This test pins that behavior; fixing guild-DM
+        authorization (threading the user id into the session key) should
+        flip this assertion and is tracked separately.
+        """
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            # guild DM: chat_type=0 (guild), operator is user_openid, but the
+            # session key carries the guild_id as its dm chat_id.
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 0,
+                "guild_id": "guild-123",
+                "user_openid": "member-abc",
+                "data": {"resolved": {"button_data": (
+                    "approve:agent:main:qqbot:dm:guild-123:allow-once"
+                )}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:

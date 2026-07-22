@@ -102,14 +102,14 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary): Promise<void> {
+async function openSecondary(entry: Secondary, reason: HermesConnectionReason): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
     return
   }
 
-  const conn = await desktop.getConnection(entry.profile)
+  const conn = await desktop.getConnection(entry.profile, reason)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
@@ -137,7 +137,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   entry.reconnecting = true
 
   try {
-    await openSecondary(entry)
+    await openSecondary(entry, 'background_session')
     entry.reconnectAttempt = 0
   } catch {
     // Transport failure → fall through to the backoff below.
@@ -181,27 +181,6 @@ function createSecondary(profile: string): Secondary {
   return entry
 }
 
-// Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
-// (store/profile). Runs the same spawn + connect chain as a real switch, so by
-// click time ensureGatewayForProfile finds an open socket and just activates
-// it. No scheduleReconnect on failure: a hover is speculative, so a dead
-// backend must not start a background retry loop — the real switch owns retry
-// and error UX. An already-open (or primary) profile is a no-op.
-export async function openGatewayForProfile(profile: string): Promise<void> {
-  const key = normKey(profile)
-
-  if (key === primaryProfile) {
-    return
-  }
-
-  const entry = secondaries.get(key) ?? createSecondary(key)
-  entry.wantOpen = true
-
-  if (!isOpen(entry.gateway)) {
-    await openSecondary(entry)
-  }
-}
-
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
 export async function ensureGatewayForProfile(profile: string): Promise<void> {
@@ -226,7 +205,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     entry.reconnectAttempt = 0
 
     try {
-      await openSecondary(entry)
+      await openSecondary(entry, 'profile_activate')
     } catch {
       scheduleReconnect(entry)
     }

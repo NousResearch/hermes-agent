@@ -66,8 +66,6 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-import { useProfilePrewarm } from './use-profile-prewarm'
-
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 
 // Past this many profiles the strip of colored squares stops scaling (tiny
@@ -471,14 +469,11 @@ function ProfileDropdown({
   )
 }
 
-// One dropdown row per profile — its own component so each row can own a
-// hover-intent prewarm timer (see useProfilePrewarm).
 function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
   const hue = color ?? 'var(--ui-text-quaternary)'
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
-    <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
+    <SelectItem value={name}>
       <span className="flex min-w-0 items-center gap-1.5">
         <span
           aria-hidden="true"
@@ -560,9 +555,6 @@ function ProfileSquare({
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
-  // Hovering a square telegraphs the switch — start that profile's backend
-  // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
@@ -652,11 +644,7 @@ function ProfileSquare({
                         setPickerOpen(true)
                       }, LONG_PRESS_MS)
                     }}
-                    onPointerEnter={startPrewarm}
-                    onPointerLeave={() => {
-                      clearPress()
-                      cancelPrewarm()
-                    }}
+                    onPointerLeave={clearPress}
                     onPointerUp={clearPress}
                   >
                     {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}

@@ -7,11 +7,10 @@ import type { ProfileInfo } from '@/types/hermes'
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
-const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile }))
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -19,7 +18,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
+const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles, selectProfile } =
   await import('./profile')
 
 const { $connection } = await import('./session')
@@ -47,7 +46,6 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
-  openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
@@ -73,7 +71,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     await ensureGatewayProfile('vps-remote')
 
     expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
-    expect(getConnection).toHaveBeenCalledWith('vps-remote')
+    expect(getConnection).toHaveBeenCalledWith('vps-remote', 'profile_activate')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('vps-remote')
   })
@@ -85,7 +83,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 
     await ensureGatewayProfile('default')
 
-    expect(getConnection).toHaveBeenCalledWith('default')
+    expect(getConnection).toHaveBeenCalledWith('default', 'profile_activate')
     expect($connection.get()?.mode).toBe('local')
   })
 
@@ -119,37 +117,11 @@ describe('profile-scoped cache invalidation', () => {
   })
 })
 
-describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
-  it('opens the gateway (spawn + connect, no activation) for a non-active profile', () => {
-    prewarmProfileBackend('warm-basic')
+describe('explicit profile activation', () => {
+  it('starts the target gateway only after an explicit profile selection', async () => {
+    selectProfile('coder')
 
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-basic')
-    // Pre-warm must never activate — that's the click's job.
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
-  })
-
-  it('skips the profile the gateway is already on', () => {
-    $activeGatewayProfile.set('warm-active')
-
-    prewarmProfileBackend('warm-active')
-
-    expect(openGatewayForProfile).not.toHaveBeenCalled()
-  })
-
-  it('throttles repeat pre-warms for the same profile within the interval', () => {
-    prewarmProfileBackend('warm-throttle-a')
-    prewarmProfileBackend('warm-throttle-a')
-    prewarmProfileBackend('warm-throttle-b')
-
-    const calls = openGatewayForProfile.mock.calls.map(([name]) => name)
-    expect(calls.filter(name => name === 'warm-throttle-a')).toHaveLength(1)
-    expect(calls.filter(name => name === 'warm-throttle-b')).toHaveLength(1)
-  })
-
-  it('swallows spawn failures — error UX belongs to the real switch', () => {
-    openGatewayForProfile.mockRejectedValueOnce(new Error('spawn failed'))
-
-    expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('coder'))
   })
 })
 

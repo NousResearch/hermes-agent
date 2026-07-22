@@ -304,7 +304,9 @@ def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_pa
     assert len(reset_calls) == 1
 
 
-def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch, tmp_path):
+def test_stash_local_changes_if_needed_returns_none_when_ref_missing(monkeypatch, tmp_path):
+    """When stash push succeeds but refs/stash doesn't exist (phantom deletion),
+    the function falls back to stash list and returns None if empty."""
     def fake_run(cmd, **kwargs):
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout=" M hermes_cli/main.py\n", returncode=0)
@@ -314,12 +316,16 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
             return SimpleNamespace(stdout="Saved working directory\n", returncode=0)
         if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:
             raise CalledProcessError(returncode=128, cmd=cmd)
+        if cmd[1:4] == ["stash", "list"]:
+            return SimpleNamespace(stdout="", returncode=0)
+        # Handle stash list with format argument (fallback path)
+        if len(cmd) >= 3 and cmd[1] == "stash" and cmd[2] == "list":
+            return SimpleNamespace(stdout="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    with pytest.raises(CalledProcessError):
-        hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+    assert hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path)) is None
 
 
 def test_discard_lockfile_churn_skips_lock_when_package_json_dirty(tmp_path):

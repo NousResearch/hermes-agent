@@ -7,13 +7,35 @@ because the per-provider ``hermes <provider>`` subcommand is only registered
 once that provider is active.
 """
 
+import argparse
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli import memory_setup
+from hermes_cli.subcommands.memory import build_memory_parser
+
+
+def _memory_parser():
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    build_memory_parser(subparsers, cmd_memory=lambda args: None)
+    return parser
 
 
 class TestMemorySetupProviderRouting:
+    def test_setup_accepts_provider_specific_args(self):
+        args = _memory_parser().parse_args([
+            "memory",
+            "setup",
+            "mem0",
+            "--mode",
+            "oss",
+            "--dry-run",
+        ])
+
+        assert args.provider == "mem0"
+        assert args.provider_args == ["--mode", "oss", "--dry-run"]
+
     def test_setup_with_provider_arg_skips_picker(self):
         """`memory setup honcho` routes straight to cmd_setup_provider."""
         args = SimpleNamespace(memory_command="setup", provider="honcho")

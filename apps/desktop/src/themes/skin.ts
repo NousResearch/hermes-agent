@@ -70,8 +70,10 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
 
   const border =
     pick(colors, ['ui_border', 'banner_border'], background) ?? mix(background, foreground, dark ? 0.16 : 0.14)
+
   const mutedForeground =
     pick(colors, ['banner_dim', 'session_border'], background) ?? mix(foreground, background, 0.45)
+
   const destructive = pick(colors, ['ui_error'], background) ?? '#e25563'
 
   const palette: DesktopThemeColors = {

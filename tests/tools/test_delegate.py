@@ -61,6 +61,95 @@ def _make_mock_parent(depth=0):
     return parent
 
 
+class TestDelegationFallbackChain(unittest.TestCase):
+    """delegation.fallback_providers beats parent-chain inheritance (#65038).
+
+    A worker explicitly routed via delegation.* must not silently escalate
+    onto the head agent's fallback models when the delegation section
+    declares its own chain.
+    """
+
+    HEAD = [{"provider": "provider-b", "model": "head-fallback"}]
+    WORKER = [{"provider": "provider-d", "model": "worker-fallback"}]
+
+    def _child_fallback(self, delegation_cfg, parent_chain):
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = parent_chain
+        with patch("tools.delegate_tool._load_config", return_value=delegation_cfg), \
+             patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="g",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+        return MockAgent.call_args.kwargs.get("fallback_model")
+
+    def test_delegation_chain_overrides_parent_inheritance(self):
+        got = self._child_fallback({"fallback_providers": list(self.WORKER)}, list(self.HEAD))
+        self.assertEqual(got, self.WORKER)
+
+    def test_absent_key_inherits_parent_chain(self):
+        self.assertEqual(self._child_fallback({}, list(self.HEAD)), self.HEAD)
+
+    def test_null_key_inherits_parent_chain(self):
+        # DEFAULT_CONFIG ships fallback_providers: null — the deep-merged
+        # default must behave exactly like an absent key.
+        self.assertEqual(
+            self._child_fallback({"fallback_providers": None}, list(self.HEAD)), self.HEAD
+        )
+
+    def test_explicit_empty_list_disables_child_fallback(self):
+        self.assertEqual(self._child_fallback({"fallback_providers": []}, list(self.HEAD)), [])
+
+    def test_malformed_entries_inherit_parent_chain(self):
+        got = self._child_fallback(
+            {"fallback_providers": ["not-a-dict", {"provider": "", "model": ""}]},
+            list(self.HEAD),
+        )
+        self.assertEqual(got, self.HEAD)
+
+    def test_fallback_providers_flow_through_real_config_loader(self):
+        """Regression through the REAL config loader — no ``_load_config``
+        patch: the key written to ``$HERMES_HOME/config.yaml`` must survive
+        the profile-aware DEFAULT_CONFIG deep-merge (where the shipped
+        default is ``None``) and reach the child's ``fallback_model``."""
+        import yaml
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"delegation": {"fallback_providers": list(self.WORKER)}}
+            ),
+            encoding="utf-8",
+        )
+
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = list(self.HEAD)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="g",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs.get("fallback_model"), self.WORKER)
+
+
 class TestDelegateRequirements(unittest.TestCase):
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())

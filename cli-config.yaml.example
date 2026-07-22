@@ -1123,6 +1123,9 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # fallback_providers:                       # Fallback chain for delegated children (same entry format as the
+  #   - provider: "openrouter"                # top-level fallback_providers list). Unset = inherit the parent
+  #     model: "deepseek/deepseek-chat"       # agent's chain; [] = disable child fallback entirely (#65038).
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

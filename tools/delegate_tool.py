@@ -1317,11 +1317,36 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
+    # Fallback chain: delegation.fallback_providers > parent inheritance.
+    # By default children inherit the parent's resolved chain so subagents
+    # recover from rate-limits and credential exhaustion exactly like the
+    # top-level agent does (#7481).  But when the delegation section declares
+    # its own chain, use it — a worker explicitly routed via delegation.*
+    # must not silently escalate onto fallback models intended only for the
+    # head agent (#65038; same reasoning as the provider-filter clearing
+    # below).  ``fallback_providers: []`` explicitly disables child fallback;
+    # a malformed value logs and inherits, mirroring reasoning_effort above.
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    delegation_fallback_raw = delegation_cfg.get("fallback_providers")
+    if delegation_fallback_raw is None:
+        child_fallback = parent_fallback
+    else:
+        try:
+            from hermes_cli.fallback_config import get_fallback_chain
+
+            child_fallback = get_fallback_chain(
+                {"fallback_providers": delegation_fallback_raw}
+            )
+        except Exception as exc:
+            logger.debug("Could not resolve delegation.fallback_providers: %s", exc)
+            child_fallback = parent_fallback
+        else:
+            if not child_fallback and delegation_fallback_raw:
+                logger.warning(
+                    "delegation.fallback_providers has no valid entries "
+                    "(each needs provider + model); inheriting parent chain"
+                )
+                child_fallback = parent_fallback
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1373,7 +1398,7 @@ def _build_child_agent(
 
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=child_fallback,
         enabled_toolsets=child_toolsets,
         disabled_toolsets=child_disabled_toolsets,
         quiet_mode=True,

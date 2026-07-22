@@ -35,26 +35,8 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "code",           # OAuth authorization codes
     "signature",      # pre-signed URL signatures
     "x-amz-signature",
-})
-
-# Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
-# Exact match, NOT substring — "token_count" and "session_id" must NOT match.
-# Ported from nearai/ironclaw#2529.
-_SENSITIVE_BODY_KEYS = frozenset({
-    "access_token",
-    "refresh_token",
-    "id_token",
-    "token",
-    "api_key",
-    "apikey",
-    "client_secret",
-    "password",
-    "auth",
-    "jwt",
-    "secret",
-    "private_key",
-    "authorization",
-    "key",
+    "authorization",  # Bearer tokens in form bodies
+    "private_key",    # PEM private keys in form bodies
 })
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated

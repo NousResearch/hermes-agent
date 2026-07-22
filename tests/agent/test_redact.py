@@ -742,6 +742,21 @@ class TestFormBodyRedaction:
         # Should pass through (still subject to other redactors)
         assert "first=1" in redact_sensitive_text(text)
 
+    def test_redact_form_body_authorization(self):
+        """authorization was in _SENSITIVE_BODY_KEYS (dead code) but not in
+        _SENSITIVE_QUERY_PARAMS — form-encoded Bearer tokens leaked in logs."""
+        text = "client_id=app&authorization=Bearer+sk-test-secret123&scope=read"
+        result = redact_sensitive_text(text)
+        assert "sk-test-secret123" not in result
+        assert "authorization" in result.lower()  # key preserved, value masked
+
+    def test_redact_form_body_private_key(self):
+        """private_key was in _SENSITIVE_BODY_KEYS (dead code) but not in
+        _SENSITIVE_QUERY_PARAMS — PEM keys in form bodies leaked in logs."""
+        text = "action=sign&private_key=-----BEGIN+RSA+PRIVATE+KEY-----&data=hello"
+        result = redact_sensitive_text(text)
+        assert "-----BEGIN+RSA+PRIVATE+KEY-----" not in result
+
 
 class TestLowercaseDottedConfigKeys:
     """Issue #16413 — config-file passwords in lowercase/dotted/colon keys

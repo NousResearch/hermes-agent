@@ -268,6 +268,109 @@ def test_job_owned_create_process_terminates_and_raises_when_resume_fails(monkey
     assert ("terminate", 7001, 1) in events
 
 
+def test_job_owned_create_process_closes_handles_via_close_handle_on_resume_failure(monkeypatch):
+    """CPython's raw ``_winapi.CreateProcess`` returns plain integer
+    handles, not PyHANDLE wrapper objects -- there is no ``.Close()``
+    method on them. Calling ``.Close()`` used to raise AttributeError,
+    silently swallowed by the surrounding ``except Exception``, leaking
+    both handles on every ResumeThread failure. The correct API for raw
+    int handles is ``_winapi.CloseHandle``; this must be called for both
+    the process and thread handle, with no AttributeError swallowed along
+    the way."""
+    from hermes_cli import _subprocess_compat
+
+    fake_job = object()
+
+    def fake_original(*args):
+        return (7001, 7002, 111, 222)
+
+    class _FakeWin32Job:
+        @staticmethod
+        def AssignProcessToJobObject(job, handle):
+            pass
+
+    class _FakeWin32Process:
+        @staticmethod
+        def ResumeThread(handle):
+            raise OSError("invalid handle")
+
+        @staticmethod
+        def TerminateProcess(handle, code):
+            pass
+
+    closed = []
+
+    def fake_close_handle(handle):
+        closed.append(handle)
+
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
+    monkeypatch.setattr(_subprocess_compat, "win32job", _FakeWin32Job)
+    monkeypatch.setattr(_subprocess_compat, "win32process", _FakeWin32Process)
+    monkeypatch.setattr(
+        _subprocess_compat.subprocess,
+        "_winapi",
+        type("W", (), {"CloseHandle": staticmethod(fake_close_handle)})(),
+    )
+    _subprocess_compat._spawn_owner.job = fake_job
+    try:
+        args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
+        with pytest.raises(OSError):
+            _subprocess_compat._job_owned_create_process(*args)
+    finally:
+        _subprocess_compat._spawn_owner.job = None
+
+    assert sorted(closed) == [7001, 7002]
+
+
+def test_job_owned_create_process_warns_but_still_raises_when_terminate_also_fails(monkeypatch, caplog):
+    """If TerminateProcess ALSO fails after ResumeThread failed, that must
+    not crash the cleanup path or swallow the original error -- it should
+    be visible (a warning) and the original ResumeThread failure must
+    still propagate."""
+    import logging
+
+    from hermes_cli import _subprocess_compat
+
+    fake_job = object()
+
+    def fake_original(*args):
+        return (7001, 7002, 111, 222)
+
+    class _FakeWin32Job:
+        @staticmethod
+        def AssignProcessToJobObject(job, handle):
+            pass
+
+    class _FakeWin32Process:
+        @staticmethod
+        def ResumeThread(handle):
+            raise OSError("resume failed")
+
+        @staticmethod
+        def TerminateProcess(handle, code):
+            raise OSError("terminate also failed")
+
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
+    monkeypatch.setattr(_subprocess_compat, "win32job", _FakeWin32Job)
+    monkeypatch.setattr(_subprocess_compat, "win32process", _FakeWin32Process)
+    monkeypatch.setattr(
+        _subprocess_compat.subprocess,
+        "_winapi",
+        type("W", (), {"CloseHandle": staticmethod(lambda h: None)})(),
+    )
+    _subprocess_compat._spawn_owner.job = fake_job
+    try:
+        args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
+        with caplog.at_level(logging.WARNING, logger="hermes_cli._subprocess_compat"):
+            with pytest.raises(OSError, match="resume failed"):
+                _subprocess_compat._job_owned_create_process(*args)
+    finally:
+        _subprocess_compat._spawn_owner.job = None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("TerminateProcess also failed" in r.getMessage() for r in warnings)
+
+
 def test_job_owned_create_process_falls_open_on_unexpected_signature(monkeypatch):
     """A future CPython signature change (unexpected argc, or kwargs) must
     not be blindly indexed into — fail open to an unmodified, un-suspended,
@@ -361,6 +464,53 @@ def test_install_job_owned_create_process_once_concurrent_first_callers(monkeypa
         "a second capture means the lock did not serialize the install"
     )
     assert _subprocess_compat._original_create_process is real_cp
+
+
+def test_install_job_owned_create_process_once_is_reload_safe():
+    """importlib.reload(hermes_cli._subprocess_compat) re-executes the
+    module's top-level code in place, which resets _original_create_process
+    back to None -- but subprocess._winapi.CreateProcess still points at
+    the PRIOR generation's installed wrapper (reload never uninstalls it).
+    A naive re-install would capture that already-installed wrapper as "the
+    original" and recurse into itself on every future call. This is a real
+    (non-mocked) end-to-end reproduction against the actual subprocess
+    module, confirmed to RecursionError before this fix and to pass cleanly
+    after it."""
+    import importlib
+    import subprocess as real_subprocess
+
+    from hermes_cli import _subprocess_compat as m
+
+    original_create_process = real_subprocess._winapi.CreateProcess
+    try:
+        m._install_job_owned_create_process_once()
+        wrapper_before_reload = real_subprocess._winapi.CreateProcess
+
+        importlib.reload(m)
+        m._install_job_owned_create_process_once()
+
+        # The installed wrapper must be untouched by the reload (proves we
+        # skipped re-patching rather than nesting a second wrapper around
+        # the first), and the true original must have been correctly
+        # recovered rather than left as None or as our own wrapper.
+        assert real_subprocess._winapi.CreateProcess is wrapper_before_reload
+        assert m._original_create_process is original_create_process
+
+        # The actual failure mode: calling through the installed wrapper on
+        # a thread that owns no job (the common case) must reach the real
+        # CreateProcess without recursing.
+        m._spawn_owner.job = None
+        try:
+            real_subprocess._winapi.CreateProcess(
+                "definitely-does-not-exist.exe", "", None, None, 0, 0, {}, None, None
+            )
+        except RecursionError:
+            pytest.fail("CreateProcess patch recursed into itself after reload")
+        except OSError:
+            pass  # expected: the bogus executable path fails normally
+    finally:
+        real_subprocess._winapi.CreateProcess = original_create_process
+        m._original_create_process = None
 
 
 # ---------------------------------------------------------------------------

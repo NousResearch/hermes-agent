@@ -574,10 +574,27 @@ def _job_owned_create_process(*args, **kwargs):
         try:
             win32process.TerminateProcess(int(hp), 1)
         except Exception:
-            pass
+            # Visible but non-fatal: a suspended child may survive if this
+            # also fails (already exited, access denied), which is worse
+            # than a silent swallow used to be, but silently leaving a
+            # permanently-suspended process around with no signal at all is
+            # worse still. The original ResumeThread failure is still
+            # raised below either way.
+            logger.warning(
+                "Windows kill-on-exit: TerminateProcess also failed after "
+                "ResumeThread failed; a suspended child process may be "
+                "left behind.",
+                exc_info=True,
+            )
+        # CPython's ``_winapi.CreateProcess`` returns plain integer handles,
+        # not PyHANDLE wrapper objects — there is no ``.Close()`` method on
+        # them. The previous ``handle.Close()`` attempt raised AttributeError
+        # on every call, which the surrounding ``except Exception`` silently
+        # swallowed, so both handles leaked on every ResumeThread failure.
+        # ``_winapi.CloseHandle`` is the correct API for raw int handles.
         for handle in (hp, ht):
             try:
-                handle.Close()
+                subprocess._winapi.CloseHandle(int(handle))  # type: ignore[attr-defined]
             except Exception:
                 pass
         raise
@@ -600,7 +617,35 @@ def _install_job_owned_create_process_once() -> None:
     with _create_process_patch_install_lock:
         if _original_create_process is not None:
             return
-        _original_create_process = subprocess._winapi.CreateProcess  # type: ignore[attr-defined]
+        current = subprocess._winapi.CreateProcess  # type: ignore[attr-defined]
+        if getattr(current, "_hermes_job_owned", False):
+            # A module reload (importlib.reload) re-executes this module's
+            # top-level code in the SAME (mutated-in-place) module
+            # namespace, which resets ``_original_create_process`` back to
+            # ``None`` here -- but ``subprocess._winapi.CreateProcess``
+            # still points at the wrapper function object a PRIOR
+            # generation of this module installed; reload never uninstalls
+            # it. Blindly re-capturing "the current CreateProcess" in that
+            # case captures our OWN already-installed wrapper as "the
+            # original", so every future call recurses into itself
+            # (RecursionError) -- reproduced directly against this
+            # scenario. Recognize our own wrapper via a marker attribute
+            # and recover the true original from an attribute stashed on
+            # the wrapper function object itself: function objects (and
+            # attributes set on them) survive reload: only names inside the
+            # module dict get reassigned, not objects already handed out to
+            # code outside the module.
+            logger.debug(
+                "Windows kill-on-exit: CreateProcess already wraps our own "
+                "hermes job-owned patch (module reload detected); reusing "
+                "the existing wrapper instead of re-patching."
+            )
+            _original_create_process = current._hermes_true_original
+            return
+        real_create_process = current
+        _original_create_process = real_create_process
+        _job_owned_create_process._hermes_true_original = real_create_process
+        _job_owned_create_process._hermes_job_owned = True
         subprocess._winapi.CreateProcess = _job_owned_create_process  # type: ignore[attr-defined]
 
 

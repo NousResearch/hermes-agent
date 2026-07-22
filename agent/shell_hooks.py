@@ -246,6 +246,18 @@ def register_from_config(
 
     manager = get_plugin_manager()
 
+    # Cross-check _registered against the live PluginManager.  When
+    # discover_and_load(force=True) clears manager._hooks (e.g. during
+    # dashboard re-init, plugin rescan, or mid-process provider refresh),
+    # _registered still carries stale entries and every subsequent
+    # registration becomes a silent no-op — hooks are "registered" in
+    # memory but never fire.  Detect and heal that desync here.
+    with _registered_lock:
+        if _registered:
+            _events = {key[0] for key in _registered}
+            if not any(manager._hooks.get(ev) for ev in _events):
+                _registered.clear()
+
     # Idempotence + allowlist read happen under the lock; the TTY
     # prompt runs outside so other threads aren't parked on a blocking
     # input().  Mutation re-takes the lock with a defensive idempotence

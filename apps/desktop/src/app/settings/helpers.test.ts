@@ -30,37 +30,12 @@ describe('settings helpers', () => {
     expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
-  it('lists the desktop memory provider options in their declared order', () => {
-    const options = enumOptionsFor('memory.provider', '', {})
-
-    // Built-in memory is not a provider plugin; the empty sentinel is the
-    // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
-  })
-
-  it('keeps a legacy literal builtin value visible as the current selection', () => {
-    const options = enumOptionsFor('memory.provider', 'builtin', {})
-
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
-  })
-
-  it('prefers the discovered provider set over the static fallback for memory.provider', () => {
-    // config-settings.tsx passes the live getMemoryStatus() providers as
-    // dynamicOptions; user-installed/pip providers must appear, not just the
-    // hardcoded honcho/hindsight subset.
-    const discovered = ['', 'honcho', 'hindsight', 'mem0', 'supermemory']
-    const options = enumOptionsFor('memory.provider', '', {}, discovered)
-
-    expect(options).toEqual(discovered)
-  })
-
-  it('keeps the current memory.provider value visible even if discovery omits it', () => {
-    // A provider selected in config but not (yet) returned by discovery must
-    // still render as the current selection rather than silently vanishing.
-    const discovered = ['', 'honcho']
-    const options = enumOptionsFor('memory.provider', 'hindsight', {}, discovered)
-
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
+  it('does not shadow the backend schema options for memory.provider', () => {
+    // memory.provider options are discovery-driven and served by the backend
+    // config schema (merged per-request); enumOptionsFor must return undefined
+    // so config-field consumes schema.options instead of a stale static list.
+    expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
+    expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
   describe('isExternalMemoryProvider', () => {

@@ -2770,7 +2770,10 @@ def estimate_request_tokens_rough(
     """
     total = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        # Add 15% safety margin for system prompt to account for tokenizer divergence.
+        # This prevents compression from firing too late when the rough estimate underestimates
+        # actual tokens (e.g., non-English text, special chars, structured content).
+        total += int((len(system_prompt) + 3) // 4 * 1.15)
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:
@@ -2853,3 +2856,5 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
         _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
     _TOOLS_TOKENS_CACHE[key] = (n, first, last, tokens)
     return tokens
+
+# CI retrigger: docker build failure appears transient

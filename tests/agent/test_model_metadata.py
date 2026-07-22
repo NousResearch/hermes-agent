@@ -168,6 +168,24 @@ class TestEstimateRequestTokensRough:
             assert len(mm._TOOLS_TOKENS_CACHE) <= cap
         assert len(mm._TOOLS_TOKENS_CACHE) == cap
 
+    def test_system_prompt_has_safety_margin(self):
+        """System prompt estimate includes 15% safety margin to prevent compression firing too late."""
+        # 1000 chars -> 250 tokens rough estimate -> 287 tokens with 15% margin
+        # (1000 + 3) // 4 = 250; 250 * 1.15 = 287.5 -> 287
+        system_prompt = "x" * 1000
+        estimate = estimate_request_tokens_rough([], system_prompt=system_prompt)
+        expected_base = (1000 + 3) // 4  # 250
+        expected_with_margin = int(expected_base * 1.15)  # 287
+        assert estimate == expected_with_margin
+
+    def test_empty_system_prompt_returns_zero(self):
+        """Empty system prompt contributes zero tokens."""
+        assert estimate_request_tokens_rough([], system_prompt="") == 0
+
+    def test_none_system_prompt_returns_zero(self):
+        """None system prompt contributes zero tokens."""
+        assert estimate_request_tokens_rough([], system_prompt=None) == 0
+
 
 # =========================================================================
 # Default context lengths

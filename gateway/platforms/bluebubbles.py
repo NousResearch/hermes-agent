@@ -68,6 +68,7 @@ _TAPBACK_REMOVED = {
     3000: "love", 3001: "like", 3002: "dislike",
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
+_TAPBACK_ADDED_BY_NAME = {name: code for code, name in _TAPBACK_ADDED.items()}
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
@@ -1125,8 +1126,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
-        if isinstance(assoc_type, str) and assoc_type.strip().isdigit():
-            assoc_type = int(assoc_type)
+        if isinstance(assoc_type, str):
+            normalized_assoc_type = assoc_type.strip().lower()
+            if normalized_assoc_type.isdigit():
+                assoc_type = int(normalized_assoc_type)
+            else:
+                assoc_type = _TAPBACK_ADDED_BY_NAME.get(normalized_assoc_type)
         if isinstance(assoc_type, int) and assoc_type in {
             **_TAPBACK_ADDED,
             **_TAPBACK_REMOVED,

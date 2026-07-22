@@ -241,7 +241,10 @@ class TestBlueBubblesExecApproval:
         assert "\n\n" not in sent[0]
 
     @pytest.mark.asyncio
-    async def test_like_tapback_resolves_active_prompt_once(self, monkeypatch):
+    @pytest.mark.parametrize("assoc_type", [2001, "like"])
+    async def test_like_tapback_resolves_active_prompt_once(
+        self, monkeypatch, assoc_type
+    ):
         adapter = _make_adapter(monkeypatch, send_read_receipts=False)
 
         async def fake_send(chat_id, text, metadata=None):
@@ -279,7 +282,7 @@ class TestBlueBubblesExecApproval:
                 "isFromMe": False,
                 "chatGuid": "iMessage;-;user@example.com",
                 "chatIdentifier": "user@example.com",
-                "associatedMessageType": 2001,
+                "associatedMessageType": assoc_type,
                 "associatedMessageGuid": "p:0/APPROVAL-GUID",
             },
         }
@@ -515,7 +518,7 @@ class TestBlueBubblesExecApproval:
         assert resolved == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("assoc_type", [2002, "2002"])
+    @pytest.mark.parametrize("assoc_type", [2002, "2002", "dislike"])
     async def test_dislike_tapback_denies(self, monkeypatch, assoc_type):
         adapter = _make_adapter(monkeypatch, send_read_receipts=False)
 

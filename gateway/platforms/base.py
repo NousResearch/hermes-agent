@@ -5761,8 +5761,26 @@ class BasePlatformAdapter(ABC):
 
         # Resolve profile from configured routes (None when no match / no routes)
         profile = None
+
+        # 1) Runtime per-source override (set via `/profile set <name>`). This
+        #    wins over profile_routes so a chat can pin its own profile live
+        #    without restarting the gateway. Hierarchical: thread > chat.
+        try:
+            from gateway.profile_overrides import resolve_override
+
+            _ov = resolve_override(
+                self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                str(chat_id),
+                str(thread_id) if thread_id else None,
+            )
+            if _ov:
+                profile = _ov
+        except Exception:
+            logger.debug("profile override lookup failed", exc_info=True)
+
+        # 2) Configured profile_routes (only consulted when no live override).
         runner = getattr(self, "gateway_runner", None)
-        if runner is not None:
+        if profile is None and runner is not None:
             try:
                 profile = runner._profile_name_for_source(
                     SessionSource(

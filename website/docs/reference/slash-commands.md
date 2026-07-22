@@ -121,7 +121,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
-| `/profile` | Show active profile name and home directory |
+| `/profile` | Show or switch the profile serving this chat. With no args, opens an interactive picker listing all active profiles (current marked ✓); selecting one switches live. Subcommands: `set NAME` (pin this chat/thread to a profile, live), `clear` (drop the pin), `list` (all profiles). Requires `gateway.multiplex_profiles: true`. |
 
 ### Exit
 

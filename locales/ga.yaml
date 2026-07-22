@@ -187,6 +187,7 @@ gateway:
   profile:
     header:                "👤 **Próifíl:** `{profile}`"
     home:                  "📂 **Baile:** `{home}`"
+    picker_title:          "👤 **Roghnaigh próifíl**\n\nReatha: `{current}`\n\nTap chun an comhrá seo a athrú (beo):"
 
   reasoning:
     level_default:             "medium (réamhshocraithe)"

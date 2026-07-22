@@ -313,33 +313,210 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
-    async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show the profile serving this source and its home.
+    async def _handle_profile_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /profile — show or change the profile serving this source.
+
+        Subcommands:
+          /profile            → status (what serves this chat right now)
+          /profile set NAME   → pin this chat (optionally thread) to profile NAME,
+                                live, no gateway restart (requires
+                                gateway.multiplex_profiles = true)
+          /profile clear      → drop this chat's pin
+          /profile list       → all profiles on this machine
 
         On a multiplexed gateway the process-level active profile is always
         the multiplexer's own (usually ``default``), so reporting it would
         answer "default" in every chat regardless of which profile actually
         serves the room/channel (``source.profile`` — stamped by the
-        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
-        profile map). When ``multiplex_profiles`` is on, report the stamped
-        profile and, like the scoped /reset banner (#59003), resolve the
-        displayed home under that profile's runtime scope. When multiplexing
-        is off (the default) the stamp is ignored — mirroring the gating in
-        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
-        reports the active profile and default home, byte-identical to before.
+        ``/p/<profile>/`` URL prefix, a per-credential adapter, a room→
+        profile map, or a live /profile set override). When ``multiplex_profiles``
+        is on, report the stamped profile and, like the scoped /reset banner
+        (#59003), resolve the displayed home under that profile's runtime
+        scope. When multiplexing is off (the default) the stamp is ignored —
+        mirroring the gating in ``_run_agent`` and
+        ``_reset_notice_session_info`` — and the command reports the active
+        profile and default home, byte-identical to before.
         """
+        import asyncio
+        import shlex
+
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            list_profiles,
+            normalize_profile_name,
+            profile_exists,
+            validate_profile_name,
+        )
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+
+        raw_args = (event.get_command_args() or "").strip()
+        argv = shlex.split(raw_args) if raw_args else []
+        sub = argv[0].lower() if argv else ""
+        # `set` with no name opens the interactive picker (parity with /model).
+        if sub == "set" and len(argv) < 2:
+            sub = ""
 
         multiplexed = getattr(
             getattr(self, "config", None), "multiplex_profiles", False
         )
         source = getattr(event, "source", None)
+        platform = source.platform.value if source and source.platform else ""
+        chat_id = getattr(source, "chat_id", "") or ""
+        thread_id = getattr(source, "thread_id", None)
 
-        profile_name = ""
+        # ---- list -----------------------------------------------------------
+        if sub == "list":
+            try:
+                infos = list_profiles()
+            except Exception:
+                infos = []
+            if not infos:
+                return "No profiles found."
+            active = get_active_profile_name() or "default"
+            rows = []
+            for info in infos:
+                nm = getattr(info, "name", None) or getattr(info, "id", "?")
+                mark = " ●" if nm == active else ""
+                rows.append(f"• {nm}{mark}")
+            rows.append("")
+            rows.append("(● = sticky default)")
+            return "\n".join(rows)
+
+        # ---- set / clear ----------------------------------------------------
+        if sub in ("set", "clear"):
+            if not multiplexed:
+                return (
+                    "⚠️ Switching profiles live requires "
+                    "`gateway.multiplex_profiles: true`.\n"
+                    "Set it with `hermes config set gateway.multiplex_profiles true` "
+                    "and restart the gateway, then run `/profile set NAME` again."
+                )
+            if sub == "clear":
+                try:
+                    from gateway.profile_overrides import clear_override
+
+                    removed = clear_override(platform, chat_id, thread_id)
+                except Exception:
+                    removed = False
+                if removed:
+                    return (
+                        f"✅ Profile pin cleared for this "
+                        f"{'thread' if thread_id else 'chat'}. "
+                        f"Falling back to routes/default."
+                    )
+                return "Nothing to clear — this chat has no profile pin."
+            # sub == "set"
+            if len(argv) < 2:
+                return "Usage: `/profile set NAME`"
+            requested = argv[1]
+            try:
+                canon = normalize_profile_name(requested)
+                validate_profile_name(canon)
+            except ValueError as e:
+                return f"❌ Invalid profile name: {e}"
+            if not profile_exists(canon):
+                return (
+                    f"❌ Profile '{canon}' does not exist. "
+                    f"Create it first: `hermes profile create {canon}`"
+                )
+            try:
+                from gateway.profile_overrides import set_override
+
+                set_override(platform, chat_id, canon, thread_id)
+            except Exception as e:
+                logger.exception("Failed to persist profile override")
+                return f"❌ Could not save profile pin: {e}"
+            scope = "thread" if thread_id else "chat"
+            return (
+                f"✅ This {scope} now serves profile **{canon}** "
+                f"(live — no restart needed). Next message runs under it.\n"
+                f"To revert: `/profile clear`"
+            )
+
+        # ---- status (default) ----------------------------------------------
+        # A live override (pinned) is the authoritative profile for this
+        # source; source.profile may be unset when status is queried outside a
+        # routed turn, so prefer the resolved override.
+        pinned = None
         if multiplexed:
+            try:
+                from gateway.profile_overrides import resolve_override
+
+                pinned = resolve_override(platform, chat_id, thread_id)
+            except Exception:
+                pinned = None
+
+        profile_name = pinned or ""
+        if not profile_name and multiplexed:
             profile_name = (getattr(source, "profile", "") or "").strip()
         profile_name = profile_name or get_active_profile_name()
+
+        # No subcommand (or `set` with no name): open an interactive picker
+        # listing every active profile, like /model. Selecting one performs
+        # the live set. Falls back to the text status card otherwise.
+        if not sub:
+            picker_sent = False
+            try:
+                infos = list_profiles()
+            except Exception:
+                infos = []
+            if infos and multiplexed:
+                def _profile_choices(current: str) -> list:
+                    out = []
+                    for info in infos:
+                        nm = getattr(info, "name", None) or getattr(info, "id", "?")
+                        out.append(
+                            {
+                                "value": nm,
+                                "label": nm,
+                                "is_current": nm == current,
+                            }
+                        )
+                    return out
+
+                async def _on_profile_selected(_chat_id: str, value: str) -> str:
+                    canon = normalize_profile_name(value)
+                    try:
+                        validate_profile_name(canon)
+                    except ValueError as e:
+                        return f"❌ Invalid profile name: {e}"
+                    if not profile_exists(canon):
+                        return (
+                            f"❌ Profile '{canon}' does not exist. "
+                            f"Create it first: `hermes profile create {canon}`"
+                        )
+                    # Offload the disk write off the event loop (parity with /model).
+                    try:
+                        from gateway.profile_overrides import set_override
+
+                        await asyncio.to_thread(
+                            set_override, platform, chat_id, canon, thread_id
+                        )
+                    except Exception as e:
+                        logger.exception("Failed to persist profile override")
+                        return f"❌ Could not save profile pin: {e}"
+                    scope = "thread" if thread_id else "chat"
+                    return (
+                        f"✅ This {scope} now serves profile **{canon}** "
+                        f"(live — no restart needed). Next message runs under it.\n"
+                        f"To revert: `/profile clear`"
+                    )
+
+                _send_picker = getattr(self, "_try_send_choice_picker", None)
+                _key_for = getattr(self, "_session_key_for_source", None)
+                if _send_picker is not None and _key_for is not None:
+                    picker_sent = await _send_picker(
+                        event,
+                        _key_for(source),
+                        title=t(
+                            "gateway.profile.picker_title",
+                            current=profile_name,
+                        ),
+                        choices=_profile_choices(profile_name),
+                        on_choice_selected=_on_profile_selected,
+                    )
+                if picker_sent:
+                    return None  # Picker sent — adapter handles the response
 
         if multiplexed:
             try:
@@ -357,6 +534,8 @@ class GatewaySlashCommandsMixin:
             t("gateway.profile.header", profile=profile_name),
             t("gateway.profile.home", home=display),
         ]
+        if pinned:
+            lines.append(f"pinned: {pinned} (live override)")
 
         return "\n".join(lines)
 

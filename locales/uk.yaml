@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **Профіль:** `{profile}`"
     home:                  "📂 **Домашня тека:** `{home}`"
+    picker_title:          "👤 **Оберіть профіль**\n\nПоточний: `{current}`\n\nНатисніть, щоб перемкнути цей чат (наживо):"
 
   reasoning:
     level_default:             "medium (за замовчуванням)"

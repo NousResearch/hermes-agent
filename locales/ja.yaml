@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **プロファイル:** `{profile}`"
     home:                  "📂 **ホーム:** `{home}`"
+    picker_title:          "👤 **プロファイルを選択**\n\n現在: `{current}`\n\nタップでこのチャットを切り替え（即時）:"
 
   reasoning:
     level_default:             "medium (デフォルト)"

@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Kezdőkönyvtár:** `{home}`"
+    picker_title:          "👤 **Válassz profilt**\n\nJelenlegi: `{current}`\n\nKoppints a csevegés élő váltásához:"
 
   reasoning:
     level_default:             "medium (alapértelmezett)"

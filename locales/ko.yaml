@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **프로필:** `{profile}`"
     home:                  "📂 **홈:** `{home}`"
+    picker_title:          "👤 **프로필 선택**\n\n현재: `{current}`\n\n탭하여 이 채팅 전환 (즉시):"
 
   reasoning:
     level_default:             "medium (기본값)"

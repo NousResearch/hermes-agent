@@ -1317,6 +1317,7 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
+    caption: str | None = None,
 ) -> None:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
@@ -1329,6 +1330,7 @@ def _send_media_via_adapter(
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_caption = caption if len(media_files) == 1 else None
 
     for media_path, _is_voice in media_files:
         try:
@@ -1337,11 +1339,11 @@ def _send_media_via_adapter(
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
                 coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
             elif ext in _VIDEO_EXTS:
-                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, caption=media_caption, metadata=metadata)
             elif ext in _IMAGE_EXTS:
-                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, caption=media_caption, metadata=metadata)
             else:
-                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, caption=media_caption, metadata=metadata)
 
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(coro, loop)
@@ -1475,7 +1477,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.warning("Job '%s': %s", job["id"], msg)
         return msg
 
-    from tools.send_message_tool import _send_to_platform
+    from tools.send_message_tool import _media_caption_split, _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -1575,6 +1577,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
+
+        # Discord supports a native content field on a single multipart file
+        # upload. Keep a short cron brief and its report in one message instead
+        # of posting an orphan text message followed by an uncaptioned file.
+        # The standalone sender applies the same rule; this keeps the live
+        # adapter path byte-for-byte consistent at the delivery boundary.
+        live_delivery_content = cleaned_delivery_content
+        media_caption = None
+        if platform == Platform.DISCORD and media_files:
+            media_caption, live_delivery_content = _media_caption_split(
+                cleaned_delivery_content,
+                media_files,
+                max_caption_len=2000,
+            )
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
@@ -1725,7 +1741,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # standalone cron path lacked this, so DM-topic cron deliveries
                 # landed in the General topic or were rejected by Bot API 10.0
                 # (#22773).
-                text_to_send = cleaned_delivery_content.strip()
+                text_to_send = live_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
                 if text_to_send:
@@ -1880,6 +1896,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         loop,
                         job,
                         platform=platform,
+                        caption=media_caption,
                     )
                 elif timed_out and media_files:
                     msg = (

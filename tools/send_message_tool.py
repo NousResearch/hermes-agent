@@ -72,7 +72,7 @@ _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 # voice note reads as a separate label rather than a bubble caption, and the
 # established convention is to keep the accompanying text as its own message.
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
-    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip",
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".html", ".htm", ".csv", ".xlsx", ".zip",
 }
 
 # Per-platform native caption length limits (characters). Text longer than

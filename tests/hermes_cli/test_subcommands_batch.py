@@ -105,19 +105,6 @@ def test_config_get_unset_subcommands_parse():
     assert ns.key == "terminal.backend"
 
 
-def test_config_show_yaml_parses():
-    parser = argparse.ArgumentParser(prog="hermes")
-    sub = parser.add_subparsers(dest="command")
-    handler = _h("config")
-    build_config_parser(sub, cmd_config=handler)
-
-    ns = parser.parse_args(["config", "show", "--yaml"])
-
-    assert ns.func is handler
-    assert ns.config_command == "show"
-    assert ns.yaml is True
-
-
 def test_dashboard_builder_two_handlers():
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")

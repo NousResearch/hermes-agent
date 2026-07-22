@@ -344,6 +344,35 @@ _dockter_hermes_show_env_file() {
   done < "$file"
 }
 
+_dockter_hermes_config_dump_script() {
+  printf '%s' 'import sys
+
+import yaml
+
+from agent.redact import mask_secret
+from hermes_cli.config import read_raw_config, redact_config_value
+
+
+def redact_password_hashes(value):
+    if isinstance(value, dict):
+        return {
+            key: mask_secret(item)
+            if isinstance(key, str)
+            and key.lower() == "password_hash"
+            and isinstance(item, str)
+            and item
+            else redact_password_hashes(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_password_hashes(item) for item in value]
+    return value
+
+
+config = redact_password_hashes(redact_config_value(read_raw_config()))
+sys.stdout.write(yaml.safe_dump(config, sort_keys=False))'
+}
+
 # =============================================================================
 # Basic operations
 # =============================================================================
@@ -452,7 +481,9 @@ dockter-hermes-show-config() {
 
   if [[ -f "${hermes_home}/config.yaml" ]]; then
     echo -e "${_HD_CLR_BOLD}${hermes_home}/config.yaml${_HD_CLR_RESET}"
-    _dockter_hermes_compose run --rm -T gateway config show --yaml || return $?
+    local dump_script
+    dump_script=$(_dockter_hermes_config_dump_script) || return 1
+    _dockter_hermes_compose run --rm -T gateway python -c "$dump_script" || return $?
   else
     echo -e "${_HD_CLR_YELLOW}No ${hermes_home}/config.yaml found${_HD_CLR_RESET}"
   fi

@@ -6,6 +6,22 @@ TMP_DIR="${TMPDIR:-/tmp}/dockter-hermes-test.$$"
 LOG_FILE="${TMP_DIR}/commands.log"
 REAL_DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
 REAL_HOME="$HOME"
+DOCKTER_TEST_REPO_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
+DOCKTER_TEST_PYTHON=""
+for candidate in \
+  "$DOCKTER_TEST_REPO_ROOT/.venv/bin/python" \
+  "$DOCKTER_TEST_REPO_ROOT/venv/bin/python" \
+  "$HOME/.hermes/hermes-agent/venv/bin/python"
+do
+  if [[ -x "$candidate" ]]; then
+    DOCKTER_TEST_PYTHON="$candidate"
+    break
+  fi
+done
+if [[ -z "$DOCKTER_TEST_PYTHON" ]]; then
+  printf 'Hermes Python environment not found\n' >&2
+  exit 1
+fi
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -21,10 +37,19 @@ touch "$TMP_DIR/hermes-agent/docker-compose.windows.yml"
 touch "$TMP_DIR/hermes-agent/docker-compose.extra.yml"
 touch "$TMP_DIR/home/.hermes/dockter-hermes/docker-compose.override.yml"
 
-cat > "$TMP_DIR/home/.hermes/config.yaml" <<'YAML'
-model:
-  provider: test
-YAML
+{
+  printf 'model:\n  provider: test\ncustom:\n'
+  for (( index = 1; index <= 300; index++ )); do
+    printf '  setting_%s: value_%s\n' "$index" "$index"
+  done
+  printf '%s\n' \
+    '  tail_marker: visible_after_line_250' \
+    'dashboard:' \
+    '  basic_auth:' \
+    '    password: plain-secret' \
+    '    password_hash: scrypt$secret-hash' \
+    '    secret: session-signing-secret'
+} > "$TMP_DIR/home/.hermes/config.yaml"
 
 cat > "$TMP_DIR/home/.hermes/.env" <<'ENV'
 API_SERVER_KEY=secret-value
@@ -42,6 +67,23 @@ printf '\n' >> "$DOCKTER_TEST_LOG"
 if [[ -n "${DOCKTER_TEST_FAIL_MATCH:-}" && "$*" == *"$DOCKTER_TEST_FAIL_MATCH"* ]]; then
   printf 'docker stub failure\n' >&2
   exit "${DOCKTER_TEST_FAIL_STATUS:-42}"
+fi
+if [[ "$*" == *"redact_password_hashes"* ]]; then
+  script=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "-c" && $# -gt 1 ]]; then
+      script="$2"
+      break
+    fi
+    shift
+  done
+  if [[ -z "$script" ]]; then
+    printf 'redaction script not found\n' >&2
+    exit 1
+  fi
+  PYTHONPATH="$DOCKTER_TEST_REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    "$DOCKTER_TEST_PYTHON" -c "$script"
+  exit $?
 fi
 case "$*" in
   *"gateway status --deep"*)
@@ -104,6 +146,7 @@ chmod +x "$TMP_DIR/bin/xdg-open"
 export HOME="$TMP_DIR/home"
 export PATH="$TMP_DIR/bin:$PATH"
 export DOCKTER_TEST_LOG="$LOG_FILE"
+export DOCKTER_TEST_REPO_ROOT DOCKTER_TEST_PYTHON
 export DOCKTER_HERMES_DIR="$TMP_DIR/hermes-agent"
 export HERMES_HOME="$TMP_DIR/home/.hermes"
 export DOCKTER_HERMES_DOCKER_BIN="$TMP_DIR/bin/docker"
@@ -230,6 +273,27 @@ run_status_failure_case() {
     return 1
   fi
   assert_log status-failure "$expected"
+}
+
+run_show_config_case() {
+  local dump_script expected output
+  printf 'TEST show-config\n'
+  : > "$LOG_FILE"
+  dump_script=$(_dockter_hermes_config_dump_script)
+  expected=$(compose_line run --rm -T gateway python -c "$dump_script")
+  output=$(dockter-hermes-show-config 2>&1)
+
+  if [[ "$output" != *"tail_marker: visible_after_line_250"* ]]; then
+    printf 'Config output was truncated:\n%s\n' "$output" >&2
+    return 1
+  fi
+  if [[ "$output" == *"plain-secret"* ||
+        "$output" == *"secret-hash"* ||
+        "$output" == *"session-signing-secret"* ]]; then
+    printf 'Config output exposed a secret:\n%s\n' "$output" >&2
+    return 1
+  fi
+  assert_log show-config "$expected"
 }
 
 run_dashboard_failure_case() {
@@ -407,9 +471,7 @@ run_case help-windows run_windows_help
 run_case config dockter-hermes-config
 run_case config-windows run_windows_config
 run_case data-dir-windows run_windows_data_dir
-run_logged_case show-config \
-  "$(compose_line run --rm -T gateway config show --yaml)" \
-  dockter-hermes-show-config
+run_show_config_case
 run_case cd dockter-hermes-cd
 run_case home dockter-hermes-home
 run_case workspace dockter-hermes-workspace

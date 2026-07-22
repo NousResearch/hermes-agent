@@ -8256,7 +8256,6 @@ _SECRET_CONFIG_KEYS = frozenset({
     "secret",
     "client_secret",
     "password",
-    "password_hash",
     "passwd",
     "auth",
     "authorization",
@@ -8293,12 +8292,6 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, list):
         return [redact_config_value(v, _depth + 1) for v in value]
     return value
-
-
-def show_config_yaml() -> None:
-    """Print every user-authored config value as redacted YAML."""
-    config = redact_config_value(read_raw_config())
-    print(yaml.safe_dump(config, sort_keys=False).rstrip())
 
 
 def show_config():
@@ -8950,10 +8943,7 @@ def config_command(args):
     subcmd = getattr(args, 'config_command', None)
     
     if subcmd is None or subcmd == "show":
-        if getattr(args, "yaml", False):
-            show_config_yaml()
-        else:
-            show_config()
+        show_config()
     
     elif subcmd == "edit":
         edit_config()

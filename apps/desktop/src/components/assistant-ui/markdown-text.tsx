@@ -64,16 +64,18 @@ async function mediaSrc(path: string): Promise<string> {
     return path
   }
 
+  // Remote gateway: files live on the gateway machine, not this disk, so fetch
+  // them over the authenticated API.  Must come before the audio/video stream
+  // check because hermes-media:// only resolves local files — on a remote
+  // gateway it would produce a 0-second broken playback.
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
+  }
+
   // Stream audio/video through the custom protocol: data URLs are capped and
   // load the whole file into memory, which broke playback for larger videos.
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
     return mediaStreamUrl(path)
-  }
-
-  // Remote gateway: the image lives on the gateway machine, so read it over the
-  // authenticated API rather than this machine's disk.
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {

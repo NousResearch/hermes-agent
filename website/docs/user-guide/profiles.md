@@ -132,6 +132,8 @@ Profiles are often confused with workspaces or sandboxes, but they are different
 
 On the default `local` terminal backend, the agent still has the same filesystem access as your user account. A profile does not stop it from accessing folders outside the profile directory.
 
+Profile visibility (the `session_search.protected` config flag) controls only whether **session_search can discover and read another profile's session database**. It does NOT restrict filesystem, memory, or tool access. A profile with `session_search.protected: true` is invisible to other profiles' session_search, but another profile's agent can still read its files — protect sensitive data at the OS level, not with the profile flag.
+
 If you want a profile to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
 
 ```yaml

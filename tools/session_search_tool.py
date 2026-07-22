@@ -141,6 +141,33 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
+def _is_profile_protected(name: str) -> bool:
+    """Check whether ``session_search.protected`` is set in a profile's config.
+
+    Returns False (unprotected) on any I/O or parse error so that a broken
+    config in someone else's profile doesn't break the caller's search.
+    Result is NOT cached globally — re-read every call so the flag takes
+    effect immediately after a config change.
+    """
+    try:
+        from hermes_cli import profiles as profiles_mod
+        import yaml
+
+        config_path = profiles_mod.get_profile_dir(name) / "config.yaml"
+        if not config_path.exists():
+            return False
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return False
+        ss = raw.get("session_search")
+        if not isinstance(ss, dict):
+            return False
+        return bool(ss.get("protected"))
+    except Exception as e:
+        logging.debug("_is_profile_protected(%r) failed: %s", name, e, exc_info=True)
+        return False
+
+
 def _resolve_profile_db(profile: str):
     """Open another profile's ``state.db`` read-only, or None for the current one.
 
@@ -161,6 +188,11 @@ def _resolve_profile_db(profile: str):
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
 
+    # Protected profiles are invisible to other profiles' session_search.
+    active = profiles_mod.get_active_profile_name()
+    if canon != active and _is_profile_protected(canon):
+        raise ValueError(f"profile '{canon}' is protected")
+
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
@@ -172,6 +204,9 @@ def _locate_session_db(session_id: str):
     so the first hit is authoritative. This is the safety net for linked-session
     reads where the model dropped the owning profile from the link and passed a
     bare id — we find it wherever it actually lives instead of failing.
+
+    Protected profiles (``session_search.protected: true`` in their config) are
+    skipped unless the caller IS that profile.
     """
     from pathlib import Path
 
@@ -180,6 +215,8 @@ def _locate_session_db(session_id: str):
         from hermes_state import SessionDB
     except Exception:
         return None, None
+
+    active = profiles_mod.get_active_profile_name()
 
     targets = [("default", profiles_mod.get_profile_dir("default"))]
     try:
@@ -194,6 +231,9 @@ def _locate_session_db(session_id: str):
         if key in seen or not db_path.exists():
             continue
         seen.add(key)
+        # Skip protected profiles that are not the caller.
+        if name != active and _is_profile_protected(name):
+            continue
         try:
             pdb = SessionDB(db_path=db_path, read_only=True)
         except Exception:

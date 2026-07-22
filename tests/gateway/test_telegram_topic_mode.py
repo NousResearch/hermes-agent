@@ -1489,12 +1489,12 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
     runner = _make_runner(session_db=db)
     runner._telegram_topic_mode_enabled = lambda source: True
 
-    # Give the adapter a concrete class with _get_dm_topic_info so the
-    # class-based lookup in _rename_telegram_topic_for_session_title
-    # actually finds it (a MagicMock auto-attr would be skipped).
+    # Give the adapter a concrete declaration check so the class-based
+    # lookup in _rename_telegram_topic_for_session_title actually finds it
+    # (a MagicMock auto-attr would be skipped).
     class _FakeAdapter:
-        def _get_dm_topic_info(self, chat_id, thread_id):
-            return {"name": "Research", "skill": "arxiv"}
+        def _is_dm_topic_operator_declared(self, chat_id, thread_id):
+            return True
 
         async def rename_dm_topic(self, **kwargs):
             return None
@@ -1510,6 +1510,50 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
     )
 
     fake.rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_message_cached_topic_is_still_auto_renamed(tmp_path):
+    """Telegram's incoming topic-name cache must not disable semantic rename."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=build_session_key(_make_source(thread_id="17585")),
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    # Exercise the real adapter state that caused the production regression:
+    # Telegram supplied a topic name before the first title callback ran.
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="***", extra={})
+    )
+    bot = SimpleNamespace(edit_forum_topic=AsyncMock())
+    adapter._bot = cast(Any, bot)
+    adapter._cache_dm_topic_from_message(
+        "208214988", "17585", "Can you still or"
+    )
+    adapter._reload_dm_topics_from_config = lambda: None
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="17585"),
+        "sess-topic",
+        "Grab",
+    )
+
+    bot.edit_forum_topic.assert_awaited_once_with(
+        chat_id=208214988,
+        message_thread_id=17585,
+        name="Grab",
+    )
 
 
 @pytest.mark.asyncio

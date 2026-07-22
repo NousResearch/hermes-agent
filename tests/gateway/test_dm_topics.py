@@ -437,6 +437,28 @@ def test_get_dm_topic_info_finds_cached_topic():
     assert result["skill"] == "my-skill"
 
 
+def test_operator_declared_topic_check_ignores_message_only_cache():
+    """A Telegram-supplied topic name is not an operator dm_topics entry."""
+    adapter = _make_adapter()
+    adapter._cache_dm_topic_from_message("111", "100", "Can you still or")
+    adapter._reload_dm_topics_from_config = lambda: None
+
+    # General topic lookup still exposes the cached display name for routing.
+    assert adapter._get_dm_topic_info("111", "100") == {"name": "Can you still or"}
+    # The rename guard must not mistake that transient cache entry for config.
+    assert adapter._is_dm_topic_operator_declared("111", "100") is False
+
+
+def test_operator_declared_topic_check_accepts_configured_cache_entry():
+    """A topic explicitly present in extra.dm_topics remains protected."""
+    adapter = _make_adapter([
+        {"chat_id": 111, "topics": [{"name": "Research", "skill": "arxiv"}]}
+    ])
+    adapter._dm_topics["111:Research"] = 100
+
+    assert adapter._is_dm_topic_operator_declared("111", "100") is True
+
+
 def test_get_dm_topic_info_returns_none_for_unknown():
     """Should return None for unknown thread_id."""
     adapter = _make_adapter([

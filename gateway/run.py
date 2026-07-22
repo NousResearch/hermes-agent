@@ -15482,23 +15482,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Skip rename when the topic is operator-declared via
         # extra.dm_topics. Those topics have fixed names chosen by the
         # operator (plus optional skill binding); auto-renaming would
-        # silently mutate operator config.
+        # silently mutate operator config. Do not use _get_dm_topic_info for
+        # the primary check: it also returns names learned from ordinary
+        # incoming Telegram messages, and those transient cache entries are
+        # exactly the fresh topics that should be auto-renamed.
         #
         # Check the class, not the instance — getattr() on MagicMock
-        # auto-creates attributes, so `hasattr(adapter, "_get_dm_topic_info")`
-        # would return True for every test double.
+        # auto-creates attributes, so `hasattr(adapter, ...)` would return
+        # True for every test double.
         adapter = self._adapter_for_source(source)
         if adapter is not None:
-            get_info = getattr(type(adapter), "_get_dm_topic_info", None)
-            if callable(get_info):
+            is_declared = getattr(
+                type(adapter), "_is_dm_topic_operator_declared", None
+            )
+            if callable(is_declared):
                 try:
-                    operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
+                    if is_declared(
+                        adapter,
+                        str(source.chat_id),
+                        str(source.thread_id),
+                    ):
+                        return
                 except Exception:
-                    operator_topic = None
-                # Only treat dict-shaped returns as operator-declared; a
-                # bare MagicMock or other sentinel shouldn't count.
-                if isinstance(operator_topic, dict):
+                    logger.debug(
+                        "Failed to check whether Telegram topic is operator-declared",
+                        exc_info=True,
+                    )
+                    # Preserve the operator-owned-name safety boundary when
+                    # the dedicated check itself fails.
                     return
+            else:
+                # Compatibility fallback for third-party/older adapters that
+                # predate the dedicated declaration check.
+                get_info = getattr(type(adapter), "_get_dm_topic_info", None)
+                if callable(get_info):
+                    try:
+                        operator_topic = get_info(
+                            adapter,
+                            str(source.chat_id),
+                            str(source.thread_id),
+                        )
+                    except Exception:
+                        operator_topic = None
+                    if isinstance(operator_topic, dict):
+                        return
 
         session_db = getattr(self, "_session_db", None)
         binding = None

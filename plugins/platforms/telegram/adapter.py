@@ -8992,11 +8992,56 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[%s] Failed to reload dm_topics from config: %s", self.name, e)
 
-    def _get_dm_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
-        """Look up DM topic config by chat_id and thread_id.
+    def _is_dm_topic_operator_declared(
+        self,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> bool:
+        """Return whether ``thread_id`` belongs to an ``extra.dm_topics`` entry.
 
-        Returns the topic config dict (name, skill, etc.) if this thread_id
-        matches a known DM topic, or None.
+        ``_dm_topics`` also contains names learned from ordinary incoming
+        Telegram messages.  Those transient cache entries are useful for
+        routing, but they must not be treated as operator-owned configuration:
+        doing so suppresses the one-shot semantic title/icon rename.
+        """
+        if not thread_id:
+            return False
+        try:
+            thread_id_int = int(thread_id)
+        except (TypeError, ValueError):
+            return False
+
+        def _configured_match() -> bool:
+            for chat_entry in self._dm_topics_config:
+                if str(chat_entry.get("chat_id")) != str(chat_id):
+                    continue
+                for topic in chat_entry.get("topics", []):
+                    configured_thread_id = topic.get("thread_id")
+                    if configured_thread_id is not None:
+                        try:
+                            if int(configured_thread_id) == thread_id_int:
+                                return True
+                        except (TypeError, ValueError):
+                            continue
+                    topic_name = str(topic.get("name") or "")
+                    if topic_name and self._dm_topics.get(
+                        f"{chat_id}:{topic_name}"
+                    ) == thread_id_int:
+                        return True
+            return False
+
+        if _configured_match():
+            return True
+        self._reload_dm_topics_from_config()
+        return _configured_match()
+
+    def _get_dm_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Look up a known DM topic by chat_id and thread_id.
+
+        Returns the full operator config dict for an ``extra.dm_topics``
+        entry, or a name-only dict for a topic learned from an incoming
+        Telegram message. Call ``_is_dm_topic_operator_declared`` when the
+        distinction matters.
         """
         if not thread_id:
             return None

@@ -199,21 +199,40 @@ def save_snapshot(data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True))
 
 
+# Checkpoint schema version. Bump this every time ``analyze_messages``
+# changes the *meaning* of a stat that `scan_sessions` caches — otherwise
+# existing histories keep serving the old (pre-fix) numbers indefinitely
+# because ``session_fingerprint`` is only derived from session metadata
+# (started_at / last_active / model / title), not the analyzer output.
+#
+# v2 (#26927): ``memory_write_events`` no longer substring-matches
+#     ``"memory"`` against every tool name. Older caches over-count and
+#     must be discarded so the Memory Palace progress finally drops to
+#     the genuine write count instead of mirroring ``memory_events``.
+_CHECKPOINT_SCHEMA_VERSION = 2
+
+
 def load_checkpoint() -> Dict[str, Any]:
     path = checkpoint_path()
     if not path.exists():
-        return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+        return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
     try:
         data = json.loads(path.read_text())
         if isinstance(data, dict):
             data.setdefault("schema_version", 1)
             data.setdefault("generated_at", 0)
             data.setdefault("sessions", {})
+            # Drop the per-session cache when the analyzer semantics moved
+            # forward. The file itself is left in place — ``save_checkpoint``
+            # rewrites it with the new version on the next scan.
+            if int(data.get("schema_version") or 0) < _CHECKPOINT_SCHEMA_VERSION:
+                data["sessions"] = {}
+                data["schema_version"] = _CHECKPOINT_SCHEMA_VERSION
             if isinstance(data.get("sessions"), dict):
                 return data
     except Exception:
         pass
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
 
 
 def save_checkpoint(data: Dict[str, Any]) -> None:
@@ -263,11 +282,71 @@ def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
     }
 
 
+def _call_function_field(call: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``call["function"]`` when it is a dict, else ``{}``.
+
+    Some legacy session rows store the field as a bare string (the tool
+    name) instead of the OpenAI ``{"name": ..., "arguments": ...}``
+    object.  ``call.get("function") or {}`` only filters out falsy values,
+    so a truthy non-dict like ``"memory"`` would slip through and cause
+    ``fn.get(...)`` to raise — aborting the whole scan instead of just
+    under-counting this one call.  This helper makes the guard
+    consistent across every reader.
+    """
+    fn = call.get("function")
+    return fn if isinstance(fn, dict) else {}
+
+
 def _tool_name_from_call(call: Any) -> Optional[str]:
     if not isinstance(call, dict):
         return None
-    fn = call.get("function") or {}
+    fn = _call_function_field(call)
     return call.get("name") or fn.get("name")
+
+
+def _tool_arguments_from_call(call: Any) -> Dict[str, Any]:
+    """Return the parsed tool-call arguments dict (or ``{}`` on failure).
+
+    Tool-call ``arguments`` come in three shapes across model adapters:
+
+    * Already a ``dict`` (some streaming providers parse on the way in).
+    * A JSON-encoded ``str`` (the OpenAI Chat Completions wire format).
+    * Missing / ``None``.
+
+    Used by ``analyze_messages`` to distinguish ``memory`` writes from
+    reads/removes for the Memory Palace achievement — see #26927, where
+    ``memory_write_events`` had degenerated into an exact copy of
+    ``memory_events`` because the previous heuristic only looked at
+    tool names, not arguments.
+    """
+    if not isinstance(call, dict):
+        return {}
+    fn = _call_function_field(call)
+    raw = call.get("arguments")
+    if raw is None:
+        raw = fn.get("arguments")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return {}
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+# Built-in memory tool actions that produce a net write to durable storage.
+# ``remove`` is excluded — it deletes content rather than persisting new
+# content, so counting it as a "write" would over-credit the Memory Palace
+# achievement.  ``mnemosyne_remember`` is a separate write-only tool name
+# from the external Mnemosyne plugin and is matched by name (no args
+# inspection needed).  See #26927.
+_MEMORY_WRITE_ACTIONS = frozenset({"add", "replace"})
+_MEMORY_TOOL_NAMES = frozenset({"memory"})
 
 
 def _content(msg: Dict[str, Any]) -> str:
@@ -313,6 +392,11 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
+    # Per-action write count for the built-in ``memory`` tool.  Populated
+    # by inspecting tool-call arguments below; consumed by
+    # ``memory_write_events`` so the Memory Palace achievement counts
+    # genuine writes instead of every memory engagement (#26927).
+    memory_write_call_count = 0
 
     for msg in messages:
         text = _content(msg)
@@ -329,6 +413,11 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
+                if name.lower() in _MEMORY_TOOL_NAMES:
+                    args = _tool_arguments_from_call(call)
+                    action = str(args.get("action") or "").strip().lower()
+                    if action in _MEMORY_WRITE_ACTIONS:
+                        memory_write_call_count += 1
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
@@ -354,7 +443,16 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
     skill_manage_events = _count_tool(tool_sequence, "skill_manage")
     memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
-    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
+    # ``memory_write_events`` was previously ``_count_tool(..., "mnemosyne_remember", "memory")``,
+    # which substring-matched every ``memory`` call (read / search / remove)
+    # and made it an exact copy of ``memory_events`` — see #26927.  The
+    # fix: count ``mnemosyne_remember`` by name (it's a write-only tool
+    # from the external Mnemosyne plugin) and gate the built-in ``memory``
+    # tool on its parsed ``action`` argument (``add`` or ``replace`` only).
+    memory_write_events = (
+        _count_tool(tool_sequence, "mnemosyne_remember")
+        + memory_write_call_count
+    )
 
     return {
         "session_id": session_id,
@@ -649,7 +747,7 @@ def scan_sessions(
                     pass
 
         save_checkpoint({
-            "schema_version": 1,
+            "schema_version": _CHECKPOINT_SCHEMA_VERSION,
             "generated_at": int(time.time()),
             "sessions": checkpoint_sessions,
         })

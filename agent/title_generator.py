@@ -100,6 +100,19 @@ def generate_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
 
+    # claude_cli profiles: main_runtime would route the tiny title call
+    # through Anthropic HTTP (extra-usage / OAuth), which fails noisily while
+    # the main turn already succeeded via `claude -p`. Prefer skip-with-
+    # clean-log over a failing HTTP aux (no auto-title is acceptable).
+    if isinstance(main_runtime, dict) and (
+        str(main_runtime.get("api_mode") or "").strip().lower() == "claude_cli"
+    ):
+        logger.info(
+            "Auto-title skipped: claude_cli runtime (no HTTP anthropic aux; "
+            "Claude owns the conversation session)"
+        )
+        return None
+
     if runtime_validator is not None:
         try:
             if not runtime_validator():

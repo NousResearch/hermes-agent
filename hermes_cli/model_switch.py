@@ -1446,6 +1446,28 @@ def switch_model(
     elif not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
 
+    # claude_cli default-when-token / explicit config: host_mandated_api_mode
+    # (api.anthropic.com) always returns anthropic_messages and would strip a
+    # correctly-resolved claude_cli api_mode from resolve_runtime_provider.
+    # Re-apply the runtime gate so /model switches (and same-provider Claude
+    # model swaps, including desktop-app model-only switches) land on
+    # `claude -p` base Max when a setup token + binary exist — unless the
+    # profile explicitly opts out via anthropic_runtime: anthropic_messages.
+    try:
+        from hermes_cli.runtime_provider import (
+            _get_model_config,
+            _maybe_apply_claude_cli_runtime,
+        )
+
+        api_mode = _maybe_apply_claude_cli_runtime(
+            provider=target_provider,
+            api_mode=api_mode or "",
+            model_cfg=_get_model_config(),
+            model=new_model,
+        )
+    except Exception:
+        pass
+
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 

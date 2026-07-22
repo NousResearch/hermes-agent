@@ -1869,9 +1869,15 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 
     Only works with regular ANTHROPIC_API_KEY (sk-ant-api*).
     OAuth tokens (sk-ant-oat*) from Claude Code return 401.
+
+    Failures are intentionally silent (debug only) — claude_cli Max profiles
+    use setup/OAuth tokens and must fall through to the hardcoded catalog
+    without spamming agent.log / the UI.
     """
-    if not api_key or api_key.startswith("sk-ant-oat"):
-        return None  # OAuth tokens can't access /v1/models
+    if not api_key or api_key.startswith("sk-ant-oat") or api_key.startswith("cc-"):
+        # OAuth / Claude Code setup tokens cannot query /v1/models; skip
+        # silently so claude_cli profiles don't log HTTP noise.
+        return None
     try:
         base = base_url.rstrip("/")
         if base.endswith("/v1"):
@@ -1883,6 +1889,11 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
         }
         resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
+            logger.debug(
+                "Anthropic /v1/models query returned %s for model %r — using catalog",
+                resp.status_code,
+                model,
+            )
             return None
         data = resp.json()
         for m in data.get("data", []):

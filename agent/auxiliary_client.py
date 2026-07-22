@@ -2794,7 +2794,72 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _is_claude_cli_runtime_active(
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when Anthropic traffic must stay on ``claude -p`` (base Max).
+
+    When the main runtime is ``claude_cli`` (or the profile/env opts into
+    ``model.anthropic_runtime: claude_cli``), Max setup/OAuth tokens must
+    never be used for HTTP ``api.anthropic.com`` side calls — that path
+    bills EXTRA USAGE and returns 400 when extra usage is disabled.
+
+    Priority:
+      1. Live ``main_runtime["api_mode"]`` (session-scoped; highest)
+      2. ``HERMES_ANTHROPIC_RUNTIME`` env (one-session override)
+      3. ``model.anthropic_runtime`` in config.yaml
+    """
+    if main_runtime is None:
+        try:
+            main_runtime = _RUNTIME_MAIN_CONTEXT.get()
+        except Exception:
+            main_runtime = None
+        if main_runtime is None:
+            try:
+                main_runtime = _compat_runtime_main()
+            except Exception:
+                main_runtime = None
+
+    if isinstance(main_runtime, dict):
+        if str(main_runtime.get("api_mode") or "").strip().lower() == "claude_cli":
+            return True
+
+    env_runtime = (os.getenv("HERMES_ANTHROPIC_RUNTIME", "") or "").strip().lower()
+    if env_runtime in {"claude_cli", "on", "1", "true", "yes"}:
+        return True
+    if env_runtime in {"off", "0", "false", "no", "anthropic_messages"}:
+        return False
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            runtime = str(model_cfg.get("anthropic_runtime") or "").strip().lower()
+            if runtime in {"claude_cli", "on", "1", "true", "yes"}:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _try_anthropic(
+    explicit_api_key: str = None,
+    *,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    # INVARIANT: claude_cli main runtime / anthropic_runtime=claude_cli must
+    # never yield an HTTP Anthropic aux client (extra-usage 400 on Max setup
+    # tokens). Fall through so auto / fallback chain can pick grok/gpt/etc.
+    if _is_claude_cli_runtime_active(main_runtime):
+        logger.info(
+            "Auxiliary client: refusing HTTP Anthropic (claude_cli runtime; "
+            "main + aux must stay on claude -p base Max or a non-Anthropic "
+            "fallback — never api.anthropic.com extra-usage)"
+        )
+        return None, None
+
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -4464,69 +4529,85 @@ def _resolve_auto(
 
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
-        resolved_provider = main_provider
-        explicit_base_url = runtime_base_url or None
-        explicit_api_key = None
-        if runtime_base_url and main_provider == "custom":
-            # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
-            # — pass through with explicit base_url + api_key.
-            resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
-        elif main_provider.startswith("custom:"):
-            # Named custom provider (custom_providers / providers dict entry).
-            _has_named_entry = False
-            try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
-                _has_named_entry = _get_named_custom_provider(main_provider) is not None
-            except ImportError:
-                pass
-            if _has_named_entry:
-                # KEEP the full ``custom:<name>`` so resolve_provider_client
-                # lands in the named-custom-provider arm — that arm honours the
-                # entry's api_mode (e.g. anthropic_messages →
-                # AnthropicAuxiliaryClient, avoiding the /anthropic→/v1 rewrite
-                # that 404s against proxies like Palantir Foundry's Anthropic
-                # surface).  Do NOT collapse to plain "custom"; that path
-                # strips /anthropic and routes through OpenAI chat.completions.
-                # base_url and api_key come from the named entry itself, so
-                # leave the explicit_* overrides unset.
-                resolved_provider = main_provider
-                explicit_base_url = None
-            elif runtime_base_url:
-                # Config-less named custom provider (#34777): the entry only
-                # exists in the live runtime, so collapse to the anonymous
-                # custom arm with the runtime endpoint + key.
+        # claude_cli main runtime: Step-1 would build HTTP Anthropic (extra
+        # usage) from provider=anthropic. Skip Step-1 and fall through to the
+        # configured fallback chain (xai-oauth/grok, openai-codex, …).
+        _skip_anthropic_http_step1 = (
+            main_provider == "anthropic"
+            and (
+                runtime_api_mode == "claude_cli"
+                or _is_claude_cli_runtime_active(runtime)
+            )
+        )
+        if _skip_anthropic_http_step1:
+            logger.info(
+                "Auxiliary auto-detect: skipping HTTP Anthropic main provider "
+                "(claude_cli runtime) — trying non-Anthropic fallback chain"
+            )
+        else:
+            resolved_provider = main_provider
+            explicit_base_url = runtime_base_url or None
+            explicit_api_key = None
+            if runtime_base_url and main_provider == "custom":
+                # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
+                # — pass through with explicit base_url + api_key.
                 resolved_provider = "custom"
                 explicit_base_url = runtime_base_url
                 explicit_api_key = runtime_api_key or None
+            elif main_provider.startswith("custom:"):
+                # Named custom provider (custom_providers / providers dict entry).
+                _has_named_entry = False
+                try:
+                    from hermes_cli.runtime_provider import _get_named_custom_provider
+                    _has_named_entry = _get_named_custom_provider(main_provider) is not None
+                except ImportError:
+                    pass
+                if _has_named_entry:
+                    # KEEP the full ``custom:<name>`` so resolve_provider_client
+                    # lands in the named-custom-provider arm — that arm honours the
+                    # entry's api_mode (e.g. anthropic_messages →
+                    # AnthropicAuxiliaryClient, avoiding the /anthropic→/v1 rewrite
+                    # that 404s against proxies like Palantir Foundry's Anthropic
+                    # surface).  Do NOT collapse to plain "custom"; that path
+                    # strips /anthropic and routes through OpenAI chat.completions.
+                    # base_url and api_key come from the named entry itself, so
+                    # leave the explicit_* overrides unset.
+                    resolved_provider = main_provider
+                    explicit_base_url = None
+                elif runtime_base_url:
+                    # Config-less named custom provider (#34777): the entry only
+                    # exists in the live runtime, so collapse to the anonymous
+                    # custom arm with the runtime endpoint + key.
+                    resolved_provider = "custom"
+                    explicit_base_url = runtime_base_url
+                    explicit_api_key = runtime_api_key or None
+                elif runtime_api_key:
+                    explicit_api_key = runtime_api_key
             elif runtime_api_key:
+                # Pin auxiliary to the same api_key as the active main chat session
+                # so that a working key is reused instead of re-selecting from the pool
+                # (which might pick a different, potentially exhausted key).
                 explicit_api_key = runtime_api_key
-        elif runtime_api_key:
-            # Pin auxiliary to the same api_key as the active main chat session
-            # so that a working key is reused instead of re-selecting from the pool
-            # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
-        # Skip Step-1 if the main provider was recently 402'd. The unhealthy
-        # cache TTL bounds how long we bypass it, so a topped-up account
-        # recovers automatically. If we tried Step-1 anyway, every aux call
-        # on a depleted main provider would pay one doomed 402 RTT before
-        # falling to Step-2.
-        main_chain_label = _normalize_chain_label(resolved_provider)
-        if main_chain_label and _is_provider_unhealthy(main_chain_label):
-            _log_skip_unhealthy(main_chain_label)
-        else:
-            client, resolved = resolve_provider_client(
-                resolved_provider,
-                main_model,
-                explicit_base_url=explicit_base_url,
-                explicit_api_key=explicit_api_key,
-                api_mode=runtime_api_mode or None,
-            )
-            if client is not None:
-                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                            main_provider, resolved or main_model)
-                return client, resolved or main_model
+            # Skip Step-1 if the main provider was recently 402'd. The unhealthy
+            # cache TTL bounds how long we bypass it, so a topped-up account
+            # recovers automatically. If we tried Step-1 anyway, every aux call
+            # on a depleted main provider would pay one doomed 402 RTT before
+            # falling to Step-2.
+            main_chain_label = _normalize_chain_label(resolved_provider)
+            if main_chain_label and _is_provider_unhealthy(main_chain_label):
+                _log_skip_unhealthy(main_chain_label)
+            else:
+                client, resolved = resolve_provider_client(
+                    resolved_provider,
+                    main_model,
+                    explicit_base_url=explicit_base_url,
+                    explicit_api_key=explicit_api_key,
+                    api_mode=runtime_api_mode or None,
+                )
+                if client is not None:
+                    logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                                main_provider, resolved or main_model)
+                    return client, resolved or main_model
 
     # ── Step 2: user-configured fallback policy ─────────────────────────
     # In auto mode, respect the task-specific fallback chain first, then the
@@ -5154,9 +5235,24 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            # Refuse HTTP Anthropic when main is claude_cli (or profile opts
+            # into anthropic_runtime=claude_cli). Without this, explicit
+            # provider="anthropic" aux tasks still bill extra usage.
+            client, default_model = _try_anthropic(
+                explicit_api_key=explicit_api_key,
+                main_runtime=main_runtime,
+            )
             if client is None:
-                logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
+                if _is_claude_cli_runtime_active(main_runtime):
+                    logger.info(
+                        "resolve_provider_client: anthropic requested but "
+                        "claude_cli runtime forbids HTTP Anthropic aux"
+                    )
+                else:
+                    logger.warning(
+                        "resolve_provider_client: anthropic requested but no "
+                        "Anthropic credentials found"
+                    )
                 return None, None
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))

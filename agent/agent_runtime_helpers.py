@@ -1960,6 +1960,27 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url)
 
+    # Preserve / default claude_cli when eligible (explicit config or
+    # default-when-token). determine_api_mode only knows host→wire mapping
+    # (api.anthropic.com → anthropic_messages) and would drop the CLI runtime
+    # on every in-place model switch, routing subsequent turns through HTTP
+    # Anthropic extra-usage. Pass new_model so auto eligibility uses the
+    # switched Claude model, not a stale config default.
+    try:
+        from hermes_cli.runtime_provider import (
+            _get_model_config,
+            _maybe_apply_claude_cli_runtime,
+        )
+
+        api_mode = _maybe_apply_claude_cli_runtime(
+            provider=(new_provider or "").strip().lower(),
+            api_mode=api_mode or "",
+            model_cfg=_get_model_config(),
+            model=new_model,
+        )
+    except Exception:
+        pass
+
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
     # hit /v1/v1/messages.  `model_switch.switch_model()` already strips
@@ -2096,6 +2117,39 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")
+        elif api_mode == "claude_cli":
+            # Claude CLI runtime: turns go through `claude -p` (base Max).
+            # Do NOT build an HTTP Anthropic client — that bills extra usage.
+            # Retire any prior multi-turn Claude session so the next turn
+            # creates a fresh CLI session under the new model.
+            from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
+
+            _is_native_anthropic = (new_provider or "").strip().lower() == "anthropic"
+            effective_key = (
+                (api_key or agent.api_key or resolve_anthropic_token() or "")
+                if _is_native_anthropic
+                else (api_key or agent.api_key or "")
+            )
+            agent.api_key = effective_key
+            agent._anthropic_api_key = effective_key
+            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None) or "https://api.anthropic.com"
+            agent._anthropic_client = None
+            agent._is_anthropic_oauth = (
+                _is_oauth_token(effective_key)
+                if (_is_native_anthropic and isinstance(effective_key, str))
+                else False
+            )
+            agent.client = None
+            agent._client_kwargs = {}
+            # Drop in-memory Claude CLI session so model/provider change is
+            # not pinned to a stale --resume id for the previous model.
+            try:
+                from agent.claude_runtime import _retire_claude_cli_session
+
+                _retire_claude_cli_session(agent, reason="switch_model")
+            except Exception:
+                agent._claude_cli_session = None
+            agent.compression_enabled = False
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

@@ -23,12 +23,41 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
 from tools.tts_tool import _get_provider, get_env_value
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Interruption latch — lets the model know it was cut off mid-speech
+# ---------------------------------------------------------------------------
+# When the user barges in on a spoken reply (talks over it, types, hits the
+# record key), the surface marks the latch; the next turn's submit path takes
+# it and prepends SPEECH_INTERRUPTED_NOTE to the model-bound message (API-call
+# local — never persisted, same as the CLI's model-switch notes). The TTL
+# keeps a stale barge from annotating an unrelated message minutes later.
+
+SPEECH_INTERRUPTED_NOTE = (
+    "[Note: the user interrupted your previous spoken reply before it finished.]"
+)
+_INTERRUPT_TTL_S = 120.0
+_interrupted_at: Optional[float] = None
+
+
+def mark_speech_interrupted() -> None:
+    global _interrupted_at
+    _interrupted_at = time.monotonic()
+
+
+def take_speech_interrupted() -> bool:
+    """Pop the latch; True when a barge happened within the TTL."""
+    global _interrupted_at
+    at, _interrupted_at = _interrupted_at, None
+    return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")

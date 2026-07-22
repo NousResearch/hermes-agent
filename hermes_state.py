@@ -5794,16 +5794,24 @@ class SessionDB:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
                 like_sql = f"""
-                    SELECT m.id, m.session_id, m.role,
-                           substr(m.content,
-                                  max(1, instr(m.content, ?) - 40),
-                                  120) AS snippet,
-                           m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
-                    FROM messages m
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(like_where)}
-                    ORDER BY m.timestamp DESC
+                    SELECT id, session_id, role, snippet, content, timestamp,
+                           tool_name, source, model, session_started
+                    FROM (
+                        SELECT m.id, m.session_id, m.role,
+                               substr(m.content,
+                                      max(1, instr(m.content, ?) - 40),
+                                      120) AS snippet,
+                               m.content, m.timestamp, m.tool_name,
+                               s.source, s.model, s.started_at AS session_started,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY s.id ORDER BY m.timestamp DESC
+                               ) AS rn
+                        FROM messages m
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(like_where)}
+                    )
+                    WHERE rn <= 5
+                    ORDER BY timestamp DESC
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])

@@ -135,6 +135,20 @@ def _conn(board: Optional[str] = None):
     return kanban_db.connect(board=board)
 
 
+def _external_conflict_http(
+    exc: kanban_db.ExternalTaskConflict,
+) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": exc.code,
+            "task_id": exc.task_id,
+            "operation": exc.operation,
+            "run_id": exc.run_id,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -752,6 +766,12 @@ async def upload_task_attachment(
         )
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}
+    except kanban_db.ExternalTaskConflict as exc:
+        try:
+            dest_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise _external_conflict_http(exc)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -794,6 +814,8 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         if att is None:
             raise HTTPException(status_code=404, detail="attachment not found")
         return {"ok": True, "id": attachment_id}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -832,6 +854,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 ok = kanban_db.assign_task(
                     conn, task_id, payload.assignee or None,
                 )
+            except kanban_db.ExternalTaskConflict as exc:
+                raise _external_conflict_http(exc)
             except RuntimeError as e:
                 raise HTTPException(status_code=409, detail=str(e))
             if not ok:
@@ -932,6 +956,8 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -949,6 +975,8 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
         if not ok:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -990,6 +1018,9 @@ def _set_status_direct(
     (user yanking a stuck worker back to the queue).
     """
     with kanban_db.write_txn(conn):
+        kanban_db._assert_no_open_external_run(
+            conn, task_id, "dashboard_set_status_direct"
+        )
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
             "SELECT status, current_run_id FROM tasks WHERE id = ?",
@@ -1051,6 +1082,9 @@ def _set_status_direct(
                 (task_id,),
             ).fetchall():
                 child_id = row["child_id"]
+                kanban_db._assert_no_open_external_run(
+                    conn, child_id, "dashboard_parent_reopened"
+                )
                 demoted = conn.execute(
                     "UPDATE tasks SET status = 'todo' "
                     "WHERE id = ? AND status = 'ready'",
@@ -1120,6 +1154,8 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     try:
         kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
         return {"ok": True}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -1137,6 +1173,8 @@ def delete_link(
     try:
         ok = kanban_db.unlink_tasks(conn, parent_id, child_id)
         return {"ok": bool(ok)}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -1232,6 +1270,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             )
                         if not ok:
                             entry.update(ok=False, error="assign refused")
+                    except kanban_db.ExternalTaskConflict as exc:
+                        entry.update(
+                            ok=False,
+                            error=str(exc),
+                            code=exc.code,
+                            run_id=exc.run_id,
+                        )
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))
                 if payload.priority is not None:
@@ -1246,6 +1291,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             (tid, json.dumps({"priority": int(payload.priority)}),
                              int(time.time())),
                         )
+            except kanban_db.ExternalTaskConflict as exc:
+                entry.update(
+                    ok=False,
+                    error=str(exc),
+                    code=exc.code,
+                    run_id=exc.run_id,
+                )
             except Exception as e:  # defensive — one bad id shouldn't kill the batch
                 entry.update(ok=False, error=str(e))
             results.append(entry)
@@ -1547,6 +1599,8 @@ def terminate_run_endpoint(
                 ),
             )
         return {"ok": True, "run_id": run_id, "task_id": r.task_id}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -1585,6 +1639,8 @@ def reclaim_task_endpoint(
                 ),
             )
         return {"ok": True, "task_id": task_id}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -1678,6 +1734,8 @@ def reassign_task_endpoint(
                 ),
             )
         return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     finally:
         conn.close()
 
@@ -2115,6 +2173,8 @@ def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete
     """Archive (default) or hard-delete a board."""
     try:
         res = kanban_db.remove_board(slug, archive=not delete)
+    except kanban_db.ExternalTaskConflict as exc:
+        raise _external_conflict_http(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"result": res, "current": kanban_db.get_current_board()}

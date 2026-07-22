@@ -175,3 +175,59 @@ def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
         )
         assert isinstance(cursor, int)
         assert isinstance(events, list)
+
+
+def test_external_worker_schema_is_present_on_fresh_and_legacy_boards(
+    tmp_path, monkeypatch
+):
+    legacy_path = _setup_home(tmp_path, monkeypatch)
+    _make_legacy_db(legacy_path)
+    fresh_path = kb.kanban_db_path(board="fresh")
+    fresh_path.parent.mkdir(parents=True, exist_ok=True)
+    kb._INITIALIZED_PATHS.discard(str(fresh_path.resolve()))
+
+    expected_task = {
+        "external_spec_attachment_id",
+        "external_spec_hash",
+        "external_spec_schema",
+        "external_spec_locked_at",
+    }
+    expected_run = {
+        "worker_kind",
+        "external_host",
+        "external_pid",
+        "external_pgid",
+        "external_start_token",
+        "external_spec_attachment_id",
+        "external_spec_hash",
+        "external_spec_schema",
+        "external_attempt",
+        "external_substate",
+        "external_lease_state",
+        "external_recovery_count",
+        "external_terminal_disposition",
+        "external_block_kind",
+        "external_result_hash",
+        "external_result_json",
+    }
+    for path in (legacy_path, fresh_path):
+        with kb.connect(path) as conn:
+            task_cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+            }
+            run_cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+            }
+            attachment_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(task_attachments)")
+            }
+            assert expected_task <= task_cols
+            assert expected_run <= run_cols
+            assert "spec_hash" in attachment_cols
+            table = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='task_external_artifacts'"
+            ).fetchone()
+            assert table is not None
+            assert "UNIQUE (run_id, name)" in table["sql"]

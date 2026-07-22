@@ -90,7 +90,40 @@ A specialisation of the profile lane: an orchestrator is a Hermes profile whose 
 
 ## Adding an external CLI worker lane
 
-Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.
+Hermes exposes a pull-based, transactional lifecycle API for supervisors that
+run non-Hermes workers. Import `hermes_cli.kanban_external_worker` and use only
+that module for board access. The protocol is:
+
+1. Create a triage task and attach exactly one `mas-task-spec.v1.json` through
+   the existing Kanban attachment surface, then call `submit`. Hermes validates
+   the strict JSON and locks the attachment id, raw-byte SHA-256, and schema.
+2. Poll `list_ready`, re-read the accepted bytes with
+   `read_submitted_attachment`, and call `claim_external` with that exact spec
+   identity and an opaque lease token.
+3. Create an inert process-group leader, persist its host/PID/PGID/start-token
+   identity with `bind_process`, and only then allow it to start child work.
+4. Refresh ownership with `heartbeat` and persist named outputs through
+   `put_artifact`. Before releasing a claim, prove the process group is absent,
+   persist a strict `mas-execution-result.v1` with `put_result`, and call
+   `finalize` with `COMPLETE`, `REQUEUE`, or `BLOCK`. Every artifact named by
+   the result must already exist with the declared SHA-256.
+5. On restart, inspect `list_active` before claiming new work. An expired run is
+   released only through `recover_expired` with affirmative process-absence or
+   no-start proof; uncertainty is recorded with `hold_for_recovery`. If
+   `read_result` returns bytes staged before the restart, replay those exact
+   bytes instead of reconstructing a new result.
+
+The native dispatcher ignores tasks with a locked external spec. Generic CLI
+and dashboard lifecycle actions fail with a typed conflict while an external
+run remains open, so a manual drag or stale-claim sweep cannot create a second
+writer. Finalize is idempotent only for the same result hash and terminal
+disposition.
+
+This API owns lifecycle state, not launcher policy. Integrations still decide
+which CLI to run, how to isolate it, how to scrub credentials, and which
+commands or repositories are allowed. A plugin-managed push lane can continue
+to supply a `spawn_fn`; a standalone supervisor should use the pull protocol
+above instead of writing `kanban.db` directly.
 
 If you're considering adding a CLI lane, open an issue describing the specific CLI and the workflow you're trying to enable. The contract above is the constraints any such lane must satisfy; the implementation shape (one plugin per CLI vs a generic CLI-runner plugin parameterised by config) is open.
 

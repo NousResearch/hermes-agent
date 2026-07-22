@@ -158,6 +158,30 @@ def _check_disk_usage_warning():
 _sudo_password_cache: dict[str, str] = {}
 _sudo_password_cache_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Hardline-block circuit breaker (mirrors the repeated-identical-call guard
+# in tools/file_tools.py for search_files).
+#
+# A hardline block (tools/approval.py:_hardline_block_result) is *deterministic*
+# — the same command will be blocked on every retry, regardless of --yolo,
+# approvals.mode=off, or cron approve mode.  Without a breaker, a weak
+# tool-follower can re-emit the identical blocked call dozens of times in a
+# row, burning the turn budget and degrading the session into empty responses
+# (issue #69256).  We track, per task_id, how many times the *exact same*
+# command has been hardline-blocked consecutively and short-circuit after a
+# few attempts with a "do not retry" message.
+#
+# Per task_id we store: {"last_key": <command str>|None, "consecutive": int}.
+# A *different* command (or a command that later executes successfully) resets
+# the counter, so the breaker only fires on truly consecutive identical blocks.
+# ---------------------------------------------------------------------------
+_hardline_block_tracker: dict = {}
+_hardline_block_tracker_lock = threading.Lock()
+# Warn on the Nth consecutive identical hardline block, hard-stop at N+1.
+# Matches the read/search loop thresholds in file_tools (warn @3, block @4).
+_HARDBREAK_WARN_AT = 3
+_HARDBREAK_BLOCK_AT = 4
+
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
 # so prompts route through prompt_toolkit's event loop.
@@ -198,6 +222,43 @@ def set_approval_callback(cb):
     GHSA-qg5c-hvr5-hjgr.
     """
     _callback_tls.approval = cb
+
+
+def _record_hardline_block(task_id: str, command: str) -> int:
+    """Increment and return the consecutive identical hardline-block count.
+
+    Called each time a command is hardline-blocked.  If *command* matches the
+    most recently hardline-blocked command for this task, the counter ticks up;
+    otherwise the counter resets to 1 and *command* becomes the new last-key.
+    A different command key resets the streak, so the breaker only fires on
+    truly consecutive identical blocks.
+    """
+    tid = task_id or "default"
+    with _hardline_block_tracker_lock:
+        task_data = _hardline_block_tracker.setdefault(
+            tid, {"last_key": None, "consecutive": 0}
+        )
+        if task_data["last_key"] == command:
+            task_data["consecutive"] += 1
+        else:
+            task_data["last_key"] = command
+            task_data["consecutive"] = 1
+        return task_data["consecutive"]
+
+
+def _reset_hardline_block_tracker(task_id: str) -> None:
+    """Clear the hardline-block streak for this task.
+
+    Called when a command *executes* (approved or otherwise) so that a later
+    retry of a previously-blocked command — after intervening successful work —
+    is treated as fresh rather than continuing an old streak.
+    """
+    tid = task_id or "default"
+    with _hardline_block_tracker_lock:
+        task_data = _hardline_block_tracker.get(tid)
+        if task_data:
+            task_data["last_key"] = None
+            task_data["consecutive"] = 0
 
 
 def _get_sudo_password_cache_scope() -> str:
@@ -2405,10 +2466,47 @@ def terminal_tool(
                     f"Command denied: {desc}. "
                     "Use the approval prompt to allow it, or rephrase the command."
                 )
+                base_msg = approval.get("message", fallback_msg)
+
+                # Hardline blocks are deterministic — the identical command
+                # will be blocked on every retry.  Short-circuit repeated
+                # identical hardline blocks so a weak tool-follower can't
+                # burn the turn budget re-emitting the same blocked call
+                # (issue #69256).  Mirrors the search_files breaker in
+                # tools/file_tools.py: warn @3, hard-stop @4+.
+                if approval.get("hardline"):
+                    count = _record_hardline_block(task_id, command)
+                    if count >= _HARDBREAK_BLOCK_AT:
+                        return json.dumps({
+                            "output": "",
+                            "exit_code": -1,
+                            "error": (
+                                f"BLOCKED: You have tried this exact command "
+                                f"{count} times in a row and it is on the "
+                                "unconditional blocklist — it will NEVER be "
+                                "approved, not even with --yolo, /yolo, or "
+                                "approvals.mode=off. STOP retrying it. "
+                                "Rephrase the command, choose a different "
+                                "approach, or run it yourself in a terminal "
+                                "outside the agent."
+                            ),
+                            "status": "blocked",
+                            "hardline": True,
+                            "blocked_repeat_count": count,
+                        }, ensure_ascii=False)
+                    if count >= _HARDBREAK_WARN_AT:
+                        base_msg = (
+                            f"{base_msg}\n\nWARNING: You have tried this exact "
+                            f"command {count} times in a row. It is on the "
+                            "unconditional blocklist and can never be approved "
+                            "via the agent — retrying is pointless. "
+                            "Rephrase it or use a different approach."
+                        )
+
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": approval.get("message", fallback_msg),
+                    "error": base_msg,
                     "status": "blocked"
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
@@ -2419,6 +2517,12 @@ def terminal_tool(
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+
+        # The command cleared the hardline floor (either force=True or it was
+        # approved).  Clear any in-progress hardline-block streak for this task
+        # so a later retry of a previously-blocked command — after intervening
+        # successful work — is treated as fresh (issue #69256).
+        _reset_hardline_block_tracker(task_id)
 
         # Validate workdir against shell injection
         if workdir:

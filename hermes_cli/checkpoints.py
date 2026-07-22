@@ -116,17 +116,25 @@ def cmd_prune(args: argparse.Namespace) -> int:
     delete_orphans = not args.keep_orphans
 
     if delete_orphans and not args.force:
+        info = store_status()
         orphans = [
-            p for p in store_status().get("projects", [])
+            p for p in info.get("projects", [])
             if not p.get("exists")
         ]
-        if orphans:
-            print(f"This will permanently delete {len(orphans)} orphan checkpoint "
-                  "project(s) whose workdir is not currently reachable:")
+        pre_v2_orphans = [
+            p for p in info.get("pre_v2_projects", [])
+            if not p.get("exists")
+        ]
+        if orphans or pre_v2_orphans:
+            print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
+                  "orphan checkpoint project(s) whose workdir is not currently reachable:")
             print()
             for p in orphans:
                 wd = p.get("workdir") or "(unknown)"
                 print(f"  {wd}  ({p.get('commits', 0)} commit(s))")
+            for p in pre_v2_orphans:
+                wd = p.get("workdir") or "(unknown)"
+                print(f"  {wd}  (pre-v2 shadow repo)")
             print()
             print("A workdir can be unreachable because the project was deleted,")
             print("or because an external volume / network share / VPN is down.")

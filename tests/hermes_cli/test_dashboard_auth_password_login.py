@@ -13,6 +13,7 @@ provider, flip ``app.state.auth_required = True``, drive a ``TestClient``.
 from __future__ import annotations
 
 import time
+from html.parser import HTMLParser
 
 import pytest
 
@@ -32,6 +33,23 @@ from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOK
 from hermes_cli.dashboard_auth.login_page import render_login_html
 from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+
+class _LoginHTMLParser(HTMLParser):
+    """Collect rendered element attributes without depending on a DOM library."""
+
+    def __init__(self):
+        super().__init__()
+        self.elements: list[tuple[str, dict[str, str | None]]] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+
+def _parse_login_html(markup: str) -> _LoginHTMLParser:
+    parser = _LoginHTMLParser()
+    parser.feed(markup)
+    return parser
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +436,90 @@ class TestRateLimit:
 
 
 class TestLoginPageRender:
+    def test_password_form_exposes_stable_autofill_semantics(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            parsed = _parse_login_html(render_login_html(next_path="/sessions"))
+            forms = [attrs for tag, attrs in parsed.elements if tag == "form"]
+            assert len(forms) == 1
+            assert forms[0]["id"] == "dashboard-testpw-login"
+            assert forms[0]["method"] == "post"
+            assert forms[0]["autocomplete"] == "on"
+
+            inputs = {
+                attrs.get("name"): attrs
+                for tag, attrs in parsed.elements
+                if tag == "input"
+            }
+            assert inputs["username"]["id"] == "dashboard-testpw-username"
+            assert inputs["username"]["type"] == "text"
+            assert inputs["username"]["autocomplete"] == "username"
+            assert inputs["password"]["id"] == "dashboard-testpw-password"
+            assert inputs["password"]["type"] == "password"
+            assert inputs["password"]["autocomplete"] == "current-password"
+
+            element_ids = [
+                attrs["id"]
+                for _, attrs in parsed.elements
+                if attrs.get("id") is not None
+            ]
+            assert len(element_ids) == len(set(element_ids))
+        finally:
+            clear_providers()
+
+    def test_password_form_labels_and_error_are_programmatically_associated(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            parsed = _parse_login_html(render_login_html())
+            attrs_by_id = {
+                attrs["id"]: attrs
+                for _, attrs in parsed.elements
+                if attrs.get("id") is not None
+            }
+            form = next(attrs for tag, attrs in parsed.elements if tag == "form")
+            assert form["aria-labelledby"] == "dashboard-testpw-title"
+            assert "dashboard-testpw-title" in attrs_by_id
+
+            labels = {
+                attrs["for"]
+                for tag, attrs in parsed.elements
+                if tag == "label"
+            }
+            assert labels == {
+                "dashboard-testpw-username",
+                "dashboard-testpw-password",
+            }
+
+            error_id = "dashboard-testpw-error"
+            assert attrs_by_id[error_id]["role"] == "alert"
+            assert attrs_by_id["dashboard-testpw-username"]["aria-describedby"] == error_id
+            assert attrs_by_id["dashboard-testpw-password"]["aria-describedby"] == error_id
+        finally:
+            clear_providers()
+
+    def test_multiple_password_forms_keep_all_ids_unique(self):
+        class OtherPasswordProvider(PasswordProvider):
+            name = "otherpw"
+            display_name = "Other Password"
+
+        clear_providers()
+        register_provider(PasswordProvider())
+        register_provider(OtherPasswordProvider())
+        try:
+            parsed = _parse_login_html(render_login_html(next_path="/sessions"))
+            element_ids = [
+                attrs["id"]
+                for _, attrs in parsed.elements
+                if attrs.get("id") is not None
+            ]
+            assert len(element_ids) == len(set(element_ids))
+            assert "dashboard-testpw-next" in element_ids
+            assert "dashboard-otherpw-next" in element_ids
+        finally:
+            clear_providers()
+
     def test_password_provider_renders_credential_form_and_script(self):
         clear_providers()
         register_provider(PasswordProvider())

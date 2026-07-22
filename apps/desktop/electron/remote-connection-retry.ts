@@ -113,5 +113,26 @@ async function resolveRemoteConnectionWithRetry<T>(
   throw new Error('Remote connection retry loop exhausted unexpectedly')
 }
 
-export { isRetryableRemoteConnectionError, requiresOauthLogin, resolveRemoteConnectionWithRetry }
+async function resolveReadyRemoteConnectionWithRetry<T>(
+  resolve: () => Promise<null | T>,
+  waitForReady: (connection: T) => Promise<void>,
+  options: RemoteConnectionRetryOptions = {}
+): Promise<null | T> {
+  return resolveRemoteConnectionWithRetry(async () => {
+    const connection = await resolve()
+
+    if (connection) {
+      await waitForReady(connection)
+    }
+
+    return connection
+  }, options)
+}
+
+export {
+  isRetryableRemoteConnectionError,
+  requiresOauthLogin,
+  resolveReadyRemoteConnectionWithRetry,
+  resolveRemoteConnectionWithRetry
+}
 export type { RemoteConnectionRetryOptions }

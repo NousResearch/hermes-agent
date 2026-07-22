@@ -128,7 +128,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
-import { resolveRemoteConnectionWithRetry } from './remote-connection-retry'
+import { resolveReadyRemoteConnectionWithRetry } from './remote-connection-retry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
@@ -4668,7 +4668,11 @@ async function waitForHermes(baseUrl, token, signal?) {
     }
   }
 
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+  const error: any = new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+
+  error.cause = lastError
+  error.kind = 'timeout'
+  throw error
 }
 
 function getWindowButtonPosition() {
@@ -7810,11 +7814,17 @@ async function startHermes() {
     const remoteConfigured = globalRemoteActive() || profileHasRemoteOverride(profile)
 
     const remote = remoteConfigured
-      ? await resolveRemoteConnectionWithRetry(() => resolveRemoteBackend(profile), {
-          onRetry: (_error, attempt, delayMs) => {
-            rememberLog(`Remote Hermes backend unavailable; retrying connection after ${delayMs}ms (attempt ${attempt}).`)
+      ? await resolveReadyRemoteConnectionWithRetry(
+          () => resolveRemoteBackend(profile),
+          connection => waitForHermes(connection.baseUrl, connection.token),
+          {
+            onRetry: (_error, attempt, delayMs) => {
+              rememberLog(
+                `Remote Hermes backend unavailable; retrying connection after ${delayMs}ms (attempt ${attempt}).`
+              )
+            }
           }
-        })
+        )
       : await resolveRemoteBackend(profile)
 
     // Re-read once resolved so the classification tracks the value actually used.
@@ -7822,7 +7832,11 @@ async function startHermes() {
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+
+      if (!remoteConfigured) {
+        await waitForHermes(remote.baseUrl, remote.token)
+      }
+
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',

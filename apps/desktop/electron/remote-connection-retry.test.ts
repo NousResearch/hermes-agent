@@ -5,6 +5,7 @@ import { test } from 'vitest'
 import {
   isRetryableRemoteConnectionError,
   requiresOauthLogin,
+  resolveReadyRemoteConnectionWithRetry,
   resolveRemoteConnectionWithRetry
 } from './remote-connection-retry'
 
@@ -108,6 +109,58 @@ test('timeouts and 5xx failures use fresh resolver calls with exponential backof
   assert.deepEqual(result, { ticket: 'fresh-ticket-3' })
   assert.equal(attempts, 3)
   assert.deepEqual(sleeps, [500, 1_000])
+})
+
+test('token readiness failures retry the complete connection attempt', async () => {
+  let readinessAttempts = 0
+  let resolverAttempts = 0
+
+  const result = await resolveReadyRemoteConnectionWithRetry(
+    async () => {
+      resolverAttempts += 1
+
+      return { baseUrl: 'https://remote.example', token: 'static-token' }
+    },
+    async () => {
+      readinessAttempts += 1
+
+      if (readinessAttempts === 1) {
+        throw Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' })
+      }
+    },
+    { maxAttempts: 2, sleep: async () => undefined }
+  )
+
+  assert.deepEqual(result, { baseUrl: 'https://remote.example', token: 'static-token' })
+  assert.equal(resolverAttempts, 2)
+  assert.equal(readinessAttempts, 2)
+})
+
+test('OAuth readiness retries resolve a fresh single-use ticket', async () => {
+  const ticketsSeenByReadiness: string[] = []
+  let resolverAttempts = 0
+
+  const result = await resolveReadyRemoteConnectionWithRetry(
+    async () => {
+      resolverAttempts += 1
+
+      return { wsUrl: `wss://remote.example/ws?ticket=fresh-${resolverAttempts}` }
+    },
+    async connection => {
+      ticketsSeenByReadiness.push(connection.wsUrl)
+
+      if (ticketsSeenByReadiness.length === 1) {
+        throw Object.assign(new Error('503 upstream unavailable'), { statusCode: 503 })
+      }
+    },
+    { maxAttempts: 2, sleep: async () => undefined }
+  )
+
+  assert.deepEqual(ticketsSeenByReadiness, [
+    'wss://remote.example/ws?ticket=fresh-1',
+    'wss://remote.example/ws?ticket=fresh-2'
+  ])
+  assert.equal(result?.wsUrl, 'wss://remote.example/ws?ticket=fresh-2')
 })
 
 test('offline and refused connections remain retryable ordinary transport errors', async () => {

@@ -1,9 +1,11 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+from types import SimpleNamespace
 import pytest
 from pathlib import Path
 
+import tools.memory_tool as memory_tool_module
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
@@ -519,6 +521,43 @@ class TestMemoryStoreSnapshot:
 
     def test_empty_snapshot_returns_none(self, store):
         assert store.format_for_system_prompt("memory") is None
+
+
+class TestMemoryStoreLocking:
+    def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
+        lock_target = tmp_path / "MEMORY.md"
+        handle = None
+        lock_fd = None
+        calls = []
+
+        def fake_open(*args, **kwargs):
+            nonlocal handle, lock_fd
+            handle = open(*args, **kwargs)
+            lock_fd = handle.fileno()
+            return handle
+
+        def fake_locking(fd, mode, size):
+            calls.append((fd, mode, size, handle.tell()))
+
+        monkeypatch.setattr(memory_tool_module, "fcntl", None)
+        monkeypatch.setattr(
+            memory_tool_module,
+            "msvcrt",
+            SimpleNamespace(LK_LOCK=1, LK_UNLCK=2, locking=fake_locking),
+            raising=False,
+        )
+        monkeypatch.setattr(memory_tool_module, "open", fake_open, raising=False)
+
+        with MemoryStore._file_lock(lock_target):
+            pass
+
+        assert handle is not None
+        assert lock_fd is not None
+        assert calls == [
+            (lock_fd, 1, 1, memory_tool_module._WINDOWS_LOCK_OFFSET),
+            (lock_fd, 2, 1, memory_tool_module._WINDOWS_LOCK_OFFSET),
+        ]
+        assert lock_target.with_suffix(".md.lock").read_text(encoding="utf-8") == "\n"
 
 
 # =========================================================================

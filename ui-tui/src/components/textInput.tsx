@@ -58,6 +58,14 @@ const colorizeHint = (s: string, hex?: string) => {
   return `${ESC}[38;2;${r};${g};${b}m${s}${ESC}[39m`
 }
 
+// Typed-text fast-echo must carry the SAME explicit fg the Ink render uses:
+// the bypass writes raw cells, and a default-fg glyph goes invisible the
+// moment a skin repaints the background to the opposite polarity (a dark
+// skin on a light terminal ⇒ black-on-black). No color ⇒ passthrough, so
+// unthemed inputs keep the terminal default.
+export const colorizeEcho = (s: string, hex?: string) =>
+  /^#[0-9a-f]{6}$/i.test(hex ?? '') ? `${ESC}[38;2;${hintRgb(hex).join(';')}m${s}${ESC}[39m` : s
+
 /** Synthetic placeholder cursor: a hint-colored chip with luminance-picked
  *  ink, standing in for the hidden hardware cursor (bubbles pattern). */
 const hintCursorCell = (ch: string, hex?: string) => {
@@ -565,6 +573,7 @@ export function TextInput({
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
+  color,
   focus = true
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
@@ -1306,7 +1315,9 @@ export function TextInput({
 
             if (simpleAppend) {
               const effect = fastAppendEffect(preInsertValue, preInsertCursor, text)
-              stdout!.write(effect.write)
+              // Same explicit fg as the Ink render (see the <Text color>) —
+              // the bypass cell must not flash the terminal-default color.
+              stdout!.write(colorizeEcho(effect.write, color))
               // ASCII-printable text advances the physical cursor by exactly
               // text.length cells (canFastAppendShape rejects non-ASCII,
               // wide chars, newlines). Notify Ink so the cached displayCursor
@@ -1395,7 +1406,14 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      {/* Explicit theme color on the typed text — default fg tracks the HOST
+          terminal's polarity, not the skin's, so a live dark-skin repaint on a
+          light terminal would otherwise leave the input black-on-black. chalk
+          re-opens the outer color after embedded [39m closes (placeholder
+          chips), and INV cursor/selection cells don't touch fg. */}
+      <Text color={color} wrap="wrap">
+        {rendered}
+      </Text>
     </Box>
   )
 }
@@ -1416,6 +1434,8 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
+  /** Hex color for typed text (theme text); terminal default when omitted. */
+  color?: string
   columns?: number
   focus?: boolean
   mask?: string

@@ -768,7 +768,13 @@ class QueuedCommentaryAgent:
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(
+        self,
+        message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message_id=None,
+    ):
         type(self).calls += 1
         if type(self).calls == 1 and self.interim_assistant_callback:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
@@ -787,7 +793,13 @@ class QueuedSilenceAgent:
     def __init__(self, **kwargs):
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(
+        self,
+        message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message_id=None,
+    ):
         type(self).calls += 1
         return {
             "final_response": "NO_REPLY" if type(self).calls == 1 else "follow-up processed",
@@ -804,7 +816,13 @@ class QueuedFailedEmptyAgent:
     def __init__(self, **kwargs):
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(
+        self,
+        message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message_id=None,
+    ):
         type(self).calls += 1
         if type(self).calls == 1:
             return {

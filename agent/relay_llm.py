@@ -387,6 +387,9 @@ class ManagedLlmStream(Iterator[Any]):
                 )
             )
         except BaseException:
+            if not self._defer_logical_completion:
+                _complete_logical(self._logical, outcome="failed")
+                self._logical = None
             loop.close()
             self._loop = None
             raise
@@ -419,10 +422,7 @@ class ManagedLlmStream(Iterator[Any]):
             raise StopIteration from None
         except BaseException as exc:
             callback_error = self._callback_error
-            self.close()
-            if not self._defer_logical_completion:
-                _complete_logical(self._logical, outcome="failed")
-                self._logical = None
+            self._close(logical_outcome="failed")
             if (
                 callback_error is not None
                 and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
@@ -441,6 +441,10 @@ class ManagedLlmStream(Iterator[Any]):
         return self._chunk_adapter(chunk)
 
     def close(self) -> None:
+        """Close an explicitly abandoned stream and cancel its logical call."""
+        self._close(logical_outcome="cancelled")
+
+    def _close(self, *, logical_outcome: str) -> None:
         if self._closed:
             return
         self._closed = True
@@ -450,6 +454,9 @@ class ManagedLlmStream(Iterator[Any]):
             close = getattr(self._stream, "close", None)
             if callable(close):
                 close()
+            if not self._defer_logical_completion:
+                _complete_logical(self._logical, outcome=logical_outcome)
+                self._logical = None
             return
         close = getattr(self._stream, "aclose", None)
         if callable(close):
@@ -461,6 +468,9 @@ class ManagedLlmStream(Iterator[Any]):
                 loop.run_until_complete(close_stream())
             except Exception:
                 pass
+        if not self._defer_logical_completion:
+            _complete_logical(self._logical, outcome=logical_outcome)
+            self._logical = None
         loop.close()
 
     def __del__(self) -> None:

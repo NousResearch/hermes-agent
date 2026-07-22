@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -424,6 +425,38 @@ class TestBuildSkillsSystemPrompt:
         assert "python-debug" in result
         assert "Debug Python scripts" in result
         assert "available_skills" in result
+
+    def test_named_profile_default_skills_follow_explicit_opt_in(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_root = tmp_path / ".hermes"
+        profile_home = hermes_root / "profiles" / "coder"
+        profile_skill = profile_home / "skills" / "coding" / "profile-skill"
+        default_skill = hermes_root / "skills" / "shared" / "default-skill"
+        profile_skill.mkdir(parents=True)
+        default_skill.mkdir(parents=True)
+        (profile_skill / "SKILL.md").write_text(
+            "---\nname: profile-skill\ndescription: Profile skill\n---\n"
+        )
+        (default_skill / "SKILL.md").write_text(
+            "---\nname: default-skill\ndescription: Default skill\n---\n"
+        )
+        (profile_home / "config.yaml").write_text("skills: {}\n")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        isolated = build_skills_system_prompt()
+        assert "profile-skill" in isolated
+        assert "default-skill" not in isolated
+
+        (profile_home / "config.yaml").write_text(
+            "skills:\n  include_default_profile: true\n"
+        )
+
+        shared = build_skills_system_prompt()
+        assert "profile-skill" in shared
+        assert "default-skill" in shared
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1704,5 +1737,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

@@ -1,5 +1,6 @@
 """Tests for agent/skill_utils.py."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 from agent.skill_utils import (
@@ -194,6 +195,28 @@ def test_is_external_skill_path_matches_configured_external_dir(tmp_path, monkey
     assert is_external_skill_path(local_skills / "local-skill" / "SKILL.md") is False
 
 
+def test_default_profile_skill_is_non_local_when_opted_in(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    hermes_root = tmp_path / ".hermes"
+    profile_home = hermes_root / "profiles" / "coder"
+    profile_skills = profile_home / "skills"
+    default_skills = hermes_root / "skills"
+    profile_skills.mkdir(parents=True)
+    default_skills.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  include_default_profile: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    skill_utils._external_dirs_cache_clear()
+
+    assert is_external_skill_path(default_skills / "shared" / "SKILL.md") is True
+    assert is_external_skill_path(profile_skills / "local" / "SKILL.md") is False
+
+
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     """Archived package SKILL.md files under support dirs are not active skills."""
     real = tmp_path / "umbrella"
@@ -365,6 +388,30 @@ class TestNormalizeSkillLookupName:
         # tools.skills_tool.SKILLS_DIR at call time so the two stay in sync.
         monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
         assert normalize_skill_lookup_name(str(skill_dir)) == "category/my-skill"
+
+    def test_absolute_under_opted_in_default_profile_becomes_relative(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import skill_utils
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        hermes_root = tmp_path / ".hermes"
+        profile_home = hermes_root / "profiles" / "coder"
+        profile_skills = profile_home / "skills"
+        default_skill = hermes_root / "skills" / "shared" / "runbook"
+        profile_skills.mkdir(parents=True)
+        default_skill.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text(
+            "skills:\n  include_default_profile: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", profile_skills)
+        skill_utils._external_dirs_cache_clear()
+
+        assert normalize_skill_lookup_name(str(default_skill)) == "shared/runbook"
 
     def test_absolute_via_symlink_uses_lexical_relative_path(self, tmp_path, monkeypatch):
         from agent.skill_utils import normalize_skill_lookup_name

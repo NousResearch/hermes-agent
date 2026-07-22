@@ -841,19 +841,15 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
+        from agent.skill_utils import get_all_skills_dirs
         _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
-        # Build set of allowed directory prefixes: local skills dir + any
-        # user-configured ``skills.external_dirs``. Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
-        # Without this widening, external skills are visible in
-        # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
-        # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
-        )
+        # Keep gateway menus aligned with skill discovery. Ensure each prefix
+        # ends with ``/`` so ``/my-skills`` does not also match
+        # ``/my-skills-extra``.
+        _allowed_prefixes = [
+            str(directory.resolve()).rstrip("/") + "/"
+            for directory in get_all_skills_dirs(SKILLS_DIR)
+        ]
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
@@ -970,12 +966,11 @@ def discord_skill_commands_by_category(
     category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
     *uncategorized*.
 
-    Scan roots include the local ``SKILLS_DIR`` **and** any configured
-    ``skills.external_dirs`` — matching the widened filter applied to the
-    flat ``discord_skill_commands()`` collector in #18741. Without this
-    parity, external-dir skills are visible via ``hermes skills list`` and
-    the agent's ``/skill-name`` dispatch but silently absent from Discord's
-    ``/skill`` autocomplete.
+    Scan roots include every visible skill directory — matching the widened
+    filter applied to the flat ``discord_skill_commands()`` collector in
+    #18741. Without this parity, non-local skills are visible via
+    ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
+    silently absent from Discord's ``/skill`` autocomplete.
 
     Filtering mirrors :func:`discord_skill_commands`: hub skills excluded,
     per-platform disabled excluded, names clamped to 32 chars, descriptions
@@ -1020,17 +1015,16 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_all_skills_dirs
         from tools.skills_tool import SKILLS_DIR
 
-        _skills_dir = SKILLS_DIR.resolve()
         _hub_dir = (SKILLS_DIR / ".hub").resolve()
-        # Build list of (resolved_root, is_local) tuples. Each external dir
-        # becomes its own scan root for category derivation — a skill at
-        # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
-        _scan_roots: list[_P] = [_skills_dir]
+        # Each visible directory becomes its own scan root for category
+        # derivation — a skill at ``<root>/mlops/foo/SKILL.md`` is still
+        # categorized as "mlops".
+        _scan_roots: list[_P] = []
         try:
-            for ext in get_external_skills_dirs():
+            for ext in get_all_skills_dirs(SKILLS_DIR):
                 try:
                     _scan_roots.append(_P(ext).resolve())
                 except Exception:

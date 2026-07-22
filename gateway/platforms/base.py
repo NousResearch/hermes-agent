@@ -13,6 +13,7 @@ import os
 import random
 import re
 import socket as _socket
+import tempfile
 import subprocess
 import sys
 import time
@@ -5195,8 +5196,21 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            # Pass an explicit output_path with the correct
+                            # extension for the current platform.  The
+                            # session contextvar (HERMES_SESSION_PLATFORM) is
+                            # not populated at this call site — it is set by
+                            # _set_session_env() inside _handle_message_with_agent
+                            # and cleared on return.  Without an explicit path
+                            # text_to_speech_tool falls back to .mp3, which
+                            # causes Telegram to render sendAudio instead of
+                            # sendVoice.
+                            _tts_ext = "ogg" if self.platform == Platform.TELEGRAM else "mp3"
+                            _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            _tts_out = Path(tempfile.gettempdir()) / f"auto_tts_{_ts}.{_tts_ext}"
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool, text=speech_text,
+                                output_path=str(_tts_out),
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")

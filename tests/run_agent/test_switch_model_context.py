@@ -610,10 +610,16 @@ def test_direct_start_named_custom_route_resolves_configured_base_url():
         },
         "custom_providers": [
             {
-                "name": "large-route",
-                "base_url": "https://large.example/v1",
+                "name": "Large Route",
+                "base_url": "https://legacy-large.example/v1",
             }
         ],
+        "providers": {
+            "large-route": {
+                "name": "Large Route",
+                "api": "https://large.example/v1",
+            }
+        },
     }
 
     agent = _make_direct_start_agent(
@@ -630,7 +636,219 @@ def test_direct_start_named_custom_route_resolves_configured_base_url():
         cfg,
         model="shared-model",
         provider="custom",
-        base_url="https://large.example/v1",
+        base_url="HTTPS://LARGE.EXAMPLE:443/v1/",
     )
 
     assert matching_agent.context_compressor.config_context_length == 1_048_576
+
+    legacy_agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://legacy-large.example/v1",
+    )
+
+    assert legacy_agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_named_custom_provider_key_uses_canonical_slug():
+    """Raw, canonical, and prefixed provider keys/names share runtime identity."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom:Route Key",
+            "context_length": 1_048_576,
+        },
+        "providers": {
+            "Route Key": {
+                "name": "Friendly Label",
+                "api": "https://key.example/v1",
+            },
+            "custom:Prefixed Key": {
+                "name": "custom:Prefixed Label",
+                "api": "https://prefixed.example/v1",
+            },
+        },
+    }
+
+    for configured_provider in (
+        "custom:Route Key",
+        "custom:Friendly Label",
+        "Route Key",
+        "route-key",
+        "Friendly Label",
+        "friendly-label",
+    ):
+        cfg["model"]["provider"] = configured_provider
+        agent = _make_direct_start_agent(
+            cfg,
+            model="shared-model",
+            provider="custom",
+            base_url="https://key.example/v1",
+        )
+
+        assert agent.context_compressor.config_context_length == 1_048_576
+
+    for configured_provider in (
+        "custom:Prefixed Key",
+        "custom:Prefixed Label",
+        "custom:custom:Prefixed Key",
+        "custom:custom:Prefixed Label",
+    ):
+        cfg["model"]["provider"] = configured_provider
+        agent = _make_direct_start_agent(
+            cfg,
+            model="shared-model",
+            provider="custom",
+            base_url="https://prefixed.example/v1",
+        )
+
+        assert agent.context_compressor.config_context_length == 1_048_576
+
+    for configured_provider in (
+        "custom: Prefixed Key",
+        "custom:\tPrefixed Key",
+    ):
+        cfg["model"]["provider"] = configured_provider
+        agent = _make_direct_start_agent(
+            cfg,
+            model="shared-model",
+            provider="custom",
+            base_url="https://prefixed.example/v1",
+        )
+
+        assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_named_custom_raw_legacy_display_name_matches():
+    """Legacy display names accepted by runtime also identify the scoped route."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "Legacy Route",
+            "context_length": 1_048_576,
+        },
+        "custom_providers": [
+            {
+                "name": "Legacy Route",
+                "base_url": "https://legacy.example/v1",
+            }
+        ],
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://legacy.example/v1",
+    )
+
+    assert agent.context_compressor.config_context_length == 1_048_576
+
+
+def test_direct_start_literal_bare_custom_entry_matches_runtime():
+    """A providers.custom entry makes bare custom a complete route identity."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "context_length": 1_048_576,
+        },
+        "providers": {
+            "custom": {
+                "api": "https://literal.example/v1",
+            }
+        },
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://literal.example/v1",
+    )
+
+    assert agent.context_compressor.config_context_length == 1_048_576
+
+
+def test_direct_start_disabled_modern_custom_falls_back_only_to_legacy():
+    """Disabled modern entries cannot retain pins, but legacy fallback can."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom:route-key",
+            "context_length": 1_048_576,
+        },
+        "providers": {
+            "route-key": {
+                "name": "Route Key",
+                "api": "https://disabled.example/v1",
+                "enabled": False,
+            }
+        },
+    }
+
+    disabled_agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://disabled.example/v1",
+    )
+    assert disabled_agent.context_compressor.config_context_length is None
+
+    cfg["custom_providers"] = [
+        {
+            "name": "Route Key",
+            "base_url": "https://legacy.example/v1",
+        }
+    ]
+    legacy_agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://legacy.example/v1",
+    )
+    assert legacy_agent.context_compressor.config_context_length == 1_048_576
+
+
+def test_direct_start_runtime_first_provider_names_require_explicit_custom_prefix():
+    """Auto, MoA, and Vertex routes cannot be shadowed by raw custom names."""
+    for provider_name in (
+        "auto",
+        "moa",
+        "vertex",
+        "google-vertex",
+        "vertex-ai",
+        "gcp-vertex",
+        "vertexai",
+    ):
+        base_url = f"https://{provider_name}.shadow.example/v1"
+        cfg = {
+            "model": {
+                "default": "shared-model",
+                "provider": provider_name,
+                "context_length": 1_048_576,
+            },
+            "providers": {
+                provider_name: {
+                    "api": base_url,
+                }
+            },
+        }
+
+        raw_agent = _make_direct_start_agent(
+            cfg,
+            model="shared-model",
+            provider="custom",
+            base_url=base_url,
+        )
+        assert raw_agent.context_compressor.config_context_length is None
+
+        cfg["model"]["provider"] = f"custom:{provider_name}"
+        custom_agent = _make_direct_start_agent(
+            cfg,
+            model="shared-model",
+            provider="custom",
+            base_url=base_url,
+        )
+        assert custom_agent.context_compressor.config_context_length == 1_048_576

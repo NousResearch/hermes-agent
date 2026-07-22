@@ -1075,21 +1075,43 @@ def _db_unavailable_error(rid, *, code: int):
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the
 # launch profile (unchanged for single-profile and per-profile-remote setups).
-def _profile_home(profile: str | None) -> Path | None:
-    """Resolve a named profile's home on THIS host, or None for the launch profile."""
+# Distinct from ``None``: the caller named a valid-but-unknown (or malformed)
+# profile that does NOT exist on this host. Kept separate so each call site can
+# fail closed with 4028 instead of silently serving the LAUNCH profile's home +
+# state.db under the wrong name (None still means omitted/own → launch profile).
+_UNKNOWN_PROFILE = object()
+
+
+def _profile_home(profile: str | None) -> Path | None | object:
+    """Resolve a named profile's home on THIS host.
+
+    Returns ``None`` for an omitted/own/launch profile, ``_UNKNOWN_PROFILE`` for
+    a named-but-unknown (or malformed) profile, or the resolved ``Path`` for a
+    known non-launch profile. Never raises.
+    """
     name = (profile or "").strip()
     if not name:
         return None
     try:
         from hermes_cli import profiles as profiles_mod
 
+        # Validate the NORMALIZED id: title-cased display labels (e.g. "Work")
+        # are legitimate and normalize to a valid id, while a malformed name
+        # (e.g. a ``..`` traversal) raises and fails closed as unknown.
+        profiles_mod.validate_profile_name(profiles_mod.normalize_profile_name(name))
         home = Path(profiles_mod.get_profile_dir(name))
     except Exception:
-        return None
-    # Already the launch profile? No override needed.
+        return _UNKNOWN_PROFILE
+    # Already the launch profile? No override needed. Checked BEFORE the
+    # existence test so a custom/Docker HERMES_HOME active-profile name is never
+    # mis-classified as unknown (get_profile_dir points at profiles/<name>).
     if home.resolve() == Path(_hermes_home).resolve():
         return None
-    return home if (home / "state.db").exists() or home.exists() else None
+    # Known-ness is profile_exists alone; a known profile with no state.db yet
+    # stays known (session.create/resume create the db on demand).
+    if not profiles_mod.profile_exists(name):
+        return _UNKNOWN_PROFILE
+    return home
 
 
 def _profile_scoped(handler):
@@ -1104,6 +1126,8 @@ def _profile_scoped(handler):
 
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        if home is _UNKNOWN_PROFILE:
+            return _unknown_profile_error(rid, params.get("profile") if isinstance(params, dict) else None)
         if home is None:
             return handler(rid, params)
         token = set_hermes_home_override(home)
@@ -1139,7 +1163,7 @@ def _configured_cwd_from_cfg(cfg: dict | None) -> str | None:
     return resolved if os.path.isdir(resolved) else None
 
 
-def _profile_configured_cwd(profile_home: Path | None) -> str | None:
+def _profile_configured_cwd(profile_home: Path | None | object) -> str | None:
     """Resolve a non-launch profile's ``terminal.cwd`` from its own config.yaml.
 
     The desktop's app-global remote mode serves every profile from one backend,
@@ -1515,6 +1539,15 @@ def _ok(rid, result: dict) -> dict:
 
 def _err(rid, code: int, msg: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
+
+
+def _unknown_profile_error(rid, profile) -> dict:
+    """Fail-closed 4028 for a request that named a profile absent on this host.
+
+    Echoes ONLY the client-supplied profile string — never a resolved host
+    ``Path`` — so an unknown-profile request cannot leak a filesystem path.
+    """
+    return _err(rid, 4028, f"requested profile {profile!r} is not available on this host")
 
 
 def method(name: str):
@@ -6061,16 +6094,22 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
-    resolved_cwd = _completion_cwd(params)
-    source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-    _enable_gateway_prompts()
 
     # ``profile`` (app-global remote mode): a new chat started under a non-launch
     # profile must build its agent + persist against THAT profile's home/state.db,
     # not the dashboard's launch profile. Stored on the session so _start_agent_build
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
+    # Resolve + fail closed BEFORE any side effect (_completion_cwd /
+    # _enable_gateway_prompts): a named-but-unknown profile must error, never
+    # silently fall back to the launch profile's home/state.db.
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    if profile_home is _UNKNOWN_PROFILE:
+        return _unknown_profile_error(rid, params.get("profile"))
+
+    resolved_cwd = _completion_cwd(params)
+    source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+    _enable_gateway_prompts()
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -6443,6 +6482,11 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    # Fail closed on a named-but-unknown profile. The sentinel is truthy, so
+    # this MUST precede the ``is not None`` test below — otherwise an unknown
+    # profile would open the launch profile's state.db (silent fallback).
+    if profile_home is _UNKNOWN_PROFILE:
+        return _unknown_profile_error(rid, params.get("profile"))
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
@@ -14627,6 +14671,18 @@ def _(rid, params: dict) -> dict:
     word = params.get("word", "")
     if not word:
         return _ok(rid, {"items": []})
+
+    # Fail closed on a named-but-unknown profile ONLY when the request has no
+    # explicit cwd: _completion_cwd puts params['cwd'] first in its or-chain and
+    # short-circuits, so with a valid cwd the profile is never consulted and no
+    # boundary is crossed. complete.path runs on every keystroke, so do NOT error
+    # when a cwd is supplied. The guard sits BEFORE the try so it is not swallowed
+    # by the local ``except Exception`` (which would return the wrong code / leak).
+    if (
+        not str(params.get("cwd") or "").strip()
+        and _profile_home(params.get("profile")) is _UNKNOWN_PROFILE
+    ):
+        return _unknown_profile_error(rid, params.get("profile"))
 
     items: list[dict] = []
     try:

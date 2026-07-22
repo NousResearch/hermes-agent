@@ -12250,3 +12250,214 @@ def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, con
     monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
 
     assert server._clarify_timeout_seconds() == expected
+
+
+# ── fail closed on a named-but-unknown profile (_profile_home + 4 call sites) ──
+# All-synthetic: a temp HERMES_HOME "deploy" root with synthetic ``alpha``/``beta``
+# profiles. These exercise the REAL ``server._profile_home`` (no monkeypatched
+# lambda) so the sentinel path is genuinely covered, and assert the EXACT code
+# 4028 so a future guard misplacement is caught.
+
+
+def _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",), launch=None):
+    """Point HERMES_HOME at a synthetic ``deploy`` root and create profiles.
+
+    ``present`` profile dirs are created under ``<root>/profiles/``. ``launch``
+    overrides ``server._hermes_home`` (defaults to the root itself, i.e. the
+    launch/own profile). Returns ``(root, profiles_root)``.
+    """
+    root = tmp_path / "deploy"
+    profiles_root = root / "profiles"
+    for name in present:
+        (profiles_root / name).mkdir(parents=True)
+    root.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(server, "_hermes_home", root if launch is None else launch)
+    return root, profiles_root
+
+
+class _CapturingTransport:
+    """Records the frames a pool worker writes so the async path is provable."""
+
+    def __init__(self):
+        self.frames: list[dict] = []
+        self.wrote = threading.Event()
+
+    def write(self, obj: dict) -> bool:
+        self.frames.append(obj)
+        self.wrote.set()
+        return True
+
+    def close(self) -> None:
+        return None
+
+
+def test_profile_home_unknown_returns_sentinel(monkeypatch, tmp_path):
+    """A valid-but-absent name and a malformed name both fail closed."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    assert server._profile_home("beta") is server._UNKNOWN_PROFILE
+    assert server._profile_home("..") is server._UNKNOWN_PROFILE
+
+
+def test_profile_home_mixed_case_resolves_to_known(monkeypatch, tmp_path):
+    """A title-cased client label normalizes to the on-disk id (no false 4028)."""
+    _root, profiles_root = _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    home = server._profile_home("Alpha")
+    assert home is not server._UNKNOWN_PROFILE
+    assert home is not None
+    assert Path(home).resolve() == (profiles_root / "alpha").resolve()
+
+
+def test_profile_home_omitted_returns_none(monkeypatch, tmp_path):
+    """Omitted / empty / whitespace profile → launch (None), unchanged."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    assert server._profile_home(None) is None
+    assert server._profile_home("") is None
+    assert server._profile_home("   ") is None
+
+
+def test_profile_home_own_launch_precedes_existence_check(monkeypatch, tmp_path):
+    """The own-profile check must run BEFORE profile_exists.
+
+    Bind the launch home to a ``profiles/<name>`` path that does NOT exist on
+    disk, then request that name. ``profile_exists`` would report False, so if
+    the existence test ran first the resolver would wrongly return the sentinel.
+    Own-first makes it launch (None).
+    """
+    root = tmp_path / "deploy"
+    (root / "profiles").mkdir(parents=True)
+    ghost_launch = root / "profiles" / "ghostlaunch"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(server, "_hermes_home", ghost_launch)
+    assert not ghost_launch.exists()
+    assert server._profile_home("ghostlaunch") is None
+
+
+def test_profile_home_known_without_state_db_stays_known(monkeypatch, tmp_path):
+    """Known-ness is profile_exists alone — a known profile with no state.db
+    still resolves to its home (session.create/resume create the db on demand)."""
+    _root, profiles_root = _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    alpha = profiles_root / "alpha"
+    assert not (alpha / "state.db").exists()
+    assert Path(server._profile_home("alpha")).resolve() == alpha.resolve()
+    # Adding a state.db does not change the classification.
+    (alpha / "state.db").write_text("", encoding="utf-8")
+    assert Path(server._profile_home("alpha")).resolve() == alpha.resolve()
+
+
+def test_session_create_unknown_profile_fails_closed(monkeypatch, tmp_path):
+    """session.create (inline) with an unknown profile → 4028, no launch fallback."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    before = list(server._sessions)
+    resp = server.dispatch(
+        {"id": "c1", "method": "session.create", "params": {"cols": 80, "profile": "beta"}}
+    )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == "requested profile 'beta' is not available on this host"
+    # No side effect: the guard precedes _completion_cwd / _enable_gateway_prompts.
+    assert list(server._sessions) == before
+
+
+def test_session_resume_unknown_profile_fails_closed(monkeypatch, tmp_path):
+    """session.resume with an unknown profile → 4028; the launch db is NOT opened."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    opened = {"launch_db": False}
+
+    def _spy_get_db():
+        opened["launch_db"] = True
+        raise AssertionError("launch db must not be opened for an unknown profile")
+
+    monkeypatch.setattr(server, "_get_db", _spy_get_db)
+    resp = server.handle_request(
+        {"id": "r1", "method": "session.resume", "params": {"session_id": "s1", "profile": "beta"}}
+    )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == "requested profile 'beta' is not available on this host"
+    assert opened["launch_db"] is False
+
+
+def test_session_resume_unknown_profile_via_transport(monkeypatch, tmp_path):
+    """session.resume is a LONG handler: dispatch returns None and the pool worker
+    writes the 4028 error via the bound transport. Proves the transport path."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    transport = _CapturingTransport()
+    result = server.dispatch(
+        {"id": "r2", "method": "session.resume", "params": {"session_id": "s1", "profile": "beta"}},
+        transport=transport,
+    )
+    assert result is None  # scheduled on the pool
+    assert transport.wrote.wait(timeout=10.0), "pool worker did not write a frame"
+    frame = transport.frames[0]
+    assert frame["error"]["code"] == 4028
+    assert frame["error"]["message"] == "requested profile 'beta' is not available on this host"
+
+
+def test_pet_info_unknown_profile_fails_closed(monkeypatch, tmp_path):
+    """A ``_profile_scoped`` pet method (pet.info) with an unknown profile → 4028."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    resp = server.handle_request(
+        {"id": "p1", "method": "pet.info", "params": {"profile": "beta"}}
+    )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == "requested profile 'beta' is not available on this host"
+
+
+def test_complete_path_unknown_profile_without_cwd_fails_closed(monkeypatch, tmp_path):
+    """complete.path with NO cwd + unknown profile → 4028 (closes the cwd leak)."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    resp = server.handle_request(
+        {"id": "cp1", "method": "complete.path", "params": {"word": "x", "profile": "beta"}}
+    )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == "requested profile 'beta' is not available on this host"
+
+
+def test_complete_path_unknown_profile_with_cwd_succeeds(monkeypatch, tmp_path):
+    """complete.path with an explicit valid cwd + unknown profile SUCCEEDS — the
+    profile is never consulted (params['cwd'] short-circuits _completion_cwd), so
+    autocomplete on every keystroke must not be broken."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    resp = server.handle_request(
+        {
+            "id": "cp2",
+            "method": "complete.path",
+            "params": {"word": "@", "profile": "beta", "cwd": str(workspace)},
+        }
+    )
+    assert "error" not in resp
+    assert isinstance(resp["result"]["items"], list)
+
+
+def test_session_resume_unknown_profile_message_echoes_only_client_string(monkeypatch, tmp_path):
+    """A malformed name (``..``) → 4028, and the message echoes ONLY the client
+    string — never a resolved host path (no filesystem-path leak)."""
+    root, _profiles_root = _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+    resp = server.handle_request(
+        {"id": "r3", "method": "session.resume", "params": {"session_id": "s1", "profile": ".."}}
+    )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == "requested profile '..' is not available on this host"
+    assert str(root) not in resp["error"]["message"]
+    assert "profiles" not in resp["error"]["message"]
+
+
+def test_session_resume_omitted_profile_uses_launch(monkeypatch, tmp_path):
+    """Omitted profile keeps launch behavior: the launch db is consulted and the
+    normal 'session not found' is returned (never a 4028)."""
+    _setup_synthetic_profiles(monkeypatch, tmp_path, present=("alpha",))
+
+    class _NoRowDb:
+        def get_session(self, _target):
+            return None
+
+        def get_session_by_title(self, _target):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _NoRowDb())
+    resp = server.handle_request(
+        {"id": "r4", "method": "session.resume", "params": {"session_id": "missing"}}
+    )
+    assert resp["error"]["code"] == 4007
+    assert resp["error"]["message"] == "session not found"

@@ -986,8 +986,7 @@ def _execute_remote(
     """
 
     _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
-    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = _resolve_limits_config(_cfg)
 
     session_tools = set(enabled_tools) if enabled_tools else set()
     sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
@@ -1239,8 +1238,7 @@ def execute_code(
 
     # Resolve config
     _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
-    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = _resolve_limits_config(_cfg)
 
     # Determine which tools the sandbox can call
     session_tools = set(enabled_tools) if enabled_tools else set()
@@ -1691,6 +1689,24 @@ def _load_config() -> dict:
         return {}
 
 
+def _parse_int_config(value: Any, default: int) -> int:
+    """Parse an integer config value, falling back only when invalid/missing."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_limits_config(cfg: dict) -> tuple[int, int]:
+    """Return (timeout_seconds, max_tool_calls) from code_execution config."""
+    return (
+        _parse_int_config(cfg.get("timeout"), DEFAULT_TIMEOUT),
+        _parse_int_config(cfg.get("max_tool_calls"), DEFAULT_MAX_TOOL_CALLS),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Execution mode resolution (strict vs project)
 # ---------------------------------------------------------------------------
@@ -1888,8 +1904,14 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     """
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    cfg = _load_config()
     if mode is None:
         mode = _get_execution_mode()
+    timeout_seconds, max_tool_calls = _resolve_limits_config(cfg)
+    if timeout_seconds == DEFAULT_TIMEOUT:
+        timeout_label = "5-minute timeout"
+    else:
+        timeout_label = f"{timeout_seconds}-second timeout"
 
     # Build tool documentation lines for only the enabled tools
     tool_lines = "\n".join(
@@ -1930,7 +1952,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "or the task requires interactive user input.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
+        f"Limits: {timeout_label}, 50KB stdout cap, "
+        f"max {max_tool_calls} tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
         f"{cwd_note}\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "

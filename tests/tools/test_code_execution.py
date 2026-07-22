@@ -46,6 +46,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _resolve_limits_config,
 )
 
 
@@ -700,11 +701,41 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertNotIn("import , ...", code_desc)
 
     def test_description_mentions_limits(self):
-        schema = build_execute_code_schema()
+        with patch("tools.code_execution_tool._load_config", return_value={}):
+            schema = build_execute_code_schema(mode="project")
         desc = schema["description"]
         self.assertIn("5-minute timeout", desc)
         self.assertIn("50KB", desc)
         self.assertIn("50 tool calls", desc)
+
+    def test_description_uses_configured_limits(self):
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 120, "max_tool_calls": 7}):
+            schema = build_execute_code_schema(mode="project")
+        desc = schema["description"]
+        self.assertIn("120-second timeout", desc)
+        self.assertIn("max 7 tool calls", desc)
+
+    def test_description_preserves_zero_configured_limits(self):
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 0, "max_tool_calls": 0}):
+            schema = build_execute_code_schema(mode="project")
+        desc = schema["description"]
+        self.assertIn("0-second timeout", desc)
+        self.assertIn("max 0 tool calls", desc)
+        self.assertEqual(_resolve_limits_config({"timeout": 0, "max_tool_calls": 0}),
+                         (0, 0))
+
+    def test_description_falls_back_for_invalid_configured_limits(self):
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": "invalid", "max_tool_calls": "invalid"}):
+            schema = build_execute_code_schema(mode="project")
+        desc = schema["description"]
+        self.assertIn("5-minute timeout", desc)
+        self.assertIn("max 50 tool calls", desc)
+        self.assertEqual(_resolve_limits_config({"timeout": "invalid",
+                                                 "max_tool_calls": "invalid"}),
+                         (300, 50))
 
     def test_description_mentions_helpers(self):
         schema = build_execute_code_schema()

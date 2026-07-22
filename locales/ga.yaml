@@ -128,7 +128,7 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
+    picker_title:          "⚡ **Priority Processing**\n\nMód reatha: `{mode}`\n\nRoghnaigh rogha:"
     choice_fast:           "fast — Priority Processing ar siúl"
     choice_normal:         "normal — gnáthphróiseáil"
 
@@ -201,7 +201,7 @@ gateway:
     reset_global_unsupported:  "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done:                "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
     unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, max, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
-    picker_title:              "🧠 **Socruithe Réasúnaíochta**\\n\\n**Iarracht:** `{level}`\\n**Scóip:** {scope}\\n**Taispeáint:** {display}\\n\\nRoghnaigh rogha:"
+    picker_title:              "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\nRoghnaigh rogha:"
     choice_none:               "none — díchumasaigh réasúnaíocht"
     choice_reset:              "reset — glan sárú an tseisiúin"
     choice_show:               "taispeáin réasúnaíocht sna freagraí"

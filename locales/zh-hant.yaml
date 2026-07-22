@@ -124,7 +124,7 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
-    picker_title:          "⚡ **Priority Processing**\\n\\n目前模式：`{mode}`\\n\\n請選擇："
+    picker_title:          "⚡ **Priority Processing**\n\n目前模式：`{mode}`\n\n請選擇："
     choice_fast:           "fast — 開啟 Priority Processing"
     choice_normal:         "normal — 標準處理"
 
@@ -197,7 +197,7 @@ gateway:
     reset_global_unsupported:  "⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。"
     reset_done:                "🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。"
     unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh, max, ultra\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
-    picker_title:              "🧠 **推理設定**\\n\\n**強度：** `{level}`\\n**範圍：** {scope}\\n**顯示：** {display}\\n\\n請選擇："
+    picker_title:              "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n請選擇："
     choice_none:               "none — 停用推理"
     choice_reset:              "reset — 清除工作階段覆寫"
     choice_show:               "在回覆中顯示推理"

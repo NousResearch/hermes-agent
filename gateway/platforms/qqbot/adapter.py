@@ -683,6 +683,9 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            if self._session:
+                await self._session.close()
+                self._session = None
             return False
 
     async def _read_events(self) -> None:

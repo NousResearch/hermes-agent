@@ -358,6 +358,7 @@ class WeComAdapter(BasePlatformAdapter):
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    await self._cleanup_ws()
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""

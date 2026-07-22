@@ -2254,3 +2254,32 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# Session leak on reconnect failure (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectSessionCleanup:
+    """When _reconnect() fails after _open_ws() has created a session,
+    the session must be closed and _session set to None."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_closes_session_on_failure(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+        # _open_ws creates the session then fails mid-way
+        async def fake_open_ws(url):
+            adapter._session = mock.AsyncMock(closed=False)
+            raise RuntimeError("connection refused")
+
+        with mock.patch.object(adapter, "_ensure_token"), \
+             mock.patch.object(adapter, "_get_gateway_url", return_value="wss://test"), \
+             mock.patch.object(adapter, "_open_ws", side_effect=fake_open_ws):
+            result = await adapter._reconnect(0)
+
+        assert result is False
+        assert adapter._session is None

@@ -2865,6 +2865,13 @@ def _normalize_empty_agent_response(
                 "Use /compact to compress the conversation, or "
                 "/reset to start fresh."
             )
+        if _is_codex_app_server_startup_timeout(error_detail):
+            # Positively identified thread/start startup timeout: the raw
+            # error is a multi-line transport dump that reads like a crash.
+            # Every OTHER failure keeps the transport's diagnostic text
+            # (including its redacted stderr tail) — that contract is
+            # deliberate, see _format_error_with_stderr.
+            return f"⚠️ {_compact_codex_startup_timeout_error()}"
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session."
@@ -2891,6 +2898,8 @@ def _normalize_empty_agent_response(
             return ""
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
+            if _is_codex_app_server_startup_timeout(err):
+                return f"⚠️ {_compact_codex_startup_timeout_error()}"
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
         return (
             "⚠️ Processing completed but no response was generated. "
@@ -2938,6 +2947,28 @@ def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
         return False
     final_response = str(agent_result.get("final_response") or "").strip()
     return not final_response or final_response == error_text
+
+
+def _is_codex_app_server_startup_timeout(error_detail: object) -> bool:
+    """Positively identify a Codex app-server thread/start startup timeout.
+
+    All three markers are required so ordinary Codex failures (which carry a
+    deliberately retained diagnostic stderr tail) are never compacted.
+    """
+    text = str(error_detail or "").lower()
+    return (
+        "codex app-server startup failed" in text
+        and "thread/start" in text
+        and "timed out" in text
+    )
+
+
+def _compact_codex_startup_timeout_error() -> str:
+    """One-line user message for the identified startup-timeout case."""
+    return (
+        "Codex app-server startup timed out while starting a thread. "
+        "Try again; if it repeats, switch back with /codex-runtime auto."
+    )
 
 
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:

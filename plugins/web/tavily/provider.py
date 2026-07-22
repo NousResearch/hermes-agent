@@ -158,16 +158,30 @@ class TavilyWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            logger.info("Tavily search: '%s' (limit=%d)", query, limit)
-            raw = _tavily_request(
-                "search",
-                {
-                    "query": query,
-                    "max_results": min(limit, 20),
-                    "include_raw_content": False,
-                    "include_images": False,
-                },
+            # ``site:<domain>`` is an operator, not a literal term. Tavily has
+            # a native domain filter (``include_domains``), so parse the
+            # operator out and apply it natively instead of sending the
+            # ``site:`` token verbatim as a search term.
+            from tools.web_tools import parse_site_operator
+
+            domains, residual = parse_site_operator(query)
+            effective_query = residual if domains else query
+
+            logger.info(
+                "Tavily search: '%s' (limit=%d, include_domains=%s)",
+                effective_query,
+                limit,
+                domains or None,
             )
+            payload: Dict[str, Any] = {
+                "query": effective_query,
+                "max_results": min(limit, 20),
+                "include_raw_content": False,
+                "include_images": False,
+            }
+            if domains:
+                payload["include_domains"] = domains
+            raw = _tavily_request("search", payload)
             return _normalize_tavily_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}

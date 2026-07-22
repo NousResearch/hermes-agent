@@ -537,6 +537,7 @@ def _apply_pricing(
     from hermes_cli.models import (
         _format_price_per_mtok,
         check_nous_free_tier,
+        compute_sale_discount,
         get_pricing_for_provider,
         partition_nous_models_by_tier,
     )
@@ -569,12 +570,32 @@ def _apply_pricing(
             cache = _format_price_per_mtok(cache_raw) if cache_raw else None
             # A model is "free" when both input and output cost nothing.
             is_free = inp == "free" and (out == "free" or out == "")
-            formatted[mid] = {
+            entry: dict = {
                 "input": inp,
                 "output": out,
                 "cache": cache,
                 "free": is_free,
             }
+            # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
+            # Novita, …) never get discount_percent / was_* even if a nested
+            # pricing.original somehow appeared in their catalog. Free / $0
+            # models never get sale chrome either — even if original leaked.
+            if slug == "nous" and not is_free:
+                sale = compute_sale_discount(
+                    inp_raw, out_raw, p.get("original")
+                )
+                if sale is not None:
+                    discount_percent, was_prompt_raw, was_out_raw = sale
+                    entry["discount_percent"] = discount_percent
+                    if was_prompt_raw != "":
+                        entry["was_input"] = _format_price_per_mtok(
+                            was_prompt_raw
+                        )
+                    if was_out_raw != "":
+                        entry["was_output"] = _format_price_per_mtok(
+                            was_out_raw
+                        )
+            formatted[mid] = entry
 
         if formatted:
             row["pricing"] = formatted

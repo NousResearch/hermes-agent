@@ -1762,6 +1762,7 @@ export interface Translations {
     free: string
     freeTier: string
     priceTitle: string
+    wasPrice: string
   }
 
   modelVisibility: {

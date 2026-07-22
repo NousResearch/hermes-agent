@@ -96,3 +96,117 @@ def test_apply_pricing_failure_is_swallowed(monkeypatch):
     inv._apply_pricing(rows)  # must not raise
 
     assert "pricing" not in rows[0]
+
+
+def test_apply_pricing_emits_sale_fields_when_original_cheaper(monkeypatch):
+    """Gateway pricing.original → was_* + discount_percent for Desktop."""
+    _patch_pricing(
+        monkeypatch,
+        free_tier=False,
+        pricing={
+            "nous": {
+                "a/sale": {
+                    "prompt": "0.0000016",
+                    "completion": "0.000008",
+                    "original": {
+                        "prompt": "0.000002",
+                        "completion": "0.00001",
+                    },
+                },
+                "b/normal": {
+                    "prompt": "0.000003",
+                    "completion": "0.000015",
+                },
+            }
+        },
+    )
+    rows = [{"slug": "nous", "models": ["a/sale", "b/normal"]}]
+    inv._apply_pricing(rows)
+
+    sale = rows[0]["pricing"]["a/sale"]
+    assert sale["input"] == "$1.60"
+    assert sale["output"] == "$8.00"
+    assert sale["discount_percent"] == 20
+    assert sale["was_input"] == "$2.00"
+    assert sale["was_output"] == "$10.00"
+
+    normal = rows[0]["pricing"]["b/normal"]
+    assert "discount_percent" not in normal
+    assert "was_input" not in normal
+    assert "was_output" not in normal
+
+
+def test_apply_pricing_omits_sale_for_free_models_even_with_original(monkeypatch):
+    """Free models must not get was_*/discount_percent even if original leaked."""
+    _patch_pricing(
+        monkeypatch,
+        free_tier=False,
+        pricing={
+            "nous": {
+                "a/free": {
+                    "prompt": "0",
+                    "completion": "0",
+                    "original": {
+                        "prompt": "0.000002",
+                        "completion": "0.00001",
+                    },
+                },
+            }
+        },
+    )
+    rows = [{"slug": "nous", "models": ["a/free"]}]
+    inv._apply_pricing(rows)
+    free = rows[0]["pricing"]["a/free"]
+    assert free["free"] is True
+    assert "discount_percent" not in free
+    assert "was_input" not in free
+    assert "was_output" not in free
+
+
+def test_apply_pricing_omits_sale_when_original_not_cheaper(monkeypatch):
+    _patch_pricing(
+        monkeypatch,
+        free_tier=False,
+        pricing={
+            "nous": {
+                "a/eq": {
+                    "prompt": "0.000002",
+                    "completion": "0.00001",
+                    "original": {
+                        "prompt": "0.000002",
+                        "completion": "0.00001",
+                    },
+                },
+            }
+        },
+    )
+    rows = [{"slug": "nous", "models": ["a/eq"]}]
+    inv._apply_pricing(rows)
+    assert "discount_percent" not in rows[0]["pricing"]["a/eq"]
+
+
+def test_apply_pricing_sale_chrome_nous_only(monkeypatch):
+    """OpenRouter (and other non-nous slugs) must never emit sale fields."""
+    _patch_pricing(
+        monkeypatch,
+        free_tier=False,
+        pricing={
+            "openrouter": {
+                "a/sale": {
+                    "prompt": "0.0000016",
+                    "completion": "0.000008",
+                    "original": {
+                        "prompt": "0.000002",
+                        "completion": "0.00001",
+                    },
+                },
+            }
+        },
+    )
+    rows = [{"slug": "openrouter", "models": ["a/sale"]}]
+    inv._apply_pricing(rows)
+    entry = rows[0]["pricing"]["a/sale"]
+    assert entry["input"] == "$1.60"
+    assert "discount_percent" not in entry
+    assert "was_input" not in entry
+    assert "was_output" not in entry

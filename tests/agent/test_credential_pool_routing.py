@@ -275,3 +275,80 @@ class TestPoolRotationCycle:
         pool.mark_exhausted_and_rotate.assert_called_once_with(
             status_code=402, error_context=None, api_key_hint="pool-current-key"
         )
+
+
+# ---------------------------------------------------------------------------
+# 6. Real-pool regression: the hint routes exhaustion to the FAILED entry
+# ---------------------------------------------------------------------------
+
+class TestApiKeyHintRealPool:
+    """Prove the routing guarantee through the real CredentialPool selector:
+    when the failed key differs from the pool's current/first entry, only the
+    failed entry is marked exhausted (#43747, wrong-entry marking)."""
+
+    def _seed_pool(self, tmp_path, monkeypatch):
+        import json
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "providers": {},
+                    "credential_pool": {
+                        "openrouter": [
+                            {
+                                "id": "cred-healthy",
+                                "label": "healthy",
+                                "auth_type": "api_key",
+                                "priority": 0,
+                                "source": "manual",
+                                "access_token": "sk-or-healthy",
+                            },
+                            {
+                                "id": "cred-failed",
+                                "label": "failed",
+                                "auth_type": "api_key",
+                                "priority": 1,
+                                "source": "manual",
+                                "access_token": "sk-or-failed",
+                            },
+                        ]
+                    },
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from agent.credential_pool import load_pool
+
+        return load_pool("openrouter")
+
+    def test_hint_marks_failed_entry_not_current(self, tmp_path, monkeypatch):
+        pool = self._seed_pool(tmp_path, monkeypatch)
+        # Another process/pool instance issued sk-or-failed; THIS pool's
+        # current() would resolve to the first (healthy) entry.
+        assert pool.select().access_token == "sk-or-healthy"
+
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=429,
+            error_context={"reason": "rate_limit_exceeded"},
+            api_key_hint="sk-or-failed",
+        )
+
+        statuses = {e.id: e.last_status for e in pool._entries}
+        assert statuses["cred-failed"] == "exhausted"
+        assert statuses["cred-healthy"] in (None, "ok")
+        assert next_entry is not None
+        assert next_entry.access_token == "sk-or-healthy"
+
+    def test_without_hint_current_entry_is_marked(self, tmp_path, monkeypatch):
+        """Baseline: no hint falls back to current() — the pre-fix behavior."""
+        pool = self._seed_pool(tmp_path, monkeypatch)
+        assert pool.select().access_token == "sk-or-healthy"
+
+        pool.mark_exhausted_and_rotate(status_code=429, error_context=None)
+
+        statuses = {e.id: e.last_status for e in pool._entries}
+        assert statuses["cred-healthy"] == "exhausted"
+        assert statuses["cred-failed"] in (None, "ok")

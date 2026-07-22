@@ -1540,6 +1540,28 @@ class SessionDB:
                 self._conn.close()
                 self._conn = None
 
+    def _has_column(self, table: str, column: str) -> bool:
+        """Check whether *column* exists in *table* for the live connection.
+
+        Used by read-only code paths (e.g. ``get_profiles_sessions``) that
+        cannot call ``_reconcile_columns()`` and therefore may be facing a
+        database whose schema is older than the current ``SCHEMA_SQL``.  When
+        the column is absent the caller can fall back to a simpler query
+        instead of crashing.
+        """
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    f"PRAGMA table_info(\"{table}\")"
+                ).fetchall()
+            for row in rows:
+                name = row[1] if isinstance(row, (tuple, list)) else row["name"]
+                if name == column:
+                    return True
+        except Exception:
+            pass
+        return False
+
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
         """Extract expected columns per table from SCHEMA_SQL.
@@ -3864,10 +3886,17 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        # When opened read-only against an older-profile DB the ``archived``
+        # column may not exist yet.  Tolerate that by skipping the filter
+        # instead of crashing (the column defaults to 0 so behaviour is
+        # equivalent — older DBs never have archived sessions).
+        _has_archived = self._has_column("sessions", "archived")
         if archived_only:
-            where_clauses.append("s.archived = 1")
+            if _has_archived:
+                where_clauses.append("s.archived = 1")
         elif not include_archived:
-            where_clauses.append("s.archived = 0")
+            if _has_archived:
+                where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -6037,10 +6066,15 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        # Tolerate older DB schemas that lack the ``archived`` column —
+        # see list_sessions_rich for rationale.
+        _has_archived = self._has_column("sessions", "archived")
         if archived_only:
-            where_clauses.append("s.archived = 1")
+            if _has_archived:
+                where_clauses.append("s.archived = 1")
         elif not include_archived:
-            where_clauses.append("s.archived = 0")
+            if _has_archived:
+                where_clauses.append("s.archived = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 

@@ -8,6 +8,7 @@ session history, audit records, or product analytics belong here.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,10 @@ class GatewayHealthSnapshot:
 
 _RUNNING_PLATFORM_STATES = {"running", "connected", "ok", "ready"}
 _FATAL_PLATFORM_STATES = {"fatal", "degraded", "error", "failed"}
+_KNOWN_STATES = _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES | {
+    "starting", "draining", "stopping", "stopped", "startup_failed", "unknown"
+}
+_SUPERVISION_MODES = {"systemd", "s6", "container", "launchd", "manual", "unknown"}
 
 
 def _allowed_logger(name: str) -> bool:
@@ -68,6 +73,46 @@ def classify_gateway_error(raw: Any) -> str:
     if "fatal" in s:
         return "platform_fatal"
     return "unknown"
+
+
+def classify_exit_reason(
+    raw: Any, *, state: Any, restart_requested: bool
+) -> Optional[str]:
+    """Reduce free-form shutdown text to a bounded operational class."""
+    if restart_requested:
+        return "restart_requested"
+    state_name = str(state or "").lower()
+    if raw is None and state_name != "startup_failed":
+        return None
+    classified = classify_gateway_error(raw)
+    if state_name == "startup_failed":
+        return classified if classified != "unknown" else "startup_failed"
+    text = str(raw or "").lower()
+    if "signal" in text or "sigterm" in text or "sigint" in text:
+        return "signal"
+    if state_name == "stopped" and any(word in text for word in ("shutdown", "stop")):
+        return "planned_stop"
+    return classified
+
+
+def _bounded_state(raw: Any) -> str:
+    state = str(raw or "unknown").lower()
+    return state if state in _KNOWN_STATES else "unknown"
+
+
+def _safe_metric_value(raw: Any, *, limit: int = 128) -> str:
+    try:
+        from agent.monitoring.redaction import redact_for_export
+        value = redact_for_export(str(raw or "")) or "unknown"
+    except Exception:
+        return "unknown"
+    return value[:limit]
+
+
+def _safe_instance_id(raw: Any) -> str:
+    """Return a stable opaque instance key without exporting the source ID."""
+    value = str(raw or "unknown").encode("utf-8", errors="replace")
+    return f"sha256:{hashlib.sha256(value).hexdigest()[:24]}"
 
 
 def subsystem_for_logger(logger_name: str) -> str:
@@ -120,11 +165,11 @@ def _derive_drainable(gateway_running: bool, gateway_state: Any) -> bool:
 
 
 def _base_attrs(*, profile: str, install_id: str, version: str, supervision_mode: str) -> Dict[str, str]:
+    mode = str(supervision_mode or "unknown").lower()
     return {
-        "hermes.profile": str(profile),
-        "service.instance.id": str(install_id),
-        "service.version": str(version),
-        "hermes.supervision_mode": str(supervision_mode),
+        "service.instance.id": _safe_instance_id(install_id),
+        "service.version": _safe_metric_value(version, limit=64),
+        "hermes.supervision_mode": mode if mode in _SUPERVISION_MODES else "unknown",
     }
 
 
@@ -132,7 +177,7 @@ def _metric(name: str, value: int | float, attrs: Dict[str, str], **extra: str) 
     out = dict(attrs)
     for key, val in extra.items():
         if val is not None:
-            out[key] = str(val)
+            out[key] = _safe_metric_value(val)
     return GatewayMetric(name=name, value=value, attributes=out)
 
 
@@ -147,7 +192,7 @@ def build_gateway_health_snapshot(
 ) -> GatewayHealthSnapshot:
     """Convert gateway_state.json-compatible runtime state into P0 signals."""
     runtime = runtime or {}
-    gateway_state = runtime.get("gateway_state")
+    gateway_state = _bounded_state(runtime.get("gateway_state"))
     active_agents = _parse_active_agents(runtime.get("active_agents", 0))
     busy = _derive_busy(gateway_running, gateway_state, active_agents)
     drainable = _derive_drainable(gateway_running, gateway_state)
@@ -168,7 +213,7 @@ def build_gateway_health_snapshot(
     events: list[GatewayHealthEvent | GatewayDiagnosticEvent] = []
     for platform, pdata in platforms.items():
         pdata = pdata if isinstance(pdata, dict) else {}
-        state = str(pdata.get("state") or "unknown").lower()
+        state = _bounded_state(pdata.get("state"))
         raw_error = pdata.get("error_code") or pdata.get("error_message")
         error_code = classify_gateway_error(raw_error)
         is_up = state in _RUNNING_PLATFORM_STATES
@@ -244,15 +289,19 @@ def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: 
         out: list[GatewayHealthEvent | GatewayDiagnosticEvent] = []
         profile = _safe_profile()
         version = _safe_version()
-        old_gateway_state = str((previous or {}).get("gateway_state")) if (previous or {}).get("gateway_state") is not None else None
-        new_gateway_state = str(current.get("gateway_state")) if current.get("gateway_state") is not None else None
+        old_gateway_state = _bounded_state((previous or {}).get("gateway_state")) if (previous or {}).get("gateway_state") is not None else None
+        new_gateway_state = _bounded_state(current.get("gateway_state")) if current.get("gateway_state") is not None else None
         if old_gateway_state != new_gateway_state and new_gateway_state:
             out.append(GatewayHealthEvent(
                 name="gateway.lifecycle",
                 gateway_state=new_gateway_state,
                 old_state=old_gateway_state,
                 new_state=new_gateway_state,
-                exit_reason=current.get("exit_reason"),
+                exit_reason=classify_exit_reason(
+                    current.get("exit_reason"),
+                    state=new_gateway_state,
+                    restart_requested=bool(current.get("restart_requested")),
+                ),
                 restart_requested=bool(current.get("restart_requested")),
                 active_agents=_parse_active_agents(current.get("active_agents", 0)),
                 profile=profile,
@@ -276,7 +325,11 @@ def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: 
                     gateway_state=new_gateway_state,
                     old_state=old_gateway_state,
                     new_state=new_gateway_state,
-                    exit_reason=current.get("exit_reason"),
+                    exit_reason=classify_exit_reason(
+                        current.get("exit_reason"),
+                        state=new_gateway_state,
+                        restart_requested=bool(current.get("restart_requested")),
+                    ),
                     restart_requested=bool(current.get("restart_requested")),
                     active_agents=_parse_active_agents(current.get("active_agents", 0)),
                     profile=profile,
@@ -292,8 +345,8 @@ def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: 
             pdata = pdata if isinstance(pdata, dict) else {}
             prev_raw = old_platforms.get(platform, {})
             prev = prev_raw if isinstance(prev_raw, dict) else {}
-            old_state = str(prev.get("state")) if prev.get("state") is not None else None
-            new_state = str(pdata.get("state")) if pdata.get("state") is not None else None
+            old_state = _bounded_state(prev.get("state")) if prev.get("state") is not None else None
+            new_state = _bounded_state(pdata.get("state")) if pdata.get("state") is not None else None
             if old_state == new_state or not new_state:
                 continue
             error_code = classify_gateway_error(pdata.get("error_code") or pdata.get("error_message"))

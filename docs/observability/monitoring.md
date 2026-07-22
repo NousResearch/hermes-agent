@@ -19,8 +19,9 @@ trajectory capture is a separate plane served by the NeMo Relay integration
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
 | Diagnostics | `/v1/logs` | Warning/error gateway log events with secrets AND PII scrubbed in-process before egress (`[redacted]` / `[email]`), bounded error classes |
 
-Every signal carries resource attributes (`service.name`, profile, version,
-install id, supervision mode) so an operator can tell instances apart.
+Signals carry `service.name`, version, supervision mode, and a stable one-way
+hash of the install id so an operator can distinguish instances without
+exporting account/profile identity or the raw install identifier.
 
 ## Enabling
 

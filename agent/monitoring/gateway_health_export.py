@@ -10,11 +10,76 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+_RESOURCE_ATTRIBUTE_KEYS = frozenset({
+    "service.name",
+    "service.namespace",
+    "service.version",
+    "service.instance.id",
+    "deployment.environment.name",
+    "cloud.provider",
+    "cloud.platform",
+    "cloud.region",
+    "telemetry.scope",
+})
+_DIAGNOSTIC_ATTRIBUTE_KEYS = frozenset({
+    "name",
+    "subsystem",
+    "error_class",
+    "error_code",
+    "platform",
+    "old_state",
+    "new_state",
+    "version",
+    "severity",
+})
+_SAFE_RESOURCE_VALUE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+
+
+def _redact_string(raw: Any, *, limit: int = 500) -> str:
+    try:
+        from agent.monitoring.redaction import redact_for_export
+        return (redact_for_export(str(raw or "")) or "[redacted]")[:limit]
+    except Exception:
+        return "[redaction-unavailable]"
+
+
+def _safe_resource_attributes(raw: Any) -> Dict[str, str]:
+    """Allowlist bounded resource labels and reject values changed by redaction."""
+    attrs: Dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return attrs
+    for key, value in raw.items():
+        key = str(key)
+        if key not in _RESOURCE_ATTRIBUTE_KEYS or value is None:
+            continue
+        if key == "service.instance.id":
+            from agent.monitoring.gateway_health import _safe_instance_id
+            attrs[key] = _safe_instance_id(value)
+            continue
+        text = str(value)
+        if not _SAFE_RESOURCE_VALUE.fullmatch(text):
+            continue
+        if _redact_string(text, limit=128) != text:
+            continue
+        attrs[key] = text
+    return attrs
+
+
+def _diagnostic_log_attributes(event: Dict[str, Any]) -> Dict[str, Any]:
+    attrs: Dict[str, Any] = {}
+    for key in _DIAGNOSTIC_ATTRIBUTE_KEYS:
+        value = event.get(key)
+        if value is None:
+            continue
+        attrs[f"hermes.{key}"] = _redact_string(value) if isinstance(value, str) else value
+    return attrs
 
 
 @dataclass(slots=True)
@@ -32,27 +97,52 @@ class GatewayHealthExportRuntime:
         if self.stop_event is not None:
             self.stop_event.set()
         if self.thread is not None:
-            self.thread.join(timeout=2.0)
+            self.thread.join(timeout=0.25)
         if self.log_handler is not None:
             try:
                 logging.getLogger().removeHandler(self.log_handler)
             except Exception:
                 pass
-        if self.streamer is not None:
-            try:
-                self.streamer.shutdown()
-            except Exception:
-                pass
-        if self.log_streamer is not None:
-            try:
-                self.log_streamer.shutdown()
-            except Exception:
-                pass
-        if self.metric_provider is not None:
-            try:
-                self.metric_provider.shutdown()
-            except Exception:
-                pass
+
+        # Detach synchronously so no new records are collected during a slow
+        # exporter shutdown. Network flush/close then runs under one bounded
+        # daemon-thread deadline and can never delay gateway teardown.
+        try:
+            from agent.monitoring.emitter import get_emitter
+            emitter = get_emitter()
+            if self.streamer is not None:
+                emitter.unsubscribe(self.streamer)
+            if self.log_streamer is not None:
+                emitter.unsubscribe(self.log_streamer)
+        except Exception:
+            pass
+
+        closeables = [
+            item for item in (self.streamer, self.log_streamer, self.metric_provider)
+            if item is not None
+        ]
+
+        def _close() -> None:
+            for item in closeables:
+                try:
+                    item.shutdown()
+                except Exception:
+                    pass
+
+        if closeables:
+            worker = threading.Thread(
+                target=_close,
+                name="hermes-gateway-health-export-shutdown",
+                daemon=True,
+            )
+            worker.start()
+            worker.join(timeout=2.0)
+
+        self.streamer = None
+        self.log_streamer = None
+        self.metric_provider = None
+        self.thread = None
+        self.stop_event = None
 
 
 def _gateway_health_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -209,9 +299,9 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
     exporter = sdk["OTLPMetricExporter"](endpoint=endpoint, headers=headers or None)
     interval_ms = max(5, int(gh.get("export_interval_seconds", 60))) * 1000
     reader = sdk["PeriodicExportingMetricReader"](exporter, export_interval_millis=interval_ms)
-    resource_attrs = dict((gh.get("resource_attributes") or {}))
-    resource_attrs.setdefault("service.name", "hermes-gateway")
-    resource_attrs.setdefault("telemetry.scope", "gateway_health")
+    resource_attrs = _safe_resource_attributes(gh.get("resource_attributes"))
+    resource_attrs["service.name"] = "hermes-gateway"
+    resource_attrs["telemetry.scope"] = "gateway_health"
     provider = sdk["MeterProvider"](
         metric_readers=[reader],
         resource=sdk["Resource"].create(resource_attrs),
@@ -267,9 +357,9 @@ class GatewayDiagnosticLogStreamer:
         gh = _gateway_health_config(config)
         headers = _resolve_headers(otlp.get("headers_env"))
         endpoint = _logs_endpoint(str(otlp.get("endpoint")))
-        resource_attrs = dict((gh.get("resource_attributes") or {}))
-        resource_attrs.setdefault("service.name", "hermes-gateway")
-        resource_attrs.setdefault("telemetry.scope", "gateway_diagnostics")
+        resource_attrs = _safe_resource_attributes(gh.get("resource_attributes"))
+        resource_attrs["service.name"] = "hermes-gateway"
+        resource_attrs["telemetry.scope"] = "gateway_diagnostics"
         self._provider = sdk["LoggerProvider"](resource=sdk["Resource"].create(resource_attrs))
         self._processor = sdk["BatchLogRecordProcessor"](
             sdk["OTLPLogExporter"](endpoint=endpoint, headers=headers or None)
@@ -284,11 +374,7 @@ class GatewayDiagnosticLogStreamer:
         for ev in batch:
             if ev.get("event") != "gateway_diagnostic":
                 continue
-            attrs = {
-                f"hermes.{key}": val
-                for key, val in ev.items()
-                if key not in {"event", "redacted_message", "ts_ns"} and val is not None
-            }
+            attrs = _diagnostic_log_attributes(ev)
             body = ev.get("redacted_message") or ev.get("name") or "gateway diagnostic"
             record = self._LogRecord(
                 timestamp=ev.get("ts_ns"),
@@ -297,7 +383,7 @@ class GatewayDiagnosticLogStreamer:
                 trace_flags=self._sdk["TraceFlags"].DEFAULT,
                 severity_text=str(ev.get("severity") or "warning").upper(),
                 severity_number=_severity_number(self._sdk, ev.get("severity")),
-                body=str(body),
+                body=_redact_string(body),
                 attributes=attrs,
             )
             self._logger.emit(record)
@@ -337,7 +423,7 @@ def _start_snapshot_thread(config: Dict[str, Any], stop_event: threading.Event) 
 
 def _attach_log_handler(config: Dict[str, Any]) -> Any:
     gh = _gateway_health_config(config)
-    if not gh.get("warning_error_events_enabled", True):
+    if not gh.get("diagnostic_events_enabled", True) or not gh.get("warning_error_events_enabled", True):
         return None
     from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
     handler = GatewayDiagnosticLogHandler(profile=_profile(), version=_version())
@@ -382,20 +468,25 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
         try:
             from agent.monitoring import otlp_exporter
             runtime.streamer = otlp_exporter.start_streaming(config, event_filter=_gateway_health_event)
+            if runtime.streamer is None:
+                raise RuntimeError("gateway health span streamer did not start")
             runtime.log_streamer = _start_diagnostic_log_streamer(config, sdk)
         except Exception:
             logger.debug("gateway diagnostic OTLP export failed to start", exc_info=True)
+            runtime.shutdown()
+            return GatewayHealthExportRuntime(enabled=False, reason="diagnostics_start_failed")
 
     try:
         runtime.log_handler = _attach_log_handler(config)
     except Exception:
         logger.debug("gateway diagnostic log handler failed to attach", exc_info=True)
-    try:
-        _emit_snapshot_events(config)
-        runtime.stop_event = threading.Event()
-        runtime.thread = _start_snapshot_thread(config, runtime.stop_event)
-    except Exception:
-        logger.debug("gateway health snapshot thread failed to start", exc_info=True)
+    if gh.get("diagnostic_events_enabled", True):
+        try:
+            _emit_snapshot_events(config)
+            runtime.stop_event = threading.Event()
+            runtime.thread = _start_snapshot_thread(config, runtime.stop_event)
+        except Exception:
+            logger.debug("gateway health snapshot thread failed to start", exc_info=True)
     return runtime
 
 

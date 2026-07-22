@@ -15,6 +15,25 @@ def test_emit_never_raises_when_disabled():
     em.close()
 
 
+def test_process_singleton_stays_dormant_until_subscribed():
+    from agent.monitoring import emitter
+
+    emitter.reset_emitter_for_tests()
+    try:
+        emitter.emit({"event": "gateway_health", "name": "gateway.lifecycle"})
+        singleton = emitter.get_emitter()
+        assert singleton.stats()["queued"] == 0
+        assert singleton._started is False
+
+        subscriber = lambda _batch: None  # noqa: E731
+        singleton.subscribe(subscriber)
+        emitter.emit({"event": "gateway_health", "name": "gateway.lifecycle"})
+        assert singleton._started is True
+        singleton.unsubscribe(subscriber)
+    finally:
+        emitter.reset_emitter_for_tests()
+
+
 def test_emit_accepts_dataclass_and_dict(tmp_path):
     em = MonitoringEmitter()
     seen: list = []

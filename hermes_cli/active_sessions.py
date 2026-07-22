@@ -90,6 +90,14 @@ def _lock_path() -> Path:
 
 
 class _FileLock:
+    # Ceiling for how long to wait for the cross-process lock before giving up,
+    # and how often to re-probe on Windows. The critical sections under this
+    # lock are tiny (a read-modify-write of a small JSON file), so real
+    # contention clears in milliseconds; the timeout only guards against a
+    # wedged peer.
+    _ACQUIRE_TIMEOUT = 10.0
+    _POLL_INTERVAL = 0.01
+
     def __init__(self, path: Path):
         self.path = path
         self._fh = None
@@ -97,26 +105,41 @@ class _FileLock:
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a+b")
-        if os.name == "nt":
-            try:
-                import msvcrt
-
-                self._fh.seek(0)
-                msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
-            except Exception as exc:
-                self._fh.close()
-                self._fh = None
-                raise RuntimeError("active session file lock unavailable") from exc
-        else:
-            try:
-                import fcntl
-
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
-            except Exception as exc:
-                self._fh.close()
-                self._fh = None
-                raise RuntimeError("active session file lock unavailable") from exc
+        try:
+            self._acquire()
+        except Exception as exc:
+            self._fh.close()
+            self._fh = None
+            raise RuntimeError("active session file lock unavailable") from exc
         return self
+
+    def _acquire(self) -> None:
+        if os.name == "nt":
+            # msvcrt's blocking LK_LOCK retries on a *one-second* granularity
+            # and raises after ten tries, so under contention acquirers are
+            # serialized seconds apart instead of immediately. That coarse
+            # latency breaks try-acquire semantics: a short-lived holder can
+            # release its slot before late acquirers even obtain the lock, so
+            # several callers each claim the "last" slot in turn (the
+            # max_concurrent_sessions cap is effectively bypassed). Poll the
+            # non-blocking LK_NBLCK mode instead so acquisition is
+            # millisecond-responsive, matching POSIX flock(LOCK_EX).
+            import msvcrt
+
+            deadline = time.monotonic() + self._ACQUIRE_TIMEOUT
+            while True:
+                try:
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    return
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(self._POLL_INTERVAL)
+        else:
+            import fcntl
+
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
 
     def __exit__(self, exc_type, exc, tb):
         if self._fh is None:

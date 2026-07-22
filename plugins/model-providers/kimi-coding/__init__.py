@@ -98,7 +98,7 @@ class KimiProfile(ProviderProfile):
 kimi = KimiProfile(
     name="kimi-coding",
     aliases=("kimi", "moonshot", "kimi-for-coding"),
-    env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
+    env_vars=("KIMI_API_KEY",),
     base_url="https://api.moonshot.ai/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
@@ -117,5 +117,34 @@ kimi_cn = KimiProfile(
     default_aux_model="kimi-k2-turbo-preview",
 )
 
+# Account B — isolated credential pool (KIMI_CODING_API_KEY).
+# Shares the same wire shape / reasoning controls as the default kimi-coding
+# provider, but reads a different env var so the user can independently
+# select account B's subscription quota.
+kimi_b = KimiProfile(
+    name="kimi-coding-b",
+    aliases=("kimi-b",),
+    env_vars=("KIMI_CODING_API_KEY",),
+    base_url="https://api.moonshot.ai/v1",
+    fixed_temperature=OMIT_TEMPERATURE,
+    default_max_tokens=32000,
+    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_aux_model="kimi-k2-turbo-preview",
+)
+
+# Account C — isolated credential pool (KIMI_ACCOUNT_C_API_KEY).
+kimi_c = KimiProfile(
+    name="kimi-coding-c",
+    aliases=("kimi-c",),
+    env_vars=("KIMI_ACCOUNT_C_API_KEY",),
+    base_url="https://api.moonshot.ai/v1",
+    fixed_temperature=OMIT_TEMPERATURE,
+    default_max_tokens=32000,
+    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_aux_model="kimi-k2-turbo-preview",
+)
+
 register_provider(kimi)
 register_provider(kimi_cn)
+register_provider(kimi_b)
+register_provider(kimi_c)

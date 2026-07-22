@@ -340,6 +340,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "kimi-coding-c": [
+        "kimi-for-coding",
+        "kimi-for-coding-highspeed",
+        "k3",
+    ],
+    "kimi-coding-b": [
+        "kimi-for-coding",
+        "kimi-for-coding-highspeed",
+        "k3",
+    ],
     "stepfun": [
         "step-3.5-flash",
         "step-3.5-flash-2603",
@@ -567,6 +577,34 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-v3-0324",
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
+    ],
+    "nebius": [
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "Qwen/Qwen3-32B",
+        "google/gemma-3-27b-it",
+        "Qwen/Qwen2.5-VL-72B-Instruct",
+        "Qwen/Qwen3-Embedding-8B",
+        "openai/gpt-oss-120b",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "NousResearch/Hermes-4-70B",
+        "NousResearch/Hermes-4-405B",
+        "Qwen/Qwen3-Next-80B-A3B-Thinking",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+        "zai-org/GLM-5.1",
+        "nvidia/Cosmos3-Super-Reasoner",
+        "openbmb/MiniCPM-V-4_5",
+        "nvidia/Nemotron-3-Nano-Omni",
+        "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
+        "MiniMaxAI/MiniMax-M2.5",
+        "MiniMaxAI/MiniMax-M3",
+        "moonshotai/Kimi-K2.6",
+        "moonshotai/Kimi-K2.7-Code",
+        "Qwen/Qwen3.5-397B-A17B",
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "nvidia/Nemotron-3-Ultra-550b-a55b",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "zai-org/GLM-5.2",
     ],
 }
 
@@ -1087,6 +1125,8 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com & Moonshot API)"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Domestic direct API)"),
+    ProviderEntry("kimi-coding-c",  "Kimi Account C",           "Kimi Coding Plan (isolated account C pool)"),
+    ProviderEntry("kimi-coding-b",  "Kimi Account B",           "Kimi Coding Plan (isolated account B pool)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (Global direct API)"),
     ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
@@ -1149,7 +1189,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # Member order is the order shown inside the group submenu.
 # ---------------------------------------------------------------------------
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
-    "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
+    "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn", "kimi-coding-b", "kimi-coding-c"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
@@ -1252,6 +1292,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
+    "kimi-c": "kimi-coding-c",
+    "kimi-b": "kimi-coding-b",
     "step": "stepfun",
     "stepfun-coding-plan": "stepfun",
     "arcee-ai": "arcee",
@@ -1311,6 +1353,8 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "tokenfactory": "nebius",
+    "nebius-tokenfactory": "nebius",
 }
 
 
@@ -2483,6 +2527,42 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
             creds = resolve_api_key_provider_credentials("stepfun")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "kimi-coding":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials("kimi-coding")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "kimi-coding-c":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials("kimi-coding-c")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "kimi-coding-b":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials("kimi-coding-b")
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

@@ -111,6 +111,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "kimi-coding-c": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("KIMI_ACCOUNT_C_API_KEY",),
+        base_url_env_var="KIMI_C_BASE_URL",
+    ),
+    "kimi-coding-b": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("KIMI_CODING_API_KEY",),
+        base_url_env_var="KIMI_B_BASE_URL",
+    ),
     "stepfun": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("STEPFUN_API_KEY",),
@@ -207,6 +217,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.upstage.ai/v1",
         base_url_env_var="UPSTAGE_BASE_URL",
     ),
+    "nebius": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="NEBIUS_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
@@ -278,6 +292,14 @@ ALIASES: Dict[str, str] = {
     "kimi-coding": "kimi-for-coding",
     "kimi-coding-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+    "kimi-c": "kimi-coding-c",
+    "kimi-b": "kimi-coding-b",
+    # kimi-coding-b / kimi-coding-c map to themselves — they are independent
+    # provider slugs with their own _LABEL_OVERRIDES and credential pools.
+    # Do NOT alias them to kimi-for-coding; normalize_provider() must keep
+    # the distinct slug so get_label() and the picker can distinguish them.
+    "kimi-coding-b": "kimi-coding-b",
+    "kimi-coding-c": "kimi-coding-c",
 
     # stepfun
     "step": "stepfun",
@@ -361,6 +383,11 @@ ALIASES: Dict[str, str] = {
     # upstage
     "solar": "upstage",
 
+    # nebius
+    "nebius": "nebius",
+    "tokenfactory": "nebius",
+    "nebius-tokenfactory": "nebius",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -386,12 +413,17 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "upstage": "Upstage Solar",
+    "nebius": "Nebius TokenFactory",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "kimi-coding-c": "Kimi Account C",
+    "kimi-coding-b": "Kimi Account B",
+    "kimi-coding": "Kimi Account A",
+    "kimi-for-coding": "Kimi Account A",
 }
 
 

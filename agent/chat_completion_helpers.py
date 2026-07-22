@@ -68,6 +68,29 @@ def _ra():
     return run_agent
 
 
+def _strip_markdown_code_block(content: str) -> str:
+    """Strip markdown code block wrappers (`````json ... ````` or ````` ... `````) from content.
+
+    Mirrors ``tools.delegate_tool.strip_markdown_code_block`` for use in
+    the chat-completion helpers without importing the heavy delegate_tool
+    module at module-load time.
+    """
+    if not content:
+        return content
+    text = content.strip()
+    if text.startswith("```"):
+        end_idx = text.find("```", 3)
+        if end_idx != -1:
+            inner = text[3:end_idx].strip()
+            lines = inner.split("\n", 1)
+            if len(lines) > 1 and lines[0].strip() and not lines[0].strip()[0].isalnum() is False:
+                inner = lines[1].strip() if len(lines) > 1 else inner
+            elif len(lines) > 1 and lines[0].strip().isalpha():
+                inner = lines[1]
+            return inner
+    return content
+
+
 def estimate_request_context_tokens(api_payload: Any) -> int:
     """Estimate context/load tokens from an API payload, dict or messages list.
 
@@ -1170,7 +1193,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
+        kwargs = _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
@@ -1191,6 +1214,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
         )
+        # vLLM disable thinking: qwen3.6-27b on vLLM ignores reasoning_config
+        # and needs chat_template_kwargs to suppress thinking output.
+        if getattr(agent, '_delegate_vllm_disable_thinking', False):
+            kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+        return kwargs
 
     # ── Legacy flag path ────────────────────────────────────────────
     # Reached only when get_provider_profile() returns None — i.e. a
@@ -1202,7 +1230,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    kwargs = _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -1238,6 +1266,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
     )
+    # vLLM disable thinking: qwen3.6-27b on vLLM ignores reasoning_config
+    # and needs chat_template_kwargs to suppress thinking output.
+    if getattr(agent, '_delegate_vllm_disable_thinking', False):
+        kwargs["chat_template_kwargs"] = {"enable_thinking": False}
+    return kwargs
 
 
 
@@ -1325,6 +1358,22 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+
+    # LongCat reasoning_content fallback: LongCat returns reasoning in
+    # reasoning_content but NOT in content for some responses. Promote
+    # reasoning_content to content when content is empty.
+    if getattr(agent, '_delegate_longcat_fallback', False):
+        if not msg["content"] and raw_reasoning_content:
+            msg["content"] = _sanitize_surrogates(raw_reasoning_content)
+
+    # MiniMax markdown strip: MiniMax wraps responses in ``` markdown blocks.
+    # Strip them so content is plain text.
+    if getattr(agent, '_delegate_minimax_markdown_strip', False):
+        if msg["content"]:
+            msg["content"] = _strip_markdown_code_block(msg["content"])
+
+    if raw_reasoning_content is not None:
+        pass  # already handled above
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
         # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
         # both require reasoning_content on every assistant tool-call

@@ -3359,6 +3359,8 @@ def select_provider_and_model(args=None):
         "xai",
         "zai",
         "kimi-coding-cn",
+        "kimi-coding-b",
+        "kimi-coding-c",
         "minimax",
         "minimax-cn",
         "kilocode",
@@ -12829,6 +12831,7 @@ def _build_provider_choices() -> list[str]:
             "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
             "anthropic", "gemini", "vertex", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
+            "kimi-coding-b", "kimi-coding-c",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
         ]

@@ -93,6 +93,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
     "kimi-coding-cn",
+    "kimi-coding-b",
+    "kimi-coding-c",
     "minimax",
     "minimax-oauth",
     "minimax-cn",

@@ -36,7 +36,7 @@ class TestProviderRegistry:
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
-        ("kimi-coding", "Kimi / Moonshot", "api_key"),
+        ("kimi-coding", "Kimi / Moonshot (Account A)", "api_key"),
         ("stepfun", "StepFun Step Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
@@ -74,12 +74,17 @@ class TestProviderRegistry:
 
     def test_kimi_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
-        # KIMI_API_KEY is the primary env var; KIMI_CODING_API_KEY is a
-        # secondary fallback for Kimi Code sk-kimi- keys so users don't
-        # have to overload the same variable.
+        # KIMI_API_KEY is the sole env var for account A.  KIMI_CODING_API_KEY
+        # (account B) was moved to the dedicated kimi-coding-b provider so each
+        # account's quota can be selected independently.
         assert "KIMI_API_KEY" in pconfig.api_key_env_vars
-        assert "KIMI_CODING_API_KEY" in pconfig.api_key_env_vars
+        assert "KIMI_CODING_API_KEY" not in pconfig.api_key_env_vars
         assert pconfig.base_url_env_var == "KIMI_BASE_URL"
+
+        # Account B — isolated pool reading KIMI_CODING_API_KEY only.
+        pb = PROVIDER_REGISTRY["kimi-coding-b"]
+        assert pb.api_key_env_vars == ("KIMI_CODING_API_KEY",)
+        assert pb.base_url_env_var == "KIMI_B_BASE_URL"
 
     def test_minimax_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax"]

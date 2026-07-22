@@ -1452,11 +1452,51 @@ def run_conversation(
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
+                def _perform_api_call_with_free_model_retry(next_api_kwargs):
+                    """Wrap _perform_api_call with free-model rate-limit retry.
+
+                    Free models on providers like OpenRouter and OpenCode Zen
+                    occasionally return HTTP 200 with empty content due to rate
+                    limiting. Retry once after a short delay when this is detected.
+                    """
+                    resp = _perform_api_call(next_api_kwargs)
+                    if getattr(agent, '_delegate_free_model_retry', False):
+                        # Check if empty content (HTTP 200 with no content)
+                        _content_empty = False
+                        try:
+                            _msg = None
+                            if agent.api_mode == "codex_responses":
+                                _content_empty = not getattr(resp, "output_text", None) and not getattr(resp, "output", None)
+                            elif agent.api_mode == "anthropic_messages":
+                                _blocks = getattr(resp, "content", None)
+                                _content_empty = not _blocks
+                            else:
+                                _msg = getattr(resp, "choices", None)
+                                if _msg:
+                                    _msg = _msg[0].message
+                                    _has_content = bool(getattr(_msg, "content", None))
+                                    _has_tool_calls = bool(getattr(_msg, "tool_calls", None))
+                                    _has_reasoning = bool(getattr(_msg, "reasoning_content", None))
+                                    _content_empty = not (_has_content or _has_tool_calls or _has_reasoning)
+                                else:
+                                    _content_empty = True
+                        except Exception:
+                            _content_empty = False
+                        if _content_empty:
+                            logger.info(
+                                "Free model returned empty content on HTTP 200 "
+                                "(model=%s, provider=%s) — retrying in 2s",
+                                agent.model, agent.provider,
+                            )
+                            time.sleep(2)
+                            resp = _perform_api_call(next_api_kwargs)
+                    return resp
+
                 from hermes_cli.middleware import run_llm_execution_middleware
 
                 response = run_llm_execution_middleware(
                     api_kwargs,
-                    _perform_api_call,
+                    _perform_api_call_with_free_model_retry,
                     original_request=_original_api_kwargs,
                     task_id=effective_task_id,
                     turn_id=turn_id,

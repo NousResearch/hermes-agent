@@ -250,13 +250,15 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
-        name="Kimi / Moonshot",
+        name="Kimi / Moonshot (Account A)",
         auth_type="api_key",
         # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat).
         # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
-        # by _resolve_kimi_base_url() below.
+        # by _resolve_kimi_base_url() below.  Account A only — KIMI_CODING_API_KEY
+        # (account B) was moved to the dedicated kimi-coding-b provider so each
+        # account's quota can be selected independently.
         inference_base_url="https://api.moonshot.ai/v1",
-        api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
+        api_key_env_vars=("KIMI_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
     ),
     "kimi-coding-cn": ProviderConfig(
@@ -265,6 +267,32 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
+    ),
+    "kimi-coding-b": ProviderConfig(
+        id="kimi-coding-b",
+        name="Kimi / Moonshot (Account B)",
+        auth_type="api_key",
+        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
+        # by _resolve_kimi_base_url() below.  Reads its own env var
+        # (KIMI_CODING_API_KEY) so its credential pool is fully isolated from
+        # account A (kimi-coding / KIMI_API_KEY) — mirroring the kimi-coding-c
+        # pattern.
+        inference_base_url="https://api.moonshot.ai/v1",
+        api_key_env_vars=("KIMI_CODING_API_KEY",),
+        base_url_env_var="KIMI_B_BASE_URL",
+    ),
+    "kimi-coding-c": ProviderConfig(
+        id="kimi-coding-c",
+        name="Kimi / Moonshot (Account C)",
+        auth_type="api_key",
+        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
+        # by _resolve_kimi_base_url() below.  This provider reads its own
+        # env var (KIMI_ACCOUNT_C_API_KEY) so its credential pool is fully
+        # isolated from the default kimi-coding pool (KIMI_API_KEY) — letting
+        # the user independently select account C.
+        inference_base_url="https://api.moonshot.ai/v1",
+        api_key_env_vars=("KIMI_ACCOUNT_C_API_KEY",),
+        base_url_env_var="KIMI_C_BASE_URL",
     ),
     "stepfun": ProviderConfig(
         id="stepfun",
@@ -459,7 +487,7 @@ try:
         # openrouter/custom are aggregator/user-supplied and handled outside
         # the registry — adding them here breaks runtime_provider resolution
         # that relies on `openrouter not in PROVIDER_REGISTRY`).
-        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "kimi-coding-b", "kimi-coding-c", "zai", "openrouter", "custom"}:
             continue
         _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
         _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
@@ -1761,6 +1789,8 @@ def resolve_provider(
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "kimi-b": "kimi-coding-b",
+        "kimi-c": "kimi-coding-c",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
@@ -6359,7 +6389,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
+    if provider_id in {"kimi-coding", "kimi-coding-cn", "kimi-coding-b", "kimi-coding-c"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -6546,7 +6576,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
+    if provider_id in {"kimi-coding", "kimi-coding-cn", "kimi-coding-b", "kimi-coding-c"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)

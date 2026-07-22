@@ -381,3 +381,82 @@ class TestExplicitOverrides:
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
 
+
+class TestNebius:
+    """Nebius TokenFactory Switch — does NOT support prompt caching
+    (prompt_tokens_details=null in responses). The function must return
+    (False, False) for Nebius so we do NOT inject cache_control markers.
+    This is the safe default: injecting markers where the upstream ignores
+    or rejects them is the ZenMux-class bug this test guards against.
+    """
+
+    def test_nebius_claude_does_not_cache(self):
+        agent = _make_agent(
+            provider="nebius",
+            base_url="https://api.tokenfactory.nebius.com/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_nebius_non_claude_does_not_cache(self):
+        agent = _make_agent(
+            provider="nebius",
+            base_url="https://api.tokenfactory.nebius.com/v1",
+            api_mode="chat_completions",
+            model="Qwen/Qwen3-32B",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
+class TestZenMux:
+    """ZenMux (zenmux.ai) aggregation platform serving Claude via OpenAI-wire.
+
+    ZenMux exposes Claude models through /v1/chat/completions with documented
+    Anthropic-style cache_control support in the OpenAI-wire envelope layout.
+    Without markers the upstream returns 0% cache reads and re-bills the full
+    prompt every turn (official docs: "explicit cache" tier for Anthropic).
+    """
+
+    def test_claude_on_zenmux_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="custom:zenmux",
+            base_url="https://zenmux.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-5",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True, "Claude on ZenMux must cache (explicit cache tier)"
+        assert native is False, "ZenMux is OpenAI-wire; envelope layout"
+
+    def test_claude_opus_on_zenmux_caches(self):
+        agent = _make_agent(
+            provider="custom:zenmux",
+            base_url="https://zenmux.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_claude_free_on_zenmux_payg_caches(self):
+        agent = _make_agent(
+            provider="custom:zenmux-payg",
+            base_url="https://zenmux.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-5-free",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True
+        assert native is False
+
+    def test_non_claude_on_zenmux_does_not_cache(self):
+        # GLM/DeepSeek on ZenMux are implicit-cache — upstream handles
+        # caching automatically, no cache_control markers needed.
+        agent = _make_agent(
+            provider="custom:zenmux",
+            base_url="https://zenmux.ai/api/v1",
+            api_mode="chat_completions",
+            model="z-ai/glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+

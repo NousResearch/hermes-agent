@@ -2388,6 +2388,59 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Model routing: per-task-type primary + fallback chains.
+        # delegate_task(task_type="search_fetch") looks up model_routes["search_fetch"]
+        # to pick provider:model, with automatic fallback on trigger conditions.
+        "model_routes": {
+            "search_fetch": {
+                "primary": {"provider": "custom:Local vLLM", "model": "qwen3.6-27b"},
+                "fallbacks": [
+                    {"provider": "custom:OpenCode Zen", "model": "mimo-v2.5-free"},
+                    {"provider": "openrouter", "model": "tencent/hy3:free"},
+                ],
+            },
+            "log_analysis": {
+                "primary": {"provider": "custom:Local vLLM", "model": "qwen3.6-27b"},
+                "fallbacks": [
+                    {"provider": "custom:OpenCode Zen", "model": "mimo-v2.5-free"},
+                    {"provider": "openrouter", "model": "tencent/hy3:free"},
+                ],
+            },
+            "code_exec": {
+                "primary": {"provider": "custom:Local vLLM", "model": "qwen3.6-27b"},
+                "fallbacks": [
+                    {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
+                    {"provider": "custom:LongCat", "model": "LongCat-2.0"},
+                    {"provider": "openrouter", "model": "tencent/hy3:free"},
+                ],
+            },
+            "code_write": {
+                "primary": {"provider": "custom:GLM Coding Plan", "model": "glm-5.2"},
+                "fallbacks": [
+                    {"provider": "custom:DashScope Token Plan", "model": "qwen3.8-max-preview"},
+                    {"provider": "kimi-coding", "model": "k3"},
+                    {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
+                ],
+            },
+            "research": {
+                "primary": {"provider": "custom:DashScope Token Plan", "model": "qwen3.8-max-preview"},
+                "fallbacks": [
+                    {"provider": "kimi-coding", "model": "k3"},
+                    {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
+                ],
+            },
+        },
+        # Conditions that trigger fallback to the next model in the chain.
+        "fallback_trigger": {
+            "http_codes": [401, 403, 404, 429, 500, 502, 503, 504],
+            "timeout_seconds": 30,
+            "content_null_and_reasoning_null": True,
+        },
+        # Batch round-robin: alternate Primary / Fallback 1 across same-type tasks.
+        "round_robin": {
+            "enabled": True,
+            "max_alternate": 2,
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

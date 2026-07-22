@@ -84,6 +84,10 @@ ENTRY_DELIMITER = "\n§\n"
 
 from tools.threat_patterns import first_threat_message as _first_threat_message
 
+# V4.7 memory validation — delegated to tools/memory_guard.py (extracted to
+# minimize upgrade-conflict surface; config-guard.sh protects the external module).
+from tools.memory_guard import guard_memory_write
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
@@ -354,6 +358,11 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
+        # V4.7 validation (Phase 0 + Phase 1 + Phase 2 + capacity)
+        guard_err = guard_memory_write("add", content, target, self)
+        if guard_err:
+            return {"success": False, "error": guard_err}
+
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
             # For add (append-only), we skip the drift guard — appending never
@@ -408,6 +417,11 @@ class MemoryStore:
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        # V4.7 validation (Phase 0 + Phase 1 + Phase 2, no capacity check)
+        guard_err = guard_memory_write("replace", new_content, target, self)
+        if guard_err:
+            return {"success": False, "error": guard_err}
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -1000,6 +1014,17 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+
+        # V4.7: validate each op before entering gate
+        for i, op in enumerate(operations):
+            op = op or {}
+            op_action = op.get("action", "add")
+            op_content = op.get("content", "")
+            if op_action in ("add", "replace") and op_content:
+                guard_err = guard_memory_write(op_action, op_content, target, store)
+                if guard_err:
+                    return tool_error(f"Operation {i} ({op_action}): {guard_err}", success=False)
+
         gate_result = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
@@ -1030,9 +1055,17 @@ def memory_tool(
         return gate_result
 
     if action == "add":
+        # V4.7 hard validation (Phase 0 + Phase 1 + Phase 2 + capacity)
+        guard_err = guard_memory_write("add", content, target, store)
+        if guard_err:
+            return tool_error(guard_err, success=False)
         result = store.add(target, content)
 
     elif action == "replace":
+        # V4.7 hard validation (Phase 0 + Phase 1 + Phase 2, no capacity check)
+        guard_err = guard_memory_write("replace", content, target, store)
+        if guard_err:
+            return tool_error(guard_err, success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":

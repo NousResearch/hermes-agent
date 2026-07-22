@@ -6022,7 +6022,7 @@ class AIAgent:
         kimi/moonshot endpoint or the dedicated kimi-coding provider.
         """
         return (
-            self.provider in {"kimi-coding", "kimi-coding-cn"}
+            self.provider in {"kimi-coding", "kimi-coding-cn", "kimi-coding-b", "kimi-coding-c"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
@@ -6257,6 +6257,9 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,
+            task_type=function_args.get("task_type"),
+            model=function_args.get("model"),
+            provider=function_args.get("provider"),
         )
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,

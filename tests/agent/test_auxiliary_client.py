@@ -4605,6 +4605,8 @@ class TestVisionAutoSkipsKimiCoding:
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
             "kimi-coding",
             "kimi-coding-cn",
+            "kimi-coding-b",
+            "kimi-coding-c",
         })
 
 

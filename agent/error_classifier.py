@@ -967,6 +967,31 @@ def _classify_by_status(
                 should_rotate_credential=True,
                 should_fallback=True,
             )
+        # Usage-limit disambiguation (mirrors _classify_402 and the
+        # no-status-code path).  Kimi Code Plan returns 403 with
+        # "You've reached your usage limit for this billing cycle" when a
+        # subscription quota is exhausted - this is billing exhaustion, not
+        # an auth failure, and must rotate the credential pool so the second
+        # account is reached.  Transient signals ("try again", "resets at",
+        # …) keep the rate_limit classification.
+        has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        if has_usage_limit:
+            has_transient_signal = any(
+                p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+            )
+            if has_transient_signal:
+                return result_fn(
+                    FailoverReason.rate_limit,
+                    retryable=True,
+                    should_rotate_credential=True,
+                    should_fallback=True,
+                )
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.auth,
             retryable=False,

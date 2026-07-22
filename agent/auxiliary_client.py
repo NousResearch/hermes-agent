@@ -299,6 +299,8 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "tokenfactory": "nebius",
+    "nebius-tokenfactory": "nebius",
 }
 
 
@@ -506,6 +508,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     # (plugins/model-providers/deepinfra: default_aux_model), which
     # _get_aux_model_for_provider() reads first. Duplicating it here would be
     # dead data that drifts when the profile's value is bumped.
+    "nebius": "Qwen/Qwen3-32B",
 }
 
 # Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
@@ -561,6 +564,8 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+    "kimi-coding-b",
+    "kimi-coding-c",
 })
 
 # OpenRouter app attribution headers (base — always sent).

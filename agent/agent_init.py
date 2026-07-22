@@ -1233,14 +1233,17 @@ def init_agent(
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
     # Kanban worker/orchestrator lifecycle guidance is session-static:
-    # the dispatcher decides at spawn time whether this process is a kanban
-    # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).
-    # Resolving the ~835-token block once here avoids re-running the
-    # membership test + reference on every system-prompt rebuild
-    # (init + each context compression).
+    # only dispatcher-spawned workers (HERMES_KANBAN_TASK set) should
+    # receive it.  A profile with the kanban toolset enabled still has
+    # the tools available for manual use, but must NOT get the worker
+    # lifecycle prompt (which instructs calling kanban_show() first —
+    # causing a spurious error in normal chat sessions).
     from agent.prompt_builder import KANBAN_GUIDANCE
+    _is_kanban_worker = bool(os.environ.get("HERMES_KANBAN_TASK"))
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE
+        if _is_kanban_worker and "kanban_show" in agent.valid_tool_names
+        else ""
     )
 
     # Check tool requirements

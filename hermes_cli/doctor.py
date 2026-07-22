@@ -54,6 +54,7 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
+    "NEBIUS_API_KEY",
 )
 
 
@@ -521,6 +522,8 @@ def _build_apikey_providers_list() -> list:
     _name_to_canonical = {
         "Z.AI / GLM": "zai", "Kimi / Moonshot": "kimi-coding",
         "StepFun Step Plan": "stepfun", "Kimi / Moonshot (China)": "kimi-coding-cn",
+        "Kimi Account B": "kimi-coding-b",
+        "Kimi Account C": "kimi-coding-c",
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",

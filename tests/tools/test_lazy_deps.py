@@ -12,6 +12,7 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+import re
 
 import pytest
 
@@ -325,6 +326,57 @@ class TestActiveFeatures:
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_dependency_alone_does_not_activate_unrelated_features(
+        self, monkeypatch
+    ):
+        monkeypatch.setitem(
+            ld.LAZY_DEPS,
+            "test.alpha",
+            ("alpha-sdk>=1,<2", "shared-runtime>=1,<2"),
+        )
+        monkeypatch.setitem(
+            ld.LAZY_DEPS,
+            "test.beta",
+            ("beta-sdk>=1,<2", "shared_runtime>=1,<2"),
+        )
+        monkeypatch.setattr(
+            ld,
+            "_is_present",
+            lambda spec: re.sub(
+                r"[-_.]+", "-", ld._pkg_name_from_spec(spec).lower()
+            ) == "shared-runtime",
+        )
+
+        active = ld.active_features()
+
+        assert "test.alpha" not in active
+        assert "test.beta" not in active
+
+    def test_fully_shared_dependency_can_activate_equivalent_features(
+        self, monkeypatch
+    ):
+        shared_specs = ("shared-sdk>=1,<2",)
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.alpha", shared_specs)
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.beta", shared_specs)
+        monkeypatch.setattr(ld, "_is_present", lambda spec: spec in shared_specs)
+
+        active = ld.active_features()
+
+        assert "test.alpha" in active
+        assert "test.beta" in active
+
+    def test_differently_pinned_shared_dependency_is_not_activation_evidence(
+        self, monkeypatch
+    ):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.alpha", ("shared-sdk==1",))
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.beta", ("shared-sdk==2",))
+        monkeypatch.setattr(ld, "_is_present", lambda spec: True)
+
+        active = ld.active_features()
+
+        assert "test.alpha" not in active
+        assert "test.beta" not in active
 
 
 class TestRefreshActiveFeatures:

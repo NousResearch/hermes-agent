@@ -492,6 +492,17 @@ def _pkg_name_from_spec(spec: str) -> str:
     return m.group(1) if m else spec
 
 
+def _canonical_pkg_name_from_spec(spec: str) -> str:
+    """Return the PEP 503-normalized distribution name from ``spec``."""
+    return re.sub(r"[-_.]+", "-", _pkg_name_from_spec(spec)).lower()
+
+
+def _normalized_spec(spec: str) -> str:
+    """Normalize a spec's distribution name while preserving its constraint."""
+    package = _pkg_name_from_spec(spec)
+    return _canonical_pkg_name_from_spec(spec) + spec[len(package):]
+
+
 def _specifier_from_spec(spec: str) -> str:
     """Extract just the version-specifier portion of a pip spec.
 
@@ -858,16 +869,44 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature counts as "active" if at least one package unique to that
+    feature is currently installed in the venv (presence check, ignoring
+    version). Shared transitive pins such as aiohttp cannot prove that every
+    feature declaring them was previously enabled. If equivalent features have
+    the same entirely shared dependency set, those shared packages remain the
+    only available evidence. Differently pinned features are not equivalent.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
+    package_owners: dict[str, set[str]] = {}
+    for feature, specs in LAZY_DEPS.items():
+        for spec in specs:
+            package = _canonical_pkg_name_from_spec(spec)
+            package_owners.setdefault(package, set()).add(feature)
+
+    feature_signatures = {
+        feature: frozenset(_normalized_spec(spec) for spec in specs)
+        for feature, specs in LAZY_DEPS.items()
+    }
+    signature_counts: dict[frozenset[str], int] = {}
+    for signature in feature_signatures.values():
+        signature_counts[signature] = signature_counts.get(signature, 0) + 1
+
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        unique_specs = [
+            spec
+            for spec in specs
+            if len(package_owners[_canonical_pkg_name_from_spec(spec)]) == 1
+        ]
+        if unique_specs:
+            evidence_specs = unique_specs
+        elif signature_counts[feature_signatures[feature]] > 1:
+            evidence_specs = specs
+        else:
+            continue
+        if any(_is_present(spec) for spec in evidence_specs):
             active.append(feature)
     return active
 

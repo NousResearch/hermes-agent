@@ -16699,6 +16699,7 @@ def _(rid, params: dict) -> dict:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
+            env=hermes_subprocess_env(inherit_credentials=False),
         )
         return _ok(
             rid,

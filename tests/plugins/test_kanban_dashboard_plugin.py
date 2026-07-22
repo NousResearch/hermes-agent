@@ -115,6 +115,37 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_board_param_isolates_workspace_default(client, tmp_path):
+    alpha_dir = tmp_path / "alpha-project"
+    beta_dir = tmp_path / "beta-project"
+    alpha_dir.mkdir()
+    beta_dir.mkdir()
+    kb.create_board("alpha", default_workdir=str(alpha_dir))
+    kb.create_board("beta", default_workdir=str(beta_dir))
+    kb.set_current_board("beta")
+
+    response = client.post(
+        "/api/plugins/kanban/tasks?board=alpha",
+        json={
+            "title": "alpha task",
+            "assignee": "worker",
+            "workspace_kind": "dir",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task"]["id"]
+    conn = kb.connect(board="alpha")
+    try:
+        task = kb.get_task(conn, task_id)
+    finally:
+        conn.close()
+
+    assert task is not None
+    assert task.workspace_path == str(alpha_dir)
+    assert task.workspace_path != str(beta_dir)
+
+
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     client, tmp_path
 ):

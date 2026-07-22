@@ -1085,6 +1085,77 @@ def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_board_param_isolates_workspace_default(monkeypatch, tmp_path):
+    """When ``board`` is passed to kanban_create, the workspace default
+    must resolve from that board's ``default_workdir``, not from the
+    global active board (which can be racing between concurrent sessions).
+
+    Regression test for #51864: ``_handle_create`` resolved the board
+    for DB connection but dropped it before calling ``create_task``,
+    so ``create_task`` fell back to ``get_current_board()`` for
+    workspace-path default resolution.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_TASK",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    try:
+        import hermes_constants
+        hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb._INITIALIZED_PATHS.clear()
+
+    # Two boards with different default_workdir settings.
+    alpha_dir = str(tmp_path / "alpha-proj")
+    beta_dir = str(tmp_path / "beta-proj")
+    os.makedirs(alpha_dir)
+    os.makedirs(beta_dir)
+    kb.create_board("alpha", default_workdir=alpha_dir)
+    kb.create_board("beta", default_workdir=beta_dir)
+
+    # Set the global active board to "beta" — simulates a concurrent
+    # session having switched boards.
+    kb.set_current_board("beta")
+    assert kb.get_current_board() == "beta"
+
+    # Create a task on board "alpha" via the tool. Before the fix,
+    # ``board`` was not forwarded to ``create_task``, so the workspace
+    # default would come from beta's default_workdir (the global active
+    # board), not alpha's.
+    d = json.loads(kt._handle_create({
+        "title": "alpha task",
+        "assignee": "worker",
+        "board": "alpha",
+        "workspace_kind": "dir",
+    }))
+    assert d["ok"] is True, d
+
+    conn = kb.connect(board="alpha")
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.workspace_kind == "dir"
+        # The workspace_path must come from alpha's default_workdir,
+        # not beta's (the global active board).
+        assert task.workspace_path == alpha_dir
+        assert task.workspace_path != beta_dir
+    finally:
+        conn.close()
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``

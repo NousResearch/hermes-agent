@@ -662,13 +662,28 @@ def build_turn_context(
                     f"💤 Resumed after {int(_idle_gap)}s idle — compacting "
                     f"~{_idle_tokens:,} tokens before continuing."
                 )
+                _idle_input = messages
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_idle_tokens,
                     task_id=effective_task_id,
                 )
-                conversation_history = conversation_history_after_compression(
-                    agent, messages
-                )
+                # ``_compress_context`` returns the INPUT list object when it
+                # skips (per-session lock held by another path, failure
+                # cooldown, anti-thrash breaker, codex-native routing). Only
+                # re-baseline + re-anchor after a real compaction — a skip
+                # must leave the turn's flush baseline and user-message index
+                # untouched.
+                if messages is not _idle_input:
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
+                    # Compaction rebuilt the list, so the index of this turn's
+                    # just-appended user message is stale — re-anchor it the
+                    # same way the preflight path does below.
+                    current_turn_user_idx = reanchor_current_turn_user_idx(
+                        messages, user_message
+                    )
+                    agent._persist_user_message_idx = current_turn_user_idx
 
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.

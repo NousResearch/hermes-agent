@@ -1,0 +1,79 @@
+name: kakao-platform
+label: Kakao
+kind: platform
+version: 0.1.0
+description: >
+  Kakao i Open Builder skill-server webhook adapter for Hermes Agent.
+  Exposes hermes as a KakaoTalk channel chatbot's "skill server": an
+  aiohttp webhook receives the bot engine's SkillRequest (utterance +
+  botUserKey) whenever a user messages the connected channel, and hermes
+  answers with a SkillResponse (version 2.0, simpleText outputs).
+  Kakao provides no request signature, so inbound requests are verified
+  with a shared-secret header configured on both sides. Kakao's skill
+  model is strictly request-response: the skill server must answer within
+  5 seconds, or return `useCallback` and finish via a one-shot callback
+  URL (documented as valid 5 minutes; ~1 minute in practice) issued only
+  on blocks with the callback option enabled. There is no push/notify API in this model — hermes cannot
+  message a KakaoTalk user outside of answering their own message, so
+  cron/proactive `send_message` calls to this platform will fail with a
+  descriptive error rather than silently doing nothing.
+author: Hermes Agent contributors
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: KAKAO_SKILL_SECRET
+    description: >
+      Shared secret hermes checks against an inbound header on every skill
+      request. Kakao does not sign webhook requests, so this is the only
+      verification available: set the same value as a custom header
+      (name configurable via KAKAO_SECRET_HEADER) when registering the
+      skill in the 카카오 i 오픈빌더 콘솔 (스킬 만들기 화면의 "헤더" 설정).
+    prompt: "Shared secret for the skill webhook header"
+    url: "https://kakaobusiness.gitbook.io/main/tool/chatbot/skill_guide/make_skill"
+    password: true
+optional_env:
+  - name: KAKAO_SECRET_HEADER
+    description: "HTTP header name carrying the shared secret (default: X-Hermes-Kakao-Secret). Must match the custom header key set in the 오픈빌더 skill config."
+    prompt: "Secret header name"
+    password: false
+  - name: KAKAO_PORT
+    description: "Webhook listen port (default: 8647)"
+    prompt: "Webhook port"
+    password: false
+  - name: KAKAO_HOST
+    description: "Webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: KAKAO_PUBLIC_URL
+    description: "Public HTTPS base URL for this webhook (e.g. a cloudflared/ngrok tunnel). Used only for log/status display -- register the full <url>/kakao/webhook path as the skill URL in 오픈빌더."
+    prompt: "Public HTTPS base URL"
+    password: false
+  - name: KAKAO_ALLOWED_USERS
+    description: "Comma-separated Kakao botUserKey values allowed to talk to the bot"
+    prompt: "Allowed botUserKey values (comma-separated)"
+    password: false
+  - name: KAKAO_ALLOW_ALL_USERS
+    description: "Allow any Kakao user who messages the channel to talk to the bot (dev only -- disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: KAKAO_SYNC_TIMEOUT
+    description: "Seconds to wait for the agent's answer before falling back to useCallback / a plain 'still thinking' reply (default: 4.0; Kakao's hard skill timeout is 5s and network latency to your server counts against it -- lower this further behind a slow tunnel)"
+    prompt: "Sync response budget (seconds)"
+    password: false
+  - name: KAKAO_CALLBACK_TIMEOUT
+    description: "Seconds to keep waiting for the agent's answer after useCallback before spending the one-shot callback on a 'still working' notice instead (default: 50; Kakao documents the callbackUrl as valid for 5 minutes but expires it after ~1 minute in practice). Answers that miss the window are stashed and delivered on the user's next message."
+    prompt: "Callback response budget (seconds)"
+    password: false
+  - name: KAKAO_BOT_ID
+    description: "Open Builder bot ID (from the bot's i.kakao.com URL) -- advisory: mismatching inbound bot.id values are logged, not rejected"
+    prompt: "Open Builder bot ID (optional)"
+    password: false
+  - name: KAKAO_CALLBACK_WAITING_TEXT
+    description: "Interim bubble shown while the callback answer is pending (default: 🤔 답변을 만들고 있어요. 잠시만 기다려 주세요.)"
+    prompt: "Callback waiting text"
+    password: false
+  - name: KAKAO_LATE_ANSWER_NOTICE_TEXT
+    description: "Notice sent when the answer misses the callback window; delivered with a 답변 확인 quick-reply button (default: 답변을 아직 만들고 있어요...)"
+    prompt: "Late-answer notice text"
+    password: false

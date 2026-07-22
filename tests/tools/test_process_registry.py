@@ -316,6 +316,40 @@ class TestOrphanedPipeReconciliation:
         except (ProcessLookupError, PermissionError):
             pass
 
+    @pytest.mark.live_system_guard_bypass
+    def test_direct_child_is_reaped_and_notified_without_polling(self, registry):
+        """A descendant-held pipe must not gate direct-child completion."""
+        marker = "hermes_process_reaper_regression_child"
+        command = (
+            f"{sys.executable} -c 'import subprocess; "
+            f"subprocess.Popen([\"{sys.executable}\", \"-c\", "
+            "\"import time; time.sleep(30)\", "
+            f"\"{marker}\"]); print(\"parent done\")'"
+        )
+        session = registry.spawn_local(
+            command, cwd="/tmp", notify_on_complete=True,
+        )
+
+        try:
+            assert session._completion_event.wait(5.0), (
+                "direct child completion remained gated on stdout EOF"
+            )
+            event = registry.completion_queue.get(timeout=1.0)
+            assert event["session_id"] == session.id
+            assert event["exit_code"] == 0
+            assert session.process.wait(timeout=0) == 0
+            with pytest.raises(ChildProcessError):
+                os.waitpid(session.pid, os.WNOHANG)
+            assert session.id in registry._finished
+            assert session.id not in registry._running
+            assert registry.completion_queue.empty()
+        finally:
+            subprocess.run(
+                ["pkill", "-9", "-f", marker],
+                capture_output=True,
+                check=False,
+            )
+
     def test_reconcile_noop_when_child_still_running(self, registry):
         """Reconcile must NOT flip exited when the direct child is alive."""
         proc = _spawn_python_sleep(5.0)

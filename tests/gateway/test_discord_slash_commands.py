@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 
+import logging
 import pytest
 
 from gateway.config import PlatformConfig
@@ -1145,3 +1146,177 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Registration-failure logging — both COMMAND_REGISTRY and plugin loops
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Before the fix, both loops silently swallowed
+# ``tree.add_command()`` failures. If a built-in or plugin slash command
+# failed to register (name conflict, discord.py validation error,
+# internal state, etc.) the failure was invisible — the command never
+# appeared in Discord's slash picker, and there was no log entry to
+# explain why.
+#
+# Post-fix: both loops emit a ``logger.warning(...)`` with the command
+# name, exception type, and message.
+
+
+import hermes_cli.commands as hermes_commands  # noqa: E402
+
+
+def test_plugin_command_registration_failure_logs_warning(
+    adapter, monkeypatch, caplog
+):
+    """If ``tree.add_command`` raises for a plugin command, log a WARNING
+    with the plugin name and exception details — do not silently swallow.
+    """
+    tree = MagicMock()
+    tree.get_commands.return_value = []
+    tree.add_command.side_effect = ValueError("name already in use")
+    adapter._client.tree = tree
+
+    monkeypatch.setattr(hermes_commands, "COMMAND_REGISTRY", [])
+    monkeypatch.setattr(
+        hermes_commands, "_iter_plugin_command_entries",
+        lambda: iter([("myplugin", "My plugin command", "args <N>")]),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+        adapter._register_slash_commands()
+
+    plugin_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "myplugin" in r.getMessage()
+        and "failed to register" in r.getMessage()
+    ]
+    assert plugin_warnings, (
+        f"Expected a WARNING about myplugin registration failure, "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+    msg = plugin_warnings[0].getMessage()
+    assert "ValueError" in msg, f"Exception type missing from warning: {msg!r}"
+    assert "name already in use" in msg, f"Exception message missing: {msg!r}"
+
+
+def test_plugin_command_registration_success_does_not_warn(
+    adapter, monkeypatch, caplog
+):
+    """On the happy path, plugin command registration must NOT emit a
+    WARNING — the new code path is silent when nothing goes wrong.
+    """
+    tree = MagicMock()
+    tree.get_commands.return_value = []
+    tree.add_command.return_value = None  # succeeds
+    adapter._client.tree = tree
+
+    monkeypatch.setattr(hermes_commands, "COMMAND_REGISTRY", [])
+    monkeypatch.setattr(
+        hermes_commands, "_iter_plugin_command_entries",
+        lambda: iter([("myplugin", "My plugin command", "args <N>")]),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+        adapter._register_slash_commands()
+
+    failure_warnings = [
+        r for r in caplog.records
+        if "failed to register" in r.getMessage()
+    ]
+    assert not failure_warnings, (
+        f"Happy path should not emit registration-failure warnings, "
+        f"got: {[r.getMessage() for r in failure_warnings]}"
+    )
+    # Positive control: verify add_command was actually called. Without
+    # this the test passes trivially if the function returned early.
+    tree.add_command.assert_called()
+
+
+def test_multiple_plugins_one_failing_logs_only_for_the_failing_one(
+    adapter, monkeypatch, caplog
+):
+    """If one plugin's command raises, the other plugin's command
+    should still register. The warning should name only the failing one.
+    """
+    tree = MagicMock()
+    tree.get_commands.return_value = []
+    tree.add_command.side_effect = [
+        ValueError("conflict with built-in"),
+        None,  # second plugin registers fine
+    ]
+    adapter._client.tree = tree
+
+    monkeypatch.setattr(hermes_commands, "COMMAND_REGISTRY", [])
+    monkeypatch.setattr(
+        hermes_commands, "_iter_plugin_command_entries",
+        lambda: iter([
+            ("badplugin", "Conflicts with built-in", "args <N>"),
+            ("goodplugin", "Registers fine", "args <N>"),
+        ]),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+        adapter._register_slash_commands()
+
+    failure_warnings = [
+        r for r in caplog.records
+        if "failed to register" in r.getMessage()
+    ]
+    assert len(failure_warnings) == 1
+    assert "badplugin" in failure_warnings[0].getMessage()
+    assert "goodplugin" not in failure_warnings[0].getMessage()
+    # Positive control: both add_command calls were attempted.
+    assert tree.add_command.call_count == 2
+
+
+def test_builtin_command_registration_failure_logs_warning(
+    adapter, monkeypatch, caplog
+):
+    """If ``tree.add_command`` raises for a built-in COMMAND_REGISTRY
+    command, log a WARNING with the command name and exception details —
+    do not silently swallow. This is the sibling fix to the plugin-loop
+    warning added in the same PR.
+    """
+    tree = MagicMock()
+    tree.get_commands.return_value = []
+    tree.add_command.side_effect = ValueError("command name conflict")
+    adapter._client.tree = tree
+
+    from hermes_cli.commands import CommandDef
+
+    monkeypatch.setattr(
+        hermes_commands, "COMMAND_REGISTRY",
+        [CommandDef(name="status", description="Show status", category="info")],
+    )
+    monkeypatch.setattr(
+        hermes_commands, "_iter_plugin_command_entries",
+        lambda: iter([]),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+        adapter._register_slash_commands()
+
+    builtin_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "status" in r.getMessage()
+        and "failed to register" in r.getMessage()
+    ]
+    assert builtin_warnings, (
+        f"Expected a WARNING about built-in 'status' registration failure, "
+        f"got: {[r.getMessage() for r in caplog.records]}"
+    )
+    msg = builtin_warnings[0].getMessage()
+    assert "ValueError" in msg, f"Exception type missing from warning: {msg!r}"
+    assert "command name conflict" in msg, (
+        f"Exception message missing: {msg!r}"
+    )
+    # Verify the log message says "Built-in" (not "Plugin") to
+    # distinguish the two registration loops in the logs.
+    assert "Built-in" in msg, (
+        f"Expected 'Built-in' label in warning, got: {msg!r}"
+    )
+    # Positive control: add_command was actually attempted.
+    tree.add_command.assert_called_once()

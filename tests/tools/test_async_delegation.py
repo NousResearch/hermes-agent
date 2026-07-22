@@ -534,6 +534,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
         source="tui",
         session_key="pre-compress-parent",
         ui_session_id="origin-tab",
+        message_id="om_trigger",
     )
     try:
         out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
@@ -547,6 +548,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     assert evt["type"] == "async_delegation"
     assert evt["session_key"] == "post-compress-tip"
     assert evt["origin_ui_session_id"] == "origin-tab"
+    assert evt["message_id"] == "om_trigger"
 
 
 def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):

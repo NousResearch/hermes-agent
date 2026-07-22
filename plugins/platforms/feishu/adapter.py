@@ -3333,6 +3333,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
+        source.message_id = message_id
         normalized = MessageEvent(
             text=text,
             message_type=inbound_type,

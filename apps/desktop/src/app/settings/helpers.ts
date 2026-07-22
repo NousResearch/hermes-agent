@@ -113,7 +113,7 @@ export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   return { type: 'string' }
 }
 
-// Backend schema omits some declared keys (e.g. memory.provider); config presence is the availability signal.
+// Backend schema omits some declared keys; config presence is the availability signal.
 export function sectionFieldEntries(
   schema: Record<string, ConfigFieldSchema>,
   config: HermesConfigRecord

@@ -38,6 +38,33 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
     assert result["checks"]["disk"]["status"] in {"ok", "degraded"}
 
 
+def test_collect_runtime_readiness_degrades_on_orphaned_async_completion(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import async_delegation
+
+    monkeypatch.setattr(
+        async_delegation,
+        "count_orphaned_pending_completions",
+        lambda: 2,
+    )
+
+    result = collect_runtime_readiness(
+        configured_model="test/model",
+        runtime_status={"gateway_state": "running"},
+    )
+
+    background = result["checks"]["background_queues"]
+    assert result["status"] == "degraded"
+    assert background["status"] == "degraded"
+    assert background["orphaned_async_delegation_completions"] == 2
+
+
 def test_collect_runtime_readiness_degrades_on_invalid_config_and_stopped_gateway(
     tmp_path, monkeypatch
 ):

@@ -263,6 +263,70 @@ def recover_abandoned_delegations() -> int:
     return recovered
 
 
+def _owner_process_alive(pid: Any, started_at: Any) -> bool:
+    """Best-effort liveness check for the process that owns a durable row."""
+    if not pid:
+        return False
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        from gateway.status import _pid_exists, get_process_start_time
+    except Exception:
+        # Diagnostics must not create false alarms when liveness helpers are
+        # unavailable; treat the owner as alive unless we can prove otherwise.
+        return True
+    if not _pid_exists(pid_int):
+        return False
+    if started_at is None:
+        return True
+    try:
+        current_start = get_process_start_time(pid_int)
+    except Exception:
+        return True
+    if current_start is None:
+        return True
+    try:
+        return int(current_start) == int(started_at)
+    except (TypeError, ValueError):
+        return True
+
+
+def count_orphaned_pending_completions() -> int:
+    """Count completed async-delegation events nobody has tried to deliver.
+
+    This is a read-only health diagnostic for existing status/readiness
+    surfaces. It flags terminal async delegation records whose completion event
+    is durable, still pending, has spent zero delivery attempts, and belongs to
+    an owner process that is provably gone. It never calls ``_connect()`` so a
+    health poll cannot create ``state.db`` or migrate schema as a side effect.
+    """
+    path = _db_path()
+    if not path.exists():
+        return 0
+    try:
+        uri = f"file:{path.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
+            rows = conn.execute(
+                """SELECT owner_pid, owner_started_at
+                   FROM async_delegations
+                   WHERE state NOT IN ('running', 'finalizing')
+                     AND delivery_state='pending'
+                     AND delivery_attempts=0
+                     AND event_json IS NOT NULL"""
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    except Exception:
+        logger.debug("async delegation orphan diagnostic failed", exc_info=True)
+        return 0
+    return sum(
+        1 for owner_pid, owner_started_at in rows
+        if owner_pid and not _owner_process_alive(owner_pid, owner_started_at)
+    )
+
+
 def restore_undelivered_completions(target_queue) -> int:
     """Enqueue durable pending completions as fresh turns after process start.
 

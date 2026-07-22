@@ -15996,6 +15996,13 @@ def main(
     
     # Handle single query mode
     if query or image:
+        # A single-query CLI process exits after printing one response; there
+        # is no persistent prompt loop to drain a later background completion.
+        # Match ``hermes -z`` and mark the channel stateless before any agent
+        # turn can dispatch delegate_task/notify_on_complete work.
+        from gateway.session_context import declare_stateless_channel
+
+        declare_stateless_channel()
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

@@ -742,7 +742,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
         _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
         _scaled_ttfb_timeout = _ttfb_timeout
         if (
-            not _ttfb_strict
+            _ttfb_timeout > 0
+            and not _ttfb_strict
             and _ttfb_disable_above > 0
             and _est_tokens_for_codex_watchdog >= _ttfb_disable_above
         ):

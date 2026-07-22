@@ -578,6 +578,35 @@ def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
     assert "codex_ttfb_kill" not in closes
 
 
+def test_disabled_large_codex_ttfb_logs_no_scale_or_cap_claims(
+    tmp_path, monkeypatch, caplog
+):
+    """Disabled TTFB must not claim adaptive scaling or capping."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "150")
+
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
+
+    sentinel = SimpleNamespace(ok=True)
+    monkeypatch.setattr(agent, "_run_codex_stream", lambda *a, **k: sentinel)
+
+    api_kwargs = {"model": "gpt-5.5", "input": "x" * (186_804 * 4)}
+    assert h.estimate_request_context_tokens(api_kwargs) == 186_804
+
+    with caplog.at_level("INFO", logger=h.__name__):
+        resp = h.interruptible_api_call(agent, api_kwargs)
+
+    assert resp is sentinel
+    assert "Scaling openai-codex no-byte TTFB" not in caplog.text
+    assert "Capping openai-codex no-byte TTFB" not in caplog.text
+
+
 def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypatch):
     """Large Codex inputs can legitimately take longer than the small-request
     first-byte cutoff before the first SSE frame. Scale the TTFB timeout up

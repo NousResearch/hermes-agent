@@ -149,42 +149,6 @@ class TestDingTalkAdapterInit:
 
 
 # ---------------------------------------------------------------------------
-# Message text extraction
-# ---------------------------------------------------------------------------
-
-
-class TestExtractText:
-
-    def test_extracts_dict_text(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = {"content": "  hello world  "}
-        msg.rich_text = None
-        assert DingTalkAdapter._extract_text(msg) == "hello world"
-
-    def test_extracts_string_text(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = "plain text"
-        msg.rich_text = None
-        assert DingTalkAdapter._extract_text(msg) == "plain text"
-
-    def test_falls_back_to_rich_text(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = ""
-        msg.rich_text = [{"text": "part1"}, {"text": "part2"}, {"image": "url"}]
-        assert DingTalkAdapter._extract_text(msg) == "part1 part2"
-
-    def test_returns_empty_for_no_content(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-        msg = MagicMock()
-        msg.text = ""
-        msg.rich_text = None
-        assert DingTalkAdapter._extract_text(msg) == ""
-
-
-# ---------------------------------------------------------------------------
 # Deduplication
 # ---------------------------------------------------------------------------
 
@@ -570,6 +534,178 @@ class TestExtractText:
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == ""
 
+    # --- Card / interactiveCard message handling (文档分享卡片) ---
+
+    def test_card_with_dict_content_and_url(self):
+        """card msgtype with extensions.card.content as dict with url key."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "title": "Q3经营分析报告",
+                "content": {"url": "https://dingtalk.com/doc/abc123"},
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档] Q3经营分析报告 https://dingtalk.com/doc/abc123"
+
+    def test_card_with_dict_content_docurl(self):
+        """card msgtype with extensions.card.content as dict with docUrl key."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "title": "周报模板",
+                "content": {"docUrl": "https://docs.dingtalk.com/xyz"},
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档] 周报模板 https://docs.dingtalk.com/xyz"
+
+    def test_card_with_json_string_content(self):
+        """card msgtype with extensions.card.content as JSON string."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "title": "数据看板",
+                "content": '{"url": "https://dingtalk.com/doc/def456"}',
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档] 数据看板 https://dingtalk.com/doc/def456"
+
+    def test_card_with_plain_string_content(self):
+        """card msgtype with extensions.card.content as plain string (used as url)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "title": "分享链接",
+                "content": "https://dingtalk.com/doc/plain",
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档] 分享链接 https://dingtalk.com/doc/plain"
+
+    def test_card_no_title_only_url(self):
+        """card msgtype with url but no title."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "content": {"url": "https://dingtalk.com/doc/onlyurl"},
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "https://dingtalk.com/doc/onlyurl"
+
+    def test_card_fallback_to_extensions_text(self):
+        """card msgtype with no usable card data → fallback to extensions.text.content."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {},
+            "text": {"content": "fallback-text"},
+        }
+        assert DingTalkAdapter._extract_text(msg) == "fallback-text"
+
+    def test_card_content_none_is_handled(self):
+        """card msgtype with content: None → no crash, empty doc_url."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "title": "某文档",
+                "content": None,
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档] 某文档"
+
+    def test_card_content_empty_string_is_handled(self):
+        """card msgtype with content: "" → no crash, empty doc_url."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "card"
+        msg.extensions = {
+            "card": {
+                "title": "空内容文档",
+                "content": "",
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档] 空内容文档"
+
+    def test_interactive_card_extracts_biz_custom_action_url(self):
+        """interactiveCard msgtype with biz_custom_action_url."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "interactiveCard"
+        msg.extensions = {
+            "content": {
+                "biz_custom_action_url": "https://dingtalk.com/doc/interactive",
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档卡片] https://dingtalk.com/doc/interactive"
+
+    def test_interactive_card_no_url_returns_empty(self):
+        """interactiveCard msgtype with no biz_custom_action_url → empty string."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "interactiveCard"
+        msg.extensions = {"content": {}}
+        assert DingTalkAdapter._extract_text(msg) == ""
+
+    def test_interactive_card_with_title_and_url(self):
+        """interactiveCard msgtype with both title and biz_custom_action_url."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "interactiveCard"
+        msg.extensions = {
+            "content": {
+                "title": "项目看板",
+                "biz_custom_action_url": "https://dingtalk.com/doc/kanban",
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档卡片] 项目看板 https://dingtalk.com/doc/kanban"
+
+    def test_interactive_card_title_only(self):
+        """interactiveCard msgtype with title but no URL."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.message_type = "interactiveCard"
+        msg.extensions = {
+            "content": {
+                "title": "仅标题",
+            }
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[文档卡片] 仅标题"
+
 
 class TestExtractMedia:
     """_extract_media must split native voice rich-text items (auto-STT)
@@ -621,6 +757,64 @@ class TestExtractMedia:
             assert mtypes == ["audio"]
         finally:
             del DINGTALK_TYPE_MAPPING["audio"]
+
+    def test_file_extensions_content_downloadcode_resolved(self):
+        """msgtype='file' with extensions.content.downloadCode → DOCUMENT."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "file"
+        msg.extensions = {"content": {"downloadCode": "dl_file_123", "fileName": "report.pdf"}}
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.DOCUMENT
+        assert urls == ["dl_file_123"]
+        assert mtypes == ["application/pdf"]
+
+    def test_image_extensions_content_classified_as_photo(self):
+        """msgtype='image' with extensions.content → PHOTO (not DOCUMENT)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "image"
+        msg.extensions = {"content": {"downloadCode": "dl_img_abc", "fileName": "photo.png"}}
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.PHOTO
+        assert urls == ["dl_img_abc"]
+        assert mtypes == ["image/png"]
+
+    def test_image_no_filename_still_photo(self):
+        """msgtype='image' without fileName → still PHOTO (MIME heuristic)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = "image"
+        msg.extensions = {"content": {"downloadCode": "dl_img_noext"}}
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.PHOTO
+        assert urls == ["dl_img_noext"]
+        # Without fileName, mime defaults to octet-stream but msg_type_str=="image" still wins
+        assert mtypes == ["application/octet-stream"]
 
 
 # ---------------------------------------------------------------------------

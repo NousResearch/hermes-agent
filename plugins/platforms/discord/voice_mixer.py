@@ -46,6 +46,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING, List, Optional
 
+import discord
+
 if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
     import numpy as np
 
@@ -145,7 +147,7 @@ class MixerChild:
         return samples
 
 
-class VoiceMixer:
+class VoiceMixer(discord.AudioSource):
     """A continuous ``discord.AudioSource`` that mixes N child streams.
 
     Use :meth:`set_ambient` to install/replace the looping idle bed and

@@ -36,6 +36,7 @@ def _make_adapter():
     adapter._pending_photo_batch_tasks = {}
     adapter._media_group_events = {}
     adapter._media_group_tasks = {}
+    adapter._media_downloads_in_progress_by_session = {}
     adapter._polling_error_task = None
     adapter._polling_heartbeat_task = None
     adapter._app = None
@@ -50,11 +51,16 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    forward_origin: dict[str, str] | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        forward_origin=forward_origin,
     )
 
 
@@ -114,6 +120,43 @@ class TestTextBatching:
         assert "chunk 1" in text
         assert "chunk 2" in text
         assert "chunk 3" in text
+
+    @pytest.mark.asyncio
+    async def test_forwarded_text_batch_keeps_per_message_context(self):
+        """Forwarded Telegram text updates should keep context while batching."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event(
+                "first forwarded message",
+                forward_origin={
+                    "type": "user",
+                    "sender_name": "Alina",
+                    "date": "2026-06-14T21:03:26+00:00",
+                },
+            )
+        )
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event(
+                "second forwarded message",
+                forward_origin={
+                    "type": "user",
+                    "sender_name": "Bob",
+                    "date": "2026-06-14T21:04:00+00:00",
+                },
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.forward_origin is None
+        assert "[Forwarded message | From: Alina | Date: 2026-06-14T21:03:26+00:00]" in dispatched.text
+        assert "[Forwarded message | From: Bob | Date: 2026-06-14T21:04:00+00:00]" in dispatched.text
+        assert "first forwarded message" in dispatched.text
+        assert "second forwarded message" in dispatched.text
 
     @pytest.mark.asyncio
     async def test_different_chats_not_merged(self):

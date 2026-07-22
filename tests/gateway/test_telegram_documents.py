@@ -16,7 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource, build_session_key
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
@@ -550,6 +551,44 @@ class TestMediaGroups:
         assert event.text == "two images"
         assert event.media_urls == ["/tmp/one.jpg", "/tmp/two.jpg"]
         assert len(event.media_types) == 2
+
+    @pytest.mark.asyncio
+    async def test_photo_album_flush_waits_for_in_progress_download(self, adapter, monkeypatch):
+        monkeypatch.setattr(adapter, "_startup_media_grace_seconds", lambda: 0.2)
+        adapter.MEDIA_GROUP_WAIT_SECONDS = 0.01
+        if not hasattr(adapter, "_media_downloads_in_progress_by_session"):
+            adapter._media_downloads_in_progress_by_session = {}
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="100",
+            chat_type="private",
+            user_id="1",
+        )
+        session_key = build_session_key(source)
+        event = MessageEvent(
+            text="two images",
+            message_type=MessageType.PHOTO,
+            source=source,
+            media_urls=["/tmp/one.jpg"],
+            media_types=["image/jpeg"],
+        )
+        adapter._media_group_events["album-wait"] = event
+        adapter._media_downloads_in_progress_by_session[session_key] = 1
+
+        async def finish_late_download():
+            await asyncio.sleep(0.03)
+            event.media_urls.append("/tmp/two.jpg")
+            event.media_types.append("image/jpeg")
+            adapter._media_downloads_in_progress_by_session.pop(session_key, None)
+
+        late_task = asyncio.create_task(finish_late_download())
+        await adapter._flush_media_group_event("album-wait")
+        await late_task
+
+        adapter.handle_message.assert_awaited_once()
+        flushed = adapter.handle_message.await_args.args[0]
+        assert flushed.media_urls == ["/tmp/one.jpg", "/tmp/two.jpg"]
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_pending_media_group_flush(self, adapter):

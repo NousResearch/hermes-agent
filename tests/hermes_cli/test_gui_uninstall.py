@@ -23,6 +23,17 @@ def _make_agent(hermes_home: Path) -> Path:
     return agent_root
 
 
+def _make_source_checkout(path: Path) -> Path:
+    """Create the minimum shape the uninstaller accepts as Hermes source."""
+    (path / "hermes_cli").mkdir(parents=True)
+    (path / "hermes_cli" / "uninstall.py").write_text("# test checkout\n")
+    (path / ".git").mkdir()
+    (path / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "1.0"\n'
+    )
+    return path
+
+
 def _make_gui_build(hermes_home: Path) -> None:
     """Create the source-built GUI artifacts a `hermes desktop` run produces."""
     desktop = hermes_home / "hermes-agent" / "apps" / "desktop"
@@ -234,8 +245,7 @@ def test_run_uninstall_yes_keep_data_is_non_interactive(tmp_path, monkeypatch):
     desktop = agent_root / "apps" / "desktop"
     (desktop / "release").mkdir(parents=True)
     (hermes_home / "desktop-build-stamp.json").write_text("{}")
-    fake_code = tmp_path / "checkout"
-    fake_code.mkdir()
+    fake_code = _make_source_checkout(tmp_path / "checkout")
 
     # Stub every destructive external so the test only exercises the control
     # flow + the real GUI sweep (which is safe inside tmp_path).
@@ -270,8 +280,7 @@ def test_run_uninstall_yes_full_wipes_home(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     (hermes_home / "hermes-agent" / "hermes_cli").mkdir(parents=True)
     (hermes_home / "config.yaml").write_text("x: 1\n")
-    fake_code = tmp_path / "checkout"
-    fake_code.mkdir()
+    fake_code = _make_source_checkout(tmp_path / "checkout")
 
     monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr(uninstall, "get_project_root", lambda: fake_code)
@@ -345,4 +354,3 @@ def test_uninstall_args_namespace_mode_mapping():
 
     full = uninstall._UninstallArgs(mode="full")
     assert full.gui is False and full.full is True and full.yes is True
-

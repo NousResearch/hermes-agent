@@ -100,12 +100,20 @@ def _read_script_for_scanning(script_path: str) -> str:
     ``UnicodeDecodeError`` on such files, and swallowing that error would let
     an attacker hide the command in binary noise.  Returns an empty string
     only when the file cannot be read at all.
+
+    ``_resolve_script_path``'s ``Path.expanduser()`` raises ``RuntimeError``
+    (not ``OSError``) for a ``~user``-shaped path with no matching system
+    user — e.g. an LLM-authored ``script`` value that happens to start with
+    ``~someuser/...``.  Catch it alongside ``OSError`` so a malformed script
+    path degrades to "can't scan it" instead of crashing job creation with an
+    unhandled exception (same bug class as agent/subdirectory_hints.py's
+    tilde-expansion crash).
     """
     try:
         return _resolve_script_path(script_path).read_bytes().decode(
             "utf-8", errors="replace"
         )
-    except OSError:
+    except (OSError, RuntimeError):
         return ""
 
 

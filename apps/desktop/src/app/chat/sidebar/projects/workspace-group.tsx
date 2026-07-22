@@ -3,10 +3,12 @@ import { useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
+import { setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { notifyError } from '@/store/notifications'
+import { triggerHaptic } from '@/lib/haptics'
+import { notify, notifyError } from '@/store/notifications'
 import { newSessionInProfile } from '@/store/profile'
-import { switchBranchInRepo } from '@/store/projects'
+import { switchBranchInRepo, tombstoneSessions } from '@/store/projects'
 
 import { countLabel, SidebarRowStack } from '../chrome'
 import { SidebarLoadMoreRow } from '../load-more-row'
@@ -27,6 +29,7 @@ interface SidebarWorkspaceGroupProps {
 export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const p = s.projects
   const isProfileGroup = group.mode === 'profile'
   // Empty worktree/branch lanes start collapsed — they only show a "No sessions
   // yet" placeholder, so defaulting them open just adds noise. Profile lanes and
@@ -94,11 +97,47 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
     onNewSession(group.path)
   }
 
+  const handleArchiveGone = async () => {
+    const sessions = group.sessions
+
+    if (!sessions.length) {
+      return
+    }
+
+    if (!window.confirm(p.archiveSessionsConfirm(sessions.length))) {
+      return
+    }
+
+    // Optimistically tombstone so the sidebar drops them immediately.
+    tombstoneSessions(sessions.map(s => s.id))
+
+    let ok = 0
+    let failed = 0
+
+    for (const session of sessions) {
+      try {
+        await setSessionArchived(session.id, true, session.profile)
+        ok++
+      } catch {
+        failed++
+      }
+    }
+
+    if (ok > 0) {
+      triggerHaptic('selection')
+      notify({ durationMs: 3_000, kind: 'success', message: p.archiveSessionsDone(ok) })
+    }
+
+    if (failed > 0) {
+      notifyError(new Error(`${failed} session(s) could not be archived`), p.archiveSessionsFailed)
+    }
+  }
+
   return (
     <SidebarRowStack>
       <WorkspaceHeader
         action={
-          (onNewSession || isProfileGroup || onRemove) && (
+          (onNewSession || isProfileGroup || onRemove || group.gone) && (
             <div className="flex items-center">
               {(onNewSession || isProfileGroup) && (
                 <WorkspaceAddButton
@@ -109,11 +148,19 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
                   onClick={() => void handleNewSession()}
                 />
               )}
+              {group.gone && (
+                <WorkspaceMenu
+                  onArchive={() => void handleArchiveGone()}
+                  onArchiveLabel={p.archiveSessions}
+                  path={group.path}
+                />
+              )}
               {onRemove && <WorkspaceMenu onRemove={onRemove} path={group.path} />}
             </div>
           )
         }
         count={isProfileGroup ? countLabel(visibleSessions.length, totalCount) : group.sessions.length}
+        gone={group.gone}
         icon={leadingIcon}
         label={group.label}
         onToggle={toggleOpen}

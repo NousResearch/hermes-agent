@@ -150,6 +150,20 @@ def _default_branch_name(cwd: str) -> str | None:
     return None
 
 
+def _branch_gone(cwd: str, branch: str | None) -> bool:
+    """True when ``branch``'s upstream tracking ref has been deleted on the remote.
+
+    This is the signal that a branch was merged (or deleted) remotely and the
+    local branch is now stale — the exact state ``git branch --list`` shows as
+    ``[gone]``.  Returns False for detached HEAD, no upstream, or a live
+    upstream.
+    """
+    if not branch:
+        return False
+    track = _git_out(cwd, ["for-each-ref", "--format=%(upstream:track)", f"refs/heads/{branch}"])
+    return "[gone]" in track
+
+
 # ── porcelain v2 status parsing ──────────────────────────────────────────────
 
 
@@ -239,6 +253,7 @@ def repo_status(cwd: str) -> dict | None:
         "branch": branch,
         "defaultBranch": _default_branch_name(cwd),
         "detached": detached,
+        "gone": _branch_gone(cwd, branch),
         "ahead": ahead,
         "behind": behind,
         "staged": sum(f["staged"] for f in files),

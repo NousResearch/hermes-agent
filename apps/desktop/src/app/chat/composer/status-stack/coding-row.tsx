@@ -173,6 +173,15 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             {branchLabel}
           </span>
 
+          {status.gone && !status.detached && (
+            <span
+              className="shrink-0 text-[0.625rem] font-medium text-amber-500/90"
+              title={s.gone}
+            >
+              {s.gone}
+            </span>
+          )}
+
           {/* Branch actions kebab — same pattern as the session/worktree rows.
               ALWAYS laid out; only its opacity flips on hover/focus/open, so
               revealing it never reflows the row (no layout shift). pointer-events

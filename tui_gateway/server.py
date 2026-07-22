@@ -1833,6 +1833,19 @@ _git_branch_for_cwd = git_probe.branch
 _git_repo_root_for_cwd = git_probe.repo_root
 _git_common_repo_root_for_cwd = git_probe.common_repo_root
 _resolve_cwd_git = git_probe.resolve
+_git_gone_branches = git_probe.gone_branches
+
+
+def _gone_branches_for_repo(root: str) -> frozenset[str]:
+    """Cached gone-branch set for a repo root.
+
+    ``git for-each-ref`` is cheap (~1ms) but the project tree is rebuilt on
+    several structural edges, so cache per-root with a short TTL. The cache
+    lives in the same process as the git probe's own root cache.
+    """
+    if not root:
+        return frozenset()
+    return frozenset(_git_gone_branches(root))
 
 
 def _session_cwd(session: dict | None) -> str:
@@ -6470,6 +6483,9 @@ def _(rid, params: dict) -> dict:
 
         _schedule_agent_build(sid)
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+        # Re-probe git branch/repo-root: the branch may have changed since
+        # this session was last active (merged, switched in another worktree).
+        _persist_session_git_meta(record, cwd)
 
         messages = _history_to_messages(display_history)
         return _ok(
@@ -6609,6 +6625,10 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
+        # Re-probe git branch/repo-root: the branch may have changed since
+        # this session was last active (merged, switched in another worktree).
+        if session.get("session_key"):
+            _persist_session_git_meta(session, profile_resume_cwd)
     return _ok(
         rid,
         {
@@ -10566,6 +10586,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+            # Re-probe the session's git branch / repo root on a daemon thread.
+            # The agent may have switched branches via `git checkout` in the
+            # terminal during the turn; persisting the fresh metadata keeps the
+            # session DB's `git_branch` column from going stale, which the
+            # sidebar project tree + gone-branch cleanup rely on.
+            _persist_session_git_meta(session, _display_session_cwd(session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
@@ -12629,6 +12655,7 @@ def _build_project_tree(
         hydrate=hydrate,
         is_junk_root=_is_repo_junk,
         is_junk_cwd=_is_session_cwd_junk,
+        gone_fn=_gone_branches_for_repo,
     )
     return tree, active_id
 

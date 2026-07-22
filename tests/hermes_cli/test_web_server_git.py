@@ -54,6 +54,7 @@ def test_status_reports_branch_and_change_counts(client, repo):
     assert body["branch"] == body["defaultBranch"]
     assert body["branch"]
     assert body["detached"] is False
+    assert body["gone"] is False
     # 1 tracked-modified + 1 untracked = 2 changed paths.
     assert body["changed"] == 2
     assert body["untracked"] == 1
@@ -67,6 +68,30 @@ def test_status_returns_null_outside_repo(client, tmp_path):
     plain.mkdir()
 
     assert client.get("/api/git/status", params={"path": str(plain)}).json() is None
+
+
+def test_status_gone_after_remote_branch_deleted(client, repo, tmp_path):
+    """A branch whose upstream was deleted on the remote reports ``gone: true``."""
+    # Set up a bare remote and push a feature branch to it.
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git(remote, "init", "--bare", "-q")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "checkout", "-q", "-b", "feature/merged")
+    _git(repo, "push", "-q", "-u", "origin", "feature/merged")
+
+    # Branch is live on the remote — not gone.
+    body = client.get("/api/git/status", params={"path": str(repo)}).json()
+    assert body["branch"] == "feature/merged"
+    assert body["gone"] is False
+
+    # Delete the remote branch; `git fetch --prune` updates the tracking ref.
+    _git(repo, "push", "-q", "origin", "--delete", "feature/merged")
+    _git(repo, "fetch", "-q", "--prune", "origin")
+
+    body = client.get("/api/git/status", params={"path": str(repo)}).json()
+    assert body["branch"] == "feature/merged"
+    assert body["gone"] is True
 
 
 def test_review_list_classifies_modified_and_untracked(client, repo):

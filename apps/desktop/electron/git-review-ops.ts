@@ -217,6 +217,25 @@ async function defaultBranchName(git) {
   return null
 }
 
+// True when the current branch's upstream tracking ref has been deleted on the
+// remote — the "[gone]" state. Returns false for detached HEAD, no upstream,
+// or a live upstream.
+async function branchGone(git, branch) {
+  if (!branch) {
+    return false
+  }
+
+  try {
+    const track = (await git.raw([
+      'for-each-ref', '--format=%(upstream:track)', `refs/heads/${branch}`
+    ])).trim()
+
+    return track.includes('[gone]')
+  } catch {
+    return false
+  }
+}
+
 // A status file's single-letter classification, preferring the staged (index)
 // code over the worktree code; untracked wins (simple-git marks both '?').
 function statusLetter(file) {
@@ -647,6 +666,7 @@ async function repoStatus(repoPath, gitBin) {
     branch: detached ? null : status.current || null,
     defaultBranch: await defaultBranchName(git),
     detached,
+    gone: await branchGone(git, detached ? null : status.current || null),
     ahead: status.ahead || 0,
     behind: status.behind || 0,
     staged: files.filter(f => f.staged).length,

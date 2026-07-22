@@ -1654,6 +1654,11 @@ export const ja = defineLocale({
       removeWorktreeDirty:
         'このワークツリーにはコミットされていない変更があります。強制削除（変更を破棄）するか、レーンを隠してディスク上に残します。',
       forceRemove: '強制削除',
+      archiveSessions: 'セッションをアーカイブ',
+      archiveSessionsConfirm: count =>
+        `このブランチの ${count} 件のセッションをアーカイブしますか？アーカイブされたチャットはサイドバーから非表示になりますが、メッセージはすべて保持されます。`,
+      archiveSessionsDone: count => `${count} 件のセッションをアーカイブしました`,
+      archiveSessionsFailed: 'セッションをアーカイブできませんでした',
       enter: label => `${label} を開く`
     },
     newSessionIn: label => `${label} で新しいセッション`,
@@ -1840,6 +1845,7 @@ export const ja = defineLocale({
       title: 'ワークツリー',
       noBranch: 'ブランチなし',
       detached: 'デタッチ',
+      gone: 'gone',
       clean: 'クリーン',
       changed: count => `${count} 件変更`,
       ahead: count => `${count} 先行`,

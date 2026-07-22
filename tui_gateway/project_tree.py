@@ -438,6 +438,26 @@ def _project_for_session(session: dict, index: _FolderIndex, resolve: Optional[R
 # ---------------------------------------------------------------------------
 
 
+def _annotate_gone(repos: list[dict], gone_fn: Optional[Callable[[str], frozenset[str]]]) -> None:
+    """Annotate each branch lane in ``repos`` with ``gone: True`` when the
+    lane's branch label is in the repo's gone set.
+
+    Only applies to main-checkout branch lanes (``isMain`` and not ``isKanban``):
+    linked worktree lanes and kanban lanes are labeled by path, not branch name.
+    Mutates group dicts in place.
+    """
+    if not gone_fn:
+        return
+    for repo in repos:
+        gone = gone_fn(repo.get("path") or "")
+        if not gone:
+            continue
+        for group in repo.get("groups") or []:
+            if group.get("isMain") and not group.get("isKanban"):
+                if group.get("label", "").strip() in gone:
+                    group["gone"] = True
+
+
 def _project_node(
     *,
     pid: str,
@@ -475,6 +495,7 @@ def build_tree(
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
     is_junk_cwd: Optional[Callable[[str], bool]] = None,
+    gone_fn: Optional[Callable[[str], frozenset[str]]] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -487,6 +508,11 @@ def build_tree(
     policy for non-git session folders: selected descendants may be intentional
     workspaces even when their parent tree contains Hermes state. User-created
     projects are honored regardless.
+    ``gone_fn`` is an optional callable that takes a repo root path and returns
+    the set of branch names whose upstream tracking ref has been deleted on the
+    remote (the ``[gone]`` state). When provided, each branch lane whose label
+    is in the set is annotated with ``gone: True`` so the UI can flag stale
+    branches for cleanup.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -527,6 +553,7 @@ def build_tree(
         repos = _seed_folder_repos(
             _build_repos(psessions, resolve, hydrate), project.get("folders") or [], resolve
         )
+        _annotate_gone(repos, gone_fn)
         result.append(
             _project_node(
                 pid=project["id"],
@@ -581,6 +608,7 @@ def build_tree(
         auto_sessions = bucket["sessions"]
         auto_key = _path_key(auto_root)
         repos = _build_repos(auto_sessions, resolve, hydrate)
+        _annotate_gone(repos, gone_fn)
         repo_node = next(
             (
                 repo

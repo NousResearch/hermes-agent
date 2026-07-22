@@ -1600,6 +1600,11 @@ export const zhHant = defineLocale({
         '從 git 中移除（刪除工作樹目錄，但保留分支），或僅從側邊欄隱藏該軌道並將工作樹保留在磁碟上。',
       removeWorktreeDirty: '此工作樹有未提交的變更。強制移除（捨棄這些變更），或僅隱藏軌道並保留在磁碟上。',
       forceRemove: '強制移除',
+      archiveSessions: '封存工作階段',
+      archiveSessionsConfirm: count =>
+        `封存此分支上的 ${count} 個工作階段？已封存的聊天會從側邊欄隱藏，但保留所有訊息。`,
+      archiveSessionsDone: count => `已封存 ${count} 個工作階段`,
+      archiveSessionsFailed: '無法封存工作階段',
       enter: label => `開啟 ${label}`
     },
     newSessionIn: label => `在 ${label} 中新建工作階段`,
@@ -1785,6 +1790,7 @@ export const zhHant = defineLocale({
       title: '工作區',
       noBranch: '無分支',
       detached: '分離 HEAD',
+      gone: 'gone',
       clean: '乾淨',
       changed: count => `${count} 處變更`,
       ahead: count => `領先 ${count}`,

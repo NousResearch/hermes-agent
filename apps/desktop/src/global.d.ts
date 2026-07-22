@@ -761,6 +761,10 @@ export interface HermesRepoStatus {
   // the default" from anywhere. Null when no trunk is detected.
   defaultBranch: null | string
   detached: boolean
+  // True when the current branch's upstream tracking ref has been deleted on
+  // the remote (merged or manually deleted) — the "[gone]" state. Lets the
+  // coding rail flag stale branches for cleanup.
+  gone: boolean
   ahead: number
   behind: number
   staged: number

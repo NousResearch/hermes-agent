@@ -479,3 +479,39 @@ def test_colliding_repo_basenames_disambiguate_labels():
     labels = sorted(p["label"] for p in tree["projects"])
 
     assert labels == ["x/proj", "y/proj"]
+
+
+def test_gone_fn_annotates_branch_lanes():
+    """A gone_fn marks branch lanes whose label is in the repo's gone set."""
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = [
+        _session("/repo", branch="main"),
+        _session("/repo", branch="feature/merged"),
+        _session("/repo", branch="feature/live"),
+    ]
+
+    tree = pt.build_tree(
+        [],
+        sessions,
+        [],
+        resolve,
+        hydrate=True,
+        gone_fn=lambda root: {"feature/merged"} if root == "/repo" else set(),
+    )
+    project = next(p for p in tree["projects"] if p["id"] == "/repo")
+    lanes = {g["label"]: g for repo in project["repos"] for g in repo["groups"]}
+
+    assert lanes["main"].get("gone") is not True
+    assert lanes["feature/merged"].get("gone") is True
+    assert lanes["feature/live"].get("gone") is not True
+
+
+def test_gone_fn_absent_leaves_no_gone_field():
+    """Without a gone_fn, no lane carries a gone field."""
+    resolve = _resolver({"/repo": ("/repo", "/repo")})
+    sessions = [_session("/repo", branch="feature/merged")]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = next(p for p in tree["projects"] if p["id"] == "/repo")
+
+    assert all("gone" not in g for repo in project["repos"] for g in repo["groups"])

@@ -9,6 +9,7 @@ const sampleStatus: HermesRepoStatus = {
   branch: 'feature/login',
   defaultBranch: 'main',
   detached: false,
+  gone: false,
   ahead: 1,
   behind: 0,
   staged: 1,

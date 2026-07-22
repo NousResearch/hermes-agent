@@ -26,6 +26,9 @@ export interface SidebarSessionGroup {
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
   isKanban?: boolean
+  // True when this branch lane's upstream tracking ref has been deleted on the
+  // remote (merged or manually deleted). The sidebar can flag it for cleanup.
+  gone?: boolean
   loadingMore?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   onLoadMore?: () => void

@@ -83,7 +83,18 @@ export function WorkspaceShowMoreButton({
 // Per-worktree actions (linked worktree lanes only), mirroring the session row
 // and ProjectMenu kebab: reveal in the file manager, copy path, and remove the
 // worktree (runs a real `git worktree remove` via the caller's confirm dialog).
-export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
+// When `onArchive` is set (gone branch lanes), adds an "Archive sessions" item.
+export function WorkspaceMenu({
+  onArchive,
+  onArchiveLabel,
+  onRemove,
+  path
+}: {
+  onArchive?: () => void
+  onArchiveLabel?: string
+  onRemove?: () => void
+  path: null | string
+}) {
   const { t } = useI18n()
   const p = t.sidebar.projects
 
@@ -102,19 +113,33 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
-        <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
-          <Codicon name="folder-opened" size="0.875rem" />
-          <span>{p.reveal}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={!path} onSelect={() => void copyPath(path)}>
-          <Codicon name="copy" size="0.875rem" />
-          <span>{p.copyPath}</span>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onRemove} variant="destructive">
-          <Codicon name="trash" size="0.875rem" />
-          <span>{`${p.removeWorktree}…`}</span>
-        </DropdownMenuItem>
+        {onArchive && (
+          <DropdownMenuItem onSelect={onArchive}>
+            <Codicon name="archive" size="0.875rem" />
+            <span>{onArchiveLabel ?? p.archiveSessions}</span>
+          </DropdownMenuItem>
+        )}
+        {path && (
+          <>
+            <DropdownMenuItem onSelect={() => void revealPath(path)}>
+              <Codicon name="folder-opened" size="0.875rem" />
+              <span>{p.reveal}</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void copyPath(path)}>
+              <Codicon name="copy" size="0.875rem" />
+              <span>{p.copyPath}</span>
+            </DropdownMenuItem>
+          </>
+        )}
+        {onRemove && (
+          <>
+            {(onArchive || path) && <DropdownMenuSeparator />}
+            <DropdownMenuItem onSelect={onRemove} variant="destructive">
+              <Codicon name="trash" size="0.875rem" />
+              <span>{`${p.removeWorktree}…`}</span>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -153,6 +178,7 @@ export function WorkspaceHeader({
   action,
   count,
   emphasis = false,
+  gone = false,
   icon,
   label,
   onToggle,
@@ -162,6 +188,7 @@ export function WorkspaceHeader({
   action?: React.ReactNode
   count: React.ReactNode
   emphasis?: boolean
+  gone?: boolean
   icon: React.ReactNode
   label: string
   onToggle: () => void
@@ -186,6 +213,14 @@ export function WorkspaceHeader({
       >
         <SidebarRowLead>{icon}</SidebarRowLead>
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
+        {gone && (
+          <span
+            className="shrink-0 text-[0.625rem] font-medium text-amber-500/90"
+            title={label}
+          >
+            gone
+          </span>
+        )}
         <span className="shrink-0">
           <SidebarCount>{count}</SidebarCount>
         </span>

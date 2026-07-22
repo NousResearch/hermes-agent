@@ -1714,6 +1714,11 @@ export const en: Translations = {
       removeWorktreeDirty:
         'This worktree has uncommitted changes. Force-remove it (discards those changes), or just hide the lane and keep it on disk.',
       forceRemove: 'Force remove',
+      archiveSessions: 'Archive sessions',
+      archiveSessionsConfirm: count =>
+        `Archive ${count} session${count === 1 ? '' : 's'} on this branch? Archived chats are hidden from the sidebar but keep all their messages.`,
+      archiveSessionsDone: count => `${count} session${count === 1 ? '' : 's'} archived`,
+      archiveSessionsFailed: 'Could not archive sessions',
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
       toggle: label => `Toggle ${label} sessions`,
@@ -1906,6 +1911,7 @@ export const en: Translations = {
       title: 'Working tree',
       noBranch: 'No branch',
       detached: 'detached',
+      gone: 'gone',
       clean: 'Clean',
       changed: count => `${count} changed`,
       ahead: count => `${count} ahead`,

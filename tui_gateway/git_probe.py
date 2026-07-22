@@ -59,6 +59,25 @@ def branch(cwd: str) -> str:
     return run_git(cwd, "branch", "--show-current") or run_git(cwd, "rev-parse", "--short", "HEAD")
 
 
+def gone_branches(cwd: str) -> set[str]:
+    """Local branches whose upstream tracking ref was deleted on the remote.
+
+    One ``git for-each-ref`` call returns all gone branches for the repo at
+    ``cwd``.  Returns an empty set for non-repos, bare repos, or repos with
+    no upstream tracking.  Used by the project tree to annotate branch lanes
+    whose sessions sit on merged/deleted branches.
+    """
+    out = run_git(cwd, "for-each-ref", "--format=%(refname:short) %(upstream:track)", "refs/heads/")
+    if not out:
+        return set()
+    gone = set()
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) >= 2 and "[gone]" in parts[1]:
+            gone.add(parts[0].strip())
+    return gone
+
+
 class _RootCache:
     """Thread-safe, single-flight cache of git-root probes. Positive results are
     cached for the process lifetime; negative ("not a repo") results are cached

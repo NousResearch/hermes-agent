@@ -143,7 +143,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
-    <div className="relative flex w-full shrink-0 justify-end">
+    <div className="relative flex shrink-0 justify-end">
       <ActionBarPrimitive.Root
         className={cn(
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -237,6 +237,26 @@ const MessageTimestamp: FC = () => {
   return <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{label}</DropdownMenuLabel>
 }
 
+const VisibleMessageTimestamp: FC = () => {
+  const { t } = useI18n()
+  const createdAt = useAuiState(s => s.message.createdAt)
+  const label = formatMessageTimestamp(createdAt, t.assistant.thread)
+
+  if (!label) {
+    return null
+  }
+
+  return (
+    <span
+      className="shrink-0 whitespace-nowrap py-1.5 text-[0.68rem] leading-4 text-muted-foreground/70 tabular-nums"
+      data-slot="aui_msg-timestamp"
+      title={label}
+    >
+      {label}
+    </span>
+  )
+}
+
 const AssistantFooter: FC<MessageActionProps> = props => (
   <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
     <BranchPickerPrimitive.Root
@@ -253,6 +273,9 @@ const AssistantFooter: FC<MessageActionProps> = props => (
         <Codicon name="chevron-right" size="0.875rem" />
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
-    <AssistantActionBar {...props} />
+    <div className="flex w-full items-center justify-end gap-2">
+      <AssistantActionBar {...props} />
+      <VisibleMessageTimestamp />
+    </div>
   </div>
 )

@@ -6785,7 +6785,8 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, session_id):
+        def get_messages_as_conversation(self, session_id, repair_alternation=False):
+            assert repair_alternation is True
             return list(original_history)
 
         def replace_messages(self, session_id, messages):
@@ -6884,7 +6885,8 @@ def test_prompt_submit_truncate_ordinal_refreshes_external_writes(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, session_id):
+        def get_messages_as_conversation(self, session_id, repair_alternation=False):
+            assert repair_alternation is True
             return list(fresh_history)
 
         def replace_messages(self, session_id, messages):
@@ -7013,7 +7015,8 @@ def test_prompt_submit_truncate_fails_closed_when_fresh_read_fails(monkeypatch):
     replaced = []
 
     class _StubDb:
-        def get_messages_as_conversation(self, session_id):
+        def get_messages_as_conversation(self, session_id, repair_alternation=False):
+            assert repair_alternation is True
             raise RuntimeError("database unavailable")
 
         def replace_messages(self, session_id, messages):
@@ -7061,7 +7064,8 @@ def test_prompt_submit_truncate_fails_closed_when_replace_fails(monkeypatch):
     ]
 
     class _StubDb:
-        def get_messages_as_conversation(self, session_id):
+        def get_messages_as_conversation(self, session_id, repair_alternation=False):
+            assert repair_alternation is True
             return list(history)
 
         def replace_messages(self, session_id, messages):

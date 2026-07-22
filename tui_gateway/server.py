@@ -9460,7 +9460,7 @@ def _(rid, params: dict) -> dict:
             if db is not None and session.get("session_key"):
                 try:
                     history = db.get_messages_as_conversation(
-                        session["session_key"]
+                        session["session_key"], repair_alternation=True
                     )
                 except Exception as exc:
                     # This path immediately performs a destructive transcript

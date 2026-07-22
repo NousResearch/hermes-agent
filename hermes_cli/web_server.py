@@ -872,6 +872,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Log level for agent.log",
         "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
     },
+    "logging.file_enabled": {
+        "type": "boolean",
+        "description": "Enable/disable file logging (agent.log, errors.log, etc.)",
+    },
     "agent.service_tier": {
         "type": "select",
         "description": "API service tier (OpenAI/Anthropic)",

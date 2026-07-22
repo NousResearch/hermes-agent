@@ -305,61 +305,73 @@ def setup_logging(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Read config defaults (best-effort — config may not be loaded yet).
-    cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
+    (
+        cfg_level,
+        cfg_max_size,
+        cfg_backup,
+        cfg_file_enabled,
+    ) = _read_logging_config()
 
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
     max_bytes = (max_size_mb or cfg_max_size or 5) * 1024 * 1024
     backups = backup_count or cfg_backup or 3
+    file_enabled = cfg_file_enabled  # None → True via default in _read_logging_config
 
     # Lazy import to avoid circular dependency at module load time.
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
-    # --- agent.log (INFO+) — the main activity log -------------------------
-    _add_rotating_handler(
-        root,
-        log_dir / "agent.log",
-        level=level,
-        max_bytes=max_bytes,
-        backup_count=backups,
-        formatter=RedactingFormatter(_LOG_FORMAT),
-    )
-
-    # --- errors.log (WARNING+) — quick triage log --------------------------
-    _add_rotating_handler(
-        root,
-        log_dir / "errors.log",
-        level=logging.WARNING,
-        max_bytes=2 * 1024 * 1024,
-        backup_count=2,
-        formatter=RedactingFormatter(_LOG_FORMAT),
-    )
-
-    # --- gateway.log (INFO+, gateway component only) ------------------------
-    if mode == "gateway":
+    if file_enabled:
+        # --- agent.log (INFO+) — the main activity log -------------------------
         _add_rotating_handler(
             root,
-            log_dir / "gateway.log",
-            level=logging.INFO,
-            max_bytes=5 * 1024 * 1024,
-            backup_count=3,
+            log_dir / "agent.log",
+            level=level,
+            max_bytes=max_bytes,
+            backup_count=backups,
             formatter=RedactingFormatter(_LOG_FORMAT),
-            log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
         )
 
-    # --- gui.log (INFO+, dashboard/tui-gateway components) -----------------
-    if mode == "gui":
+        # --- errors.log (WARNING+) — quick triage log --------------------------
         _add_rotating_handler(
             root,
-            log_dir / "gui.log",
-            level=logging.INFO,
-            max_bytes=10 * 1024 * 1024,
-            backup_count=5,
+            log_dir / "errors.log",
+            level=logging.WARNING,
+            max_bytes=2 * 1024 * 1024,
+            backup_count=2,
             formatter=RedactingFormatter(_LOG_FORMAT),
-            log_filter=_ComponentFilter(COMPONENT_PREFIXES["gui"]),
         )
+
+        # --- gateway.log (INFO+, gateway component only) ------------------------
+        if mode == "gateway":
+            _add_rotating_handler(
+                root,
+                log_dir / "gateway.log",
+                level=logging.INFO,
+                max_bytes=5 * 1024 * 1024,
+                backup_count=3,
+                formatter=RedactingFormatter(_LOG_FORMAT),
+                log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+            )
+
+        # --- gui.log (INFO+, dashboard/tui-gateway components) -----------------
+        if mode == "gui":
+            _add_rotating_handler(
+                root,
+                log_dir / "gui.log",
+                level=logging.INFO,
+                max_bytes=10 * 1024 * 1024,
+                backup_count=5,
+                formatter=RedactingFormatter(_LOG_FORMAT),
+                log_filter=_ComponentFilter(COMPONENT_PREFIXES["gui"]),
+            )
+    else:
+        # File logging disabled — add a minimal StreamHandler to stderr so
+        # the user still sees log output on the console (at WARNING+ by
+        # default, or at *level* if it's more permissive than WARNING).
+        _ensure_stderr_handler(level, RedactingFormatter(_LOG_FORMAT))
 
     if _logging_initialized and not force:
         return log_dir
@@ -718,6 +730,23 @@ def _reset_queued_handlers() -> None:
         _log_queue = None
 
 
+def _ensure_stderr_handler(level: int, formatter: logging.Formatter) -> None:
+    """Add a StreamHandler to stderr if none exists on the root logger.
+
+    Called when file logging is disabled so the user still sees log output
+    on the console.  Idempotent — checks for an existing StreamHandler
+    before adding a new one.
+    """
+    root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
+            return  # already have a stream handler
+    handler = logging.StreamHandler(_safe_stderr())
+    handler.setLevel(level)
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+
+
 def _add_rotating_handler(
     logger: logging.Logger,
     path: Path,
@@ -762,7 +791,8 @@ def _add_rotating_handler(
 def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml.
 
-    Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
+    Returns ``(level, max_size_mb, backup_count, file_enabled)`` — any may be
+    ``None`` (in which case callers apply their own defaults).
     """
     try:
         from utils import fast_safe_load
@@ -783,7 +813,8 @@ def _read_logging_config():
                     log_cfg.get("level"),
                     log_cfg.get("max_size_mb"),
                     log_cfg.get("backup_count"),
+                    log_cfg.get("file_enabled", True),
                 )
     except Exception:
         pass
-    return (None, None, None)
+    return (None, None, None, True)

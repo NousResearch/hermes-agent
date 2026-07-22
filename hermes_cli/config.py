@@ -2962,10 +2962,12 @@ DEFAULT_CONFIG = {
 
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
+    # Set file_enabled to false to disable file logging entirely (console only).
     "logging": {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
+        "file_enabled": True,  # Set false to disable file logging entirely
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches

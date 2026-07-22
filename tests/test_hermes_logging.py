@@ -885,7 +885,7 @@ class TestReadLoggingConfig:
     """_read_logging_config() reads from config.yaml."""
 
     def test_returns_none_when_no_config(self, hermes_home):
-        level, max_size, backup = hermes_logging._read_logging_config()
+        level, max_size, backup, _fe = hermes_logging._read_logging_config()
         assert level is None
         assert max_size is None
         assert backup is None
@@ -895,7 +895,7 @@ class TestReadLoggingConfig:
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
         (hermes_home / "config.yaml").write_text(yaml.dump(config))
 
-        level, max_size, backup = hermes_logging._read_logging_config()
+        level, max_size, backup, _fe = hermes_logging._read_logging_config()
         assert level == "DEBUG"
         assert max_size == 10
         assert backup == 5
@@ -905,7 +905,7 @@ class TestReadLoggingConfig:
         config = {"model": "test"}
         (hermes_home / "config.yaml").write_text(yaml.dump(config))
 
-        level, max_size, backup = hermes_logging._read_logging_config()
+        level, max_size, backup, _fe = hermes_logging._read_logging_config()
         assert level is None
 
 

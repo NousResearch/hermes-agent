@@ -16421,7 +16421,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
-        from gateway.session_context import set_session_vars
+        from gateway.session_context import (
+            canonical_notification_adapter_identity,
+            set_session_vars,
+        )
         # Propagate the adapter's async-delivery capability so async tools
         # (terminal notify_on_complete / watch_patterns, delegate_task
         # background=True) know whether this channel can wake a later turn.
@@ -16429,19 +16432,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # (api_server) declare supports_async_delivery=False. Use getattr so
         # bare runners built via object.__new__ (tests) without self.adapters
         # don't blow up — they simply default to supported.
-        _adapters = getattr(self, "adapters", None) or {}
-        _adapter = _adapters.get(context.source.platform)
+        _active_profile = self._active_profile_name()
+        _source_profile = str(getattr(context.source, "profile", "") or "").strip()
+        _route_profile = _source_profile or _active_profile
+        if _source_profile and _source_profile != _active_profile:
+            _adapter = (
+                (getattr(self, "_profile_adapters", None) or {})
+                .get(_source_profile, {})
+                .get(context.source.platform)
+            )
+        else:
+            _adapter = (getattr(self, "adapters", None) or {}).get(
+                context.source.platform
+            )
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _adapter_identity = ""
+        if _adapter is not None:
+            _adapter_identity = canonical_notification_adapter_identity(
+                _route_profile, context.source.platform.value
+            )
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
+            chat_type=context.source.chat_type or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
-            profile=getattr(context.source, "profile", "") or "",
+            profile=_route_profile,
+            adapter_identity=_adapter_identity,
             async_delivery=_async_delivery,
         )
 

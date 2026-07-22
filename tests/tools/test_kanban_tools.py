@@ -2149,6 +2149,15 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
     monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+    monkeypatch.setenv(
+        "HERMES_SESSION_KEY", "agent:main:telegram:group:chat-42:thread-7"
+    )
+    monkeypatch.setenv("HERMES_SESSION_PROFILE", "default")
+    monkeypatch.setenv(
+        "HERMES_SESSION_ADAPTER_IDENTITY",
+        "profile:default|platform:telegram",
+    )
 
     out = kt._handle_create({
         "title": "auto-sub gateway",
@@ -2166,6 +2175,16 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["chat_id"] == "chat-42"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
+    assert (
+        s["canonical_session_key"]
+        == "agent:main:telegram:group:chat-42:thread-7"
+    )
+    assert s["chat_type"] == "group"
+    assert s["notifier_profile"] == "default"
+    assert (
+        s["adapter_identity"]
+        == "profile:default|platform:telegram"
+    )
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):

@@ -1259,6 +1259,9 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
     notifier_profile TEXT,
+    canonical_session_key TEXT,
+    chat_type     TEXT,
+    adapter_identity TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -2357,10 +2360,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         notify_cols = {
             row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
         }
-        if "notifier_profile" not in notify_cols:
-            _add_column_if_missing(
-                conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
-            )
+        notify_additive_columns = {
+            "notifier_profile": "notifier_profile TEXT",
+            "canonical_session_key": "canonical_session_key TEXT",
+            "chat_type": "chat_type TEXT",
+            "adapter_identity": "adapter_identity TEXT",
+        }
+        for column, ddl in notify_additive_columns.items():
+            if column not in notify_cols:
+                _add_column_if_missing(conn, "kanban_notify_subs", column, ddl)
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2484,7 +2492,8 @@ _REBUILD_SPECS = {
         "CREATE TABLE kanban_notify_subs ("
         " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
         " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
-        " notifier_profile TEXT, created_at INTEGER NOT NULL,"
+        " notifier_profile TEXT, canonical_session_key TEXT, chat_type TEXT,"
+        " adapter_identity TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
@@ -9103,6 +9112,9 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    canonical_session_key: Optional[str] = None,
+    chat_type: Optional[str] = None,
+    adapter_identity: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
@@ -9111,12 +9123,47 @@ def add_notify_sub(
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id, notifier_profile,
+                 canonical_session_key, chat_type, adapter_identity,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                task_id, platform, chat_id, thread_id or "", user_id,
+                notifier_profile, canonical_session_key, chat_type,
+                adapter_identity, now,
+            ),
         )
-        if notifier_profile:
+        trusted_route = all(
+            str(value or "").strip()
+            for value in (
+                canonical_session_key,
+                platform,
+                chat_type,
+                notifier_profile,
+                adapter_identity,
+            )
+        )
+        if trusted_route:
+            # Upgrade an existing legacy row only when every canonical routing
+            # field came from the live gateway session context. Updating the
+            # fields together prevents a partial migration from being treated
+            # as a canonical route.
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET user_id = ?, notifier_profile = ?,
+                       canonical_session_key = ?, chat_type = ?,
+                       adapter_identity = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                """,
+                (
+                    user_id, notifier_profile, canonical_session_key, chat_type,
+                    adapter_identity, task_id, platform, chat_id,
+                    thread_id or "",
+                ),
+            )
+        elif notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
             # backfilling only when the existing value is unset.
             conn.execute(

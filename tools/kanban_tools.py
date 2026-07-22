@@ -1258,9 +1258,14 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        canonical_session_key = get_session_env("HERMES_SESSION_KEY", "") or None
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
+        )
+        adapter_identity = (
+            get_session_env("HERMES_SESSION_ADAPTER_IDENTITY", "") or None
         )
 
         # Lazy-import to keep the module-level dependency light
@@ -1270,6 +1275,9 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             platform=platform, chat_id=chat_id,
             thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            canonical_session_key=canonical_session_key,
+            chat_type=chat_type,
+            adapter_identity=adapter_identity,
         )
         return True
     except Exception as _exc:

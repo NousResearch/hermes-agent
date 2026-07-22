@@ -481,6 +481,60 @@ class GatewaySlashCommandsMixin:
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
                     if platform_str and chat_id:
+                        canonical_route: dict[str, str] = {}
+                        try:
+                            session_entry = (
+                                await self.async_session_store.get_or_create_session(
+                                    source
+                                )
+                            )
+                            canonical_session_key = str(
+                                getattr(session_entry, "session_key", "") or ""
+                            ).strip()
+                            active_profile = (
+                                getattr(self, "_kanban_notifier_profile", None)
+                                or self._active_profile_name()
+                            )
+                            route_profile = str(
+                                getattr(source, "profile", None)
+                                or active_profile
+                                or "default"
+                            ).strip()
+                            from gateway.session_context import (
+                                canonical_notification_adapter_identity,
+                            )
+                            adapter_identity = (
+                                canonical_notification_adapter_identity(
+                                    route_profile, platform_str
+                                )
+                            )
+                            live_routes = self._kanban_notification_adapter_routes(
+                                active_profile
+                            )
+                            chat_type = str(
+                                getattr(source, "chat_type", "") or ""
+                            ).strip()
+                            if (
+                                canonical_session_key
+                                and chat_type
+                                and adapter_identity in live_routes
+                            ):
+                                canonical_route = {
+                                    "canonical_session_key": canonical_session_key,
+                                    "chat_type": chat_type,
+                                    "notifier_profile": route_profile,
+                                    "adapter_identity": adapter_identity,
+                                }
+                        except Exception:
+                            # A slash-created task still keeps its visible
+                            # notification subscription. Without a verified
+                            # SessionEntry/live adapter route it remains
+                            # deliberately notify-only.
+                            logger.debug(
+                                "kanban create: canonical notification route unavailable",
+                                exc_info=True,
+                            )
+
                         def _sub():
                             from hermes_cli import kanban_db as _kb
                             conn = _kb.connect(board=requested_board)
@@ -490,7 +544,18 @@ class GatewaySlashCommandsMixin:
                                     platform=platform_str, chat_id=chat_id,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
-                                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    notifier_profile=(
+                                        canonical_route.get("notifier_profile")
+                                        or getattr(self, "_kanban_notifier_profile", None)
+                                        or self._active_profile_name()
+                                    ),
+                                    canonical_session_key=canonical_route.get(
+                                        "canonical_session_key"
+                                    ),
+                                    chat_type=canonical_route.get("chat_type"),
+                                    adapter_identity=canonical_route.get(
+                                        "adapter_identity"
+                                    ),
                                 )
                             finally:
                                 conn.close()

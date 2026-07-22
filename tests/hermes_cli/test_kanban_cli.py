@@ -165,6 +165,32 @@ def test_run_slash_json_output(kanban_home):
     assert payload["title"] == "jsontask"
     assert payload["assignee"] == "alice"
     assert payload["status"] == "ready"
+    assert payload["preflight"]["level"] == "low"
+
+
+def test_create_high_risk_advice_is_non_blocking(kanban_home, monkeypatch):
+    monkeypatch.setattr(kc, "_check_dispatcher_presence", lambda: (True, ""))
+    out = kc.run_slash(
+        "create 'broad repair' --assignee alice "
+        "--body 'Investigate and design the repair, then implement API, database, CLI, "
+        "and dashboard changes. Back up and migrate live data with credentials.'"
+    )
+
+    assert "Created t_" in out
+    assert "non-blocking" in out.lower()
+    assert "decompose" in out.lower()
+
+
+def test_create_low_risk_human_output_stays_quiet(kanban_home, monkeypatch):
+    monkeypatch.setattr(kc, "_check_dispatcher_presence", lambda: (True, ""))
+    out = kc.run_slash(
+        "create 'focused parser fix' --assignee alice "
+        "--body 'Implement one parser option and its focused test.'"
+    )
+
+    assert "Created t_" in out
+    assert "preflight" not in out.lower()
+    assert "non-blocking" not in out.lower()
 
 
 def test_run_slash_dispatch_dry_run_counts(kanban_home):

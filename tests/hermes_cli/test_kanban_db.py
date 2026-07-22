@@ -38,6 +38,77 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def test_create_task_persists_one_redacted_preflight_event_for_high_risk(kanban_home):
+    secret = "PRIVATE-BODY-EXCERPT"
+    body = (
+        "Investigate and design the repair, then implement API, database, CLI, "
+        f"and dashboard changes. Back up and migrate live data with credentials. {secret}"
+    )
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Repair broad live workflow",
+            body=body,
+            idempotency_key="risk-once",
+        )
+        repeated_id = kb.create_task(
+            conn,
+            title="Repair broad live workflow",
+            body=body,
+            idempotency_key="risk-once",
+        )
+        events = [event for event in kb.list_events(conn, task_id) if event.kind == "task_preflight"]
+
+    assert repeated_id == task_id
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["version"] == 1
+    assert payload["level"] == "high"
+    assert payload["recommendation"] == "decompose_before_dispatch"
+    assert payload["checkpoint_required"] is True
+    assert set(payload) == {
+        "version",
+        "level",
+        "dimensions",
+        "recommendation",
+        "checkpoint_required",
+    }
+    assert secret not in repr(payload)
+
+
+def test_create_task_persists_medium_preflight_event(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Credential-gated parser fix",
+            body=(
+                "Investigate the parser failure, then implement the fix "
+                "using external credentials."
+            ),
+        )
+        events = [
+            event
+            for event in kb.list_events(conn, task_id)
+            if event.kind == "task_preflight"
+        ]
+
+    assert len(events) == 1
+    assert events[0].payload["level"] == "medium"
+    assert events[0].payload["recommendation"] == "consider_decomposition"
+
+
+def test_create_task_does_not_persist_preflight_event_for_low_risk(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Add parser timeout",
+            body="Implement one parser option and its focused regression test.",
+        )
+        kinds = [event.kind for event in kb.list_events(conn, task_id)]
+
+    assert kinds == ["created"]
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

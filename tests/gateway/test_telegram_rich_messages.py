@@ -11,6 +11,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 """
 
 import logging
+import re as _re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +21,14 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
+
+
+def _no_unescaped_dollar(md, token):
+    """True when ``token`` (e.g. ``$5``) does not appear with an unescaped ``$``.
+
+    ``\\$5`` (escaped) does not count — the ``$`` is preceded by a backslash.
+    """
+    return _re.search(r"(?<!\\)" + _re.escape(token), md) is None
 
 
 # Content exercising rich-only constructs: a heading, a real Markdown table,
@@ -1210,3 +1219,219 @@ async def test_try_edit_rich_records_streamed_final_for_reply_recovery(monkeypat
     result = await adapter._try_edit_rich("12345", "5724", "Готово. Основной бот живой.")
     assert result is not None and result.success
     assert rich_sent_store.lookup("12345", "5724") == "Готово. Основной бот живой."
+
+
+# ── Bare-$ escaping for Bot API 10.1 rich markdown (#66746) ────────────
+# Telegram's rich markdown treats `$...$` as inline LaTeX math. A reply with
+# two or more bare dollar amounts (e.g. `$395k vs $483k`) that ALSO triggers
+# rich routing (a pipe table elsewhere) gets the first two `$` paired into a
+# garbled math span. `_rich_message_payload` must escape a standalone single
+# `$` to `\$` while leaving `$$` block math and code-span dollars untouched.
+
+
+def _draft_api_kwargs(adapter):
+    """Return the api_kwargs dict from the single sendRichMessageDraft call."""
+    call = adapter._bot.do_api_request.call_args
+    assert call.args[0] == "sendRichMessageDraft"
+    return call.kwargs["api_kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_rich_escapes_bare_dollar_in_financial_figures():
+    """A pipe table triggers rich mode; unrelated bare `$` amounts in the prose
+    must arrive escaped so Telegram's client does not pair them as inline math."""
+    adapter = _make_adapter()
+    content = (
+        "- **Red collateral**: API shows $395k vs UI $483k **88k gap**\n"
+        "- **Red debt**: API $233k vs UI $168k **65k gap**\n\n"
+        "| Metric | Value |\n|---|---|\n| gap | 88k |"
+    )
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    # Every bare dollar amount is escaped; none survive as a raw single `$`.
+    assert _no_unescaped_dollar(md, "$395k")
+    assert _no_unescaped_dollar(md, "$483k")
+    assert r"\$395k" in md
+    assert r"\$233k" in md
+    assert r"\$168k" in md
+    # The bold markers and table survive untouched.
+    assert "**88k gap**" in md
+    assert "|---|---|" in md
+
+
+@pytest.mark.asyncio
+async def test_rich_pipe_table_keeps_unrelated_bare_dollars_escaped():
+    """The minimal repro from the issue: a table plus two bare `$` amounts."""
+    adapter = _make_adapter()
+    content = (
+        "- **Red collateral**: API shows $395k vs UI $483k **88k gap**\n"
+        "- **Red debt**: API $233k vs UI $168k **65k gap**\n\n"
+        "| A | B |\n|---|---|\n| 1 | 2 |"
+    )
+
+    await adapter.send("12345", content)
+
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    # No two raw bare `$` remain that the Telegram client could pair.
+    assert md.count("$") - md.count("$$") * 2 - md.count(r"\$") == 0
+
+
+@pytest.mark.asyncio
+async def test_rich_bare_dollar_no_longer_splits_bold_markers():
+    """With the bare `$` escaped, Telegram no longer carves out a math span, so
+    `**bold**` markers straddling the former span render correctly."""
+    adapter = _make_adapter()
+    content = "API $5 vs UI $7 **gap**\n\n| A | B |\n|---|---|\n| 1 | 2 |"
+
+    await adapter.send("12345", content)
+
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "**gap**" in md
+    assert _no_unescaped_dollar(md, "$5")
+    assert _no_unescaped_dollar(md, "$7")
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_escapes_bare_dollar():
+    """The finalize-edit rich path (editMessageText rich_message) must also
+    escape bare `$` — it shares `_rich_message_payload`."""
+    adapter = _make_adapter()
+    content = "Cost is $42 today vs $50 yesterday.\n\n| Day | Cost |\n|---|---|\n| 1 | 42 |"
+
+    result = await adapter.edit_message("12345", "555", content, finalize=True)
+
+    assert result.success is True
+    md = _rich_edit_kwargs(adapter)["rich_message"]["markdown"]
+    assert _no_unescaped_dollar(md, "$42")
+    assert _no_unescaped_dollar(md, "$50")
+    assert r"\$42" in md and r"\$50" in md
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_escapes_bare_dollar():
+    """The streaming-draft rich path (sendRichMessageDraft) must also escape
+    bare `$` — it shares `_rich_message_payload`."""
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+    content = "Price $99 now, was $199.\n\n| SKU | Price |\n|---|---|\n| x | 99 |"
+
+    result = await adapter.send_draft("12345", draft_id=7, content=content)
+
+    assert result.success is True
+    md = _draft_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert _no_unescaped_dollar(md, "$99")
+    assert _no_unescaped_dollar(md, "$199")
+    assert r"\$99" in md and r"\$199" in md
+
+
+@pytest.mark.asyncio
+async def test_rich_keeps_block_math_dollars_unescaped():
+    """`$$...$$` block math is the supported math contract and must survive
+    intact — escaping its dollars would destroy the equation."""
+    adapter = _make_adapter()
+    content = "Energy: $$E = mc^2$$ and momentum $$p = mv$$.\n\n| A | B |\n|---|---|\n| 1 | 2 |"
+
+    await adapter.send("12345", content)
+
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "$$E = mc^2$$" in md
+    assert "$$p = mv$$" in md
+    assert r"\$\$" not in md  # no escaping touched the block-math delimiters
+
+
+@pytest.mark.asyncio
+async def test_rich_keeps_dollar_inside_inline_code_literal():
+    """A `$` inside an inline code span is already literal to Telegram's parser;
+    escaping it would surface a visible backslash."""
+    adapter = _make_adapter()
+    content = "Run `echo $HOME` then check $5 cost.\n\n| A | B |\n|---|---|\n| 1 | 2 |"
+
+    await adapter.send("12345", content)
+
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "`echo $HOME`" in md       # inline code dollar untouched
+    assert r"`echo \$HOME`" not in md
+    assert _no_unescaped_dollar(md, "$5")  # prose dollar still escaped
+    assert r"\$5" in md
+
+
+@pytest.mark.asyncio
+async def test_rich_keeps_dollar_inside_fenced_code_literal():
+    """A `$` inside a fenced code block is already literal; it must not be
+    escaped."""
+    adapter = _make_adapter()
+    content = (
+        "Shell snippet:\n\n```\ncost=$5\necho $cost\n```\n\n"
+        "Total $10 due.\n\n| A | B |\n|---|---|\n| 1 | 2 |"
+    )
+
+    await adapter.send("12345", content)
+
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "cost=$5" in md          # fenced-code dollars untouched
+    assert "echo $cost" in md
+    assert r"cost=\$5" not in md
+    assert _no_unescaped_dollar(md, "$10")  # prose dollar still escaped
+    assert r"\$10" in md
+
+
+@pytest.mark.asyncio
+async def test_rich_no_dollar_content_unchanged():
+    """Content with no `$` at all must pass through byte-for-byte (no behaviour
+    change for the common case)."""
+    adapter = _make_adapter()
+
+    await adapter.send("12345", RICH_CONTENT)
+
+    md = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert md == RICH_CONTENT
+
+
+_REVIEWED_DOLLAR_CONTENT = (
+    "Energy $E=mc^2$, old price \\$5, new price $10.\n\n"
+    "| A | B |\n|---|---|\n| 1 | 2 |"
+)
+
+
+def _assert_reviewed_dollars(md):
+    assert "$E=mc^2$" in md
+    assert r"old price \$5" in md
+    assert r"old price \\$5" not in md
+    assert r"new price \$10" in md
+
+
+@pytest.mark.asyncio
+async def test_rich_send_preserves_inline_math_and_preescaped_dollars():
+    adapter = _make_adapter()
+
+    await adapter.send("12345", _REVIEWED_DOLLAR_CONTENT)
+
+    _assert_reviewed_dollars(_rich_api_kwargs(adapter)["rich_message"]["markdown"])
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_preserves_inline_math_and_preescaped_dollars():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", _REVIEWED_DOLLAR_CONTENT, finalize=True
+    )
+
+    assert result.success is True
+    _assert_reviewed_dollars(_rich_edit_kwargs(adapter)["rich_message"]["markdown"])
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_preserves_inline_math_and_preescaped_dollars():
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft(
+        "12345", draft_id=7, content=_REVIEWED_DOLLAR_CONTENT
+    )
+
+    assert result.success is True
+    _assert_reviewed_dollars(_draft_api_kwargs(adapter)["rich_message"]["markdown"])

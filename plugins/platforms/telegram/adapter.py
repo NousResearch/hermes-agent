@@ -500,6 +500,20 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     re.MULTILINE,
 )
 
+# Regions whose `$` must NOT be escaped for the rich-message path, plus
+# currency markers that must be. Telegram's Bot API 10.1 rich markdown treats
+# ``$...$`` as inline LaTeX math (#66746), so finance prose such as
+# ``$395k vs $483k`` can become a garbled math span. Preserve supported inline
+# and block math, code, and already escaped dollars; escape only an unescaped
+# single ``$`` immediately before a digit.
+_RICH_DOLLAR_REGION_RE = re.compile(
+    r'(?P<code_fence>```[^\n]*\n[\s\S]*?```)'           # fenced code block
+    r'|(?P<code_inline>`[^`\n]*`)'                       # inline code span
+    r'|(?P<math_block>\$\$[\s\S]*?\$\$)'                 # $$ block math
+    r'|(?P<math_inline>(?<![\\$])\$(?![\d\s$])(?:\\.|[^\\\n$])+\$(?!\$))'
+    r'|(?P<currency>(?<![\\$])\$(?!\$)(?=\d))'          # unescaped $ before an amount
+)
+
 
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert single ``\\n`` to Markdown hard breaks for the rich-message path.
@@ -530,6 +544,28 @@ def _rich_normalize_linebreaks(text: str) -> str:
     tail = text[pos:]
     out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
     return ''.join(out)
+
+
+def _escape_bare_rich_dollars(text: str) -> str:
+    """Escape currency ``$`` markers for the Bot API 10.1 rich-markdown path.
+
+    Telegram's rich markdown treats ``$...$`` as inline LaTeX math, so two bare
+    dollar amounts (e.g. ``$395k vs $483k``) are paired into a garbled math span
+    (#66746). An unescaped single ``$`` immediately before a digit is escaped
+    to ``\\$`` so it renders as a literal currency marker.
+
+    Supported ``$...$`` inline math and ``$$...$$`` block math are preserved.
+    Dollars inside code or already escaped as ``\\$`` are also left untouched.
+    """
+    if not text or '$' not in text:
+        return text
+
+    def _sub(m: re.Match) -> str:
+        if m.lastgroup == "currency":
+            return r"\$"
+        return m.group(0)
+
+    return _RICH_DOLLAR_REGION_RE.sub(_sub, text)
 
 
 # Watchdog bound for `await updater.stop()`. When the underlying TCP socket is
@@ -1645,8 +1681,15 @@ class TelegramAdapter(BasePlatformAdapter):
         Single newlines are normalized to Markdown hard breaks so that
         multi-line content (slash-command lists, etc.) renders correctly
         in the rich-message path.  See ``_rich_normalize_linebreaks``.
+
+        Currency ``$`` markers are escaped so Telegram's rich markdown does
+        not pair dollar amounts (e.g. ``$395k vs $483k``) into an inline-math
+        span. Inline/block math, code, and pre-escaped dollars are preserved.
+        See ``_escape_bare_rich_dollars`` (#66746).
         """
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        payload: Dict[str, Any] = {
+            "markdown": _escape_bare_rich_dollars(_rich_normalize_linebreaks(content))
+        }
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

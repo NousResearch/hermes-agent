@@ -180,6 +180,76 @@ class TestSessionLifecycle:
         assert db.get_session("gen1")["cwd"] == "/work/repo"
         assert db.get_session("gen2")["cwd"] == "/work/repo"
 
+    def test_child_session_inherits_git_branch_from_parent(self, db):
+        """git_branch travels with cwd/git_repo_root — the Desktop sidebar
+        shows the branch chip per session, so a compression child born
+        without it loses the chip even though the workspace didn't change."""
+        db.create_session(session_id="parent", source="cli")
+        db.update_session_cwd(
+            "parent", "/work/repo", git_branch="feature-x", git_repo_root="/work/repo"
+        )
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        child = db.get_session("child")
+        assert child["git_branch"] == "feature-x"
+
+    def test_compression_child_inherits_gateway_origin_columns(self, db):
+        """A compression fork's child inherits gateway routing metadata
+        (session_key/chat_id/...) from the ended parent, so a crash before
+        the gateway re-records the peer can't strand it (#59527)."""
+        db.create_session(
+            session_id="parent", source="telegram",
+            user_id="u1", session_key="telegram:u1:c1",
+            chat_id="c1", chat_type="private", thread_id="t1",
+        )
+        db.record_gateway_session_peer(
+            "parent", source="telegram", user_id="u1",
+            session_key="telegram:u1:c1", chat_id="c1", chat_type="private",
+            thread_id="t1", display_name="Chat One", origin_json='{"p":"telegram"}',
+        )
+        # Rotation path: parent is ended with 'compression' BEFORE the child
+        # row is created (agent/conversation_compression.py).
+        db.end_session("parent", "compression")
+
+        db.create_session(
+            session_id="child", source="telegram", parent_session_id="parent"
+        )
+
+        child = db.get_session("child")
+        assert child["user_id"] == "u1"
+        assert child["session_key"] == "telegram:u1:c1"
+        assert child["chat_id"] == "c1"
+        assert child["chat_type"] == "private"
+        assert child["thread_id"] == "t1"
+        assert child["display_name"] == "Chat One"
+        assert child["origin_json"] == '{"p":"telegram"}'
+
+    def test_live_parent_child_does_not_inherit_gateway_origin(self, db):
+        """Delegate/subagent children (parent still live) must NOT inherit
+        routing keys — peer recovery could otherwise repoint gateway traffic
+        into a subagent's session."""
+        db.create_session(
+            session_id="parent", source="telegram",
+            user_id="u1", session_key="telegram:u1:c1",
+            chat_id="c1", chat_type="private",
+        )
+
+        db.create_session(
+            session_id="sub", source="telegram", parent_session_id="parent"
+        )
+
+        sub = db.get_session("sub")
+        assert sub["session_key"] is None
+        assert sub["chat_id"] is None
+        assert sub["user_id"] is None
+        # Workspace metadata still inherits — that part is safe for any child.
+        db.update_session_cwd("parent", "/work/repo", git_repo_root="/work/repo")
+        db.create_session(
+            session_id="sub2", source="telegram", parent_session_id="parent"
+        )
+        assert db.get_session("sub2")["cwd"] == "/work/repo"
+
     def test_update_session_cwd_empty_branch_does_not_clobber(self, db):
         """A failed branch probe (empty string) must not wipe a branch we
         already captured — only the cwd updates."""

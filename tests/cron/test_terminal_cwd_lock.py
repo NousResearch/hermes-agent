@@ -11,6 +11,7 @@ These tests assert that contract.
 """
 
 import threading
+import time
 
 
 def _lock():
@@ -196,7 +197,8 @@ def test_queued_writer_preserves_exclusive_ordering():
     lock = _lock()
     first_reader_holding = threading.Event()
     release_first_reader = threading.Event()
-    writer_waiting = threading.Event()
+    writer_started = threading.Event()
+    writer_queued = threading.Event()
     later_reader_acquired = threading.Event()
     writer_acquired = threading.Event()
 
@@ -210,7 +212,7 @@ def test_queued_writer_preserves_exclusive_ordering():
 
     def writer():
         first_reader_holding.wait(timeout=5)
-        writer_waiting.set()
+        writer_started.set()
         assert lock.acquire_write(timeout=5)
         try:
             writer_acquired.set()
@@ -218,7 +220,7 @@ def test_queued_writer_preserves_exclusive_ordering():
             lock.release_write()
 
     def later_reader():
-        writer_waiting.wait(timeout=5)
+        writer_queued.wait(timeout=5)
         lock.acquire_read()
         try:
             later_reader_acquired.set()
@@ -228,7 +230,16 @@ def test_queued_writer_preserves_exclusive_ordering():
     threads = [threading.Thread(target=fn) for fn in (first_reader, writer, later_reader)]
     for thread in threads:
         thread.start()
-    assert writer_waiting.wait(timeout=5)
+    assert writer_started.wait(timeout=5)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with lock._cond:
+            if lock._writers_waiting:
+                break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("writer never entered the queued state")
+    writer_queued.set()
     assert not later_reader_acquired.wait(timeout=0.1)
     release_first_reader.set()
     assert writer_acquired.wait(timeout=5)
@@ -236,3 +247,40 @@ def test_queued_writer_preserves_exclusive_ordering():
         thread.join(timeout=5)
         assert not thread.is_alive()
     assert later_reader_acquired.is_set()
+
+
+def test_timed_out_writer_wakes_later_reader():
+    """Abandoning writer preference must not strand readers."""
+    lock = _lock()
+    active_reader = threading.Event()
+    release_active = threading.Event()
+    writer_done = threading.Event()
+    later_reader = threading.Event()
+
+    def reader_one():
+        lock.acquire_read()
+        active_reader.set()
+        release_active.wait(timeout=5)
+        lock.release_read()
+
+    def writer():
+        active_reader.wait(timeout=5)
+        assert lock.acquire_write(timeout=0.1) is False
+        writer_done.set()
+
+    def reader_two():
+        active_reader.wait(timeout=5)
+        writer_done.wait(timeout=5)
+        lock.acquire_read()
+        later_reader.set()
+        lock.release_read()
+
+    threads = [threading.Thread(target=fn) for fn in (reader_one, writer, reader_two)]
+    for thread in threads:
+        thread.start()
+    assert writer_done.wait(timeout=5)
+    assert later_reader.wait(timeout=5)
+    release_active.set()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()

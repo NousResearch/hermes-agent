@@ -210,6 +210,18 @@ def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
+def execution_is_live(execution_id: str) -> bool:
+    """Return whether an execution still has a provably live owner."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT status, pid, process_started_at FROM executions WHERE id=?",
+            (str(execution_id),),
+        ).fetchone()
+    if row is None or row["status"] not in ("claimed", "running"):
+        return False
+    return _owner_is_live(int(row["pid"]), row["process_started_at"])
+
+
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """Load latest execution for many jobs in one indexed query."""
     clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]

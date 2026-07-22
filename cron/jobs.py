@@ -1748,7 +1748,9 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
+def claim_job_for_fire(
+    job_id: str, *, claim_ttl_seconds: int = 300, execution_id: str | None = None
+) -> bool:
     """Atomically claim a job for a single external 'fire' (multi-machine
     at-most-once). Returns True iff THIS caller won the claim.
 
@@ -1779,6 +1781,22 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             now = _hermes_now()
             existing = job.get("fire_claim")
             if existing:
+                prior_execution_id = (
+                    existing.get("execution_id")
+                    if isinstance(existing, dict)
+                    else None
+                )
+                if prior_execution_id:
+                    # An expired timestamp is not proof that the external fire
+                    # died.  Durable execution ownership wins over the
+                    # advisory TTL, preventing a second child from replacing a
+                    # still-live claim.
+                    try:
+                        from cron.executions import execution_is_live
+                        if execution_is_live(prior_execution_id):
+                            return False
+                    except Exception:
+                        return False  # fail closed if liveness is unknowable
                 try:
                     claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
                     # Bounded on BOTH sides (#60703): a claim stamped in the
@@ -1792,7 +1810,11 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
-            job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
+            job["fire_claim"] = {
+                "at": now.isoformat(),
+                "by": _machine_id(),
+                **({"execution_id": str(execution_id)} if execution_id else {}),
+            }
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
@@ -1801,6 +1823,25 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             save_jobs(jobs)
             return True
         return False
+
+
+def release_fire_claim(job_id: str, *, execution_id: Optional[str] = None) -> bool:
+    """Release a matching external-fire claim after pre-dispatch failure."""
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            claim = job.get("fire_claim")
+            if not claim:
+                return False
+            owner = claim.get("execution_id") if isinstance(claim, dict) else None
+            if execution_id is not None and owner is not None and owner != str(execution_id):
+                return False
+            job["fire_claim"] = None
+            save_jobs(jobs)
+            return True
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

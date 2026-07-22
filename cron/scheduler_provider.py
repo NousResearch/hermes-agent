@@ -19,9 +19,12 @@ selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
 
+import logging
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class CronScheduler(ABC):
@@ -100,17 +103,57 @@ class CronScheduler(ABC):
         Returns True if THIS caller claimed and ran the job, False if the claim
         was lost (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
-        from cron.executions import create_execution
-        from cron.scheduler import run_one_job
+        from cron.jobs import claim_job_for_fire, get_job, release_fire_claim
+        from cron.executions import create_execution, finish_execution
+        from cron.scheduler import run_one_job, _set_runtime_state
 
-        if not claim_job_for_fire(job_id):
-            return False  # another machine already claimed this fire
-        job = get_job(job_id)
-        if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
-        return run_one_job(job, adapters=adapters, loop=loop)
+        execution = create_execution(job_id, source=self.name)
+        execution_id = execution["id"]
+        dispatched = False
+        try:
+            try:
+                claimed = claim_job_for_fire(job_id, execution_id=execution_id)
+            except TypeError as exc:
+                # Preserve narrow legacy test/plugin seams that replace the store
+                # helper with the pre-ownership one-argument callable. Production
+                # always uses the durable execution-aware implementation.
+                if "execution_id" not in str(exc):
+                    raise
+                claimed = claim_job_for_fire(job_id)
+            if not claimed:
+                finish_execution(execution_id, success=False, error="Fire claim rejected.")
+                return False
+            job = get_job(job_id)
+            if job is None:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Job removed between claim and dispatch.",
+                )
+                release_fire_claim(job_id, execution_id=execution_id)
+                return False
+            job["execution_id"] = execution_id
+            _set_runtime_state(job_id, "running")
+            dispatched = True
+            return run_one_job(job, adapters=adapters, loop=loop)
+        except BaseException as exc:
+            if not dispatched:
+                try:
+                    finish_execution(
+                        execution_id,
+                        success=False,
+                        error=f"Pre-dispatch failure: {exc}",
+                    )
+                except Exception:
+                    logger.exception("Failed to finalize cron execution %s", execution_id)
+                try:
+                    release_fire_claim(job_id, execution_id=execution_id)
+                except Exception:
+                    logger.exception("Failed to release cron fire claim for %s", job_id)
+            raise
+        finally:
+            if dispatched:
+                _set_runtime_state(job_id, "terminal")
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):

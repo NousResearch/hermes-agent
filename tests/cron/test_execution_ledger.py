@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _point_ledger(monkeypatch, tmp_path):
     import cron.executions as executions
@@ -235,6 +237,23 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
         })
     ]
     assert "submit-fail" not in scheduler.get_running_job_ids()
+
+
+def test_execution_creation_failure_releases_guard(monkeypatch):
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "create_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ledger unavailable")),
+    )
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [{"id": "create-fail"}])
+    monkeypatch.setattr(scheduler, "advance_next_run", lambda _job_id: None)
+    monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: object())
+
+    with pytest.raises(RuntimeError, match="ledger unavailable"):
+        scheduler.tick(verbose=False, sync=False)
+    assert "create-fail" not in scheduler.get_running_job_ids()
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):

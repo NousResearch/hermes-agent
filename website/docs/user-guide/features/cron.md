@@ -427,6 +427,32 @@ cron:
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
 
+## Agent runtime limit
+
+LLM-backed cron runs request a dedicated Linux cgroup-v2 boundary before releasing the
+child to execute. When runtime capability and ownership checks succeed, termination
+uses that boundary's `cgroup.kill` and waits for it to become empty before releasing
+ownership. The scheduler exposes the per-job result through
+`cron.scheduler.get_cron_boundary_status(job_id)`: `contained` means hard
+containment was established, `unavailable` means Linux delegation was not usable,
+and `unsupported` means the platform cannot provide this hard boundary. On the
+latter two paths only, the process group is cleaned up as explicitly-labelled best
+effort; detached descendants are not guaranteed to be contained. macOS and Windows
+do not claim equivalent detached-session containment. A teardown or ownership
+revalidation failure is reported as `cleanup_failed` and ownership is retained.
+
+The default wall-clock limit is one hour:
+
+```yaml
+cron:
+  max_runtime_seconds: 3600
+```
+
+When a cgroup boundary is available, the scheduler writes `1` to its `cgroup.kill`, waits for the boundary to become empty, and reaps the child before releasing the run. Only the explicitly-labelled fallback path sends `SIGTERM`, waits five seconds, then sends `SIGKILL` to the child process group; detached descendants are not guaranteed to be contained there. Set `max_runtime_seconds: 0`
+only as an explicit opt-out for jobs that intentionally have no wall bound; the existing
+inactivity timeout still applies. Job status reports `running`, `cancelling`, or
+terminal state independently of historical `last_status`.
+
 ## No-agent mode (script-only jobs)
 
 For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:

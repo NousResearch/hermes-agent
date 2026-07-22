@@ -402,6 +402,51 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
     assert ran == []
 
 
+def test_fire_due_finalizes_and_releases_claim_when_claim_raises(monkeypatch):
+    """A post-create claim failure cannot leave durable ownership live."""
+    import pytest
+    import cron.jobs as jobs
+    import cron.executions as executions
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    finished = []
+    released = []
+    record = {"id": "exec-claim-error"}
+    monkeypatch.setattr(executions, "create_execution", lambda *a, **k: record)
+    monkeypatch.setattr(executions, "finish_execution", lambda *a, **k: finished.append((a, k)))
+    monkeypatch.setattr(jobs, "release_fire_claim", lambda *a, **k: released.append((a, k)))
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("claim store unavailable")))
+
+    with pytest.raises(RuntimeError, match="claim store unavailable"):
+        InProcessCronScheduler().fire_due("j1")
+
+    assert finished and finished[0][1]["success"] is False
+    assert released and released[0][1]["execution_id"] == "exec-claim-error"
+
+
+def test_fire_due_finalizes_and_releases_claim_when_job_lookup_raises(monkeypatch):
+    """A claim followed by lookup failure is cleaned up before propagation."""
+    import pytest
+    import cron.jobs as jobs
+    import cron.executions as executions
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    finished = []
+    released = []
+    record = {"id": "exec-lookup-error"}
+    monkeypatch.setattr(executions, "create_execution", lambda *a, **k: record)
+    monkeypatch.setattr(executions, "finish_execution", lambda *a, **k: finished.append((a, k)))
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda *a, **k: True)
+    monkeypatch.setattr(jobs, "release_fire_claim", lambda *a, **k: released.append((a, k)))
+    monkeypatch.setattr(jobs, "get_job", lambda *a, **k: (_ for _ in ()).throw(KeyError("jobs")))
+
+    with pytest.raises(KeyError, match="jobs"):
+        InProcessCronScheduler().fire_due("j1")
+
+    assert finished and finished[0][1]["success"] is False
+    assert released and released[0][1]["execution_id"] == "exec-lookup-error"
+
+
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──
 
 

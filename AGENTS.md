@@ -4,6 +4,10 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## ADR/OpenSpec pre-flight
+
+Read the applicable Base ADRs first, then inspect the relevant `openspec/` change artifacts; non-trivial changes must follow the OpenSpec workflow and cite their architectural ADRs (see ADR 0006).
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

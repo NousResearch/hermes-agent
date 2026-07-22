@@ -569,6 +569,32 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
     name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    try:
+        from cron.executions import latest_execution
+        durable_execution = job.get("latest_execution") or latest_execution(job_id)
+    except Exception:
+        durable_execution = job.get("latest_execution")
+    durable_state = (
+        durable_execution.get("status")
+        if isinstance(durable_execution, dict)
+        else None
+    )
+    try:
+        from cron.scheduler import get_runtime_state
+        runtime_state = get_runtime_state(job_id)
+    except Exception:
+        runtime_state = None
+    claimed = bool(job.get("run_claim") or job.get("fire_claim"))
+    # The execution ledger is profile-shared and authoritative across
+    # processes; local runtime state is only a fallback.
+    if durable_state in {"claimed", "running", "completed", "failed", "unknown"}:
+        effective_runtime_state = durable_state
+    elif runtime_state in {"running", "cancelling"}:
+        effective_runtime_state = runtime_state
+    elif claimed:
+        effective_runtime_state = "claimed"
+    else:
+        effective_runtime_state = runtime_state
     result = {
         "job_id": job_id,
         "name": name,
@@ -585,12 +611,11 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
-        # Health/status consumers must distinguish a historical successful
-        # last_run from a claim that is still in flight.  Claims are durable
-        # stale-owner evidence; last_run_at alone is not a liveness signal.
         "run_claim": job.get("run_claim"),
         "fire_claim": job.get("fire_claim"),
-        "in_flight": bool(job.get("run_claim") or job.get("fire_claim")),
+        "in_flight": bool(effective_runtime_state in {"claimed", "running", "cancelling"}),
+        "runtime_state": effective_runtime_state,
+        "execution_state": durable_state,
         "enabled": job.get("enabled", True),
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),
@@ -627,8 +652,16 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     try:
         from cron.scheduler import run_one_job
 
+        # Persist the execution owner before claiming the job. The claim TTL
+        # is advisory while this durable execution remains live, including
+        # when another process observes the job.
+        from cron.executions import create_execution, finish_execution
+
+        execution = create_execution(job_id, source="direct")
+        execution_id = execution["id"]
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
+        if not claim_job_for_fire(job_id, execution_id=execution_id):
+            finish_execution(execution_id, success=False, error="Fire claim rejected.")
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
             # (#60703): that message sends the user chasing a phantom
@@ -642,6 +675,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                 reason = "Job is already being fired by the scheduler; not run again."
             return {"claimed": False, "success": False, "error": reason}
 
+        job = dict(job, execution_id=execution_id)
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
         processed = run_one_job(job)

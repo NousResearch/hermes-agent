@@ -8899,24 +8899,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 one subsystem's failure doesn't block the rest.
                 """
                 try:
-                    from tools.process_registry import process_registry
-                    _killed = process_registry.kill_all()
-                    if _killed:
-                        logger.info(
-                            "Shutdown (%s): killed %d tool subprocess(es)",
-                            phase, _killed,
-                        )
-                except Exception as _e:
-                    logger.debug("process_registry.kill_all (%s) error: %s", phase, _e)
-                try:
-                    # Any cron job still dispatched at this instant just had
-                    # its tool subprocess killed above (kill_all() has no
-                    # per-job-ID targeting — it's a global sweep). Its agent
-                    # thread is still alive in this process and may go on to
-                    # produce a plausible-looking final response from the
-                    # now-truncated tool output; mark the run interrupted so
-                    # the scheduler can never report that as success (#60432).
-                    # No-op when no cron job is in flight.
+                    # Establish cancellation ownership before killing any
+                    # child/tool. The interrupted flag must win over a late
+                    # successful result from a worker racing shutdown.
                     from cron.scheduler import mark_running_jobs_interrupted
                     _interrupted = mark_running_jobs_interrupted(
                         f"Gateway shutdown ({phase}) killed the job's tool "
@@ -8929,6 +8914,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as _e:
                     logger.debug("mark_running_jobs_interrupted (%s) error: %s", phase, _e)
+                try:
+                    from tools.process_registry import process_registry
+                    _killed = process_registry.kill_all()
+                    if _killed:
+                        logger.info(
+                            "Shutdown (%s): killed %d tool subprocess(es)",
+                            phase, _killed,
+                        )
+                except Exception as _e:
+                    logger.debug("process_registry.kill_all (%s) error: %s", phase, _e)
+                try:
+                    from cron.scheduler import terminate_running_cron_processes
+                    _terminated = terminate_running_cron_processes(f"gateway shutdown ({phase})")
+                    if _terminated:
+                        logger.info(
+                            "Shutdown (%s): terminated %d isolated cron child process(es)",
+                            phase, len(_terminated),
+                        )
+                except Exception as _e:
+                    logger.debug("terminate isolated cron children (%s) error: %s", phase, _e)
                 try:
                     from tools.async_delegation import interrupt_all as _interrupt_async
                     _async_n = _interrupt_async(reason=f"gateway shutdown ({phase})")

@@ -147,6 +147,22 @@ class TestFutureDatedClaims:
         save_jobs(jobs)
         assert claim_job_for_fire(job["id"]) is True
 
+    def test_expired_fire_claim_with_live_execution_is_not_reclaimed(self, monkeypatch):
+        """A stale advisory timestamp cannot replace a live durable owner."""
+        job = self._make_job()
+        jobs = load_jobs()
+        for stored in jobs:
+            if stored["id"] == job["id"]:
+                stored["fire_claim"] = {
+                    "at": (jobs_mod._hermes_now() - timedelta(hours=1)).isoformat(),
+                    "by": "old-owner",
+                    "execution_id": "live-execution",
+                }
+        save_jobs(jobs)
+        monkeypatch.setattr("cron.executions.execution_is_live", lambda execution_id: True)
+
+        assert claim_job_for_fire(job["id"]) is False
+
     def test_future_run_claim_does_not_skip_oneshot_forever(self):
         """A one-shot with a future-dated run_claim must still become due."""
         past_fire = (jobs_mod._hermes_now() - timedelta(seconds=30)).isoformat()
@@ -166,7 +182,31 @@ class TestFutureDatedClaims:
 
 
 class TestHonestRunSkipMessages:
-    def test_paused_job_not_reported_as_already_firing(self):
+    def test_manual_claim_is_linked_to_durable_execution(self, monkeypatch):
+        """A manual fire must publish its execution owner in the claim CAS."""
+        import cron.scheduler as scheduler
+        import tools.cronjob_tools as cron_tools
+
+        job = create_job(name="manual linkage", schedule="0 7 * * *", prompt="x")
+        seen = {}
+        real_claim = cron_tools.claim_job_for_fire
+
+        def capture_claim(job_id, **kwargs):
+            seen.update(kwargs)
+            return real_claim(job_id, **kwargs)
+
+        monkeypatch.setattr(cron_tools, "claim_job_for_fire", capture_claim)
+        monkeypatch.setattr(
+            scheduler,
+            "run_one_job",
+            lambda claimed_job: (seen.setdefault("job", claimed_job) or True),
+        )
+        result = cron_tools._execute_job_now(get_job(job["id"]))
+        assert result["claimed"] is True
+        assert seen["execution_id"] == seen["job"]["execution_id"]
+        assert get_job(job["id"])["fire_claim"]["execution_id"] == seen["execution_id"]
+
+    def test_paused_job_not_reported_as_already_firing(self, monkeypatch):
         from tools.cronjob_tools import _execute_job_now
 
         job = create_job(name="paused job", schedule="0 7 * * *", prompt="x")

@@ -69,11 +69,18 @@ interface UseSessionListActionsArgs {
   profileScope: string
 }
 
+export interface RefreshSessionsOptions {
+  refreshCronJobs?: boolean
+  shouldApply?: () => boolean
+  skipIfBusy?: boolean
+}
+
 /** Owns the sidebar's session-list fetching + paging: recents, cron runs/jobs,
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  const pendingRefreshSessionsRef = useRef(0)
 
   // Messaging-platform sessions as their own slice, fetched separately from
   // local recents so each platform renders a self-managed section and never
@@ -137,7 +144,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [profileScope])
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (options: RefreshSessionsOptions = {}) => {
+    if (options.skipIfBusy && pendingRefreshSessionsRef.current > 0) {
+      return
+    }
+
+    pendingRefreshSessionsRef.current += 1
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
     // The loading flag exists to drive the initial skeletons (they only render
@@ -177,7 +189,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         messagingExclude: MESSAGING_EXCLUDED_SOURCES
       })
 
-      if (refreshSessionsRequestRef.current === requestId) {
+      if (refreshSessionsRequestRef.current === requestId && (options.shouldApply?.() ?? true)) {
         const recents = result.recents
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
@@ -213,13 +225,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
       }
     } finally {
+      pendingRefreshSessionsRef.current = Math.max(0, pendingRefreshSessionsRef.current - 1)
+
       if (showLoading && refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)
       }
     }
 
-    // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-    void refreshCronJobs()
+    // Cron *jobs* are a distinct API (getCronJobs), not a session slice. The
+    // high-frequency cross-client session poll opts out; cron has its own 30s
+    // visibility poll.
+    if (options.refreshCronJobs !== false) {
+      void refreshCronJobs()
+    }
   }, [profileScope, refreshCronJobs])
 
   const loadMoreSessions = useCallback(async () => {

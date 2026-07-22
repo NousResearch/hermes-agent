@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { getCronJobs, type SessionInfo, type SidebarSessionsResponse } from '@/hermes'
 import {
   $cronSessions,
   $messagingSessions,
@@ -79,6 +79,60 @@ afterEach(() => {
 })
 
 describe('refreshSessions identity + loading hygiene', () => {
+  it('can skip the cron-job side effect for frequent session reconciliation', async () => {
+    vi.mocked(getCronJobs).mockClear()
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [], total: 0, profile_totals: {} }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions({ refreshCronJobs: false })
+    })
+
+    expect(getCronJobs).not.toHaveBeenCalled()
+  })
+
+  it('discards a response when its caller is no longer current', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('stale')], total: 1, profile_totals: {} }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions({ shouldApply: () => false })
+    })
+
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('skips a polling refresh while another refresh is in flight', async () => {
+    let resolveRequest!: (value: SidebarSessionsResponse) => void
+
+    const pendingRequest = new Promise<SidebarSessionsResponse>(resolve => {
+      resolveRequest = resolve
+    })
+
+    listSidebarSessions.mockReturnValueOnce(pendingRequest)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    let firstRefresh!: Promise<void>
+
+    await act(async () => {
+      firstRefresh = result.current.refreshSessions()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      await result.current.refreshSessions({ skipIfBusy: true })
+    })
+
+    expect(listSidebarSessions).toHaveBeenCalledTimes(1)
+
+    resolveRequest(sidebar({ sessions: [row('fresh')], total: 1, profile_totals: {} }))
+
+    await act(async () => {
+      await firstRefresh
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['fresh'])
+  })
+
   it('keeps the previous $sessions array when the refresh is content-identical', async () => {
     const rows = [row('a'), row('b')]
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: rows, total: 2, profile_totals: { default: 2 } }))

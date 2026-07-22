@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $connection } from '@/store/session'
 import {
   $attentionSessionIds,
   $stalledSessionIds,
@@ -8,7 +11,90 @@ import {
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
 
-import { rehydrateLiveSessionStatuses } from './use-background-sync'
+import { rehydrateLiveSessionStatuses, useBackgroundSync } from './use-background-sync'
+
+describe('useBackgroundSync', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    $connection.set({ baseUrl: 'http://shared-gateway', mode: 'remote', profile: 'san' } as never)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  it('refreshes local sessions while a shared gateway is open', () => {
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+
+    renderHook(() =>
+      useBackgroundSync({
+        activeGatewayProfile: 'san',
+        activeIsMessaging: false,
+        activeSessionId: null,
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveMessagingTranscript: vi.fn().mockResolvedValue(undefined),
+        refreshCronJobs: vi.fn().mockResolvedValue(undefined),
+        refreshCurrentModel: vi.fn().mockResolvedValue(undefined),
+        refreshHermesConfig: vi.fn().mockResolvedValue(undefined),
+        refreshMessagingSessions: vi.fn().mockResolvedValue(undefined),
+        refreshSessions,
+        requestGateway: vi.fn().mockResolvedValue({ sessions: [] })
+      })
+    )
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(2)
+    const pollOptions = refreshSessions.mock.calls[1][0]
+
+    expect(pollOptions?.refreshCronJobs).toBe(false)
+    expect(pollOptions?.skipIfBusy).toBe(true)
+    expect(pollOptions?.shouldApply?.()).toBe(true)
+
+    act(() => {
+      $connection.set({ baseUrl: 'http://different-gateway', mode: 'remote', profile: 'work' } as never)
+    })
+
+    expect(pollOptions?.shouldApply?.()).toBe(false)
+  })
+
+  it('does not poll local-only sessions', () => {
+    $connection.set({ mode: 'local' } as never)
+    const refreshSessions = vi.fn().mockResolvedValue(undefined)
+
+    renderHook(() =>
+      useBackgroundSync({
+        activeGatewayProfile: 'san',
+        activeIsMessaging: false,
+        activeSessionId: null,
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveMessagingTranscript: vi.fn().mockResolvedValue(undefined),
+        refreshCronJobs: vi.fn().mockResolvedValue(undefined),
+        refreshCurrentModel: vi.fn().mockResolvedValue(undefined),
+        refreshHermesConfig: vi.fn().mockResolvedValue(undefined),
+        refreshMessagingSessions: vi.fn().mockResolvedValue(undefined),
+        refreshSessions,
+        requestGateway: vi.fn().mockResolvedValue({ sessions: [] })
+      })
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('rehydrateLiveSessionStatuses', () => {
   beforeEach(() => {

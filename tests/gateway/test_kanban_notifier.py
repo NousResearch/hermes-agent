@@ -113,14 +113,28 @@ def test_notifier_agent_wake_is_opt_in_by_default(tmp_path, monkeypatch):
 
 
 def test_notifier_agent_wake_opt_in_still_injects_message(tmp_path, monkeypatch):
-    """Opt-in deployments keep the collaboration wake path."""
+    """Opt-in deployments keep the collaboration wake path.
+
+    Exercises the real config.yaml → hermes_cli.config.load_config →
+    _resolve_notifier_agent_wake_enabled path instead of monkeypatching
+    the resolver, closing the config-to-watcher gap noted in review.
+    """
+    import yaml
+    from hermes_cli import config as hermes_config
+
     db_path = tmp_path / "wake-opt-in.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
-    monkeypatch.setattr(
-        "gateway.kanban_watchers._resolve_notifier_agent_wake_enabled",
-        lambda _load_config: True,
+
+    # Temp HERMES_HOME with a config.yaml that opts in to agent wake.
+    fake_home = tmp_path / "hermes-home"
+    fake_home.mkdir()
+    (fake_home / "config.yaml").write_text(
+        yaml.safe_dump({"kanban": {"wake_agent_on_terminal_events": True}})
     )
+    monkeypatch.setenv("HERMES_HOME", str(fake_home))
+    # Clear the in-process config cache so load_config() reads the new file.
+    hermes_config._LOAD_CONFIG_CACHE.clear()
 
     tid = _create_completed_subscription(session_id="creator-session")
     adapter = RecordingAdapter()
@@ -132,6 +146,9 @@ def test_notifier_agent_wake_opt_in_still_injects_message(tmp_path, monkeypatch)
     assert len(adapter.handled) == 1
     assert tid in adapter.handled[0].text
     assert adapter.handled[0].internal is True
+
+    # Restore cache so other tests aren't polluted.
+    hermes_config._LOAD_CONFIG_CACHE.clear()
 
 
 def test_resolve_notifier_agent_wake_enabled_defaults_safe():

@@ -550,6 +550,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
+| `wake_agent_on_terminal_events` | `false` | When `true`, terminal kanban notifications (completed / gave_up / crashed) also inject an internal message into the subscribed chat to wake an agent session. Disabled by default: a delivery subscription should not silently become cross-profile task takeover. Enable only for deployments that want the collaborative wake path. |
 
 And the two auxiliary LLM slots:
 

@@ -1997,7 +1997,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             errors="replace",
         )
         if result.returncode != 0:
-            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
             print("TUI dev prebuild failed.")
             if preview:
@@ -2027,7 +2027,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             errors="replace",
         )
         if result.returncode != 0:
-            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
             print("TUI build failed.")
             if preview:

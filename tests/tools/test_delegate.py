@@ -351,6 +351,42 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_propagates_approval_session_contextvar(self, mock_run):
+        """Each batch worker keeps the initiating gateway approval session."""
+        from tools.approval import (
+            get_current_session_key,
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        seen_session_keys = []
+
+        def run_child(**kwargs):
+            seen_session_keys.append(get_current_session_key(default="missing"))
+            return {
+                "task_index": kwargs["task_index"],
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 0,
+                "duration_seconds": 0.0,
+            }
+
+        mock_run.side_effect = run_child
+        token = set_current_session_key("gateway-session-A")
+        try:
+            delegate_task(
+                tasks=[{"goal": "A"}, {"goal": "B"}],
+                parent_agent=_make_mock_parent(),
+            )
+        finally:
+            reset_current_session_key(token)
+
+        self.assertEqual(
+            seen_session_keys,
+            ["gateway-session-A", "gateway-session-A"],
+        )
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [
             {
@@ -3200,6 +3236,45 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         self.assertEqual(seen, [_subagent_auto_deny])
         # Parent's callback slot is still empty (TLS isolates threads).
         self.assertIsNone(_get_approval_callback())
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_run_single_child_preserves_session_context_and_callback(self, _mock_cfg):
+        """The timeout worker keeps gateway context and its own callback policy."""
+        from tools.approval import (
+            get_current_session_key,
+            reset_current_session_key,
+            set_current_session_key,
+        )
+        from tools.delegate_tool import _run_single_child, _subagent_auto_deny
+        from tools.terminal_tool import _get_approval_callback
+
+        seen = {}
+
+        class Child:
+            _current_task_id = "child-task"
+
+            def run_conversation(self, user_message, task_id, stream_callback=None):
+                seen["session_key"] = get_current_session_key(default="missing")
+                seen["approval_callback"] = _get_approval_callback()
+                return {
+                    "completed": True,
+                    "final_response": "done",
+                    "message": user_message,
+                    "task_id": task_id,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+        parent = _make_mock_parent()
+        token = set_current_session_key("gateway-session-A")
+        try:
+            result = _run_single_child(0, "needs approval", Child(), parent)
+        finally:
+            reset_current_session_key(token)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(seen["session_key"], "gateway-session-A")
+        self.assertIs(seen["approval_callback"], _subagent_auto_deny)
 
 
 class TestFallbackModelInheritance(unittest.TestCase):

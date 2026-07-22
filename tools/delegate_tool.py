@@ -17,6 +17,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import contextvars
 import enum
 import json
 import logging
@@ -25,11 +26,8 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    TimeoutError as FuturesTimeoutError,
-)
-from typing import Any, Dict, List, Optional
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from typing import Any, Callable, Dict, List, Optional
 
 from toolsets import TOOLSETS
 
@@ -111,6 +109,25 @@ def _get_subagent_approval_callback():
     if is_truthy_value(val):
         return _subagent_auto_approve
     return _subagent_auto_deny
+
+
+def _propagate_contextvars_to_thread(
+    target: Callable[..., Any],
+) -> Callable[..., Any]:
+    """Capture the caller's ContextVars without replacing worker TLS state.
+
+    Delegated approval routing depends on the gateway session ContextVars, but
+    the delegate executors deliberately install their own terminal approval
+    callbacks with an initializer.  The general thread-context helper also
+    copies those callbacks, so it is not appropriate at this boundary.
+    """
+    ctx = contextvars.copy_context()
+
+    def _runner(*args, **kwargs):
+        return ctx.run(target, *args, **kwargs)
+
+    return _runner
+
 
 # NOTE: nested delegation is granted by role='orchestrator' (which re-adds the
 # "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
@@ -2008,7 +2025,9 @@ def _run_single_child(
                 stream_callback=_relay_child_text,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _child_future = _timeout_executor.submit(
+            _propagate_contextvars_to_thread(_run_with_thread_capture)
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2649,11 +2668,12 @@ def delegate_task(
             # normally, but if the parent is interrupted while a child is
             # wedged, the abandoned worker must not block interpreter exit.
             from tools.daemon_pool import DaemonThreadPoolExecutor
+
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
-                        _run_single_child,
+                        _propagate_contextvars_to_thread(_run_single_child),
                         task_index=i,
                         goal=t["goal"],
                         child=child,

@@ -1003,20 +1003,25 @@ class ShellFileOperations(FileOperations):
         # carries a marker so an orphaned temp (only possible on a hard
         # crash *between* cat and mv) is identifiable.
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
-        identity_command = ""
+        publish_command = 'mv -f "$tmp" "$t"; '
         if self.env.__class__.__name__ == "LocalEnvironment":
             python = self._escape_shell_arg(sys.executable)
             identity_script = self._escape_shell_arg(
-                "import json,os,sys; p=sys.argv[1]; "
-                "p=(p[1]+':'+p[2:]) if os.name=='nt' and len(p)>2 "
+                "import json,os,sys; "
+                "cv=lambda p:(p[1]+':'+p[2:]) if os.name=='nt' and len(p)>2 "
                 "and p[0]=='/' and p[1].isalpha() and p[2]=='/' else p; "
-                "s=os.lstat(p); "
+                "src,dst=map(cv,sys.argv[1:3]); before=os.lstat(src); "
+                "os.replace(src,dst); after=os.lstat(dst); "
+                "same=(before.st_dev,before.st_ino)==(after.st_dev,after.st_ino); "
                 "print('__HERMES_WRITE_IDENTITY__'+json.dumps({"
-                "'version':1,'device':s.st_dev,'inode':s.st_ino,"
-                "'mode':s.st_mode,'size':s.st_size,"
-                "'mtime_ns':s.st_mtime_ns,'ctime_ns':s.st_ctime_ns}))"
+                "'version':1,'device':after.st_dev,'inode':after.st_ino,"
+                "'mode':after.st_mode,'size':after.st_size,"
+                "'mtime_ns':after.st_mtime_ns,'ctime_ns':after.st_ctime_ns})) "
+                "if same else None"
             )
-            identity_command = f'{python} -c {identity_script} "$tmp"; '
+            publish_command = (
+                f'{python} -c {identity_script} "$tmp" "$t"; '
+            )
 
         # One shell script, fully quoted. Notes:
         #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
@@ -1044,8 +1049,7 @@ class ShellFileOperations(FileOperations):
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
-            f"{identity_command}"
-            'mv -f "$tmp" "$t"; '
+            f"{publish_command}"
             "trap - EXIT"
         )
         return self._exec(script, stdin_data=content)

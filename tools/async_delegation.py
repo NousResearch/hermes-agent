@@ -264,7 +264,17 @@ def recover_abandoned_delegations() -> int:
 
 
 def restore_undelivered_completions(target_queue) -> int:
-    """Enqueue durable pending completions as fresh turns after process start."""
+    """Enqueue durable pending completions as fresh turns after process start.
+
+    Every restored event is stamped ``restored=True`` (in-memory only — the
+    stamp is added after the durable payload is deserialized and is never
+    persisted). Restored events originate from a *previous* process, so no
+    consumer in THIS process implicitly owns them: drain paths that run
+    without an ownership filter (the legacy single-session behavior) must
+    leave them queued for a consumer that can positively prove ownership,
+    otherwise a brand-new session adopts a dead session's delegation
+    results seconds after boot (#64484).
+    """
     recover_abandoned_delegations()
     with _DB_LOCK, _connect() as conn:
         rows = conn.execute(
@@ -273,7 +283,10 @@ def restore_undelivered_completions(target_queue) -> int:
                ORDER BY completed_at, delegation_id"""
         ).fetchall()
         for _delegation_id, payload in rows:
-            target_queue.put(json.loads(payload))
+            evt = json.loads(payload)
+            if isinstance(evt, dict):
+                evt["restored"] = True
+            target_queue.put(evt)
     return len(rows)
 
 
@@ -642,6 +655,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    delegation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -663,7 +677,7 @@ def dispatch_async_delegation_batch(
     ``{"status": "rejected", "error": ...}`` when the async pool is at
     capacity.
     """
-    delegation_id = _new_delegation_id()
+    delegation_id = delegation_id or _new_delegation_id()
     dispatched_at = time.time()
     n = len(goals)
     # A combined goal label for status listings / the completion header.
@@ -792,6 +806,10 @@ def _finalize_batch(
         # The full per-task results list — the formatter renders a
         # consolidated multi-task block from this.
         "results": combined.get("results") or [],
+        # Per-task live transcript log paths (cache/delegation/live/...).
+        # They persist after completion and double as the full-fidelity
+        # operational record of each child's run.
+        "live_transcripts": combined.get("live_transcripts"),
         "error": combined.get("error"),
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,

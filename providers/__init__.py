@@ -42,7 +42,20 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
+# Canonical name -> source label ("bundled" | "user" | "legacy") for the
+# currently active profile. Populated during discovery so `hermes doctor`
+# can report where each active profile came from.
+_SOURCES: dict[str, str] = {}
+# Canonical name -> list of source labels that previously registered the same
+# name but were displaced. Only present for names that were overridden at
+# least once. Order is the order in which they were displaced.
+_OVERRIDES: dict[str, list[str]] = {}
 _discovered = False
+
+# Source label of the plugin currently being imported, set by
+# _import_plugin_dir / _discover_providers and read by register_provider so
+# the registrant doesn't have to know its own provenance.
+_CURRENT_SOURCE: str | None = None
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -57,9 +70,16 @@ def register_provider(profile: ProviderProfile) -> None:
     plugins under ``$HERMES_HOME/plugins/model-providers/`` can override
     bundled profiles without editing repo code.
     """
-    _REGISTRY[profile.name] = profile
+    name = profile.name
+    if _CURRENT_SOURCE is not None and name in _REGISTRY:
+        prev_source = _SOURCES.get(name)
+        if prev_source is not None and prev_source != _CURRENT_SOURCE:
+            _OVERRIDES.setdefault(name, []).append(prev_source)
+    _REGISTRY[name] = profile
+    if _CURRENT_SOURCE is not None:
+        _SOURCES[name] = _CURRENT_SOURCE
     for alias in profile.aliases:
-        _ALIASES[alias] = profile.name
+        _ALIASES[alias] = name
 
 
 def get_provider_profile(name: str) -> ProviderProfile | None:
@@ -88,6 +108,30 @@ def list_providers() -> list[ProviderProfile]:
     return result
 
 
+def get_provider_source(name: str) -> str | None:
+    """Return the source label of the active profile for ``name``.
+
+    Returns ``"bundled"``, ``"user"``, ``"legacy"``, or ``None`` if the
+    name is not registered. Accepts aliases.
+    """
+    if not _discovered:
+        _discover_providers()
+    canonical = _ALIASES.get(name, name)
+    return _SOURCES.get(canonical)
+
+
+def list_provider_overrides() -> dict[str, list[str]]:
+    """Return ``{canonical_name: [displaced_sources]}`` for overridden profiles.
+
+    Only includes profiles that were registered by more than one source
+    during discovery. The list contains the sources whose registrations
+    were displaced by the currently active one, in displacement order.
+    """
+    if not _discovered:
+        _discover_providers()
+    return {k: list(v) for k, v in _OVERRIDES.items()}
+
+
 def _user_plugins_dir() -> Path | None:
     """Return ``$HERMES_HOME/plugins/model-providers/`` if it exists."""
     try:
@@ -102,7 +146,9 @@ def _user_plugins_dir() -> Path | None:
 def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     """Import a single plugin directory so it self-registers.
 
-    ``source`` is "bundled" or "user", used only for log messages.
+    ``source`` is "bundled" or "user", used for log messages and stored on
+    each registered profile via the ``_CURRENT_SOURCE`` module-level
+    contextual variable that ``register_provider`` reads.
     """
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
@@ -121,6 +167,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     if module_name in sys.modules:
         return  # already imported
 
+    global _CURRENT_SOURCE
+    _CURRENT_SOURCE = source
     try:
         spec = importlib.util.spec_from_file_location(
             module_name, init_file, submodule_search_locations=[str(plugin_dir)]
@@ -135,6 +183,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+    finally:
+        _CURRENT_SOURCE = None
 
 
 def _discover_providers() -> None:
@@ -148,7 +198,7 @@ def _discover_providers() -> None:
     Each step imports its plugins, which call ``register_provider()`` at
     module-level. Later steps win on name collision.
     """
-    global _discovered
+    global _discovered, _CURRENT_SOURCE
     if _discovered:
         return
     _discovered = True
@@ -181,11 +231,14 @@ def _discover_providers() -> None:
         for _importer, modname, _ispkg in pkgutil.iter_modules(_pkg.__path__):
             if modname.startswith("_") or modname == "base":
                 continue
+            _CURRENT_SOURCE = "legacy"
             try:
                 importlib.import_module(f"providers.{modname}")
             except ImportError as exc:
                 logger.warning(
                     "Failed to import legacy provider module %s: %s", modname, exc
                 )
+            finally:
+                _CURRENT_SOURCE = None
     except Exception:
-        pass
+        _CURRENT_SOURCE = None

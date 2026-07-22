@@ -2337,6 +2337,53 @@ def run_doctor(args):
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     
+    _section("Provider Plugins")
+    try:
+        from providers import (
+            get_provider_source,
+            list_provider_overrides,
+            list_providers,
+        )
+
+        _profiles = list_providers()
+        _overrides = list_provider_overrides()
+        _by_source: dict[str, list[str]] = {"bundled": [], "user": [], "legacy": []}
+        _unknown_source: list[str] = []
+        for _p in _profiles:
+            _src = get_provider_source(_p.name)
+            if _src in _by_source:
+                _by_source[_src].append(_p.name)
+            else:
+                _unknown_source.append(_p.name)
+
+        _bundled_n = len(_by_source["bundled"])
+        _user_n = len(_by_source["user"])
+        _legacy_n = len(_by_source["legacy"])
+        _detail_parts = [f"{_bundled_n} bundled"]
+        if _user_n:
+            _detail_parts.append(f"{_user_n} user")
+        if _legacy_n:
+            _detail_parts.append(f"{_legacy_n} legacy")
+        check_ok(
+            f"{len(_profiles)} provider profile(s) active",
+            f"({', '.join(_detail_parts)})",
+        )
+
+        if _overrides:
+            check_warn(
+                f"{len(_overrides)} provider(s) overridden by later-loaded plugin(s)"
+            )
+            for _name in sorted(_overrides):
+                _active = get_provider_source(_name) or "?"
+                _displaced = ", ".join(_overrides[_name])
+                check_info(f"{_name}: active={_active}, displaced={_displaced}")
+        elif _by_source["user"]:
+            check_info(
+                "User plugins (no overrides): " + ", ".join(sorted(_by_source["user"]))
+            )
+    except Exception as _e:
+        check_warn("Could not enumerate provider plugins", str(_e))
+
     _section("Skills Hub")
     hub_dir = HERMES_HOME / "skills" / ".hub"
     if hub_dir.exists():

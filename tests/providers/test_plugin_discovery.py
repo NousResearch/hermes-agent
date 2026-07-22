@@ -21,6 +21,8 @@ def _clear_provider_caches():
     import providers as _pkg
     _pkg._REGISTRY.clear()
     _pkg._ALIASES.clear()
+    _pkg._SOURCES.clear()
+    _pkg._OVERRIDES.clear()
     _pkg._discovered = False
     # Evict any cached plugin modules so the next import re-executes.
     for mod in list(sys.modules.keys()):
@@ -117,6 +119,85 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
 
     # Clean up: reset discovery state so other tests see the bundled version
     _clear_provider_caches()
+
+
+def test_bundled_profiles_report_source_bundled():
+    """Every bundled profile should be tagged with source='bundled'."""
+    _clear_provider_caches()
+    from providers import get_provider_source, list_providers
+
+    profiles = list_providers()
+    assert profiles, "Discovery returned no profiles"
+    # Sample across several built-ins; if any of these are missing the change
+    # has bigger problems than source tracking.
+    for required in ("gmi", "openrouter", "anthropic", "deepseek"):
+        assert get_provider_source(required) == "bundled", (
+            f"{required} expected source='bundled', got {get_provider_source(required)!r}"
+        )
+    # Aliases must resolve to the canonical profile's source.
+    from providers import get_provider_profile
+
+    for p in profiles:
+        for alias in p.aliases:
+            assert get_provider_source(alias) == get_provider_source(p.name), (
+                f"alias {alias!r} of {p.name!r} reports different source"
+            )
+            assert get_provider_profile(alias) is p
+
+
+def test_user_override_records_displaced_source(tmp_path, monkeypatch):
+    """A user plugin that overrides a bundled profile must update source +
+    record the displaced 'bundled' source in list_provider_overrides()."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    user_gmi = hermes_home / "plugins" / "model-providers" / "gmi"
+    user_gmi.mkdir(parents=True)
+    (user_gmi / "__init__.py").write_text(
+        "from providers import register_provider\n"
+        "from providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(\n"
+        '    name="gmi",\n'
+        '    aliases=(),\n'
+        '    env_vars=("GMI_API_KEY",),\n'
+        '    base_url="https://user-override.example/v1",\n'
+        '    auth_type="api_key",\n'
+        "))\n"
+    )
+    (user_gmi / "plugin.yaml").write_text(
+        "name: gmi\nkind: model-provider\nversion: 0.0.1\n"
+    )
+
+    _clear_provider_caches()
+    from providers import (
+        get_provider_profile,
+        get_provider_source,
+        list_provider_overrides,
+    )
+
+    assert get_provider_source("gmi") == "user"
+    overrides = list_provider_overrides()
+    assert "gmi" in overrides, f"gmi missing from overrides: {overrides}"
+    assert overrides["gmi"] == ["bundled"]
+    # Returned mapping must be a defensive copy.
+    overrides["gmi"].append("tampered")
+    fresh = list_provider_overrides()
+    assert fresh["gmi"] == ["bundled"]
+    # Active profile is the user one.
+    profile = get_provider_profile("gmi")
+    assert profile is not None
+    assert profile.base_url == "https://user-override.example/v1"
+
+    _clear_provider_caches()
+
+
+def test_get_provider_source_unknown_returns_none():
+    """Unregistered names return None rather than raising."""
+    _clear_provider_caches()
+    from providers import get_provider_source
+
+    assert get_provider_source("definitely-not-a-real-provider-xyz") is None
 
 
 def test_general_plugin_manager_skips_model_provider_kind(tmp_path, monkeypatch):

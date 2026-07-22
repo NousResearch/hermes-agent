@@ -99,13 +99,16 @@ def test_handoff_in_protected_head_is_replaced_not_duplicated():
     with patch("agent.context_compressor.call_llm", return_value=_response("UPDATED summary body")):
         compressed = compressor.compress(_messages_with_handoff(old_summary))
 
+    # The summary may be emitted standalone or merged into the first tail
+    # message (alternation corner case), so detect it the same way the
+    # compressor does rather than via a startswith(SUMMARY_PREFIX) check.
     summary_messages = [
         msg
         for msg in compressed
         if isinstance(msg, dict)
-        and str(msg.get("content") or "").startswith(SUMMARY_PREFIX)
+        and ContextCompressor._is_context_summary_content(msg.get("content"))
     ]
     assert len(summary_messages) == 1
-    assert "UPDATED summary body" in summary_messages[0]["content"]
-    assert old_summary not in summary_messages[0]["content"]
+    assert "UPDATED summary body" in str(summary_messages[0]["content"])
+    assert old_summary not in str(summary_messages[0]["content"])
     assert old_summary not in "\n".join(str(msg.get("content") or "") for msg in compressed)

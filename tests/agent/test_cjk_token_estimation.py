@@ -1,7 +1,11 @@
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
-from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
+from agent.model_metadata import (
+    _is_cjk_token_dense_char,
+    estimate_messages_tokens_rough,
+    estimate_tokens_rough,
+)
 
 
 def test_cjk_text_is_not_estimated_as_four_chars_per_token():
@@ -48,3 +52,43 @@ def test_cjk_tail_does_not_expand_to_english_char_budget():
     compress_end = compressor._find_tail_cut_by_tokens(messages, compress_start)
 
     assert len(messages) - compress_end < 31
+
+
+def _reference_per_char_estimate(text: str) -> int:
+    """The pre-perf-gate per-character reference implementation."""
+    dense = 0
+    sparse = 0
+    for ch in text:
+        if _is_cjk_token_dense_char(ch):
+            dense += 1
+        else:
+            sparse += 1
+    return dense + ((sparse + 3) // 4)
+
+
+def test_perf_gated_estimator_matches_per_char_reference():
+    samples = [
+        "",
+        "ab",
+        "a" * 400,
+        "가" * 400,
+        "압축 테스트 " + ("가" * 1000),
+        "café résumé naïve",  # non-ASCII, no CJK
+        "hello 안녕 world",
+        "ｱｲｳｴｵ ﾃｽﾄ",  # halfwidth kana (fullwidth-forms block)
+        "漢字とかな交じり文です。",
+        "русский текст",  # Cyrillic — non-ASCII, non-CJK
+    ]
+    for text in samples:
+        assert estimate_tokens_rough(text) == _reference_per_char_estimate(text), repr(text)
+
+
+def test_ascii_fast_path_keeps_classic_four_chars_per_token():
+    # Pure ASCII must be bit-identical to the historical (len+3)//4 rule.
+    for text in ("x", "xyz", "a" * 1000, "tool output\n" * 500):
+        assert estimate_tokens_rough(text) == (len(text) + 3) // 4
+
+
+def test_non_ascii_non_cjk_keeps_classic_rule():
+    text = "café résumé " * 40
+    assert estimate_tokens_rough(text) == (len(text) + 3) // 4

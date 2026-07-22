@@ -58,9 +58,9 @@ class TestEstimateTokensRough:
         assert long > short
 
     def test_unicode_multibyte(self):
-        """Unicode chars are still 1 Python char each — 4 chars/token holds."""
+        """CJK chars are token-dense: counted ~1 token each, not 4 chars/token."""
         text = "你好世界"  # 4 CJK characters
-        assert estimate_tokens_rough(text) == 1
+        assert estimate_tokens_rough(text) == 4
 
 
 class TestEstimateMessagesTokensRough:

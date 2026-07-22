@@ -2678,6 +2678,20 @@ def _is_cjk_token_dense_char(ch: str) -> bool:
     )
 
 
+# Same codepoint ranges as _is_cjk_token_dense_char, as a compiled character
+# class so dense-char counting runs in C (``len(text) - len(re.sub(...))``)
+# instead of a per-char Python loop.  MUST stay in sync with
+# _is_cjk_token_dense_char.
+_CJK_DENSE_RE = re.compile(
+    "[\u1100-\u11ff"  # Hangul Jamo
+    "\u2e80-\u9fff"  # CJK radicals/ideographs
+    "\ua960-\ua97f"  # Hangul Jamo Extended-A
+    "\uac00-\ud7af"  # Hangul Syllables
+    "\uf900-\ufaff"  # CJK compatibility ideographs
+    "\uff00-\uffef]"  # Fullwidth forms / halfwidth kana
+)
+
+
 def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate for pre-flight checks.
 
@@ -2687,17 +2701,25 @@ def estimate_tokens_rough(text: str) -> int:
     CJK/Hangul/Kana text is much denser than English under common LLM
     tokenizers, so count those codepoints as roughly one token each instead
     of applying the English-centric ~4 chars/token rule.
+
+    Perf: this runs on every message in every preflight/compaction walk,
+    including MB-scale tool outputs, so the common all-ASCII case must stay
+    O(1).  ``str.isascii()`` is a flag check on CPython's compact unicode
+    representation (no scan), and the CJK counting itself is a single
+    C-level ``re.findall`` rather than a per-character Python loop.
     """
     if not text:
         return 0
     text = str(text)
-    dense = 0
-    sparse = 0
-    for ch in text:
-        if _is_cjk_token_dense_char(ch):
-            dense += 1
-        else:
-            sparse += 1
+    if text.isascii():
+        # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
+        return (len(text) + 3) // 4
+    dense = len(text) - len(_CJK_DENSE_RE.sub("", text))
+    if not dense:
+        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): keep the
+        # classic ~4 chars/token rule.
+        return (len(text) + 3) // 4
+    sparse = len(text) - dense
     return dense + ((sparse + 3) // 4)
 
 

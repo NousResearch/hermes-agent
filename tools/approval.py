@@ -631,6 +631,15 @@ DANGEROUS_PATTERNS = [
     # *next* line to satisfy the negative lookahead, silently allowing DELETE without WHERE.
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
+    # MongoDB destructive operations — .drop() deletes an entire collection
+    # and .drop_database() deletes all collections.  .delete_many({}) without
+    # a filter removes every document.  These are the NoSQL equivalent of
+    # DROP TABLE / TRUNCATE and should always require explicit user approval.
+    # Inspired by #66032: 1.17B documents lost when LLM-generated inline
+    # python3 -c script included collection.drop() alongside a read query.
+    (r'\.drop\s*\(\s*\)', "MongoDB collection drop"),
+    (r'\.drop_database\s*\(', "MongoDB database drop"),
+    (r'\.delete_many\s*\(\s*\{\s*\}\s*\)', "MongoDB delete_many with empty filter (drops all documents)"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),

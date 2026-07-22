@@ -5167,7 +5167,20 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
             session_store._ensure_loaded()
-            return session_key in session_store._entries
+            entry = session_store._entries.get(session_key)
+            if entry is None:
+                return False
+
+            # A key that exists but would be rolled to a fresh session by the
+            # reset policy (daily/idle/suspended) is NOT an active session:
+            # get_or_create_session() will reset it on the next real message,
+            # so treating it as active here would suppress the first-turn
+            # thread-history reseed (#55239).
+            should_reset = getattr(type(session_store), "_should_reset", None)
+            if callable(should_reset) and should_reset(session_store, entry, source):
+                return False
+
+            return True
         except Exception:
             return False
 

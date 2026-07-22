@@ -267,6 +267,18 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
 
+def test_memkeeper_manifest_is_declared_as_wheel_data_file():
+    """The memkeeper catalog entry must retain its directory in built wheels."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+    assert data_files.get("optional-mcps/memkeeper") == [
+        "optional-mcps/memkeeper/manifest.yaml"
+    ], (
+        "pyproject [tool.setuptools.data-files] must declare memkeeper's "
+        "manifest so wheels ship this catalog entry"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #

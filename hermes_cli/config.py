@@ -2015,6 +2015,10 @@ DEFAULT_CONFIG = {
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
+            # Matrix uses m.replace events for streaming (edit-based), which
+            # shows rapid edits in clients like Element — same flickering
+            # behaviour as Discord/Slack.  Disable by default.
+            "matrix": {"streaming": False},
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

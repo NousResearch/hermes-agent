@@ -1533,6 +1533,37 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
         print("  cd into your project repo first, then run hermes -w")
         return None
 
+    # Canonicalize repo_root to the MAIN working tree so worktrees are never
+    # created nested inside another worktree. When a session starts *inside* a
+    # linked worktree, both `_git_repo_root()` and the WebUI's
+    # `find_git_repo_root()` use `git rev-parse --show-toplevel`, which returns
+    # that worktree's own root — not the canonical clone. The new worktree would
+    # then be created under <worktree>/.worktrees/, digging one level deeper for
+    # every session spawned from a worktree session (recursive nesting).
+    # `--git-common-dir` always resolves to the main repo's .git even from a
+    # linked worktree; its parent is the canonical clone root. Only redirect for
+    # a normal (non-bare) clone whose common git dir is a ".git" directory —
+    # bare repos / unusual layouts are left untouched (prior behavior).
+    try:
+        _common = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if _common.returncode == 0:
+            _cdir = _normalize_git_bash_path(_common.stdout.strip())
+            if _cdir and os.path.basename(os.path.normpath(_cdir)) == ".git":
+                _canonical = os.path.dirname(os.path.normpath(_cdir))
+                if _canonical and _canonical != repo_root:
+                    logger.debug(
+                        "worktree: redirecting repo_root %s -> canonical %s "
+                        "(session started inside a worktree)",
+                        repo_root, _canonical,
+                    )
+                    repo_root = _canonical
+    except Exception as e:
+        logger.debug("Could not canonicalize repo_root to main worktree: %s", e)
+
     short_id = uuid.uuid4().hex[:8]
     wt_name = f"hermes-{short_id}"
     branch_name = f"hermes/{wt_name}"

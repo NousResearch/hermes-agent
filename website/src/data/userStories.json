@@ -1,5 +1,16 @@
 [
   {
+    "id": "tborges-personal-research-desk",
+    "source": "x",
+    "author": "@tborges77",
+    "url": "https://x.com/tborges77/status/2070231771174588825?s=20",
+    "date": "2026-06-25",
+    "category": "research",
+    "headline": "Hermes as a personal research desk: sources → KB → podcast briefs",
+    "quote": "I use Hermes as a local-first research desk. Scheduled jobs watch source streams, capture evidence, and write into a living KB with entities, timelines, and links. The useful part is not a one-off summary; Hermes asks what changed, what connects to older threads, and what deserves a Parallax segment, a private podcast-style briefing format with two or three AI hosts/guests discussing the research for my own consumption. It turned research from manual checking into a recurring pipeline: sources arrive, evidence is stored, the KB improves, and the best threads surface as briefings I can listen to.",
+    "size": "lg"
+  },
+  {
     "id": "anthony-inbox-cron",
     "source": "blog",
     "author": "Anthony Maio (Substack)",

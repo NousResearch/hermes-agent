@@ -298,6 +298,51 @@ class TestMigration:
                 after = (p.stat().st_mtime_ns, p.stat().st_size)
                 assert after == before[slug], f"board DB mutated by migration: {slug}"
 
+    @pytest.mark.skipif(not REAL_INVENTORY.exists(), reason="evidence bundle not present")
+    def test_main_writes_registry_with_hardened_permissions(self, hermes_home):
+        assert migrate.main(["--inventory", str(REAL_INVENTORY), "--no-rehash"]) == 0
+        root_mode = stat.S_IMODE(lc.registry_path().parent.stat().st_mode)
+        file_mode = stat.S_IMODE(lc.registry_path().stat().st_mode)
+        assert root_mode == 0o700
+        assert file_mode == 0o600
+        assert lc.load_registry()["generation"] == 1
+
+    @pytest.mark.skipif(not REAL_INVENTORY.exists(), reason="evidence bundle not present")
+    def test_main_out_path_still_uses_hardened_writer(self, hermes_home):
+        out_path = hermes_home / "alternate-control" / "boards.json"
+        assert migrate.main([
+            "--inventory", str(REAL_INVENTORY), "--no-rehash", "--out", str(out_path),
+        ]) == 0
+        assert stat.S_IMODE(out_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not REAL_INVENTORY.exists(), reason="evidence bundle not present")
+    @pytest.mark.parametrize("mask", [0o000, 0o077])
+    def test_main_out_path_permissions_do_not_depend_on_umask(self, hermes_home, mask):
+        out_path = hermes_home / f"umask-{mask:o}" / "boards.json"
+        old_umask = os.umask(mask)
+        try:
+            assert migrate.main([
+                "--inventory", str(REAL_INVENTORY), "--no-rehash", "--out", str(out_path),
+            ]) == 0
+        finally:
+            os.umask(old_umask)
+        assert stat.S_IMODE(out_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not REAL_INVENTORY.exists(), reason="evidence bundle not present")
+    def test_main_out_path_rejects_symlink_registry(self, hermes_home):
+        real = hermes_home / "real" / "boards.json"
+        real.parent.mkdir(parents=True)
+        real.write_text("{}")
+        link = hermes_home / "link" / "boards.json"
+        link.parent.mkdir(parents=True)
+        os.symlink(real, link)
+        with pytest.raises(lc.LifecycleRegistryError, match="symlink"):
+            migrate.main([
+                "--inventory", str(REAL_INVENTORY), "--no-rehash", "--out", str(link),
+            ])
+
     def test_missing_board_detected(self):
         inventory = {
             "a": {"slug": "a", "db_path": "/nonexistent/a.db", "db_sha256": "", "classification": "POSSIBLE_PRODUCTION"},
@@ -608,6 +653,105 @@ class TestTelemetry:
             )
         lines = [json.loads(l) for l in lc.telemetry_path().read_text().strip().splitlines()]
         assert [l["phase"] for l in lines] == ["BEGIN", "COMMIT"]
+
+    def test_dispatch_once_records_core_telemetry(self, kanban_home, all_assignees_spawnable):
+        lc.write_new_registry({"default": _entry("LEGACY_ACTIVE")})
+        with kb.connect() as conn:
+            kb.create_task(conn, title="t", assignee="w")
+        with kb.connect(board="default") as conn:
+            kb.dispatch_once(conn, board="default", spawn_fn=lambda *a, **k: None)
+        records = [json.loads(l) for l in lc.telemetry_path().read_text().splitlines()]
+        assert [r["phase"] for r in records] == ["BEGIN", "COMMIT"]
+        assert {r["operation_category"] for r in records} == {"dispatch"}
+        assert {r["writer_role"] for r in records} == {"core-kanban-db"}
+
+    def test_reclaim_task_records_core_telemetry(self, kanban_home):
+        lc.write_new_registry({"default": _entry("INACTIVE")})
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.claim_task(conn, tid)
+            assert kb.reclaim_task(conn, tid, reason="operator abort") is True
+        records = [json.loads(l) for l in lc.telemetry_path().read_text().splitlines()]
+        reclaim_records = [r for r in records if r["operation_category"] == "reclaim"]
+        assert [r["phase"] for r in reclaim_records] == ["BEGIN", "COMMIT"]
+        assert {r["task_id"] for r in reclaim_records} == {tid}
+        assert reclaim_records[-1]["sqlite_result"] == "ok"
+
+    def test_dispatch_once_records_rollback_without_secret_on_exception(
+        self, kanban_home, monkeypatch,
+    ):
+        lc.write_new_registry({"default": _entry("LEGACY_ACTIVE")})
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("secret-token-123")
+
+        monkeypatch.setattr(kb, "_dispatch_once_locked", _boom)
+        with kb.connect(board="default") as conn:
+            with pytest.raises(RuntimeError):
+                kb.dispatch_once(conn, board="default")
+        records = [json.loads(l) for l in lc.telemetry_path().read_text().splitlines()]
+        assert [r["phase"] for r in records] == ["BEGIN", "ROLLBACK"]
+        assert records[-1]["sqlite_result"] == "RuntimeError"
+        assert "secret-token-123" not in json.dumps(records)
+
+    def test_reclaim_task_records_rollback_without_secret_on_exception(
+        self, kanban_home, monkeypatch,
+    ):
+        lc.write_new_registry({"default": _entry("INACTIVE")})
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("secret-token-456")
+
+        monkeypatch.setattr(kb, "_end_run", _boom)
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", body="secret-body", assignee="w")
+            kb.claim_task(conn, tid)
+            with pytest.raises(RuntimeError):
+                kb.reclaim_task(conn, tid, reason="operator abort")
+        records = [json.loads(l) for l in lc.telemetry_path().read_text().splitlines()]
+        reclaim_records = [r for r in records if r["operation_category"] == "reclaim"]
+        assert [r["phase"] for r in reclaim_records] == ["BEGIN", "ROLLBACK"]
+        assert reclaim_records[-1]["sqlite_result"] == "RuntimeError"
+        assert "secret-token-456" not in json.dumps(reclaim_records)
+        assert "secret-body" not in json.dumps(reclaim_records)
+
+    def test_dispatch_dry_run_suppresses_core_write_telemetry(
+        self, kanban_home, all_assignees_spawnable,
+    ):
+        lc.write_new_registry({"default": _entry("LEGACY_ACTIVE")})
+        with kb.connect() as conn:
+            kb.create_task(conn, title="t", assignee="w")
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", dry_run=True, spawn_fn=lambda *a, **k: None,
+            )
+        assert result.spawned
+        assert not lc.telemetry_path().exists()
+
+    def test_core_telemetry_failure_does_not_stop_primary_mutations(
+        self, kanban_home, all_assignees_spawnable, monkeypatch,
+    ):
+        lc.write_new_registry({"default": _entry("INACTIVE")})
+
+        def _telemetry_boom(*args, **kwargs):
+            raise OSError("telemetry sink unavailable")
+
+        monkeypatch.setattr(lc, "record_writer_event", _telemetry_boom)
+        spawned = []
+        _write_registry({"default": _entry("LEGACY_ACTIVE")}, generation=2)
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", spawn_fn=lambda *a, **k: spawned.append(1),
+            )
+        assert result.spawned
+        assert spawned == [1]
+
+        _write_registry({"default": _entry("INACTIVE")}, generation=3)
+        with kb.connect() as conn:
+            assert kb.reclaim_task(conn, tid, reason="operator abort") is True
+            assert kb.get_task(conn, tid).status == "ready"
 
     def test_rotation_moves_old_file_aside(self, hermes_home, monkeypatch):
         monkeypatch.setattr(lc, "_TELEMETRY_MAX_BYTES", 200)

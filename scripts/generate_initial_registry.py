@@ -216,10 +216,7 @@ def main(argv=None) -> int:
         return 0
 
     out_path = args.out or lifecycle.registry_path()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(registry, fh, indent=2, sort_keys=True)
-        fh.write("\n")
+    lifecycle.write_new_registry_at(out_path, registry["boards"])
     print(f"Wrote registry to {out_path}")
     return 0
 

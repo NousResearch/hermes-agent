@@ -73,6 +73,7 @@ _REGISTRY_LOCK_TIMEOUT_SECONDS = 5.0
 _REGISTRY_LOCK_POLL_SECONDS = 0.05
 
 WRITER_ROLES = {
+    "core-kanban-db",
     "gateway-dispatcher",
     "manual-dispatch-cli",
     "worker-completion",
@@ -220,11 +221,10 @@ class BoardEntry:
         }
 
 
-def load_registry_raw() -> dict:
+def _load_registry_raw_at(path: Path) -> dict:
     """Load + validate the registry file. Raises LifecycleRegistryError on
     ANY problem (missing, symlink, unparseable JSON, wrong/missing schema
     version, malformed shape). Never returns a partially-trusted dict."""
-    path = registry_path()
     try:
         _reject_symlink(path)
     except LifecycleRegistryError:
@@ -258,6 +258,11 @@ def load_registry_raw() -> dict:
                 f"registry board entry {slug!r} malformed or missing valid 'state'"
             )
     return data
+
+
+def load_registry_raw() -> dict:
+    """Load + validate the default lifecycle registry."""
+    return _load_registry_raw_at(registry_path())
 
 
 def load_registry() -> dict:
@@ -462,21 +467,21 @@ def _atomic_write_json(path: Path, data: dict) -> None:
             pass
         raise
     # Re-validate what actually landed on disk.
-    load_registry_raw()
+    _load_registry_raw_at(path)
 
 
-def write_new_registry(boards: dict) -> dict:
-    """Create the registry file from scratch (migration entrypoint only).
+def write_new_registry_at(path: Path, boards: dict) -> dict:
+    """Create a registry file from scratch at ``path``.
 
     Fails if a registry already exists — use ``apply_board_transition`` for
     updates to an existing registry.
     """
-    path = registry_path()
     with _registry_write_lock(path):
+        _reject_symlink(path)
         if path.exists():
             raise LifecycleRegistryError(
                 f"registry already exists at {path}; refusing to overwrite "
-                f"via write_new_registry (use apply_board_transition instead)"
+                f"via write_new_registry_at (use apply_board_transition instead)"
             )
         data = {
             "schema_version": SCHEMA_VERSION,
@@ -485,6 +490,11 @@ def write_new_registry(boards: dict) -> dict:
         }
         _atomic_write_json(path, data)
         return data
+
+
+def write_new_registry(boards: dict) -> dict:
+    """Create the default registry file from scratch (migration entrypoint only)."""
+    return write_new_registry_at(registry_path(), boards)
 
 
 def apply_board_transition(

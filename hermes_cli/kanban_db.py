@@ -1761,6 +1761,53 @@ def _enforce_lifecycle_write_gate(conn: sqlite3.Connection, *, operation: str) -
     )
 
 
+def _conn_db_path_for_telemetry(conn: sqlite3.Connection) -> str:
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row is not None and row[2]:
+            return str(row[2])
+    except sqlite3.Error:
+        pass
+    return ""
+
+
+def _record_lifecycle_writer_event(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str],
+    operation_category: str,
+    txn_id: str,
+    phase: str,
+    sqlite_result: str = "",
+    task_id: str = "",
+    run_id: str = "",
+    db_path: "str | Path | None" = None,
+) -> None:
+    """Best-effort P0-G telemetry; never affects the board mutation path."""
+    try:
+        from hermes_cli import kanban_lifecycle as _lifecycle
+        slug = _normalize_board_slug(board) if board else _slug_for_conn(conn)
+        _lifecycle.record_writer_event(
+            writer_id="kanban_db",
+            writer_role="core-kanban-db",
+            board=slug or DEFAULT_BOARD,
+            db_path=db_path or _conn_db_path_for_telemetry(conn),
+            operation_category=operation_category,
+            txn_id=txn_id,
+            phase=phase,
+            sqlite_result=sqlite_result,
+            task_id=task_id,
+            run_id=run_id,
+        )
+    except Exception:
+        _log.debug(
+            "kanban lifecycle telemetry: failed to record %s %s",
+            operation_category,
+            phase,
+            exc_info=True,
+        )
+
+
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
     """Copy a corrupt DB (and its WAL/SHM sidecars) to a content-addressed backup.
 
@@ -4007,36 +4054,72 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
+    telemetry_txn_id = f"reclaim:{task_id}:{secrets.token_hex(4)}"
+    _record_lifecycle_writer_event(
+        conn,
+        board=None,
+        operation_category="reclaim",
+        txn_id=telemetry_txn_id,
+        phase="BEGIN",
+        task_id=task_id,
+    )
+    try:
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+                "AND claim_lock IS ?",
+                (task_id, prev_lock),
+            )
+            if cur.rowcount != 1:
+                reclaimed = False
+                run_id = None
+            else:
+                reclaimed = True
+                run_id = _end_run(
+                    conn, task_id,
+                    outcome="reclaimed", status="reclaimed",
+                    error=(
+                        f"manual_reclaim: {reason}" if reason
+                        else f"manual_reclaim lock={prev_lock}"
+                    ),
+                    metadata=termination,
+                )
+                payload = {
+                    "manual": True,
+                    "reason": reason,
+                    "prev_lock": prev_lock,
+                }
+                payload.update(termination)
+                _append_event(
+                    conn, task_id, "reclaimed",
+                    payload,
+                    run_id=run_id,
+                )
+    except Exception as exc:
+        _record_lifecycle_writer_event(
+            conn,
+            board=None,
+            operation_category="reclaim",
+            txn_id=telemetry_txn_id,
+            phase="ROLLBACK",
+            sqlite_result=type(exc).__name__,
+            task_id=task_id,
         )
-        if cur.rowcount != 1:
-            return False
-        run_id = _end_run(
-            conn, task_id,
-            outcome="reclaimed", status="reclaimed",
-            error=(
-                f"manual_reclaim: {reason}" if reason
-                else f"manual_reclaim lock={prev_lock}"
-            ),
-            metadata=termination,
-        )
-        payload = {
-            "manual": True,
-            "reason": reason,
-            "prev_lock": prev_lock,
-        }
-        payload.update(termination)
-        _append_event(
-            conn, task_id, "reclaimed",
-            payload,
-            run_id=run_id,
-        )
+        raise
+    _record_lifecycle_writer_event(
+        conn,
+        board=None,
+        operation_category="reclaim",
+        txn_id=telemetry_txn_id,
+        phase="COMMIT",
+        sqlite_result="ok" if reclaimed else "no_rows",
+        task_id=task_id,
+        run_id=str(run_id or ""),
+    )
+    if not reclaimed:
+        return False
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
     # a fresh budget. (_clear_failure_counter opens its own write_txn,
@@ -7286,22 +7369,57 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
 
-    with _dispatch_tick_lock(db_path) as held:
-        if not held:
-            return DispatchResult(skipped_locked=True)
-        return _dispatch_once_locked(
+    telemetry_txn_id = f"dispatch:{slug}:{secrets.token_hex(4)}"
+    if not dry_run:
+        _record_lifecycle_writer_event(
             conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
+            board=slug,
+            db_path=db_path,
+            operation_category="dispatch",
+            txn_id=telemetry_txn_id,
+            phase="BEGIN",
         )
+    try:
+        with _dispatch_tick_lock(db_path) as held:
+            if not held:
+                result = DispatchResult(skipped_locked=True)
+            else:
+                result = _dispatch_once_locked(
+                    conn,
+                    spawn_fn=spawn_fn,
+                    ttl_seconds=ttl_seconds,
+                    dry_run=dry_run,
+                    max_spawn=max_spawn,
+                    max_in_progress=max_in_progress,
+                    failure_limit=failure_limit,
+                    stale_timeout_seconds=stale_timeout_seconds,
+                    board=board,
+                    default_assignee=default_assignee,
+                    max_in_progress_per_profile=max_in_progress_per_profile,
+                )
+    except Exception as exc:
+        if not dry_run:
+            _record_lifecycle_writer_event(
+                conn,
+                board=slug,
+                db_path=db_path,
+                operation_category="dispatch",
+                txn_id=telemetry_txn_id,
+                phase="ROLLBACK",
+                sqlite_result=type(exc).__name__,
+            )
+        raise
+    if not dry_run:
+        _record_lifecycle_writer_event(
+            conn,
+            board=slug,
+            db_path=db_path,
+            operation_category="dispatch",
+            txn_id=telemetry_txn_id,
+            phase="COMMIT",
+            sqlite_result="skipped_locked" if result.skipped_locked else "ok",
+        )
+    return result
 
 
 def _dispatch_once_locked(

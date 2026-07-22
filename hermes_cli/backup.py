@@ -8,20 +8,24 @@ Backup and import commands for hermes CLI.
 HERMES_HOME root.
 """
 
+import contextlib
 import json
 import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +300,41 @@ def _format_size(nbytes: int) -> str:
     return f"{nbytes:.1f} TB"
 
 
+@contextlib.contextmanager
+def _atomic_owner_only_zip(out_path: Path) -> Iterator[zipfile.ZipFile]:
+    """Yield a ``ZipFile`` that lands at *out_path* as an owner-only 0o600 file.
+
+    ``zipfile.ZipFile(out_path, "w")`` would create the archive under the
+    process umask (often 0o644), leaving a TOCTOU window where a
+    secret-bearing backup (auth.json/state.db/config.yaml) is world- or
+    group-readable until a later chmod runs. Instead this stages the zip in
+    a sibling temp file created 0o600 from the first byte via O_EXCL, then
+    atomically replaces *out_path* on success -- mirroring the auth.json
+    write path (hermes_cli/auth.py:1125-1138, PR #59736 review).
+
+    On any exception the temp file is discarded and *out_path* is left
+    untouched.
+    """
+    tmp_path = out_path.parent / f".{out_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+    handle = os.fdopen(fd, "wb")
+    try:
+        with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            yield zf
+        handle.flush()
+        os.fsync(handle.fileno())
+    except BaseException:
+        handle.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
+    handle.close()
+    real_path = atomic_replace(tmp_path, out_path)
+    try:
+        os.chmod(real_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
     hermes_root = get_default_hermes_root()
@@ -312,8 +351,13 @@ def run_backup(args) -> None:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
             out_path = out_path / f"hermes-backup-{stamp}.zip"
     else:
+        # Default lands under HERMES_HOME/backups/ (the same directory the
+        # pre-update/pre-migration auto-backups use, already excluded from
+        # the file walk below) rather than $HOME directly -- the backup
+        # contains auth.json/state.db/config.yaml, and $HOME isn't
+        # protected by HERMES_HOME's 0700 mode the way ~/.hermes is.
         stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        out_path = Path.home() / f"hermes-backup-{stamp}.zip"
+        out_path = hermes_root / "backups" / f"hermes-backup-{stamp}.zip"
 
     # Ensure the suffix is .zip
     if out_path.suffix.lower() != ".zip":
@@ -388,7 +432,7 @@ def run_backup(args) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    with _atomic_owner_only_zip(out_path) as zf:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
@@ -1234,7 +1278,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
 
     sqlite_snapshot_failed = False
     try:
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        with _atomic_owner_only_zip(out_path) as zf:
             for abs_path, rel_path in files_to_add:
                 try:
                     if abs_path.suffix == ".db":
@@ -1264,11 +1308,6 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                     continue
     except OSError as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
-        # Best-effort cleanup of partial file
-        try:
-            out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         return None
 
     if sqlite_snapshot_failed:

@@ -469,7 +469,11 @@ class TestBackup:
             assert pid_files == []
 
     def test_default_output_path(self, tmp_path, monkeypatch):
-        """When no output path given, zip goes to ~/hermes-backup-*.zip."""
+        """When no output path given, zip goes under HERMES_HOME/backups/,
+        not $HOME -- the backup carries auth.json/state.db/config.yaml, and
+        $HOME isn't protected by HERMES_HOME's 0700 mode the way ~/.hermes
+        is (see security hardening: the zip must not rely on inheriting
+        protection from a directory Hermes doesn't control)."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
@@ -482,9 +486,80 @@ class TestBackup:
         from hermes_cli.backup import run_backup
         run_backup(args)
 
-        # Should exist in home dir
-        zips = list(tmp_path.glob("hermes-backup-*.zip"))
+        # Should NOT leak into $HOME.
+        assert list(tmp_path.glob("hermes-backup-*.zip")) == []
+
+        # Should exist under HERMES_HOME/backups/ instead.
+        zips = list((hermes_home / "backups").glob("hermes-backup-*.zip"))
         assert len(zips) == 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+    def test_zip_is_owner_only_regardless_of_destination(self, tmp_path, monkeypatch):
+        """The zip must land at 0600 whether it's the default backups/
+        location or an explicit --output elsewhere -- it carries
+        auth.json/state.db/config.yaml and is meant to be moved/copied, so
+        it can't rely on its parent directory for protection."""
+        import stat
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        old_umask = os.umask(0o022)
+        try:
+            from hermes_cli.backup import run_backup
+
+            run_backup(Namespace(output=None))
+            default_zip = next((hermes_home / "backups").glob("hermes-backup-*.zip"))
+            assert stat.S_IMODE(default_zip.stat().st_mode) == 0o600
+
+            explicit_zip = tmp_path / "explicit-backup.zip"
+            run_backup(Namespace(output=str(explicit_zip)))
+            assert stat.S_IMODE(explicit_zip.stat().st_mode) == 0o600
+        finally:
+            os.umask(old_umask)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+    def test_atomic_owner_only_zip_stages_0600_before_write(self, tmp_path):
+        """The staging temp file must be created 0600 (via O_EXCL) before any
+        bytes are written -- ``zipfile.ZipFile(path, "w")`` alone creates the
+        archive under the process umask, leaving a window where a
+        secret-bearing backup is world/group-readable until a later chmod
+        (the TOCTOU teknium1 flagged on PR #59736)."""
+        import stat
+
+        from hermes_cli.backup import _atomic_owner_only_zip
+
+        out_path = tmp_path / "out.zip"
+        old_umask = os.umask(0o022)
+        try:
+            with _atomic_owner_only_zip(out_path) as zf:
+                tmp_files = [
+                    p for p in tmp_path.iterdir() if p.name.startswith(".out.zip.tmp.")
+                ]
+                assert len(tmp_files) == 1
+                assert stat.S_IMODE(tmp_files[0].stat().st_mode) == 0o600
+                zf.writestr("hello.txt", "world")
+            assert stat.S_IMODE(out_path.stat().st_mode) == 0o600
+            assert [p for p in tmp_path.iterdir() if p.name.startswith(".out.zip.tmp.")] == []
+        finally:
+            os.umask(old_umask)
+
+    def test_atomic_owner_only_zip_discards_tmp_on_error(self, tmp_path):
+        """A failure mid-write must leave neither a partial *out_path* nor a
+        leftover temp file behind."""
+        from hermes_cli.backup import _atomic_owner_only_zip
+
+        out_path = tmp_path / "out.zip"
+        with pytest.raises(RuntimeError):
+            with _atomic_owner_only_zip(out_path) as zf:
+                zf.writestr("hello.txt", "world")
+                raise RuntimeError("boom")
+
+        assert not out_path.exists()
+        assert [p for p in tmp_path.iterdir() if p.name.startswith(".out.zip.tmp.")] == []
 
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
         """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
@@ -2045,6 +2120,24 @@ class TestPreUpdateBackup:
         assert out.parent == hermes_home / "backups"
         assert out.name.startswith("pre-update-")
         assert out.suffix == ".zip"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+    def test_zip_is_owner_only(self, hermes_home):
+        """Pre-update backups carry the same secrets as ``hermes backup``
+        (auth.json/state.db/config.yaml) and share its zip writer, so they
+        must land 0600 regardless of process umask -- not just the
+        interactive ``hermes backup`` path."""
+        import stat
+
+        from hermes_cli.backup import create_pre_update_backup
+
+        old_umask = os.umask(0o022)
+        try:
+            out = create_pre_update_backup(hermes_home=hermes_home)
+        finally:
+            os.umask(old_umask)
+        assert out is not None
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
 
     def test_backup_contents_match_full_backup(self, hermes_home):
         """Pre-update backup should include the same user data that

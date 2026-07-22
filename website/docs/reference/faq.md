@@ -743,12 +743,12 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
    ```bash
    hermes backup
    ```
-   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved as `~/.hermes/backups/hermes-backup-<timestamp>.zip` (owner-only, mode `0600`, since it carries those secrets verbatim).
 
 3. Copy the zip to the new machine and import it:
    ```bash
    # On the source machine
-   scp ~/hermes-backup-<timestamp>.zip newmachine:~/
+   scp ~/.hermes/backups/hermes-backup-<timestamp>.zip newmachine:~/
 
    # On the new machine
    hermes import ~/hermes-backup-<timestamp>.zip

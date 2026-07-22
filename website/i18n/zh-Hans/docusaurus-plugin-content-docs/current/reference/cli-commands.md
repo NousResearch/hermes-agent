@@ -604,7 +604,7 @@ hermes backup [options]
 
 | 选项 | 说明 |
 |--------|-------------|
-| `-o`, `--output <path>` | zip 文件的输出路径（默认：`~/hermes-backup-<timestamp>.zip`）。 |
+| `-o`, `--output <path>` | zip 文件的输出路径（默认：`~/.hermes/backups/hermes-backup-<timestamp>.zip`）。 |
 | `-q`, `--quick` | 快速快照：仅包含关键状态文件（config.yaml、state.db、.env、auth、cron 任务）。比完整备份快得多。 |
 | `-l`, `--label <name>` | 快照标签（仅与 `--quick` 配合使用）。 |
 
@@ -619,7 +619,7 @@ hermes backup [options]
 ### 示例
 
 ```bash
-hermes backup                           # 完整备份到 ~/hermes-backup-*.zip
+hermes backup                           # 完整备份到 ~/.hermes/backups/hermes-backup-*.zip
 hermes backup -o /tmp/hermes.zip        # 完整备份到指定路径
 hermes backup --quick                   # 仅状态快速快照
 hermes backup --quick --label "pre-upgrade"  # 带标签的快速快照
@@ -681,8 +681,8 @@ hermes import <zipfile> [options]
 
 ### 示例
 ```bash
-hermes import ~/hermes-backup-20260423.zip           # 覆盖现有配置前提示确认
-hermes import ~/hermes-backup-20260423.zip --force   # 不提示直接覆盖
+hermes import ~/.hermes/backups/hermes-backup-20260423.zip           # 覆盖现有配置前提示确认
+hermes import ~/.hermes/backups/hermes-backup-20260423.zip --force   # 不提示直接覆盖
 ```
 
 ## `hermes logs`

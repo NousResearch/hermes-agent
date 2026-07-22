@@ -68,6 +68,72 @@ def test_idempotency_key_returns_existing_task(kanban_home):
         conn.close()
 
 
+def test_idempotency_key_is_atomic_across_concurrent_creates(kanban_home):
+    key = "concurrent-create"
+    connections_ready = threading.Barrier(3)
+    start_create = threading.Event()
+    prechecks_complete = [threading.Event(), threading.Event()]
+    writes_attempted = [threading.Event(), threading.Event()]
+    results = [None, None]
+    errors = []
+
+    def create(index):
+        conn = kb.connect()
+        try:
+            def trace(statement):
+                normalized = " ".join(statement.lower().split())
+                if normalized.startswith(
+                    "select id from tasks where idempotency_key"
+                ):
+                    prechecks_complete[index].set()
+                elif normalized == "begin immediate":
+                    writes_attempted[index].set()
+
+            conn.set_trace_callback(trace)
+            connections_ready.wait(timeout=10)
+            if not start_create.wait(timeout=10):
+                raise TimeoutError("concurrent create was not released")
+            results[index] = kb.create_task(
+                conn,
+                title=f"concurrent attempt {index}",
+                idempotency_key=key,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=create, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+
+    connections_ready.wait(timeout=10)
+    blocker = kb.connect()
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        start_create.set()
+        assert all(event.wait(timeout=10) for event in prechecks_complete)
+        assert all(event.wait(timeout=10) for event in writes_attempted)
+        blocker.execute("COMMIT")
+    finally:
+        if blocker.in_transaction:
+            blocker.execute("ROLLBACK")
+        blocker.close()
+
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert results[0] == results[1]
+    with kb.connect() as conn:
+        task_count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = ?",
+            (key,),
+        ).fetchone()[0]
+    assert task_count == 1
+
+
 def test_idempotency_key_ignored_for_archived(kanban_home):
     conn = kb.connect()
     try:

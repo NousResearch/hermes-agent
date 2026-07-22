@@ -95,6 +95,19 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Z.AI Concurrency
+
+Z.AI Coding Plan can return overload code 1305 when direct-agent, delegated, and Mixture-of-Agents calls fan out concurrently. Hermes applies a strict process-local cap of two Z.AI requests by default. Configure the active profile under `providers.zai`:
+
+```yaml
+providers:
+  zai:
+    max_concurrent: 2
+    acquire_timeout_seconds: 0
+```
+
+Set `max_concurrent` to `0` to disable the gate. `acquire_timeout_seconds: 0` waits until a slot is available; a positive value fails locally after that many seconds without sending another provider request. These are behavioral settings, so they belong in `config.yaml`, not `.env`. Each profile reads its own values through its active `HERMES_HOME`.
+
 ## Update Behavior
 
 `hermes update` settings live under `updates` in `config.yaml`:

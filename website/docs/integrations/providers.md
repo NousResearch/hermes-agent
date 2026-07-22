@@ -280,6 +280,25 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
+:::note Z.AI Concurrency Bound
+Hermes limits direct-agent and MoA calls to Z.AI to two simultaneous in-flight requests per process by default. This prevents a subagent or MoA fan-out from sustaining code 1305 overload retries and repeatedly re-sending a large context.
+
+Configure the active profile in `config.yaml`:
+
+```yaml
+providers:
+  zai:
+    max_concurrent: 2
+    acquire_timeout_seconds: 0
+```
+
+`max_concurrent: 0` disables the gate. A positive `acquire_timeout_seconds` raises locally without contacting the provider when no slot becomes available; the default `0` waits until a slot is free, while interactive waits remain interruptible. You can set the same values with `hermes config set providers.zai.max_concurrent 2` and `hermes config set providers.zai.acquire_timeout_seconds 0`.
+
+The bound is process-local and profile-scoped. If several CLI or gateway processes share one Coding Plan key, their effective combined ceiling is the number of processes multiplied by the per-process value; fleet operators should usually keep the value at `1` or `2`. This gate does not change the separate rolling usage quota or its "Usage limit reached for 5 hour" response.
+
+The gate covers the direct-agent and Mixture-of-Agents request paths. Auxiliary side-model calls (vision, web-extract, approval, compression, and other `auxiliary`-configured tasks) are not routed through it, so a Z.AI-backed auxiliary configuration can add in-flight requests beyond `max_concurrent`. Detection is host-first: a call is gated only when its resolved base-URL host is Z.AI, so a `zai`/`glm` provider pointed at a local or third-party endpoint via `GLM_BASE_URL` is not throttled.
+:::
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.

@@ -1093,7 +1093,10 @@ MEMORY_SCHEMA = {
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "procedures belong in a skill, not memory. Durable lessons with proof belong in the "
+        "episode tool (evidence-gated, not system-prompt injected) rather than stuffing "
+        "MEMORY.md. Prefer facts that will still be true in a month; do not write phase/queue "
+        "status snapshots here."
     ),
     "parameters": {
         "type": "object",

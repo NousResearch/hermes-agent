@@ -1539,6 +1539,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -3167,6 +3171,235 @@ class TestMigrateLegacyCommand:
         gateway_cli.gateway_command(args)
 
         assert called == {"interactive": False, "dry_run": False}
+
+
+class TestVaultRuntimeSmokeRestartHook:
+    def _prepare_systemd_restart(
+        self, tmp_path, monkeypatch, *, system: bool, ready: bool
+    ):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Unit]\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_select_systemd_scope",
+            lambda requested=False: system,
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_require_root_for_system_service", lambda action: None
+        )
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_require_service_installed",
+            lambda action, system=False: None,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "refresh_systemd_unit_if_needed",
+            lambda system=False: None,
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli, "_systemd_main_pid", lambda system=False: None
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_recover_pending_systemd_restart",
+            lambda system=False, previous_pid=None: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: ready,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: SimpleNamespace(
+                returncode=0, stdout="", stderr=""
+            ),
+        )
+
+    @staticmethod
+    def _install_smoke_script(tmp_path):
+        script = tmp_path / "scripts" / "hermes_vault_runtime_smoke.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        return script
+
+    def test_supported_restart_backends_are_explicit(self):
+        assert gateway_cli.VAULT_SMOKE_RESTART_BACKENDS == frozenset(
+            {"systemd-user", "launchd"}
+        )
+
+    def test_user_systemd_restart_schedules_present_hook_after_readiness(
+        self, tmp_path, monkeypatch
+    ):
+        self._prepare_systemd_restart(
+            tmp_path, monkeypatch, system=False, ready=True
+        )
+        script = self._install_smoke_script(tmp_path)
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            return SimpleNamespace(pid=123)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        gateway_cli.systemd_restart(system=False)
+
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert cmd == [gateway_cli.sys.executable, str(script), "--delay", "8.0"]
+        assert kwargs["stdout"].closed is True
+
+    def test_user_systemd_restart_with_absent_hook_does_not_spawn(
+        self, tmp_path, monkeypatch
+    ):
+        self._prepare_systemd_restart(
+            tmp_path, monkeypatch, system=False, ready=True
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("missing hook must not spawn")
+            ),
+        )
+
+        gateway_cli.systemd_restart(system=False)
+
+    def test_user_systemd_restart_does_not_schedule_before_readiness(
+        self, tmp_path, monkeypatch
+    ):
+        self._prepare_systemd_restart(
+            tmp_path, monkeypatch, system=False, ready=False
+        )
+        self._install_smoke_script(tmp_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("unready service must not run hook")
+            ),
+        )
+
+        gateway_cli.systemd_restart(system=False)
+
+    def test_system_systemd_restart_never_runs_user_controlled_hook(
+        self, tmp_path, monkeypatch
+    ):
+        self._prepare_systemd_restart(
+            tmp_path, monkeypatch, system=True, ready=True
+        )
+        self._install_smoke_script(tmp_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("system service must not run HERMES_HOME hook")
+            ),
+        )
+
+        gateway_cli.systemd_restart(system=True)
+
+    def test_launchd_restart_schedules_present_hook_after_manager_success(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout="", stderr=""
+            ),
+        )
+        script = self._install_smoke_script(tmp_path)
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            return SimpleNamespace(pid=456)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        gateway_cli.launchd_restart()
+
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert cmd == [gateway_cli.sys.executable, str(script), "--delay", "8.0"]
+        assert kwargs["stdout"].closed is True
+
+    def test_launchd_self_restart_schedules_present_hook_with_handoff_delay(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            gateway_cli, "_request_gateway_self_restart", lambda pid: True
+        )
+        script = self._install_smoke_script(tmp_path)
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            return SimpleNamespace(pid=457)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        gateway_cli.launchd_restart()
+
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert cmd == [gateway_cli.sys.executable, str(script), "--delay", "15.0"]
+        assert kwargs["stdout"].closed is True
+
+    def test_launchd_restart_failure_does_not_schedule_hook(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        self._install_smoke_script(tmp_path)
+
+        def fail_restart(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, args[0])
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fail_restart)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("failed restart must not run hook")
+            ),
+        )
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli.launchd_restart()
+
+    def test_spawn_failure_closes_parent_log_descriptor(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        self._install_smoke_script(tmp_path)
+        parent_logs = []
+
+        def fail_popen(cmd, **kwargs):
+            parent_logs.append(kwargs["stdout"])
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fail_popen)
+
+        gateway_cli._schedule_vault_runtime_smoke("systemd-user")
+
+        assert len(parent_logs) == 1
+        assert parent_logs[0].closed is True
+        assert "Could not schedule post-restart vault smoke test" in capsys.readouterr().out
 
 
 class TestGatewayStatusParser:

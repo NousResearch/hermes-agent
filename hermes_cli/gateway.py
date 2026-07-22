@@ -65,6 +65,12 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+# The smoke script lives under the operator-controlled HERMES_HOME, so it may
+# only be launched by service managers that run in that same user's scope.
+# System systemd services, Windows services, and detached/manual restarts are
+# intentionally unsupported.
+VAULT_SMOKE_RESTART_BACKENDS = frozenset({"systemd-user", "launchd"})
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -3194,6 +3200,38 @@ def _get_restart_drain_timeout() -> float:
     return parse_restart_drain_timeout(raw)
 
 
+def _schedule_vault_runtime_smoke(
+    backend: str, delay_seconds: float = 8.0
+) -> None:
+    """Launch the optional post-restart smoke script for a user service."""
+    if backend not in VAULT_SMOKE_RESTART_BACKENDS:
+        return
+
+    hermes_home = get_hermes_home()
+    script = hermes_home / "scripts" / "hermes_vault_runtime_smoke.py"
+    if not script.exists():
+        return
+
+    log_path = hermes_home / "logs" / "vault_runtime_smoke.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # Popen duplicates the descriptor for the child. Closing this parent
+        # handle immediately prevents one descriptor leak per restart.
+        with open(log_path, "ab") as log:
+            subprocess.Popen(
+                [sys.executable, str(script), "--delay", str(delay_seconds)],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        print(f"↻ Scheduled post-restart vault smoke test → {log_path}")
+    except Exception as exc:
+        print(
+            "⚠ Could not schedule post-restart vault smoke test: "
+            f"{exc.__class__.__name__}"
+        )
+
+
 def systemd_install(
     force: bool = False,
     system: bool = False,
@@ -3395,6 +3433,8 @@ def systemd_restart(system: bool = False):
                 timeout=90,
             )
             if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+                if not system:
+                    _schedule_vault_runtime_smoke("systemd-user")
                 return
             if _systemd_service_is_start_limited(system=system):
                 return
@@ -3425,10 +3465,14 @@ def systemd_restart(system: bool = False):
                 "check `hermes gateway status` or logs for final state."
             )
             return
-        _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+        if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+            if not system:
+                _schedule_vault_runtime_smoke("systemd-user")
         return
 
     if _recover_pending_systemd_restart(system=system, previous_pid=pid):
+        if not system:
+            _schedule_vault_runtime_smoke("systemd-user")
         return
 
     _run_systemctl(
@@ -3455,7 +3499,9 @@ def systemd_restart(system: bool = False):
             "check `hermes gateway status` or logs for final state."
         )
         return
-    _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+    if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+        if not system:
+            _schedule_vault_runtime_smoke("systemd-user")
 
 
 def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
@@ -4409,6 +4455,7 @@ def launchd_restart():
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
+            _schedule_vault_runtime_smoke("launchd", delay_seconds=15.0)
             return
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
@@ -4434,6 +4481,7 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
+        _schedule_vault_runtime_smoke("launchd")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
             # Not a "job unloaded" code. If the domain is fundamentally
@@ -4470,6 +4518,7 @@ def launchd_restart():
             return
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
+        _schedule_vault_runtime_smoke("launchd")
 
 
 def launchd_status(deep: bool = False):

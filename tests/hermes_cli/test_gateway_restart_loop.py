@@ -55,6 +55,14 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
+        # `systemd-run` wraps the command in a transient systemd scope unit —
+        # separate cgroup, immune to SIGTERM propagation from the gateway kill.
+        # See lifecyle_guard.py:_SAFE_DISPATCH_PREFIX for the full pattern.
+        "systemd-run --on-active=15 systemctl --user restart hermes-gateway",
+        "systemd-run --unit=hermes-restart --collect systemctl --user restart hermes-gateway",
+        "systemd-run --on-active=5 systemctl stop hermes-gateway",
+        "systemd-run --user --unit=foo --on-active=10 systemctl --user start hermes-gateway",
+        # Existing safe commands
         "restart the server application",
         "hermes cron list",
         "hermes update",
@@ -357,6 +365,28 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 0
         assert calls == ["systemctl status nginx"]
+
+    def test_systemd_run_bypasses_lifecycle_guard(self, monkeypatch):
+        """systemd-run wraps in a separate cgroup, must not be blocked."""
+        import tools.terminal_tool as tt
+
+        calls = []
+
+        class _FakeEnv:
+            env = {}
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "Running as unit hermes-restart.service", "returncode": 0}
+
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
+
+        result = json.loads(tt.terminal_tool(
+            command="systemd-run --on-active=15 systemctl --user restart hermes-gateway"
+        ))
+
+        assert result["exit_code"] == 0, f"Should allow systemd-run wrapper: {result.get('error')}"
+        assert calls == ["systemd-run --on-active=15 systemctl --user restart hermes-gateway"]
 
     def test_guard_inactive_outside_gateway(self, monkeypatch):
         """Without _HERMES_GATEWAY=1 the lifecycle guard must not fire."""

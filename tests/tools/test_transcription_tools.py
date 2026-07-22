@@ -404,12 +404,7 @@ class TestTranscribeLocalCommand:
             return _TempDir()
 
         def fake_run(cmd, *args, **kwargs):
-            if isinstance(cmd, list):
-                output_path = cmd[-1]
-                with open(output_path, "wb") as handle:
-                    handle.write(b"RIFF....WAVEfmt ")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
+            assert isinstance(cmd, list)
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -1563,13 +1558,75 @@ class TestShellSafety:
         assert parts[0] == "/usr/bin/whisper"
         assert "/tmp/test.wav" in parts
 
-    def test_env_var_template_uses_shell_path(self, monkeypatch):
-        """When HERMES_LOCAL_STT_COMMAND is set, use_shell should be True."""
-        import os
-        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
-        monkeypatch.setenv(LOCAL_STT_COMMAND_ENV, "whisper {input_path} | tee log.txt")
-        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
-        assert use_shell is True
+    def test_env_var_template_metacharacters_are_literal_argv(
+        self, monkeypatch, sample_wav, tmp_path
+    ):
+        from tools.transcription_tools import (
+            LOCAL_STT_COMMAND_ENV,
+            _transcribe_local_command,
+            windows_hide_flags,
+        )
+
+        output_dir = tmp_path / "transcript-output"
+        output_dir.mkdir()
+        monkeypatch.setenv(
+            LOCAL_STT_COMMAND_ENV,
+            (
+                "whisper {input_path} ; printf injected | tee log.txt "
+                "&& echo $(id) `whoami` --output_dir {output_dir}"
+            ),
+        )
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self):
+                    return str(output_dir)
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        invocation = {}
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            invocation["kwargs"] = kwargs
+            (output_dir / "transcript.txt").write_text("safe", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir
+        )
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["transcript"] == "safe"
+        assert invocation["command"] == [
+            "whisper",
+            sample_wav,
+            ";",
+            "printf",
+            "injected",
+            "|",
+            "tee",
+            "log.txt",
+            "&&",
+            "echo",
+            "$(id)",
+            "`whoami`",
+            "--output_dir",
+            str(output_dir),
+        ]
+        assert invocation["kwargs"] == {
+            "check": True,
+            "capture_output": True,
+            "text": True,
+            "timeout": 300,
+            "stdin": subprocess.DEVNULL,
+            "creationflags": windows_hide_flags(),
+        }
 
     def test_no_env_var_uses_list_mode(self, monkeypatch):
         """When no env var is set, use_shell should be False."""

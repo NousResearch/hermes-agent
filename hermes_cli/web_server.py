@@ -93,6 +93,7 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
 from utils import env_var_enabled
 
 try:
@@ -11211,6 +11212,14 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
     sid, _limit, messages = result
+    messages = [
+        {
+            key: value
+            for key, value in message.items()
+            if key != TURN_MEMORY_DISPOSITION_KEY
+        }
+        for message in messages
+    ]
     return {
         "session_id": sid,
         "messages": messages,

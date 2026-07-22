@@ -27,6 +27,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
@@ -152,7 +153,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -898,6 +899,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     effect_disposition TEXT,
+    turn_memory_disposition TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -4247,6 +4249,7 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         effect_disposition: Optional[str] = None,
+        turn_memory_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
     ) -> int:
@@ -4314,10 +4317,10 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, turn_memory_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4326,6 +4329,7 @@ class SessionDB:
                     tool_calls_json,
                     _scrub_surrogates(tool_name),
                     effect_disposition,
+                    turn_memory_disposition,
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -4419,10 +4423,10 @@ class SessionDB:
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, turn_memory_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4431,6 +4435,7 @@ class SessionDB:
                     tool_calls_json,
                     _scrub_surrogates(msg.get("tool_name")),
                     msg.get("effect_disposition"),
+                    msg.get(TURN_MEMORY_DISPOSITION_KEY),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -4599,6 +4604,16 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    @staticmethod
+    def _restore_internal_message_metadata(msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Map durable internal columns back onto the in-memory message shape."""
+
+        disposition = msg.pop("turn_memory_disposition", None)
+        if disposition:
+            msg[TURN_MEMORY_DISPOSITION_KEY] = disposition
+        return msg
+
+
     def get_messages(
         self,
         session_id: str,
@@ -4638,6 +4653,7 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            self._restore_internal_message_metadata(msg)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
@@ -4705,6 +4721,7 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            self._restore_internal_message_metadata(msg)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
@@ -4969,7 +4986,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, turn_memory_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
                 "api_content "
@@ -4997,7 +5014,7 @@ class SessionDB:
     # get_messages_as_conversation and get_resume_conversations so a single
     # SELECT can feed both the model-fed and display views.
     _CONVERSATION_ROW_COLUMNS = (
-        "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, turn_memory_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
         "api_content"
@@ -5040,6 +5057,8 @@ class SessionDB:
                 msg["tool_name"] = row["tool_name"]
             if row["effect_disposition"]:
                 msg["effect_disposition"] = row["effect_disposition"]
+            if row["turn_memory_disposition"]:
+                msg[TURN_MEMORY_DISPOSITION_KEY] = row["turn_memory_disposition"]
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

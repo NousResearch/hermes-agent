@@ -3,6 +3,7 @@ import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
@@ -716,6 +717,28 @@ class TestSessionStoreRewriteTranscript:
 
         reloaded = store.load_transcript(session_id)
         assert reloaded == []
+
+    def test_append_round_trips_turn_memory_disposition(self, store):
+        session_id = "test_session_disposition"
+        store._db.create_session(session_id=session_id, source="test")
+        marked_message = {
+            "role": "user",
+            "content": "delegate this",
+            TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+        }
+        original_message = marked_message.copy()
+
+        store.append_to_transcript(session_id, marked_message)
+        store.append_to_transcript(
+            session_id,
+            {"role": "assistant", "content": "delegated"},
+        )
+
+        reloaded = store.load_transcript(session_id)
+
+        assert marked_message == original_message
+        assert reloaded[0][TURN_MEMORY_DISPOSITION_KEY] == "do_not_retain"
+        assert TURN_MEMORY_DISPOSITION_KEY not in reloaded[1]
 
 
 class TestLoadTranscriptDBOnly:

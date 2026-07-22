@@ -37,6 +37,7 @@ from agent.turn_context import (
     compose_user_api_content,
     reanchor_current_turn_user_idx,
 )
+from agent.turn_provenance import TurnProvenance
 from agent.turn_retry_state import TurnRetryState
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
@@ -595,6 +596,7 @@ def run_conversation(
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    turn_provenance: Optional[TurnProvenance] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -612,7 +614,8 @@ def run_conversation(
             synthetic prefixes.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
-                or queuing follow-up prefetch work.
+        turn_provenance: Optional semantic turn origin used to control
+            automatic memory retention for synthetic turns.
 
     Returns:
         Dict: Complete conversation result with final response and message history
@@ -647,6 +650,7 @@ def run_conversation(
         stream_callback,
         persist_user_message,
         persist_user_timestamp,
+        turn_provenance,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
         install_safe_stdio=_install_safe_stdio,
         sanitize_surrogates=_sanitize_surrogates,
@@ -666,6 +670,7 @@ def run_conversation(
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
+    turn_provenance = _ctx.turn_provenance
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
@@ -716,6 +721,7 @@ def run_conversation(
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
+            turn_provenance=turn_provenance,
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
@@ -5794,6 +5800,7 @@ def run_conversation(
         user_message=user_message,
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
+        turn_provenance=turn_provenance,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,

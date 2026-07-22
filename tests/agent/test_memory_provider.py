@@ -1,5 +1,6 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
+import copy
 import json
 import threading
 import time
@@ -8,7 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+from agent.memory_manager import (
+    MemoryManager,
+    inject_memory_provider_tools,
+    memory_safe_session_messages,
+)
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -276,6 +282,30 @@ class TestMemoryManager:
         mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
 
+    def test_sync_all_filters_excluded_turns_and_internal_metadata(self):
+        mgr = MemoryManager()
+        p = MessagesMemoryProvider("external")
+        mgr.add_provider(p)
+        messages = [
+            {"role": "user", "content": "keep"},
+            {
+                "role": "user",
+                "content": "synthetic",
+                TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+            },
+            {"role": "assistant", "content": "synthetic reply"},
+            {"role": "user", "content": "current", TURN_MEMORY_DISPOSITION_KEY: "retain"},
+        ]
+
+        mgr.sync_all("current", "reply", messages=messages)
+        mgr.flush_pending(timeout=5)
+
+        assert p.synced_turns[0][3] == [
+            {"role": "user", "content": "keep"},
+            {"role": "user", "content": "current"},
+        ]
+        assert messages[-1][TURN_MEMORY_DISPOSITION_KEY] == "retain"
+
     def test_sync_all_omits_messages_for_legacy_provider(self):
         mgr = MemoryManager()
         p = FakeMemoryProvider("external")
@@ -375,6 +405,52 @@ class TestMemoryManager:
         mgr.add_provider(p)
         mgr.on_pre_compress([{"role": "user", "content": "old"}])
         assert p.pre_compress_called
+
+    def test_on_pre_compress_passes_sanitized_messages_to_provider(self):
+        class _TrackingProvider(FakeMemoryProvider):
+            def __init__(self):
+                super().__init__("tracking")
+                self.received = None
+
+            def on_pre_compress(self, messages):
+                self.pre_compress_called = True
+                self.received = messages
+
+        mgr = MemoryManager()
+        provider = _TrackingProvider()
+        mgr.add_provider(provider)
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "retain", "meta": {"scope": "kept"}},
+            {"role": "assistant", "content": "reply-1"},
+            {
+                "role": "user",
+                "content": "synthetic",
+                TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+            },
+            {"role": "assistant", "content": "temp-reply"},
+            {"role": "tool", "content": "temp-tool", "tool_name": "search"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "reply-2"},
+        ]
+        baseline = copy.deepcopy(messages)
+
+        mgr.on_pre_compress(messages)
+
+        assert provider.pre_compress_called
+        assert [m["content"] for m in provider.received] == [
+            "sys",
+            "retain",
+            "reply-1",
+            "next",
+            "reply-2",
+        ]
+        assert all(
+            TURN_MEMORY_DISPOSITION_KEY not in message for message in provider.received
+        )
+        assert messages == baseline
+        assert provider.received[0] is not messages[0]
+
 
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()
@@ -1153,6 +1229,63 @@ class TestCommitMemorySessionRouting:
         mgr.add_provider(bad)
 
         mgr.on_session_end([])  # must not raise
+
+    def test_memory_safe_session_messages_excludes_non_retain_turn_without_mutating_source(self):
+        messages = [
+            {"role": "user", "content": "keep-1"},
+            {"role": "assistant", "content": "reply-1"},
+            {
+                "role": "user",
+                "content": "synthetic",
+                TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+            },
+            {"role": "assistant", "content": "reply-2"},
+            {"role": "tool", "content": "tool-2", "tool_name": "search"},
+            {"role": "user", "content": "keep-3"},
+            {"role": "assistant", "content": "reply-3"},
+        ]
+
+        filtered = memory_safe_session_messages(messages)
+
+        assert [m["content"] for m in filtered] == [
+            "keep-1",
+            "reply-1",
+            "keep-3",
+            "reply-3",
+        ]
+        assert [m["content"] for m in messages] == [
+            "keep-1",
+            "reply-1",
+            "synthetic",
+            "reply-2",
+            "tool-2",
+            "keep-3",
+            "reply-3",
+        ]
+        assert all(TURN_MEMORY_DISPOSITION_KEY not in m for m in filtered)
+
+    def test_on_session_end_filters_non_retain_turns_before_provider_extraction(self):
+        mgr = MemoryManager()
+        provider = _CommitRecorder("builtin")
+        mgr.add_provider(provider)
+
+        msgs = [
+            {"role": "user", "content": "keep"},
+            {
+                "role": "user",
+                "content": "synthetic",
+                TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+            },
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "resume"},
+        ]
+
+        mgr.on_session_end(msgs)
+
+        assert provider.end_calls == [[
+            {"role": "user", "content": "keep"},
+            {"role": "user", "content": "resume"},
+        ]]
 
 
 # ---------------------------------------------------------------------------

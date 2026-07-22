@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.turn_provenance import ASYNC_DELEGATION_COMPLETION_TURN
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
@@ -173,6 +174,20 @@ class TestMessageEventGetCommandArgs:
     def test_not_a_command_returns_full_text(self):
         event = MessageEvent(text="hello world")
         assert event.get_command_args() == "hello world"
+
+
+class TestMessageEventTurnProvenance:
+    def test_defaults_to_none(self):
+        event = MessageEvent(text="hello world")
+        assert event.turn_provenance is None
+
+    def test_accepts_first_class_turn_provenance(self):
+        event = MessageEvent(
+            text="synthetic completion",
+            internal=True,
+            turn_provenance=ASYNC_DELEGATION_COMPLETION_TURN,
+        )
+        assert event.turn_provenance == ASYNC_DELEGATION_COMPLETION_TURN
 
 
 # ---------------------------------------------------------------------------

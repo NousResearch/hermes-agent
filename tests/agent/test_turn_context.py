@@ -16,6 +16,10 @@ import pytest
 
 from agent.context_compressor import ContextCompressor
 from agent.turn_context import TurnContext, build_turn_context
+from agent.turn_provenance import (
+    ASYNC_DELEGATION_COMPLETION_TURN,
+    TURN_MEMORY_DISPOSITION_KEY,
+)
 from hermes_state import SessionDB
 
 
@@ -174,9 +178,11 @@ def test_returns_turn_context_with_user_message_appended():
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
     # The user turn was appended and indexed.
-    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    assert ctx.messages[-1]["role"] == "user"
+    assert ctx.messages[-1]["content"] == "hello"
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
+    assert TURN_MEMORY_DISPOSITION_KEY not in ctx.messages[-1]
 
 
 def test_applies_agent_side_effects():
@@ -307,6 +313,26 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+def test_non_retain_turn_keeps_recall_but_skips_memory_review():
+    agent = _FakeAgent()
+    agent._memory_manager = MagicMock()
+    agent._memory_manager.prefetch_all.return_value = ""
+    agent._memory_nudge_interval = 1
+    agent.valid_tool_names = {"memory"}
+    agent._memory_store = object()
+
+    ctx = _build(
+        agent,
+        turn_provenance=ASYNC_DELEGATION_COMPLETION_TURN,
+    )
+
+    assert ctx.should_review_memory is False
+    assert ctx.ext_prefetch_cache == ""
+    assert ctx.messages[-1][TURN_MEMORY_DISPOSITION_KEY] == "do_not_retain"
+    agent._memory_manager.prefetch_all.assert_called_once_with("hello")
+    assert agent._turns_since_memory == 0
 
 
 def test_ensure_db_session_runs_after_system_prompt_restore():
@@ -450,4 +476,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.turn_provenance import ASYNC_DELEGATION_COMPLETION_TURN
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
@@ -3042,6 +3043,14 @@ def test_async_delegation_event_prefers_origin_ui_session(monkeypatch):
     assert server._notification_event_belongs_elsewhere("origin-sid", mine, evt) is False
 
 
+def test_notification_event_turn_provenance_is_async_only():
+    assert (
+        server._notification_event_turn_provenance({"type": "async_delegation"})
+        == ASYNC_DELEGATION_COMPLETION_TURN
+    )
+    assert server._notification_event_turn_provenance({"type": "completion"}) is None
+
+
 def test_notification_event_follows_compression_continuation(monkeypatch):
     """Events keyed to a compressed parent route to the live continuation."""
     old_parent = _session(session_key="old-parent")
@@ -3065,6 +3074,103 @@ def test_notification_event_follows_compression_continuation(monkeypatch):
         {"old-sid": old_parent, "tip-sid": live_tip, "third-sid": third},
     )
     assert server._notification_event_belongs_elsewhere("third-sid", third, evt) is True
+
+
+def test_notification_poller_shutdown_drain_dispatches_async_delegation_turn_provenance(
+    monkeypatch,
+):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    submitted = []
+
+    def _recording_submit(rid, sid, session, text, turn_provenance=None):
+        submitted.append(turn_provenance)
+        with session["history_lock"]:
+            session["running"] = False
+
+    sess = _session(session_key="session-a")
+    server._sessions["sid_a"] = sess
+    monkeypatch.setattr(server, "_run_prompt_submit", _recording_submit)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(
+        {
+            "type": "async_delegation",
+            "session_id": "proc_async",
+            "session_key": "session-a",
+            "delegation_id": "deleg-1",
+            "goal": "collect artifacts",
+            "status": "completed",
+            "summary": "subagent done",
+        }
+    )
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_async")
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", sess)
+        assert submitted == [ASYNC_DELEGATION_COMPLETION_TURN]
+    finally:
+        server._sessions.pop("sid_a", None)
+        process_registry._completion_consumed.discard("proc_async")
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_live_loop_dispatches_async_delegation_with_turn_provenance(
+    monkeypatch,
+):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    submitted = []
+    stop = threading.Event()
+
+    def _recording_submit(rid, sid, session, text, turn_provenance=None):
+        submitted.append(turn_provenance)
+        with session["history_lock"]:
+            session["running"] = False
+        stop.set()
+
+    sess = _session(session_key="session-a", running=False)
+    server._sessions["sid_live_poll"] = sess
+    monkeypatch.setattr(server, "_run_prompt_submit", _recording_submit)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(
+        {
+            "type": "async_delegation",
+            "session_id": "proc_async_live",
+            "session_key": "session-a",
+            "delegation_id": "deleg-live",
+            "goal": "collect artifacts",
+            "status": "completed",
+            "summary": "subagent done",
+        }
+    )
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_async_live")
+
+    try:
+        server._notification_poller_loop(stop, "sid_live_poll", sess)
+        assert submitted == [ASYNC_DELEGATION_COMPLETION_TURN]
+        assert sess["running"] is False
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_live_poll", None)
+        process_registry._completion_consumed.discard("proc_async_live")
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
 
 
 def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch):
@@ -3482,6 +3588,54 @@ class _RecordingAgent:
     ):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
+
+
+def test_run_prompt_submit_preserves_explicit_provenance_when_signature_probe_fails(
+    monkeypatch, tmp_path
+):
+    class _RunProbeAgent:
+        model = "test-model"
+        provider = "test-provider"
+
+        def __init__(self):
+            self.called = None
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            task_id=None,
+            turn_provenance=None,
+        ):
+            self.called = turn_provenance
+            return {"final_response": "", "messages": []}
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        server.inspect,
+        "signature",
+        lambda _callable: (_ for _ in ()).throw(ValueError("uninspectable")),
+    )
+    agent = _RunProbeAgent()
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
+
+    try:
+        server._run_prompt_submit(
+            "1",
+            "sid",
+            session,
+            "hello",
+            turn_provenance=ASYNC_DELEGATION_COMPLETION_TURN,
+        )
+
+        assert agent.called == ASYNC_DELEGATION_COMPLETION_TURN
+    finally:
+        server._sessions.pop("sid", None)
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])

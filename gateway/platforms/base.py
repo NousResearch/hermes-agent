@@ -492,7 +492,10 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+
+if TYPE_CHECKING:
+    from agent.turn_provenance import TurnProvenance
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -1811,6 +1814,11 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Semantic turn origin at the shared memory boundary. Distinct from
+    # ``internal``: internal controls routing/authorization bypass, while this
+    # governs how the resulting turn should behave for memory retention.
+    turn_provenance: Optional["TurnProvenance"] = None
 
     # Free-form per-event metadata.  Adapters may set platform-specific
     # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when

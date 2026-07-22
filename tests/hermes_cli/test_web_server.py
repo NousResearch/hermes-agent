@@ -2160,6 +2160,44 @@ class TestWebServerEndpoints:
         assert payload["session_id"] == "desktop-tip"
         assert [m["content"] for m in payload["messages"]] == ["after compression"]
 
+    def test_get_session_messages_preserves_fields_without_private_provenance(self):
+        from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="field-preservation", source="cli")
+            db.append_message(
+                session_id="field-preservation",
+                role="assistant",
+                content="hello",
+                tool_name="lookup",
+                tool_call_id="call-1",
+                token_count=12,
+                finish_reason="stop",
+                reasoning="private reasoning",
+                reasoning_content="reasoning content",
+                platform_message_id="platform-1",
+                observed=True,
+                turn_memory_disposition="do_not_retain",
+            )
+            before = db.get_messages("field-preservation")
+        finally:
+            db.close()
+
+        response = self.client.get("/api/sessions/field-preservation/messages")
+
+        assert response.status_code == 200
+        returned = response.json()["messages"]
+        assert returned == [
+            {
+                key: value
+                for key, value in before[0].items()
+                if key != TURN_MEMORY_DISPOSITION_KEY
+            }
+        ]
+        assert before[0][TURN_MEMORY_DISPOSITION_KEY] == "do_not_retain"
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 

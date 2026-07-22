@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
+from agent.turn_provenance import ASYNC_DELEGATION_COMPLETION_TURN, TurnProvenance
 from hermes_constants import (
     get_hermes_home,
     get_hermes_home_override,
@@ -9811,6 +9812,14 @@ def _notification_event_requires_owner(evt: dict) -> bool:
     )
 
 
+def _notification_event_turn_provenance(evt: dict) -> TurnProvenance | None:
+    """Map a background notification event to an explicit turn provenance."""
+
+    if evt.get("type") == "async_delegation":
+        return ASYNC_DELEGATION_COMPLETION_TURN
+    return None
+
+
 def _notification_event_dedup_key(evt: dict) -> tuple:
     """Return the UI-emission identity for a process notification event.
 
@@ -9942,7 +9951,17 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            _event_turn_provenance = _notification_event_turn_provenance(evt)
+            if _event_turn_provenance is None:
+                _run_prompt_submit(rid, sid, session, text)
+            else:
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    turn_provenance=_event_turn_provenance,
+                )
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10010,7 +10029,17 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            _event_turn_provenance = _notification_event_turn_provenance(evt)
+            if _event_turn_provenance is None:
+                _run_prompt_submit(rid, sid, session, text)
+            else:
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    turn_provenance=_event_turn_provenance,
+                )
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10085,7 +10114,9 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid, sid: str, session: dict, text: Any, turn_provenance: TurnProvenance | None = None
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -10257,10 +10288,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 "stream_callback": _stream,
             }
             try:
-                if "task_id" in inspect.signature(agent.run_conversation).parameters:
+                run_sig = inspect.signature(agent.run_conversation)
+                if "task_id" in run_sig.parameters:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            # turn_provenance is a retention boundary, unlike optional task_id;
+            # forward it unconditionally so a failed signature probe cannot drop it.
+            if turn_provenance is not None:
+                run_kwargs["turn_provenance"] = turn_provenance
             result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
@@ -10634,7 +10670,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     continue
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _evt_turn_provenance = _notification_event_turn_provenance(_evt)
+                    if _evt_turn_provenance is None:
+                        _run_prompt_submit(rid, sid, session, synth)
+                    else:
+                        _run_prompt_submit(
+                            rid,
+                            sid,
+                            session,
+                            synth,
+                            turn_provenance=_evt_turn_provenance,
+                        )
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

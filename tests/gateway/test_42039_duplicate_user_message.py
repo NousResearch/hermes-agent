@@ -21,6 +21,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.turn_provenance import (
+    ASYNC_DELEGATION_COMPLETION_TURN,
+    TURN_MEMORY_DISPOSITION_KEY,
+    TurnMemoryDisposition,
+)
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
@@ -81,7 +86,7 @@ def _bootstrap(monkeypatch, tmp_path):
     return runner
 
 
-def _event():
+def _event(turn_provenance=None):
     return MessageEvent(
         text="hello world",
         source=SessionSource(
@@ -91,6 +96,7 @@ def _event():
             user_id="12345",
         ),
         message_id="msg-42",
+        turn_provenance=turn_provenance,
     )
 
 
@@ -103,24 +109,42 @@ def _source():
     )
 
 
+def _user_entries(calls):
+    return [
+        call.args[1]
+        for call in calls
+        if len(call.args) >= 2
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("role") == "user"
+    ]
+
+
 def _assert_user_call_has_skip_db(calls, expected_skip_db: bool):
     """Find append_to_transcript calls with role='user' and check skip_db."""
-    user_calls = []
-    for call in calls:
-        args = call.args
-        if len(args) >= 2 and isinstance(args[1], dict):
-            if args[1].get("role") == "user":
-                user_calls.append(call)
-    assert len(user_calls) >= 1, (
+    user_entries = _user_entries(calls)
+    assert len(user_entries) >= 1, (
         f"Expected at least one user-role append_to_transcript call, "
         f"got calls: {[c.args for c in calls if len(c.args)>=2]}"
     )
-    for call in user_calls:
+    for call in calls:
+        if len(call.args) < 2 or not isinstance(call.args[1], dict):
+            continue
+        if call.args[1].get("role") != "user":
+            continue
         actual = call.kwargs.get("skip_db", False)
         assert actual == expected_skip_db, (
             f"Expected skip_db={expected_skip_db} for user-role call, "
             f"got skip_db={actual}. kwargs={call.kwargs}"
         )
+
+
+def _assert_user_entries_have_disposition(calls, expected):
+    entries = _user_entries(calls)
+    assert entries, "Expected a user-role append_to_transcript call"
+    if expected is None:
+        assert all(TURN_MEMORY_DISPOSITION_KEY not in entry for entry in entries)
+    else:
+        assert all(entry.get(TURN_MEMORY_DISPOSITION_KEY) == expected for entry in entries)
 
 
 # ── Test 1: agent_failed_early path uses skip_db=True ─────────────────
@@ -181,6 +205,43 @@ async def test_agent_failed_early_no_skip_db_when_no_session_db(
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, False
     )
+    _assert_user_entries_have_disposition(
+        runner.session_store.append_to_transcript.call_args_list, None
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_failed_early_reconstructed_user_preserves_provenance(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._session_db = None  # Gateway owns persistence for this turn.
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": None,
+            "error": "ReadTimeout: timed out",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(ASYNC_DELEGATION_COMPLETION_TURN),
+        _source(),
+        "agent:main:telegram:group:-1001:12345",
+        1,
+    )
+
+    _assert_user_entries_have_disposition(
+        runner.session_store.append_to_transcript.call_args_list,
+        TurnMemoryDisposition.DO_NOT_RETAIN.value,
+    )
+    _assert_user_call_has_skip_db(
+        runner.session_store.append_to_transcript.call_args_list, False
+    )
 
 
 # ── Test 3: not-new-messages path uses skip_db=True ───────────────────
@@ -209,6 +270,42 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
 
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
+    )
+    _assert_user_entries_have_disposition(
+        runner.session_store.append_to_transcript.call_args_list, None
+    )
+
+
+@pytest.mark.asyncio
+async def test_not_new_messages_reconstructed_user_preserves_provenance(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._session_db = None  # Gateway owns persistence for this turn.
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Hello!",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [],
+            "history_offset": 1,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(ASYNC_DELEGATION_COMPLETION_TURN),
+        _source(),
+        "agent:main:telegram:group:-1001:12345",
+        1,
+    )
+
+    _assert_user_entries_have_disposition(
+        runner.session_store.append_to_transcript.call_args_list,
+        TurnMemoryDisposition.DO_NOT_RETAIN.value,
+    )
+    _assert_user_call_has_skip_db(
+        runner.session_store.append_to_transcript.call_args_list, False
     )
 
 

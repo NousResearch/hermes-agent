@@ -6,6 +6,7 @@ import json
 import pytest
 
 import hermes_state
+from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
@@ -1158,6 +1159,75 @@ class TestMessageStorage:
         )
 
         assert db.get_messages_as_conversation("s1")[0]["effect_disposition"] == "unknown"
+
+    def test_turn_memory_disposition_round_trips_through_session_db(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {
+                    "role": "user",
+                    "content": "synthetic",
+                    TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+                },
+                {"role": "assistant", "content": "reply"},
+            ],
+        )
+
+        stored = db.get_messages("s1")
+        conv = db.get_messages_as_conversation("s1")
+
+        assert stored[0][TURN_MEMORY_DISPOSITION_KEY] == "do_not_retain"
+        assert conv[0][TURN_MEMORY_DISPOSITION_KEY] == "do_not_retain"
+
+    def test_migration_keeps_legacy_disposition_null_as_retain(self, tmp_path):
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(db_path)
+        legacy_schema = SCHEMA_SQL.replace("    turn_memory_disposition TEXT,\n", "")
+        conn.executescript(legacy_schema)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version(version) VALUES (22)")
+        conn.execute(
+            "INSERT INTO sessions(id, source, started_at, message_count, tool_call_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("s1", "cli", 1.0, 2, 0),
+        )
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp, active, compacted) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "user", "legacy prompt", 1.0, 1, 0),
+        )
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp, active, compacted) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "assistant", "legacy reply", 2.0, 1, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            conv = migrated.get_messages_as_conversation("s1")
+            rows = migrated.get_messages("s1")
+            assert conv[0].get(TURN_MEMORY_DISPOSITION_KEY) is None
+            assert rows[0].get(TURN_MEMORY_DISPOSITION_KEY) is None
+            assert rows[1].get(TURN_MEMORY_DISPOSITION_KEY) is None
+            with migrated._lock:
+                raw = migrated._conn.execute(
+                    "SELECT turn_memory_disposition FROM messages WHERE id = 1"
+                ).fetchone()
+            assert raw[0] is None
+            # Idempotent reopen must preserve the migrated value.
+            migrated._conn.close()
+            reopened = SessionDB(db_path=db_path)
+            try:
+                reopened_rows = reopened.get_messages("s1")
+                assert reopened_rows[0].get(TURN_MEMORY_DISPOSITION_KEY) is None
+            finally:
+                reopened._conn.close()
+        finally:
+            if getattr(migrated, "_conn", None) is not None:
+                migrated._conn.close()
 
     def test_replace_messages_handles_multimodal_content(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must also

@@ -13,7 +13,10 @@ runtime via a thread-local whitelist on the existing
 that caused the prefix-cache miss.
 """
 
+from copy import deepcopy
 from unittest.mock import patch
+
+import pytest
 
 
 def _make_agent_stub(agent_cls):
@@ -52,6 +55,71 @@ class _SyncThread:
     def start(self):
         if self._target:
             self._target()
+
+
+@pytest.mark.parametrize(
+    ("review_memory", "review_skills"),
+    [(True, False), (False, True), (True, True)],
+)
+def test_background_review_uses_memory_safe_transcript(
+    review_memory, review_skills
+):
+    """Every durable review mode receives only retained, public messages."""
+    import run_agent
+    from agent.turn_provenance import TURN_MEMORY_DISPOSITION_KEY
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    messages_snapshot = [
+        {"role": "user", "content": "keep-1"},
+        {
+            "role": "assistant",
+            "content": "reply-1",
+            TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+        },
+        {
+            "role": "user",
+            "content": "synthetic",
+            TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+        },
+        {"role": "assistant", "content": "synthetic reply"},
+        {"role": "tool", "content": "synthetic tool", "tool_name": "search"},
+        {"role": "user", "content": "keep-2"},
+        {"role": "assistant", "content": "reply-2"},
+    ]
+    original_messages = deepcopy(messages_snapshot)
+    captured = {}
+
+    def _capture_review(_agent, safe_messages, **kwargs):
+        captured["messages"] = safe_messages
+        captured["kwargs"] = kwargs
+        return (lambda: None), "review prompt"
+
+    with patch(
+        "agent.background_review.spawn_background_review_thread",
+        side_effect=_capture_review,
+    ), patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=messages_snapshot,
+            review_memory=review_memory,
+            review_skills=review_skills,
+        )
+
+    assert captured["messages"] == [
+        {"role": "user", "content": "keep-1"},
+        {"role": "assistant", "content": "reply-1"},
+        {"role": "user", "content": "keep-2"},
+        {"role": "assistant", "content": "reply-2"},
+    ]
+    assert captured["kwargs"] == {
+        "review_memory": review_memory,
+        "review_skills": review_skills,
+    }
+    assert messages_snapshot == original_messages
+    assert all(
+        safe_message is not original_message
+        for safe_message in captured["messages"]
+        for original_message in messages_snapshot
+    )
 
 
 def test_background_review_matches_parent_toolset_config():

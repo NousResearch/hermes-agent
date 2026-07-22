@@ -37,6 +37,12 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
+from agent.turn_provenance import (
+    TurnProvenance,
+    normalize_turn_provenance,
+    should_retain_turn_memory,
+    stamp_turn_provenance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +263,8 @@ class TurnContext:
     turn_id: str
     # Index of the current user turn within ``messages``.
     current_turn_user_idx: int
+    # Semantic provenance of the current turn at the memory boundary.
+    turn_provenance: TurnProvenance
     # Whether the post-turn memory review should fire.
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
@@ -274,6 +282,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    turn_provenance: Optional[TurnProvenance] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -292,6 +301,7 @@ def build_turn_context(
     """
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
+    turn_provenance = normalize_turn_provenance(turn_provenance)
 
     # NOTE: the DB session row is created later, AFTER the system prompt is
     # restored/built (see _ensure_db_session() below the system-prompt block).
@@ -450,6 +460,7 @@ def build_turn_context(
         user_msg = {"role": "user", "content": user_message}
         if isinstance(pending_cli_message, dict):
             agent._pending_cli_user_message = None
+    stamp_turn_provenance(user_msg, turn_provenance)
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
@@ -492,9 +503,12 @@ def build_turn_context(
 
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
-    if (agent._memory_nudge_interval > 0
-            and "memory" in agent.valid_tool_names
-            and agent._memory_store):
+    if (
+        should_retain_turn_memory(turn_provenance)
+        and agent._memory_nudge_interval > 0
+        and "memory" in agent.valid_tool_names
+        and agent._memory_store
+    ):
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             should_review_memory = True
@@ -792,7 +806,9 @@ def build_turn_context(
         except Exception:
             pass
 
-    # External memory provider: prefetch once before the tool loop.
+    # Recall is independent of retention: synthetic completion turns should
+    # see the same current context as ordinary turns. Only the post-turn
+    # persistence/prefetch path is gated by provenance in the finalizer.
     ext_prefetch_cache = ""
     if agent._memory_manager:
         try:
@@ -896,6 +912,7 @@ def build_turn_context(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx,
+        turn_provenance=turn_provenance,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,

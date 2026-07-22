@@ -62,6 +62,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent.turn_provenance import TurnProvenance, TURN_MEMORY_DISPOSITION_KEY, should_retain_turn_memory
 from hermes_constants import get_hermes_home
 
 
@@ -1646,7 +1647,7 @@ class AIAgent:
         review_memory: bool = False,
         review_skills: bool = False,
     ) -> None:
-        """Spawn the background memory/skill review thread.
+        """Spawn a durable review from a retention-safe transcript copy.
 
         Thin wrapper — the heavy lifting lives in
         ``agent.background_review.spawn_background_review_thread`` which
@@ -1655,10 +1656,15 @@ class AIAgent:
         keep working.
         """
         from agent.background_review import spawn_background_review_thread
+        from agent.memory_manager import memory_safe_session_messages
         from tools.thread_context import propagate_context_to_thread
+
+        # Both memory and skill reviews can write durable state. Filter at this
+        # shared seam so no runtime can replay a do-not-retain turn into either.
+        safe_messages_snapshot = memory_safe_session_messages(messages_snapshot)
         target, _prompt = spawn_background_review_thread(
             self,
-            messages_snapshot,
+            safe_messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
         )
@@ -2038,6 +2044,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    turn_memory_disposition=msg.get(TURN_MEMORY_DISPOSITION_KEY),
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
                 )
@@ -3508,6 +3515,7 @@ class AIAgent:
         final_response: Any,
         interrupted: bool,
         messages: list | None = None,
+        turn_provenance: TurnProvenance | None = None,
     ) -> None:
         """Mirror a completed turn into external memory providers.
 
@@ -3536,6 +3544,10 @@ class AIAgent:
         backend must not block the user from seeing their response.
         """
         if interrupted:
+            return
+        # The current turn still receives recall in turn_context. This gate is
+        # only for automatic persistence and warming the following turn.
+        if not should_retain_turn_memory(turn_provenance):
             return
         if not (self._memory_manager and final_response and original_user_message):
             return
@@ -6357,6 +6369,7 @@ class AIAgent:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        turn_provenance: Optional[TurnProvenance] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -6399,6 +6412,7 @@ class AIAgent:
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
+                    turn_provenance=turn_provenance,
                 )
             finally:
                 reset_accounting_context(acct_token)
@@ -6426,10 +6440,19 @@ class AIAgent:
         messages: List[Dict[str, Any]],
         effective_task_id: str,
         should_review_memory: bool = False,
+        turn_provenance: TurnProvenance | None = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=should_review_memory,
+            turn_provenance=turn_provenance,
+        )
 
 def main(
     query: str = None,

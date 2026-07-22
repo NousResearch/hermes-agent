@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.turn_provenance import TurnProvenance, should_retain_turn_memory
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +621,7 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    turn_provenance: TurnProvenance | None = None,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -792,6 +794,7 @@ def run_codex_app_server_turn(
                 final_response=turn.final_text,
                 interrupted=False,
                 messages=messages,
+                turn_provenance=turn_provenance,
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
@@ -802,12 +805,17 @@ def run_codex_app_server_turn(
     if (
         turn.final_text
         and not turn.interrupted
-        and (should_review_memory or should_review_skills)
+        and (
+            (should_retain_turn_memory(turn_provenance) and should_review_memory)
+            or should_review_skills
+        )
     ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
-                review_memory=should_review_memory,
+                review_memory=(
+                    should_retain_turn_memory(turn_provenance) and should_review_memory
+                ),
                 review_skills=should_review_skills,
             )
         except Exception:

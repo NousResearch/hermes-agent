@@ -9573,7 +9573,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            if event.get("type") == "async_delegation":
+                from agent.turn_provenance import ASYNC_DELEGATION_COMPLETION_TURN
+
+                self._pending_input.put(
+                    {
+                        "text": synthetic_message,
+                        "turn_provenance": ASYNC_DELEGATION_COMPLETION_TURN,
+                    }
+                )
+            else:
+                self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
@@ -11899,7 +11909,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list = None, turn_provenance=None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -12054,6 +12064,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = {"role": "user", "content": message}
+            from agent.turn_provenance import stamp_turn_provenance
+
+            stamp_turn_provenance(staged_user_message, turn_provenance)
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -12217,6 +12230,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         task_id=self.session_id,
                         persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
+                        turn_provenance=turn_provenance,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
                         _restore = getattr(self, "_pending_moa_restore_model", None) or {}
@@ -15130,6 +15144,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []
+                    turn_provenance = None
+                    if isinstance(user_input, dict) and "text" in user_input:
+                        turn_provenance = user_input.get("turn_provenance")
+                        submit_images = list(user_input.get("images") or [])
+                        user_input = user_input.get("text")
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
 
@@ -15214,7 +15233,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            turn_provenance=turn_provenance,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

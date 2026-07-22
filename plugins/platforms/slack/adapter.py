@@ -722,6 +722,7 @@ class SlackAdapter(BasePlatformAdapter):
         # so a multi-workspace Socket Mode process never reuses another
         # tenant's display name.
         self._user_name_cache: Dict[Tuple[str, str], str] = {}
+        self._USER_NAME_CACHE_MAX = 5000
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -2920,12 +2921,16 @@ class SlackAdapter(BasePlatformAdapter):
                 or user.get("name")
                 or user_id
             )
-            self._user_name_cache[cache_key] = name
-            return name
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
-            self._user_name_cache[cache_key] = user_id
-            return user_id
+            name = user_id
+
+        self._user_name_cache[cache_key] = name
+        if len(self._user_name_cache) > self._USER_NAME_CACHE_MAX:
+            excess = len(self._user_name_cache) - self._USER_NAME_CACHE_MAX // 2
+            for old_key in list(self._user_name_cache)[:excess]:
+                del self._user_name_cache[old_key]
+        return name
 
     async def _humanize_user_mentions(
         self, text: str, chat_id: str = "", team_id: str = ""

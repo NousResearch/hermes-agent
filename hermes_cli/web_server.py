@@ -46,6 +46,7 @@ from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_fla
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from types import SimpleNamespace
 
 import yaml
 
@@ -7528,6 +7529,56 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     return {"ok": False, "reachable": True, "message": f"Provider returned HTTP {resp.status_code} for this key."}
 
 
+
+# ── Pool API security helpers ─────────────────────────────────────────────
+_BLOCKED_HOSTS = frozenset({
+    "169.254.169.254",      # AWS/Azure/GCP metadata
+    "metadata.google.internal",
+    "metadata",
+    "fd00:ec2::254",        # AWS IMDSv6
+})
+
+def _validate_base_url(url: str) -> str:
+    """Sanitize a user-supplied base_url to prevent SSRF."""
+    import urllib.parse
+    if not url or not url.strip():
+        return url
+    url = url.strip()
+    if "\x00" in url or "\0" in url or "\u0000" in url:
+        raise ValueError("Null byte in base_url")
+    parsed = urllib.parse.urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https", ""):
+        raise ValueError(f"Blocked scheme: {scheme}")
+    hostname = (parsed.hostname or "").lower()
+    if hostname in _BLOCKED_HOSTS:
+        raise ValueError(f"Blocked internal host: {hostname}")
+    if hostname.startswith("169.254."):
+        raise ValueError(f"Blocked link-local address: {hostname}")
+    return url
+
+def _validate_provider_name(provider: str) -> str:
+    """Validate provider name to prevent path traversal."""
+    from fastapi import HTTPException
+    if not provider or not provider.strip():
+        raise HTTPException(status_code=400, detail="Provider name required")
+    provider = provider.strip().lower()
+    backslash = chr(92)
+    if ("/" in provider or backslash in provider or
+            ".." in provider or chr(0) in provider):
+        raise HTTPException(status_code=400, detail=f"Invalid provider name")
+    safe_chars = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+    if any(c not in safe_chars for c in provider):
+        raise HTTPException(status_code=400, detail=f"Invalid provider name")
+    return provider
+
+def _mask_api_key(key: str) -> str:
+    """Mask an API key for display — show only first 4 and last 4 characters."""
+    if not key or len(key) < 12:
+        return "***" if key else ""
+    return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
 @app.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
@@ -13153,6 +13204,7 @@ class CredentialPoolAdd(BaseModel):
     # an interactive browser flow that doesn't belong in a single POST).
     api_key: str
     label: Optional[str] = None
+    base_url: Optional[str] = None  # Per-credential endpoint override (SSRF-validated)
 
 
 def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
@@ -13169,7 +13221,10 @@ def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
         "source": getattr(entry, "source", None),
         "priority": getattr(entry, "priority", 0),
         "last_status": getattr(entry, "last_status", None),
+        "last_error_code": getattr(entry, "last_error_code", None),
+        "last_error_reason": getattr(entry, "last_error_reason", None),
         "request_count": getattr(entry, "request_count", 0),
+        "base_url": getattr(entry, "base_url", None) or "",
         "token_preview": redact_key(token) if token else "",
         "has_refresh": bool(getattr(entry, "refresh_token", None)),
     }
@@ -13217,6 +13272,20 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
     api_key = (body.api_key or "").strip()
     if not provider or not api_key:
         raise HTTPException(status_code=400, detail="provider and api_key are required")
+    if len(api_key) < 8:
+        raise HTTPException(status_code=400, detail="api_key must be at least 8 characters")
+
+    # SSRF guard: validate any user-supplied base_url
+    safe_base_url = ""
+    if body.base_url:
+        try:
+            safe_base_url = _validate_base_url(body.base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid base_url: {exc}")
+
+    # Use explicit base_url if provided, otherwise the provider registry default
+    from hermes_cli.auth_commands import _provider_base_url
+    final_base_url = safe_base_url.strip() or _provider_base_url(provider)
 
     try:
         pool = load_pool(provider)
@@ -13229,6 +13298,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
             priority=0,
             source=SOURCE_MANUAL,
             access_token=api_key,
+            base_url=final_base_url,
         )
         pool.add_entry(entry)
         # Re-adding a credential is an explicit re-engagement signal: lift
@@ -13310,6 +13380,462 @@ async def remove_credential_pool_entry(provider: str, index: int):
         "cleaned": cleaned,
         "hints": hints,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pool strategy / reset / health — extend the credential pool family.
+
+class PoolStrategyUpdate(BaseModel):
+    strategy: str  # "fill_first" | "round_robin" | "least_used" | "random"
+
+
+@app.put("/api/credentials/pool/{provider}/strategy")
+async def set_pool_strategy(provider: str, body: PoolStrategyUpdate):
+    """Set the rotation strategy for this provider's pool."""
+    provider = _validate_provider_name(provider)
+    from agent.credential_pool import SUPPORTED_POOL_STRATEGIES
+    strategy = body.strategy.strip().lower()
+    if strategy not in SUPPORTED_POOL_STRATEGIES:
+        raise HTTPException(status_code=400, detail=f"Unknown strategy: {strategy}. Supported: {sorted(SUPPORTED_POOL_STRATEGIES)}")
+    from hermes_cli.config import set_config_value
+    set_config_value(f"credential_pool_strategies.{provider}", strategy)
+    return {"ok": True, "strategy": strategy}
+
+
+@app.post("/api/credentials/pool/{provider}/{index}/reset")
+async def reset_pool_entry(provider: str, index: int):
+    """Reset an exhausted/dead entry back to 'ok' status."""
+    provider = _validate_provider_name(provider)
+    from agent.credential_pool import load_pool, STATUS_OK
+    from dataclasses import replace
+    pool = load_pool(provider)
+    entries = pool.entries()
+    if index < 1 or index > len(entries):
+        raise HTTPException(status_code=404, detail=f"No pool entry at index {index}")
+    entry = entries[index - 1]
+    updated = replace(entry, last_status=STATUS_OK, last_status_at=None,
+                      last_error_code=None, last_error_reason=None,
+                      last_error_message=None, last_error_reset_at=None)
+    pool._replace_entry(entry, updated)
+    pool._persist()
+    return {"ok": True, "index": index, "status": STATUS_OK}
+
+
+@app.get("/api/credentials/pool/{provider}/health")
+async def pool_health(provider: str):
+    """Quick health summary — for sidebar badges."""
+    provider = _validate_provider_name(provider)
+    from agent.credential_pool import load_pool, get_pool_strategy, STATUS_OK
+    pool = load_pool(provider)
+    entries = pool.entries()
+    return {
+        "provider": provider,
+        "total": len(entries),
+        "available": sum(1 for e in entries if getattr(e, "last_status", STATUS_OK) == STATUS_OK),
+        "strategy": get_pool_strategy(provider),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Credential pool — OAuth login / status / logout / Spotify / summary / probe.
+#
+# These six endpoints complete the parity with the `hermes auth` CLI so the
+# remote dashboard can do everything the local CLI does.  The OAuth-capable
+# providers (anthropic, nous, openai-codex, xai-oauth, qwen-oauth,
+# minimax-oauth) get a dedicated login endpoint that runs the appropriate
+# interactive flow inside a worker thread (never the event loop).
+# ---------------------------------------------------------------------------
+
+#: OAuth-capable providers — mirrors _OAUTH_CAPABLE_PROVIDERS in
+#: hermes_cli.auth_commands.  Lives here as a tuple for HTTP-side validation
+#: without importing a private symbol from auth_commands.
+_OAUTH_CAPABLE_POOL_PROVIDERS = frozenset({
+    "anthropic",
+    "nous",
+    "openai-codex",
+    "xai-oauth",
+    "qwen-oauth",
+    "minimax-oauth",
+})
+
+
+class PoolOAuthLogin(BaseModel):
+    provider: str
+    no_browser: bool = False
+    timeout: float = 180.0
+    insecure: bool = False
+    ca_bundle: Optional[str] = None
+
+
+class PoolLogout(BaseModel):
+    pass
+
+
+
+
+class PoolProbe(BaseModel):
+    entry_id: Optional[str] = None
+    label: Optional[str] = None
+
+
+def _build_oauth_args(provider: str, body: PoolOAuthLogin) -> Any:
+    """Translate the REST body into the SimpleNamespace ``auth_add_command``
+    expects.  The mirror is intentionally tiny — we only forward the OAuth
+    knobs ``auth_add_command`` actually reads."""
+    return SimpleNamespace(
+        provider=provider,
+        auth_type="oauth",
+        no_browser=bool(body.no_browser),
+        timeout=float(body.timeout or 180.0),
+        insecure=bool(body.insecure),
+        ca_bundle=body.ca_bundle,
+        label="",
+        api_key=None,
+        base_url=None,
+        portal_url=None,
+        inference_url=None,
+        client_id=None,
+        scope=None,
+    )
+
+
+def _run_oauth_login_blocking(provider: str, body: PoolOAuthLogin) -> bool:
+    """Run ``auth_add_command`` for an OAuth provider in a worker thread.
+
+    The OAuth flows open a browser / wait on a localhost callback, so we
+    MUST NOT block the asyncio event loop.  Returns True if a credential
+    was added (or one already existed), False otherwise.
+    """
+    import threading
+
+    import hermes_cli.auth_commands as auth_commands
+
+    result_box: Dict[str, bool] = {"added": False, "raised": False}
+
+    def _runner() -> None:
+        args = _build_oauth_args(provider, body)
+        try:
+            auth_commands.auth_add_command(args)
+            result_box["added"] = True
+        except SystemExit as exc:
+            # SystemExit(0) == success-with-no-output (already logged in, etc.)
+            # SystemExit(non-zero) == failure
+            result_box["added"] = exc.code in (None, 0)
+        except Exception as exc:
+            _log.warning("OAuth login failed for %s: %s", provider, exc)
+            result_box["added"] = False
+
+    thread = threading.Thread(target=_runner, name=f"oauth-login-{provider}", daemon=True)
+    thread.start()
+    thread.join(timeout=max(body.timeout or 180.0, 1.0) + 5.0)
+    return result_box["added"]
+
+
+@app.post("/api/credentials/pool/oauth-login")
+async def pool_oauth_login(body: PoolOAuthLogin):
+    """Initiate an OAuth login for an OAuth-capable provider.
+
+    The browser flow runs in a worker thread; the response returns once the
+    flow finishes (success or failure).  Providers not in the OAuth-capable
+    whitelist get an immediate 400 — use the API-key POST /pool route.
+    """
+    provider = _validate_provider_name(body.provider)
+    if provider not in _OAUTH_CAPABLE_POOL_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider '{provider}' does not support OAuth login. "
+                f"OAuth-capable: {sorted(_OAUTH_CAPABLE_POOL_PROVIDERS)}"
+            ),
+        )
+    if body.timeout and (body.timeout < 1.0 or body.timeout > 900.0):
+        raise HTTPException(status_code=400, detail="timeout must be between 1 and 900 seconds")
+    if body.ca_bundle:
+        try:
+            _validate_base_url("https://example.invalid")  # no-op sanity ping
+            if not Path(body.ca_bundle).is_file():
+                raise HTTPException(
+                    status_code=400, detail=f"ca_bundle file not found: {body.ca_bundle}"
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid ca_bundle: {exc}")
+
+    ok = _run_oauth_login_blocking(provider, body)
+    if not ok:
+        raise HTTPException(status_code=401, detail=f"OAuth login failed for {provider}")
+    # Re-load the pool to expose the entry's masked token preview
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider)
+        entries = pool.entries()
+    except Exception:
+        entries = []
+    return {
+        "ok": True,
+        "provider": provider,
+        "status": "logged_in",
+        "credentials_count": len(entries),
+    }
+
+
+@app.get("/api/credentials/pool/{provider}/status")
+async def pool_status(provider: str):
+    """Return the structural auth status for a provider.
+
+    Mirrors ``hermes_cli.auth_commands.auth_status_command`` but exposes the
+    full dict (including OAuth fields like ``client_id``, ``scope``, etc.)
+    so the dashboard can render provider-specific detail panels without
+    re-parsing the CLI's pretty-printed output.
+    """
+    provider = _validate_provider_name(provider)
+    import hermes_cli.auth as auth_mod
+    try:
+        status = auth_mod.get_auth_status(provider)
+    except Exception as exc:
+        _log.exception("get_auth_status(%s) failed", provider)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # Never leak access/refresh tokens if any downstream provider status
+    # accidentally returns them.
+    for secret_key in ("access_token", "refresh_token", "api_key", "token"):
+        if secret_key in status:
+            status[secret_key] = redact_key(str(status[secret_key]))
+    status.setdefault("provider", provider)
+    return status
+
+
+@app.post("/api/credentials/pool/{provider}/logout")
+async def pool_logout(provider: str):
+    """Clear auth state for a provider.  Mirrors
+    ``auth_commands.auth_logout_command``.
+    """
+    provider = _validate_provider_name(provider)
+    import hermes_cli.auth as auth_mod
+    args = SimpleNamespace(provider=provider)
+    try:
+        auth_mod.logout_command(args)
+    except SystemExit as exc:
+        # logout_command calls SystemExit(1) when the provider is unknown
+        if exc.code not in (None, 0):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown provider: {provider}",
+            )
+    except Exception as exc:
+        _log.exception("logout_command(%s) failed", provider)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True, "provider": provider}
+
+
+@app.get("/api/credentials/pool/summary")
+async def pool_summary():
+    """Return every provider in the registry with its pool summary.
+
+    Used by the dashboard top-level view to render the provider grid
+    without having to issue one request per provider.
+    """
+    import hermes_cli.auth as auth_mod
+    from agent.credential_pool import (
+        load_pool,
+        get_pool_strategy,
+        STATUS_OK,
+    )
+
+    providers_out: List[Dict[str, Any]] = []
+    total_credentials = 0
+    try:
+        registry = dict(getattr(auth_mod, "PROVIDER_REGISTRY", {}) or {})
+    except Exception:
+        registry = {}
+
+    # Always include Spotify, even though it isn't in PROVIDER_REGISTRY.
+    extra_providers: List[str] = []
+    # Spotify status is handled separately by /api/credentials/pool/spotify/{action}
+
+    for provider_id in sorted(registry.keys()):
+        entry = registry.get(provider_id) or {}
+        try:
+            pool = load_pool(provider_id)
+            entries = pool.entries()
+            creds = len(entries)
+            avail = sum(
+                1 for e in entries if getattr(e, "last_status", STATUS_OK) == STATUS_OK
+            )
+            last_err = next(
+                (
+                    getattr(e, "last_error_reason", None)
+                    for e in entries
+                    if getattr(e, "last_error_reason", None)
+                ),
+                None,
+            )
+            total_credentials += creds
+            providers_out.append({
+                "id": provider_id,
+                "name": getattr(entry, "name", provider_id),
+                "type": getattr(entry, "auth_type", "api_key"),
+                "credentials_count": creds,
+                "available_count": avail,
+                "strategy": get_pool_strategy(provider_id),
+                "last_error": last_err,
+            })
+        except Exception as exc:
+            providers_out.append({
+                "id": provider_id,
+                "name": getattr(entry, "name", provider_id),
+                "type": getattr(entry, "auth_type", "api_key"),
+                "credentials_count": 0,
+                "available_count": 0,
+                "strategy": get_pool_strategy(provider_id),
+                "last_error": f"pool_load_failed: {exc}",
+            })
+
+    for provider_id in extra_providers:
+        if any(p["id"] == provider_id for p in providers_out):
+            continue
+        state = auth_mod.get_provider_auth_state(provider_id) or {}
+        providers_out.append({
+            "id": provider_id,
+            "name": "Spotify",
+            "type": "oauth_pkce",
+            "credentials_count": 1 if state else 0,
+            "available_count": 1 if state.get("refresh_token") else 0,
+            "strategy": get_pool_strategy(provider_id),
+            "last_error": None,
+        })
+
+    return {
+        "providers": providers_out,
+        "total_providers": len(providers_out),
+        "total_credentials": total_credentials,
+    }
+
+
+def _probe_one_entry(entry: Any, timeout: float = 8.0) -> Dict[str, Any]:
+    """Make a single GET to ``entry.base_url`` and report the result.
+
+    This is a lightweight, best-effort liveness probe — used by the
+    dashboard's "Test all" button to colourise provider cards.  We never
+    raise; every failure mode is captured in the result dict.
+    """
+    import urllib.error
+    import urllib.request
+
+    base_url = (getattr(entry, "base_url", "") or "").strip()
+    label = getattr(entry, "label", "") or ""
+    if not base_url:
+        return {
+            "label": label,
+            "base_url": "",
+            "http_code": None,
+            "latency_ms": None,
+            "ok": False,
+            "error": "no base_url configured",
+        }
+    # SSRF-validate before any outbound request
+    try:
+        safe_url = _validate_base_url(base_url)
+    except ValueError as exc:
+        return {
+            "label": label,
+            "base_url": base_url,
+            "http_code": None,
+            "latency_ms": None,
+            "ok": False,
+            "error": f"ssrf_blocked: {exc}",
+        }
+
+    req = urllib.request.Request(safe_url, method="GET")
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            latency = (time.monotonic() - started) * 1000.0
+            return {
+                "label": label,
+                "base_url": safe_url,
+                "http_code": int(code) if code else None,
+                "latency_ms": round(latency, 2),
+                "ok": True,
+            }
+    except urllib.error.HTTPError as exc:
+        latency = (time.monotonic() - started) * 1000.0
+        # 4xx is still a reachable endpoint — report as not ok but reachable.
+        return {
+            "label": label,
+            "base_url": safe_url,
+            "http_code": int(exc.code),
+            "latency_ms": round(latency, 2),
+            "ok": False,
+            "error": f"http_{exc.code}",
+        }
+    except urllib.error.URLError as exc:
+        return {
+            "label": label,
+            "base_url": safe_url,
+            "http_code": None,
+            "latency_ms": None,
+            "ok": False,
+            "error": f"url_error: {exc.reason}",
+        }
+    except Exception as exc:
+        return {
+            "label": label,
+            "base_url": safe_url,
+            "http_code": None,
+            "latency_ms": None,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+@app.post("/api/credentials/pool/{provider}/probe")
+async def pool_probe(provider: str, body: PoolProbe):
+    """Live-probe one or all entries for a provider.
+
+    With ``entry_id`` or ``label`` set, only the matching entry is probed;
+    otherwise every entry in the pool is probed in parallel (the actual HTTP
+    work happens sequentially inside this handler — the network IO is
+    short-lived).
+    """
+    provider = _validate_provider_name(provider)
+    from agent.credential_pool import load_pool
+
+    try:
+        pool = load_pool(provider)
+        entries = pool.entries()
+    except Exception as exc:
+        _log.exception("probe: load_pool(%s) failed", provider)
+        raise HTTPException(status_code=404, detail=f"No pool for provider {provider}") from exc
+
+    if not entries:
+        return {"provider": provider, "results": []}
+
+    if body.entry_id:
+        target = next((e for e in entries if getattr(e, "id", None) == body.entry_id), None)
+        if target is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No pool entry with id={body.entry_id} for provider {provider}",
+            )
+        chosen = [target]
+    elif body.label:
+        target = next(
+            (e for e in entries if getattr(e, "label", None) == body.label),
+            None,
+        )
+        if target is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No pool entry with label={body.label!r} for provider {provider}",
+            )
+        chosen = [target]
+    else:
+        chosen = list(entries)
+
+    results = [_probe_one_entry(e) for e in chosen]
+    return {"provider": provider, "results": results}
 
 
 # ---------------------------------------------------------------------------

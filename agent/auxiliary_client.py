@@ -1956,7 +1956,21 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
 
-            raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            # ── Unified resolver ──────────────────────────────────────
+            # Delegate to agent.auth.resolve_provider_credentials() — the
+            # SINGLE source of truth for provider-specific credential
+            # resolution. Inline import avoids a circular dep: agent/ is
+            # imported by both CLI and Gateway, so a module-level import
+            # would cycle through hermes_cli.
+            from agent.auth import resolve_provider_credentials as _resolve
+            from hermes_cli.runtime_provider import _get_model_config
+            _resolved: "ResolvedCredential" = _resolve(
+                provider=provider_id,
+                entry=entry,
+                model_cfg=_get_model_config(),
+            )
+            # ResolvedCredential fields consumed here: base_url only.
+            raw_base_url: str = _resolved.base_url
             base_url = _to_openai_base_url(raw_base_url)
             model = _get_aux_model_for_provider(provider_id) or None
             if model is None:

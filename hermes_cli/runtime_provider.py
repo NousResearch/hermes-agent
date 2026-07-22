@@ -412,120 +412,30 @@ def _resolve_runtime_from_pool_entry(
     # opencode-zen /v1 to be stripped for chat_completions requests when
     # config.default was still a Claude model.
     effective_model = (target_model or model_cfg.get("default") or "")
-    base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
-    api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    api_mode = "chat_completions"
-    if provider == "openai-codex":
-        api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_CODEX_BASE_URL
-    elif provider == "xai-oauth":
-        api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
-    elif provider == "qwen-oauth":
-        api_mode = "chat_completions"
-        base_url = base_url or DEFAULT_QWEN_BASE_URL
-    elif provider == "minimax-oauth":
-        # MiniMax OAuth tokens are valid only against the Anthropic Messages
-        # compatible endpoint. Do not honor stale model.api_mode values from a
-        # prior OpenAI-compatible provider, or the client will hit
-        # /chat/completions under /anthropic and receive a bare nginx 404.
-        api_mode = "anthropic_messages"
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        base_url = base_url or (pconfig.inference_base_url if pconfig else "")
-    elif provider == "anthropic":
-        api_mode = "anthropic_messages"
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == "anthropic":
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if not _anthropic_base_url_override_ok(cfg_base_url):
-                cfg_base_url = ""
-        base_url = cfg_base_url or base_url or "https://api.anthropic.com"
-    elif provider == "openrouter":
-        base_url = base_url or OPENROUTER_BASE_URL
-    elif provider == "xai":
-        api_mode = "codex_responses"
-    elif provider == "nous":
-        api_mode = "chat_completions"
-        base_url = _nous_inference_base_url_override() or base_url
-    elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
-        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
-    elif provider == "azure-foundry":
-        # Azure Foundry: read api_mode and base_url from config
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        if cfg_provider == "azure-foundry":
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
-                api_mode = configured_mode
-        # Model-family inference for GPT-5.x / codex / o1-o4: Azure rejects
-        # /chat/completions on these with 400 "operation unsupported" — see
-        # azure_foundry_model_api_mode() for rationale.  Skip when the user
-        # explicitly picked anthropic_messages (Anthropic-style endpoint).
-        if effective_model and api_mode != "anthropic_messages":
-            try:
-                from hermes_cli.models import azure_foundry_model_api_mode
 
-                inferred = azure_foundry_model_api_mode(effective_model)
-            except Exception:
-                inferred = None
-            if inferred:
-                api_mode = inferred
-        # For Anthropic-style endpoints, strip /v1 suffix
-        if api_mode == "anthropic_messages":
-            base_url = re.sub(r"/v1/?$", "", base_url)
-    else:
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        # Honour model.base_url from config.yaml when the configured provider
-        # matches this provider — same pattern as the Anthropic branch above.
-        # Only override when the pool entry has no explicit base_url (i.e. it
-        # fell back to the hardcoded default).  Env var overrides win (#6039).
-        pconfig = PROVIDER_REGISTRY.get(provider)
-        pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-        if configured_provider == provider and pool_url_is_default:
-            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
-        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if provider in {"opencode-zen", "opencode-go"}:
-            # Re-derive api_mode from the effective model rather than the
-            # persisted api_mode: the opencode providers serve both
-            # anthropic_messages and chat_completions models, so the previous
-            # session's mode must not leak across /model switches.
-            # Refs #16878.
-            from hermes_cli.models import opencode_model_api_mode
-            api_mode = opencode_model_api_mode(provider, effective_model)
-        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        else:
-            # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
-            # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
-
-    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
-    # symmetrically: strip /v1 for anthropic_messages, re-append it for
-    # chat_completions / codex_responses (heals a stripped URL persisted to
-    # model.base_url by an earlier switch into an anthropic-routed model).
-    if provider in {"opencode-zen", "opencode-go"}:
-        from hermes_cli.models import normalize_opencode_base_url
-
-        base_url = normalize_opencode_base_url(provider, api_mode, base_url)
-
-    # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
-    # Inert when `model.openai_runtime` is unset or "auto".
-    api_mode = _maybe_apply_codex_app_server_runtime(
-        provider=provider, api_mode=api_mode, model_cfg=model_cfg
+    # ── Unified resolver ──────────────────────────────────────────────
+    # Delegate to agent.auth.resolve_provider_credentials() — the SINGLE
+    # source of truth for provider-specific credential resolution. This
+    # replaces ~120 lines of inline if/elif branches that used to be
+    # duplicated between this file and agent/auxiliary_client.py, and
+    # keeps the Gateway/Desktop path and the CLI (auxiliary) path in
+    # lock-step on the SSRF guard, precedence chain, and /v1 stripping.
+    #
+    # The inline ``from agent.auth import ...`` is intentional: agent/
+    # is imported by both the CLI and the Gateway, and hoisting the
+    # import to module scope would create a cycle through hermes_cli.
+    from agent.auth import resolve_provider_credentials as _resolve
+    _resolved: "ResolvedCredential" = _resolve(
+        provider=provider,
+        entry=entry,
+        model_cfg=model_cfg,
+        target_model=target_model,
     )
-
-    if provider == "lmstudio":
-        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
+    # ResolvedCredential fields consumed here: api_key, base_url, api_mode.
+    # (source / expires_at / extras are dropped — downstream doesn't need them.)
+    base_url: str = _resolved.base_url
+    api_key: str = _resolved.api_key
+    api_mode: str = _resolved.api_mode
 
     return {
         "provider": provider,

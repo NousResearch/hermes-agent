@@ -25,6 +25,7 @@ mirrors the pattern used in tests/hermes_cli/test_config_drift.py.
 
 import ast
 import inspect
+import os
 
 
 def _extract_dict_values(source: str, dict_name: str) -> set[str]:
@@ -322,3 +323,121 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_ssh_server_alive_interval_is_bridged_everywhere():
+    """Regression pin for ``terminal.ssh_server_alive_interval`` being silently
+    dropped by one of the three bridge paths.
+
+    The SSH keepalive interval is a behavioral setting (not a secret), so per
+    AGENTS.md it must be configurable via config.yaml and bridged to the
+    ``TERMINAL_SSH_SERVER_ALIVE_INTERVAL`` env var that ``terminal_tool`` reads.
+    If any of the three bridge dicts (cli.py env_mappings, gateway/run.py
+    _terminal_env_map, config.py TERMINAL_CONFIG_ENV_MAP) is missing the key,
+    ``terminal.ssh_server_alive_interval: 30`` in config.yaml silently does
+    nothing for that entry point.  Same four-site invariant as the docker keys.
+    """
+    assert "ssh_server_alive_interval" in _cli_env_map_keys()
+    assert "ssh_server_alive_interval" in _gateway_env_map_keys()
+    assert "ssh_server_alive_interval" in _save_config_env_sync_keys()
+    assert "TERMINAL_SSH_SERVER_ALIVE_INTERVAL" in _terminal_tool_env_var_names()
+
+
+def test_ssh_server_alive_count_max_is_bridged_everywhere():
+    """Regression pin for ``terminal.ssh_server_alive_count_max`` — the sibling
+    to ssh_server_alive_interval.  Same four-site bridge invariant.
+    """
+    assert "ssh_server_alive_count_max" in _cli_env_map_keys()
+    assert "ssh_server_alive_count_max" in _gateway_env_map_keys()
+    assert "ssh_server_alive_count_max" in _save_config_env_sync_keys()
+    assert "TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX" in _terminal_tool_env_var_names()
+
+
+def test_ssh_keepalive_config_bridges_to_env_var_and_environment(monkeypatch):
+    """End-to-end bridge propagation: config.yaml value → env var → SSHEnvironment.
+
+    Sets ``terminal.ssh_server_alive_interval`` / ``ssh_server_alive_count_max``
+    in a fake config, runs ``apply_terminal_config_to_env`` (the canonical bridge
+    used by CLI, gateway, and ``hermes config set``), then verifies the env vars
+    are set and that ``_get_env_config`` picks them up and that
+    ``_create_environment`` forwards them to ``SSHEnvironment``.
+    """
+    import tools.terminal_tool as _tt
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, apply_terminal_config_to_env
+
+    # 1. config.yaml value → env vars via the bridge
+    fake_config = {
+        "terminal": {
+            "backend": "ssh",
+            "ssh_host": "testhost",
+            "ssh_user": "testuser",
+            "ssh_server_alive_interval": 45,
+            "ssh_server_alive_count_max": 7,
+        }
+    }
+    # Clean env so we only see what the bridge sets
+    for _k, _v in TERMINAL_CONFIG_ENV_MAP.items():
+        monkeypatch.delenv(_v, raising=False)
+    monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
+
+    apply_terminal_config_to_env(env=None, config=fake_config, override=True)
+
+    assert os.environ["TERMINAL_SSH_SERVER_ALIVE_INTERVAL"] == "45"
+    assert os.environ["TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX"] == "7"
+
+    # 2. env vars → _get_env_config dict
+    cfg = _tt._get_env_config()
+    assert cfg["ssh_server_alive_interval"] == 45
+    assert cfg["ssh_server_alive_count_max"] == 7
+
+    # 3. _get_env_config → _create_environment → SSHEnvironment
+    #    Mock _SSHEnvironment to capture the kwargs without actually connecting.
+    captured = {}
+
+    class _FakeSSH:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(_tt, "_SSHEnvironment", _FakeSSH)
+    _tt._create_environment(
+        env_type="ssh",
+        image="",
+        cwd="~",
+        timeout=60,
+        ssh_config={
+            "host": "testhost",
+            "user": "testuser",
+            "port": 22,
+            "key": "",
+            "server_alive_interval": cfg["ssh_server_alive_interval"],
+            "server_alive_count_max": cfg["ssh_server_alive_count_max"],
+        },
+        task_id="bridge-test",
+    )
+    assert captured["server_alive_interval"] == 45
+    assert captured["server_alive_count_max"] == 7
+
+
+def test_ssh_keepalive_defaults_when_no_config(monkeypatch):
+    """When config.yaml has no keepalive keys, the bridge leaves env vars unset
+    and ``_get_env_config`` falls back to the 60/3 defaults baked into
+    ``terminal_tool._get_env_config``.
+    """
+    import tools.terminal_tool as _tt
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, apply_terminal_config_to_env
+
+    fake_config = {"terminal": {"backend": "ssh", "ssh_host": "h", "ssh_user": "u"}}
+    for _k, _v in TERMINAL_CONFIG_ENV_MAP.items():
+        monkeypatch.delenv(_v, raising=False)
+    monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
+
+    apply_terminal_config_to_env(env=None, config=fake_config, override=True)
+
+    # No config value → bridge should NOT set the env var
+    assert "TERMINAL_SSH_SERVER_ALIVE_INTERVAL" not in os.environ
+    assert "TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX" not in os.environ
+
+    cfg = _tt._get_env_config()
+    assert cfg["ssh_server_alive_interval"] == 60
+    assert cfg["ssh_server_alive_count_max"] == 3
+

@@ -231,6 +231,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_USER` | SSH username |
 | `TERMINAL_SSH_PORT` | SSH port (default: 22) |
 | `TERMINAL_SSH_KEY` | Path to private key |
+| `TERMINAL_SSH_SERVER_ALIVE_INTERVAL` | SSH keepalive interval in seconds (default: 60; set 0 to disable). Prefer `terminal.ssh_server_alive_interval` in config.yaml. |
+| `TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX` | SSH keepalive missed-packet threshold (default: 3). Prefer `terminal.ssh_server_alive_count_max` in config.yaml. |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
 ## Container Resources (Docker, Singularity, Modal, Daytona)

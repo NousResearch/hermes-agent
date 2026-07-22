@@ -661,6 +661,17 @@ Scheduled auto-resume for N restart-interrupted session(s)
 
 No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
 
+#### Optional external restart checkpoint
+
+Hermes already persists gateway transcripts and resumes interrupted sessions; no checkpoint script is needed for conversation continuity. If a planned restart must also export that persisted state to another local system, configure a Python script in `config.yaml`:
+
+```yaml
+gateway:
+  restart_checkpoint_script: scripts/export_restart_context.py
+```
+
+Relative paths resolve from `HERMES_HOME`. After draining and persisting active sessions, the gateway invokes the script with its current Python interpreter and `--reason "gateway restart requested"`, then waits before teardown. The script can delay restart by at most 15 seconds. Missing scripts, failures, and timeouts are logged and never prevent restart; subprocess work runs off the async event-loop thread, so messaging and shutdown bookkeeping remain responsive while it completes.
+
 ### Mobile-friendly progress defaults
 
 Telegram is usually a mobile inbox, so the defaults are tuned for that surface:

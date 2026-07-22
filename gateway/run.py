@@ -36,6 +36,7 @@ import shlex
 import site
 import sys
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -68,6 +69,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_RESTART_CHECKPOINT_TIMEOUT_SECS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
@@ -6832,6 +6834,82 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 start_new_session=True,
             )
 
+    async def _run_restart_context_checkpoint(
+        self,
+        reason: str = "gateway restart requested",
+    ) -> None:
+        """Run the configured external restart checkpoint, best-effort.
+
+        Hermes already persists and resumes its own gateway transcripts. This
+        hook is only for explicit external side effects (for example exporting
+        the stable transcript to another local system) configured through
+        ``gateway.restart_checkpoint_script`` in ``config.yaml``.
+
+        Contract: the value names a Python ``.py`` file; relative paths are
+        resolved from ``HERMES_HOME``. The current interpreter invokes it with
+        ``--reason <text>`` and ``HERMES_HOME`` as its working directory.
+        Shutdown awaits completion after draining transcripts and before
+        teardown, so the hook may delay restart by at most 15 seconds. Running
+        ``subprocess.run`` in a worker thread keeps the gateway event loop
+        responsive throughout that bounded delay. Missing scripts, non-zero
+        exits, timeouts, and invocation errors are warnings and never prevent
+        restart.
+        """
+        config = _load_gateway_config()
+        raw_script = cfg_get(
+            config,
+            "gateway",
+            "restart_checkpoint_script",
+            default="",
+        )
+        if not isinstance(raw_script, str) or not raw_script.strip():
+            return
+
+        script = Path(raw_script.strip()).expanduser()
+        checkpoint_home = _gateway_config_home()
+        if not script.is_absolute():
+            script = checkpoint_home / script
+        if script.suffix.lower() != ".py":
+            logger.warning(
+                "Restart checkpoint script must be a Python .py file: %s",
+                script,
+            )
+            return
+        if not script.is_file():
+            logger.warning("Restart checkpoint script does not exist: %s", script)
+            return
+
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, str(script), "--reason", reason],
+                cwd=str(checkpoint_home),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=_RESTART_CHECKPOINT_TIMEOUT_SECS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Restart checkpoint timed out after %ss: %s",
+                _RESTART_CHECKPOINT_TIMEOUT_SECS,
+                script,
+            )
+            return
+        except Exception as exc:
+            logger.warning("Restart checkpoint invocation failed: %s", exc)
+            return
+
+        if result.returncode == 0:
+            logger.info("Restart checkpoint completed: %s", script)
+        else:
+            logger.warning(
+                "Restart checkpoint failed with exit code %s: %s",
+                result.returncode,
+                script,
+            )
+
     def _launch_systemd_restart_shortcut(self) -> None:
         """Best-effort helper to bypass systemd's automatic restart delay.
 
@@ -9140,6 +9218,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Shutdown phase: post-interrupt tool kill done at +%.2fs",
                     _phase_elapsed(),
                 )
+
+            # The durable Hermes transcript/resume path above is the source of
+            # truth for conversation continuity. A configured checkpoint is an
+            # optional external export of that now-stable state. Await it before
+            # teardown so successful completion is meaningful; its fixed timeout
+            # bounds any restart delay and its worker thread leaves this event
+            # loop responsive.
+            if self._restart_requested:
+                await self._run_restart_context_checkpoint()
 
             if self._restart_requested and self._restart_detached:
                 try:

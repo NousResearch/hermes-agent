@@ -286,6 +286,94 @@ def _check_all_guards(command: str, env_type: str,
                                   has_host_access=has_host_access)
 
 
+# =============================================================================
+# Repeated hardline-block circuit breaker
+# =============================================================================
+# A *hardline* block (tools/approval.py: detect_hardline_command /
+# _hardline_block_result -- the catastrophic-pattern blocklist AND the
+# malformed-payload guard) is deterministic: an identical retry has a 0%
+# chance of succeeding. Without a circuit breaker a looping model can re-emit
+# the exact same blocked command until the turn cap, degrading the session to
+# empty responses. When the same command has been hardline-blocked enough
+# times for one conversation we append a short note telling the model to stop
+# retrying and change approach.
+#
+# Design (kept deliberately simple after two failed "consecutive"-streak
+# attempts, 2026-07 Sol review):
+#   * Count, per conversation, how many times each exact (command, block
+#     message) pair has been hardline-blocked -- a plain cumulative tally, not
+#     a consecutive streak. A streak needs a reset on every *other* terminal
+#     outcome, and the many early-return paths in terminal_tool() kept leaving
+#     stale streak state (Sol HIGH #1). A cumulative tally needs no reset at
+#     all: it is only ever touched on a hardline block, so there is no path
+#     that can corrupt it. Hitting the same unconditional block 3+ times in a
+#     conversation warrants the nudge regardless of what happened in between.
+#   * ONE reason-neutral escalation for every hardline reason. Trying to
+#     branch malformed-vs-catastrophic on a substring of the block message
+#     misclassifies executable commands that trip the malformed guard first
+#     (e.g. ``grep -P ; rm -rf /``), and coaching "run it without pipes / run
+#     it yourself" around a catastrophic block is unsafe (Sol HIGH #2). The
+#     base hardline message already tells the model it must run such commands
+#     itself; the escalation only adds "you have repeated this; it is
+#     deterministic; stop and change approach".
+_terminal_repeat_lock = threading.Lock()
+# task_key -> { (command, block_message): count }. Bounded on both axes.
+_terminal_repeat_tracker: "Dict[str, Dict[tuple, int]]" = {}
+
+# file_tools uses 4 for its search breaker; a hardline block is fully
+# deterministic, so 3 identical blocks is enough to be sure this is a loop.
+_TERMINAL_HARDLINE_REPEAT_THRESHOLD = 3
+
+# Bounded state for long-lived gateway processes (Sol MEDIUM #4): cap the
+# number of tracked conversations, and the distinct blocked commands per
+# conversation, evicting oldest-first (dicts preserve insertion order).
+_TERMINAL_REPEAT_TRACKER_MAX_TASKS = 512
+_TERMINAL_REPEAT_MAX_KEYS_PER_TASK = 64
+
+_TERMINAL_HARDLINE_ESCALATION = (
+    " You have hit this exact block {count} times in this conversation. It is "
+    "deterministic and will not succeed on retry -- stop repeating this "
+    "command and take a different approach to your goal."
+)
+
+
+def _repeat_conversation_key(task_id, session_id):
+    """Stable per-conversation key for the repeat tracker, or None to skip.
+
+    Tagged so a task_id can never collide with another conversation's
+    session_id (Sol MEDIUM #3). None when the caller has no stable identity
+    at all -- tracking is skipped rather than bucketed into a shared key that
+    would let unrelated calls cross-increment.
+    """
+    if task_id:
+        return "t:" + str(task_id)
+    if session_id:
+        return "s:" + str(session_id)
+    return None
+
+
+def _track_hardline_repeat(task_key, command: str, block_message: str) -> int:
+    """Increment and return the cumulative count of this exact hardline block
+    for ``task_key``. Keyed on the raw (command, block message) pair -- a
+    different command or a different hardline reason is a different key. No
+    reset path exists by design: the tally is only touched here, on a hardline
+    block, so nothing else can leave it stale.
+    """
+    if task_key is None:
+        return 0
+    repeat_key = (command, block_message)
+    with _terminal_repeat_lock:
+        if (task_key not in _terminal_repeat_tracker
+                and len(_terminal_repeat_tracker) >= _TERMINAL_REPEAT_TRACKER_MAX_TASKS):
+            del _terminal_repeat_tracker[next(iter(_terminal_repeat_tracker))]
+        task_counts = _terminal_repeat_tracker.setdefault(task_key, {})
+        if (repeat_key not in task_counts
+                and len(task_counts) >= _TERMINAL_REPEAT_MAX_KEYS_PER_TASK):
+            del task_counts[next(iter(task_counts))]
+        task_counts[repeat_key] = task_counts.get(repeat_key, 0) + 1
+        return task_counts[repeat_key]
+
+
 # Allowlist: characters that can legitimately appear in directory paths.
 # Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
 # dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
@@ -2379,6 +2467,14 @@ def terminal_tool(
         # an approved command can't be SIGINT-killed by a bit that landed during
         # the approval-wait (see clear_current_thread_interrupt).
         _approved_run = bool(force)
+        # Tagged per-conversation key for the repeat-block circuit breaker
+        # below. Uses the RAW task_id/session_id (not effective_task_id, which
+        # collapses to "default" for almost every call via
+        # _resolve_container_task_id and would bucket unrelated conversations),
+        # tags them so a task_id can't collide with another conversation's
+        # session_id, and returns None (untracked) when neither is present
+        # rather than sharing a bucket (Sol review, MEDIUM #3).
+        _repeat_task_key = _repeat_conversation_key(task_id, session_id)
         if not force:
             approval = _check_all_guards(
                 command, env_type,
@@ -2405,10 +2501,23 @@ def terminal_tool(
                     f"Command denied: {desc}. "
                     "Use the approval prompt to allow it, or rephrase the command."
                 )
+                block_message = approval.get("message", fallback_msg)
+                if approval.get("hardline") is True:
+                    # Deterministic block: an identical retry has a 0% chance
+                    # of succeeding. Escalate once the model has looped on this
+                    # exact block enough times so it doesn't burn the whole
+                    # turn budget on repeated denials.
+                    repeat_count = _track_hardline_repeat(
+                        _repeat_task_key, command, block_message,
+                    )
+                    if repeat_count >= _TERMINAL_HARDLINE_REPEAT_THRESHOLD:
+                        block_message = block_message + _TERMINAL_HARDLINE_ESCALATION.format(
+                            count=repeat_count,
+                        )
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": approval.get("message", fallback_msg),
+                    "error": block_message,
                     "status": "blocked"
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user

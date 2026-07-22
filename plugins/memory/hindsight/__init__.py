@@ -42,6 +42,7 @@ import threading
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -504,15 +505,29 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
+def _resolve_embedded_llm_api_key(config: dict[str, Any]) -> str:
+    """Resolve the embedded daemon key without duplicating provider credentials."""
+    explicit = (
+        config.get("llmApiKey")
+        or config.get("llm_api_key")
+        or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+    )
+    if explicit:
+        return str(explicit)
+    if config.get("llm_provider") == "openrouter":
+        return os.environ.get("OPENROUTER_API_KEY", "")
+    if config.get("llm_provider") == "openai_compatible":
+        hostname = urlparse(str(config.get("llm_base_url") or "")).hostname or ""
+        if hostname == "api.deepseek.com" or hostname.endswith(".api.deepseek.com"):
+            return os.environ.get("DEEPSEEK_API_KEY", "")
+    return ""
+
+
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
     if current_key is None:
-        current_key = (
-            config.get("llmApiKey")
-            or config.get("llm_api_key")
-            or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
-        )
+        current_key = _resolve_embedded_llm_api_key(config)
 
     current_provider = config.get("llm_provider", "")
     current_model = config.get("llm_model", "")
@@ -553,10 +568,13 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    profile_env.touch(mode=0o600, exist_ok=True)
+    profile_env.chmod(0o600)
     profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
         encoding="utf-8",
     )
+    profile_env.chmod(0o600)
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:
@@ -1036,7 +1054,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=_resolve_embedded_llm_api_key(self._config),
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:

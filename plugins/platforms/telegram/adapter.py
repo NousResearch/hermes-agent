@@ -4084,6 +4084,13 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
+            # Lock parse_mode across the whole multi-chunk reply. Per-chunk
+            # MarkdownV2→plain fallback left some parts formatted and others
+            # raw (same class of bug as Feishu #26841). Once any chunk fails
+            # MarkdownV2, every chunk of this reply is sent as plain text —
+            # deleting already-delivered Markdown chunks and restarting so the
+            # user never sees a mixed plain/rich split.
+            force_plain = False
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -4100,7 +4107,9 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
-            for i, chunk in enumerate(chunks):
+            i = 0
+            while i < len(chunks):
+                chunk = chunks[i]
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
@@ -4144,23 +4153,66 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
+                restart_all_plain = False
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
+                        # Try Markdown first (unless this reply is locked to plain),
+                        # fall back to plain text if it fails — and keep that
+                        # decision for every remaining chunk of this send.
                         try:
-                            msg = await self._bot.send_message(
-                                chat_id=normalize_telegram_chat_id(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                **thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
-                            )
+                            if force_plain:
+                                plain_chunk = _strip_mdv2(chunk)
+                                msg = await self._bot.send_message(
+                                    chat_id=normalize_telegram_chat_id(chat_id),
+                                    text=plain_chunk,
+                                    parse_mode=None,
+                                    reply_to_message_id=reply_to_id,
+                                    **thread_kwargs,
+                                    **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
+                                )
+                            else:
+                                msg = await self._bot.send_message(
+                                    chat_id=normalize_telegram_chat_id(chat_id),
+                                    text=chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
+                                    reply_to_message_id=reply_to_id,
+                                    **thread_kwargs,
+                                    **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
+                                )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                            if (
+                                not force_plain
+                                and (
+                                    "parse" in str(md_error).lower()
+                                    or "markdown" in str(md_error).lower()
+                                )
+                            ):
+                                logger.warning(
+                                    "[%s] MarkdownV2 parse failed, falling back to plain text: %s",
+                                    self.name, md_error,
+                                )
+                                force_plain = True
+                                if message_ids:
+                                    # Earlier chunks already went out as MarkdownV2.
+                                    # Delete them and resend the whole reply as
+                                    # plain so formatting stays consistent.
+                                    logger.warning(
+                                        "[%s] Restarting multi-chunk Telegram send as plain text "
+                                        "after MarkdownV2 failure on chunk %d/%d",
+                                        self.name, i + 1, len(chunks),
+                                    )
+                                    for mid in list(message_ids):
+                                        try:
+                                            await self.delete_message(chat_id, mid)
+                                        except Exception:
+                                            pass
+                                    message_ids.clear()
+                                    restart_all_plain = True
+                                    i = 0
+                                    break
                                 plain_chunk = _strip_mdv2(chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=normalize_telegram_chat_id(chat_id),
@@ -4292,7 +4344,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await asyncio.sleep(wait)
                                 continue
                         raise
+                if restart_all_plain:
+                    continue
                 message_ids.append(str(msg.message_id))
+                i += 1
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -4638,6 +4693,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
+        first_chunk_plain = False
         try:
             if finalize:
                 # Use format_message + parse_mode for the final chunk;
@@ -4664,6 +4720,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             message_id=int(message_id),
                             text=_strip_mdv2(first_chunk),
                         )
+                        first_chunk_plain = True
             else:
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
@@ -4688,11 +4745,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # contiguous block.  We call self._bot.send_message directly so the
         # continuation skips ``self.send``'s own pre-chunking pass (chunks
         # are already correctly sized).  Best-effort MarkdownV2 with plain
-        # fallback, mirroring send().
+        # fallback, locking plain mode for every remaining chunk once any
+        # MarkdownV2 attempt fails (same consistency rule as send()).
         continuation_ids: list[str] = []
         delivered_chunks = [first_chunk]
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
+        force_plain = first_chunk_plain
         for chunk in chunks[1:]:
             sent_msg = None
             reply_to_id = int(prev_id) if prev_id else None
@@ -4702,7 +4761,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 metadata,
                 reply_to_message_id=reply_to_id,
             )
-            for use_markdown in (True, False) if finalize else (False,):
+            markdown_attempts = (False,) if (force_plain or not finalize) else (True, False)
+            for use_markdown in markdown_attempts:
                 try:
                     if use_markdown:
                         text = _separate_chunk_indicator_from_fence(
@@ -4723,6 +4783,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         **self._link_preview_kwargs(),
                         **self._notification_kwargs(metadata),
                     )
+                    if not use_markdown and finalize:
+                        force_plain = True
                     break
                 except Exception as send_err:
                     if "reply message not found" in str(send_err).lower():
@@ -4744,6 +4806,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
+                            if finalize:
+                                force_plain = True
                             break
                         except Exception as _retry_err:
                             logger.warning(
@@ -4753,7 +4817,8 @@ class TelegramAdapter(BasePlatformAdapter):
                             sent_msg = None
                             break
                     if use_markdown:
-                        # try plain text on next loop iteration
+                        # try plain text on next loop iteration; lock the rest
+                        force_plain = True
                         continue
                     logger.warning(
                         "[%s] Overflow continuation send failed: %s",

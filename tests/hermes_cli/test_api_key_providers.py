@@ -680,6 +680,7 @@ class TestRuntimeProviderResolution:
         assert result["api_key"] == "auto-kimi-key"
 
     def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _provider: True)
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="copilot")
@@ -689,6 +690,7 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "https://api.githubcopilot.com"
 
     def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _provider: True)
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
         monkeypatch.setattr(
             "hermes_cli.runtime_provider._get_model_config",

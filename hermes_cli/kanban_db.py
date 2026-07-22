@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -233,6 +233,70 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # conventional "temporary failure, retry later" code, and well clear of the
 # 0/1/2 codes the worker uses for success / generic failure / usage error.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
+
+
+# Dedicated logger for the parser-friendly clean-exit failure envelope.
+# Workers (``cli.py`` quiet-query exit path) emit a single JSON line per
+# failed run so ``tail -f agent.log`` scrapers and synthetic tests can grep
+# ``failure_reason`` / ``error_class`` / ``provider`` / ``model`` /
+# ``http_status`` without free-text parsing. Kept on its own logger so
+# operators can route it independently (e.g. to a dedicated
+# ``envelope.jsonl`` sink) and so it stays byte-stable regardless of the
+# module's other log levels.
+_FAILURE_ENVELOPE_LOGGER_NAME = "hermes.kanban.failure_envelope"
+_failure_envelope_log = logging.getLogger(_FAILURE_ENVELOPE_LOGGER_NAME)
+# Default to WARNING so the line is visible by default but stays one record
+# per failure (no per-tool spam). Propagates to root so ``agent.log`` (the
+# canonical ops sink) picks the line up alongside everything else.
+
+
+def _emit_failure_envelope_log(
+    task_id,
+    result,
+    *,
+    exit_code,
+):
+    """Emit one parser-friendly JSON line for a failed clean-exit envelope.
+
+    Called from ``cli.py`` quiet-query exit path when ``HERMES_KANBAN_TASK``
+    is set and the worker ``run_conversation`` returned a dict with
+    ``failed=True``. Captures the structured envelope fields
+    (``failure_reason`` / ``error_class`` / ``provider`` / ``model`` /
+    ``http_status``) populated by ``t_8acdc493`` and ``t_a2c1ced7``,
+    plus the task id and exit code so the dispatcher ``tail -f`` view
+    and synthetic ops tests can scrape them without free-text parsing.
+
+    The line is JSON (NOT ``key=value``) so any ``json.loads`` consumer
+    works out of the box. Schema is additive -- new keys may land in
+    later fixes, but the five field names above are the contract pinned
+    by ``test_clean_exit_failure_envelope_log.py``.
+
+    No-op when ``result`` is not a mapping, when ``failed`` is falsy, or
+    when none of the five envelope fields are present. Never raises.
+    """
+    if not isinstance(result, Mapping):
+        return
+    if not result.get("failed"):
+        return
+    payload = {
+        "task_id": task_id,
+        "exit_code": int(exit_code),
+        "failure_reason": result.get("failure_reason"),
+        "error_class": result.get("error_class"),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "http_status": result.get("http_status"),
+    }
+    envelope_keys = {"failure_reason", "error_class", "provider", "model", "http_status"}
+    if not any(payload[k] is not None for k in envelope_keys):
+        return
+    try:
+        _failure_envelope_log.warning(
+            "kanban.failure_envelope %s",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:
+        pass
 
 
 def _resolve_crash_grace_seconds() -> int:

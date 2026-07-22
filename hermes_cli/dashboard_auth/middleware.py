@@ -86,6 +86,48 @@ def _path_is_public(path: str) -> bool:
     )
 
 
+# Public routes that reveal MORE to a logged-in caller than to an anonymous
+# one. They stay public — reachable with no cookies, always 200 — but the gate
+# short-circuits before any cookie verification, so without this a logged-in
+# browser is indistinguishable from a stranger and the handler silently serves
+# everyone the anonymous view.
+#
+# Keep this minimal, and keep the anonymous response the SAFE one: a route
+# belongs here only when the extra detail is an enrichment, never when the
+# anonymous response would be wrong.
+_OPTIONAL_SESSION_PUBLIC_PATHS: frozenset[str] = frozenset({
+    # Serves the plain CONFIG_SCHEMA anonymously; folds the operator's
+    # config.yaml voice providers in for an authenticated caller.
+    "/api/config/schema",
+})
+
+
+def _attach_optional_session(request: Request) -> None:
+    """Best-effort ``request.state.session`` for an optional-session route.
+
+    Deliberately a thin subset of the main gate: verify the access token if one
+    was supplied, attach the Session, and stop. No refresh, no cookie rotation,
+    no clearing, no 401/redirect — an absent, expired, or unrecognised cookie
+    just leaves the request anonymous, because the route is public and must
+    keep answering 200. Never raises: a provider outage degrades the caller to
+    the anonymous view rather than breaking a public endpoint.
+    """
+    try:
+        access_token, _refresh_token = read_session_cookies(request)
+        if not access_token:
+            return
+        for provider in _ordered_session_providers(read_session_provider(request)):
+            try:
+                session = provider.verify_session(access_token=access_token)
+            except Exception:
+                continue
+            if session is not None:
+                request.state.session = session
+                return
+    except Exception:
+        return
+
+
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd:
@@ -341,6 +383,8 @@ async def gated_auth_middleware(
 
     path = request.url.path
     if _path_is_public(path):
+        if path in _OPTIONAL_SESSION_PUBLIC_PATHS:
+            _attach_optional_session(request)
         return await call_next(request)
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop

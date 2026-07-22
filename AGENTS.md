@@ -1103,7 +1103,8 @@ kanban task.
   `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_attach`,
   `kanban_attach_url`, `kanban_attachments`; profiles that explicitly
   enable the `kanban` toolset outside a dispatcher-spawned task also get
-  `kanban_list` and `kanban_unblock` for board routing.
+  `kanban_list`, `kanban_unblock`, and audited `kanban_unlink` for board
+  routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via

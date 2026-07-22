@@ -211,6 +211,7 @@ class TestModuleSurface:
             "kanban_list",
             "kanban_unblock",
             "kanban_link",
+            "kanban_unlink",
         ):
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"

@@ -58,11 +58,56 @@ async def test_goal_status_notice_uses_adapter_send_with_thread_metadata():
         thread_id="thread-123",
     )
 
-    await runner._send_goal_status_notice(source, "✓ Goal achieved: done")
+    goal_event = {
+        "contract": "hermes.goal_event.v1",
+        "event_type": "done",
+        "status": "done",
+        "reason": "done",
+        "raw_text": "✓ Goal achieved: done",
+    }
+
+    await runner._send_goal_status_notice(
+        source,
+        "✓ Goal achieved: done",
+        goal_event=goal_event,
+    )
 
     assert adapter.calls == [
         {
             "chat_id": "parent-channel",
+            "content": "✓ Goal achieved: done",
+            "reply_to": None,
+            "metadata": {"thread_id": "thread-123", "goal_event": goal_event},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_goal_status_notice_uses_profile_routed_adapter():
+    """Multiplexed profile replies must use the source-routed adapter.
+
+    A direct ``self.adapters.get(source.platform)`` lookup would pick the
+    default-profile adapter and misroute the goal notice.
+    """
+    runner = GatewayRunner.__new__(GatewayRunner)
+    default_adapter = FakeAdapter()
+    profile_adapter = FakeAdapter()
+    runner.adapters = {Platform.DISCORD: default_adapter}
+    runner._adapter_for_source = lambda source: profile_adapter
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="profile-channel",
+        thread_id="thread-123",
+        profile="secondary",
+    )
+
+    await runner._send_goal_status_notice(source, "✓ Goal achieved: done")
+
+    assert default_adapter.calls == []
+    assert profile_adapter.calls == [
+        {
+            "chat_id": "profile-channel",
             "content": "✓ Goal achieved: done",
             "reply_to": None,
             "metadata": {"thread_id": "thread-123"},
@@ -90,7 +135,19 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
         user_id="user-1",
     )
 
-    await runner._defer_goal_status_notice_after_delivery(source, "✓ Goal achieved: done")
+    goal_event = {
+        "contract": "hermes.goal_event.v1",
+        "event_type": "done",
+        "status": "done",
+        "reason": "done",
+        "raw_text": "✓ Goal achieved: done",
+    }
+
+    await runner._defer_goal_status_notice_after_delivery(
+        source,
+        "✓ Goal achieved: done",
+        goal_event=goal_event,
+    )
 
     assert adapter.calls == []
     assert len(adapter.callbacks) == 1
@@ -105,7 +162,7 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
             "chat_id": "parent-channel",
             "content": "✓ Goal achieved: done",
             "reply_to": None,
-            "metadata": {"thread_id": "thread-123"},
+            "metadata": {"thread_id": "thread-123", "goal_event": goal_event},
         }
     ]
 

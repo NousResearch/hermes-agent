@@ -14370,18 +14370,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
-    async def _send_goal_status_notice(self, source: Any, message: str) -> None:
+    @staticmethod
+    def _goal_status_event_type(decision: Dict[str, Any]) -> str:
+        """Map a GoalManager decision to the public goal_event type."""
+        status = str(decision.get("status") or "").strip().lower()
+        verdict = str(decision.get("verdict") or "").strip().lower()
+        if status == "done" or verdict == "done":
+            return "done"
+        if status == "paused":
+            return "paused"
+        if decision.get("should_continue"):
+            return "continue"
+        return verdict or status or "status"
+
+    def _build_goal_status_event(
+        self,
+        *,
+        decision: Dict[str, Any],
+        goal_state: Any,
+        raw_text: str,
+    ) -> Dict[str, Any]:
+        """Return structured metadata for a /goal judge status notice."""
+        event: Dict[str, Any] = {
+            "contract": "hermes.goal_event.v1",
+            "event_type": self._goal_status_event_type(decision),
+            "status": decision.get("status"),
+            "reason": decision.get("reason") or "",
+            "raw_text": raw_text,
+        }
+        verdict = decision.get("verdict")
+        if verdict:
+            event["verdict"] = verdict
+
+        if goal_state is not None:
+            event["turn"] = {
+                "used": int(getattr(goal_state, "turns_used", 0) or 0),
+                "max": int(getattr(goal_state, "max_turns", 0) or 0),
+            }
+            goal = getattr(goal_state, "goal", None)
+            if goal:
+                event["goal"] = goal
+            pause_reason = getattr(goal_state, "paused_reason", None)
+            if pause_reason:
+                event["pause_reason"] = pause_reason
+
+        return event
+
+    def _goal_status_notice_metadata(
+        self,
+        source: Any,
+        goal_event: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Merge thread routing metadata with optional /goal event metadata."""
+        try:
+            metadata = self._thread_metadata_for_source(source) or {}
+        except Exception:
+            metadata = {}
+        if goal_event:
+            metadata = dict(metadata)
+            metadata["goal_event"] = goal_event
+        return metadata or None
+
+    async def _send_goal_status_notice(
+        self,
+        source: Any,
+        message: str,
+        *,
+        goal_event: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
         adapter = self._adapter_for_source(source)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
 
-        try:
-            metadata = self._thread_metadata_for_source(source)
-        except Exception:
-            metadata = None
-
+        metadata = self._goal_status_notice_metadata(source, goal_event)
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
             logger.warning(
@@ -14389,7 +14452,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
+    async def _defer_goal_status_notice_after_delivery(
+        self,
+        source: Any,
+        message: str,
+        *,
+        goal_event: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The gateway message handler returns the agent response to the platform
@@ -14406,7 +14475,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _deliver() -> None:
             try:
-                await self._send_goal_status_notice(source, message)
+                await self._send_goal_status_notice(source, message, goal_event=goal_event)
             except Exception as exc:
                 logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
 
@@ -14485,7 +14554,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # an awaited post-delivery callback preserves delivery reliability
         # without reversing the user-visible ordering.
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            goal_event = self._build_goal_status_event(
+                decision=decision,
+                goal_state=getattr(mgr, "state", None),
+                raw_text=msg,
+            )
+            await self._defer_goal_status_notice_after_delivery(source, msg, goal_event=goal_event)
 
         if not decision.get("should_continue"):
             return

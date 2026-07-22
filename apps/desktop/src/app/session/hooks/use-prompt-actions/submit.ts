@@ -591,11 +591,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               // turn. Rebind all success/error cleanup before retrying so a
               // failed recovered submit cannot strand busy state or attach its
               // error to the stale runtime session.
+              const staleSessionId = sessionId
               sessionId = recoveredId
 
               if (targetIsCurrentView()) {
                 setActiveSessionId(recoveredId)
                 activeSessionIdRef.current = recoveredId
+              }
+
+              // The optimistic turn was seeded under the stale runtime id.
+              // Re-seed it under the recovered id before retrying, then remove
+              // the stale copy so a later error/stream cannot strand duplicate
+              // busy state in the old session cache.
+              if (staleSessionId !== recoveredId) {
+                seedOptimistic(recoveredId)
+                dropOptimistic(staleSessionId)
               }
 
               // A recovered submit may itself sit in the bounded session-busy

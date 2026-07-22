@@ -1894,6 +1894,17 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(finalUpdate?.state.messages).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: 'assistant', error: 'recovered submit failed' })])
     )
+    expect(
+      updates.some(
+        update =>
+          update.sessionId === RUNTIME_SESSION_ID &&
+          update.state.busy === false &&
+          Array.isArray(update.state.messages) &&
+          !update.state.messages.some(
+            (message: { id?: unknown }) => typeof message.id === 'string' && message.id.startsWith('user-')
+          )
+      )
+    ).toBe(true)
   })
 
   it('abandons a recovered submit when the user switches sessions during a session-busy retry delay', async () => {

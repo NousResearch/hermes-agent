@@ -1264,10 +1264,11 @@ def _collect_auto_append_media_tags(
 
 
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
-    """Collect every media path already delivered in prior tool results.
+    """Collect every media path already delivered in prior messages.
 
     Used to dedup auto-appended MEDIA tags so the same file is not re-sent on
-    later turns. Must cover BOTH delivery shapes:
+    later turns. Must cover all delivery shapes:
+      * ``MEDIA:<path>`` tags in assistant messages,
       * ``MEDIA:<path>`` text tags in tool results, and
       * ``image_generate`` JSON-payload paths (``host_image`` / ``image`` /
         ``agent_visible_image``), which carry no MEDIA: tag.
@@ -1280,7 +1281,13 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     paths: set = set()
     tool_name_by_call_id: Dict[str, str] = {}
     for msg in agent_history:
+        if not isinstance(msg, dict):
+            continue
         if msg.get("role") == "assistant":
+            content = msg.get("content")
+            if isinstance(content, str) and "MEDIA:" in content:
+                media, _ = BasePlatformAdapter.extract_media(content)
+                paths.update(path for path, _is_voice in media)
             for call in msg.get("tool_calls") or []:
                 cid = call.get("id") or call.get("call_id")
                 fn = call.get("function") or {}
@@ -1288,6 +1295,8 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                 if cid and name:
                     tool_name_by_call_id[str(cid)] = name
     for msg in agent_history:
+        if not isinstance(msg, dict):
+            continue
         if msg.get("role") not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
@@ -1310,6 +1319,44 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
                         paths.add(jp)
                         break
     return paths
+
+
+async def _deliver_already_sent_turn_media(
+    runner,
+    *,
+    agent_result,
+    agent_messages,
+    response,
+    event,
+):
+    """Deliver current-turn media after streamed text was already sent."""
+    if (
+        not agent_result.get("already_sent")
+        or agent_result.get("failed")
+        or not response
+    ):
+        return False
+
+    adapter = runner._adapter_for_source(event.source)
+    if not adapter:
+        return False
+
+    from gateway.turn_media import collect_turn_media_text
+
+    historical_media_paths = agent_result.get("history_media_paths")
+    media_text = collect_turn_media_text(
+        agent_messages,
+        response,
+        history_offset=agent_result.get("history_offset"),
+        historical_media_paths=historical_media_paths,
+    )
+    await runner._deliver_media_from_response(
+        media_text,
+        event,
+        adapter,
+        exclude_media_paths=historical_media_paths,
+    )
+    return True
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -13546,12 +13593,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
-                    _media_adapter = self._adapter_for_source(source)
-                    if _media_adapter:
-                        await self._deliver_media_from_response(
-                            response, event, _media_adapter,
-                        )
+                await _deliver_already_sent_turn_media(
+                    self,
+                    agent_result=agent_result,
+                    agent_messages=agent_messages,
+                    response=response,
+                    event=event,
+                )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -14618,6 +14666,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        exclude_media_paths=None,
     ) -> None:
         """Extract MEDIA: tags and local file paths from a response and deliver them.
 
@@ -14636,8 +14685,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             force_document_attachments = "[[as_document]]" in response
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.turn_media import normalized_media_path, normalized_media_paths
 
+            excluded = normalized_media_paths(exclude_media_paths) or frozenset()
             media_files, cleaned = adapter.extract_media(response)
+            if excluded:
+                media_files = [
+                    (path, is_voice)
+                    for path, is_voice in media_files
+                    if normalized_media_path(path) not in excluded
+                ]
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Chain the cleaned text through each extractor (extract_media →
             # extract_images → extract_local_files) so MEDIA: tags and image URLs
@@ -14648,8 +14705,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # glued on. This matches the chain order in gateway/platforms/base.py.
             _, cleaned = adapter.extract_images(cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
+            if excluded:
+                local_files = [
+                    path
+                    for path in local_files
+                    if normalized_media_path(path) not in excluded
+                ]
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
+            # Compaction copies retained tail messages and rebases the transcript
+            # offset to zero. The pre-turn snapshot is stable across that rewrite,
+            # so excluding its paths here prevents copied old MEDIA tags from
+            # becoming attachments while current-turn paths still pass through.
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -21134,6 +21201,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
+                    "history_media_paths": sorted(_history_media_paths),
                     "compacted_in_place": _compacted_in_place,
                     "session_id": effective_session_id,
                     "last_prompt_tokens": _last_prompt_toks,
@@ -21251,6 +21319,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
+                "history_media_paths": sorted(_history_media_paths),
                 "compacted_in_place": _compacted_in_place,
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,

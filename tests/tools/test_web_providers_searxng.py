@@ -230,6 +230,229 @@ class TestIsBackendAvailable:
 
 
 # ---------------------------------------------------------------------------
+# Config contract: web.searxng makes searxng selectable without env vars
+# ---------------------------------------------------------------------------
+
+
+class TestIsBackendAvailableConfigContract:
+    """_is_backend_available must detect searxng via web.searxng config too."""
+
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
+    def test_config_only_url_makes_searxng_available(self, monkeypatch):
+        """web.searxng.url in config.yaml alone (no SEARXNG_URL env) works."""
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        # Mock load_config so _searxng_config() finds the URL
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(
+            searxng_provider,
+            "_searxng_config",
+            lambda: {"url": "http://config-only:8080"},
+        )
+        from tools.web_tools import _is_backend_available
+
+        assert _is_backend_available("searxng") is True
+
+    def test_config_only_url_with_registered_provider_false(self, monkeypatch):
+        """When web.searxng.url is empty, _is_backend_available returns False."""
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(
+            searxng_provider,
+            "_searxng_config",
+            lambda: {"url": ""},
+        )
+        from tools.web_tools import _is_backend_available
+
+        assert _is_backend_available("searxng") is False
+
+
+# ---------------------------------------------------------------------------
+# Config contract: web.searxng.method/params/headers in search()
+# ---------------------------------------------------------------------------
+
+
+class TestSearXNGConfigSearchBehavior:
+    """Verify that config knobs (method, params, headers) affect search()."""
+
+    _SAMPLE_RESPONSE = {
+        "results": [
+            {"title": "A", "url": "https://a.example.com", "content": "Desc", "score": 0.5},
+        ]
+    }
+
+    def _make_mock_response(self, json_data, status_code=200):
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = json_data
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    def test_post_method_sends_data_not_params(self, monkeypatch):
+        """POST sends params as data=, not params=."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(
+            searxng_provider,
+            "_searxng_config",
+            lambda: {"url": "http://localhost:8080", "method": "post"},
+        )
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
+
+        calls = []
+
+        def capture_post(url, **kwargs):
+            calls.append((url, kwargs))
+            return mock_resp
+
+        import httpx
+
+        with patch.object(httpx, "post", side_effect=capture_post):
+            SearXNGWebSearchProvider().search("hello", limit=5)
+
+        assert len(calls) == 1
+        url, kwargs = calls[0]
+        assert url == "http://localhost:8080/search"
+        # POST sends q/format/pageno as data=
+        assert kwargs.get("data") == {"q": "hello", "format": "json", "pageno": 1}
+        # params= should NOT be set when method=post
+        assert "params" not in kwargs
+
+    def test_extra_params_merged(self, monkeypatch):
+        """Extra params from web.searxng.params are merged with core params."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(
+            searxng_provider,
+            "_searxng_config",
+            lambda: {"params": {"categories": "general", "language": "en-US", "safesearch": 0}},
+        )
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
+
+        captured = {}
+
+        def capture_get(url, **kwargs):
+            captured.update(kwargs)
+            return mock_resp
+
+        import httpx
+
+        with patch.object(httpx, "get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("query", limit=5)
+
+        params = captured.get("params", {})
+        assert params["q"] == "query"
+        assert params["format"] == "json"
+        assert params["categories"] == "general"
+        assert params["language"] == "en-US"
+        assert params["safesearch"] == 0
+
+    def test_extra_params_cannot_override_core_params(self, monkeypatch):
+        """User params cannot override q/format/pageno."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(
+            searxng_provider,
+            "_searxng_config",
+            lambda: {"params": {"q": "evil-injection", "format": "xml"}},
+        )
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
+
+        captured = {}
+
+        def capture_get(url, **kwargs):
+            captured.update(kwargs)
+            return mock_resp
+
+        import httpx
+
+        with patch.object(httpx, "get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("real-query", limit=5)
+
+        params = captured.get("params", {})
+        assert params["q"] == "real-query"
+        assert params["format"] == "json"
+
+    def test_extra_headers_merged(self, monkeypatch):
+        """Extra headers from web.searxng.headers are merged with defaults."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(
+            searxng_provider,
+            "_searxng_config",
+            lambda: {"headers": {"Accept-Language": "en-US,en;q=0.9", "X-Custom": "test"}},
+        )
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
+
+        captured = {}
+
+        def capture_get(url, **kwargs):
+            captured.update(kwargs)
+            return mock_resp
+
+        import httpx
+
+        with patch.object(httpx, "get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("query", limit=5)
+
+        headers = captured.get("headers", {})
+        assert headers["Accept"] == "application/json"
+        assert headers["Accept-Language"] == "en-US,en;q=0.9"
+        assert headers["X-Custom"] == "test"
+
+    def test_backwards_compat_no_config_same_get_behavior(self, monkeypatch):
+        """Without web.searxng config, method defaults to GET with no extra params/headers."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        import plugins.web.searxng.provider as searxng_provider
+
+        monkeypatch.setattr(searxng_provider, "_searxng_config", lambda: {})
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
+
+        captured = {}
+
+        def capture_get(url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return mock_resp
+
+        import httpx
+
+        with patch.object(httpx, "get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert captured["url"] == "http://localhost:8080/search"
+        params = captured.get("params", {})
+        assert params == {"q": "query", "format": "json", "pageno": 1}
+        headers = captured.get("headers", {})
+        assert headers == {"Accept": "application/json"}
+
+
+# ---------------------------------------------------------------------------
 # Integration: _get_backend() accepts "searxng" as configured value
 # ---------------------------------------------------------------------------
 

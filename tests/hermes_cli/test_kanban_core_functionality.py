@@ -3725,7 +3725,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
         # PR salvage (#32857 commit 7): the dispatcher now reaps zombies at
         # the top of each tick via ``asyncio.to_thread(_kb.reap_worker_zombies)``
         # BEFORE the per-board tick work. Each tick now issues 3 ``to_thread``
-        # calls (reaper + ``_tick_once`` + ``_ready_nonempty``) instead of 2,
+        # calls (reaper + ``_tick_once`` + ``_boards_with_spawnable``) instead of 2,
         # so this counter must reach 6 to allow the same 2 dispatch ticks the
         # pre-reaper test expected at 4. Connect counts in the assertion below
         # are unchanged.
@@ -3852,6 +3852,375 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 2
     assert any("database fingerprint unchanged" in msg for msg in messages)
     assert calls["tick"] == 3
+
+
+def test_gateway_multi_board_deferral_does_not_mask_stuck(monkeypatch, caplog):
+    """Board A's deferral does NOT mask board B's stuck state (key regression test).
+
+    With two boards:
+    - Board "alpha": has spawnable ready work, but dispatch returns
+      skipped_global_capped=True (intentionally deferred).
+    - Board "beta": has spawnable ready work, dispatch returns empty spawned=[]
+      with NO deferral flags (genuinely stuck).
+
+    After HEALTH_WINDOW ticks, the stuck warning should fire — proving
+    board A's deferral does NOT hide board B's problem.
+    """
+    from unittest.mock import MagicMock
+    import asyncio
+    import logging
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli.kanban_db import DispatchResult
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 0.1,
+            }
+        },
+    )
+
+    # Two boards
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [
+            {"slug": "alpha"},
+            {"slug": "beta"},
+        ],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+
+    # Track connection -> board mapping
+    conn_to_board = {}
+
+    def _connect(board=None):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = None
+        conn_to_board[conn] = board or "default"
+        return conn
+
+    spawnable_boards = {"alpha", "beta"}
+
+    def _has_spawnable_ready(conn):
+        board = conn_to_board.get(conn, "default")
+        return board in spawnable_boards
+
+    def _has_spawnable_review(conn):
+        return False
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr(_kb, "has_spawnable_ready", _has_spawnable_ready)
+    monkeypatch.setattr(_kb, "has_spawnable_review", _has_spawnable_review)
+    monkeypatch.setattr(_kb, "reap_worker_zombies", lambda: [])
+
+    # Dispatch results: alpha deferred, beta stuck
+    def _dispatch_once(conn, **kwargs):
+        return (
+            DispatchResult(skipped_global_capped=True)
+            if conn_to_board.get(conn) == "alpha"
+            else DispatchResult()
+        )
+
+    monkeypatch.setattr(_kb, "dispatch_once", _dispatch_once)
+
+    # Mock to_thread to count ticks
+    to_thread_calls = []
+    tick_once_calls = 0
+
+    async def _to_thread(fn, *args, **kwargs):
+        nonlocal tick_once_calls
+        result = fn(*args, **kwargs)
+        fn_name = getattr(fn, "__name__", str(fn))
+        to_thread_calls.append(fn_name)
+        if fn_name == "_tick_once":
+            tick_once_calls += 1
+            if tick_once_calls >= 8:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    stuck_warnings = [msg for msg in messages if "kanban dispatcher stuck" in msg]
+    assert len(stuck_warnings) >= 1, f"Expected stuck warning, got {messages}"
+
+
+def test_gateway_single_board_deferral_resets_bad_ticks(monkeypatch, caplog):
+    """Single board with skipped_global_capped=True: NO stuck warning.
+
+    When a board has spawnable work but is intentionally deferred (capped),
+    the bad_ticks counter should reset each tick, not accumulate.
+    """
+    from unittest.mock import MagicMock
+    import asyncio
+    import logging
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli.kanban_db import DispatchResult
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 0.1,
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": "default"}],
+    )
+    monkeypatch.setattr(_kb, "read_board_metadata", lambda slug: {"slug": slug})
+
+    def _connect(board=None):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = None
+        return conn
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr(_kb, "has_spawnable_ready", lambda conn: True)
+    monkeypatch.setattr(_kb, "has_spawnable_review", lambda conn: False)
+    monkeypatch.setattr(_kb, "reap_worker_zombies", lambda: [])
+
+    # Always deferred
+    monkeypatch.setattr(
+        _kb,
+        "dispatch_once",
+        lambda conn, **kwargs: DispatchResult(skipped_global_capped=True),
+    )
+
+    to_thread_calls = []
+    tick_once_calls = 0
+
+    async def _to_thread(fn, *args, **kwargs):
+        nonlocal tick_once_calls
+        result = fn(*args, **kwargs)
+        fn_name = getattr(fn, "__name__", str(fn))
+        to_thread_calls.append(fn_name)
+        if fn_name == "_tick_once":
+            tick_once_calls += 1
+            if tick_once_calls >= 8:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    stuck_warnings = [msg for msg in messages if "kanban dispatcher stuck" in msg]
+    assert len(stuck_warnings) == 0, f"Expected NO stuck warning with deferral, got {stuck_warnings}"
+
+
+def test_gateway_single_board_stuck_fires_warning(monkeypatch, caplog):
+    """Single board with spawnable work, no deferral, no spawn: warning fires.
+
+    Baseline test: when a board genuinely has spawnable work but nothing
+    is spawned and there's no deferral flag, the stuck warning should fire
+    after HEALTH_WINDOW consecutive ticks.
+    """
+    from unittest.mock import MagicMock
+    import asyncio
+    import logging
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli.kanban_db import DispatchResult
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 0.1,
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": "default"}],
+    )
+    monkeypatch.setattr(_kb, "read_board_metadata", lambda slug: {"slug": slug})
+
+    def _connect(board=None):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = None
+        return conn
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr(_kb, "has_spawnable_ready", lambda conn: True)
+    monkeypatch.setattr(_kb, "has_spawnable_review", lambda conn: False)
+    monkeypatch.setattr(_kb, "reap_worker_zombies", lambda: [])
+
+    # Always stuck: no spawn, no deferral flags
+    monkeypatch.setattr(_kb, "dispatch_once", lambda conn, **kwargs: DispatchResult())
+
+    to_thread_calls = []
+    tick_once_calls = 0
+
+    async def _to_thread(fn, *args, **kwargs):
+        nonlocal tick_once_calls
+        result = fn(*args, **kwargs)
+        fn_name = getattr(fn, "__name__", str(fn))
+        to_thread_calls.append(fn_name)
+        if fn_name == "_tick_once":
+            tick_once_calls += 1
+            if tick_once_calls >= 8:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    stuck_warnings = [msg for msg in messages if "kanban dispatcher stuck" in msg]
+    assert len(stuck_warnings) >= 1, f"Expected stuck warning, got {messages}"
+
+
+def test_daemon_health_predicate_logic():
+    """Test the daemon path health predicate directly.
+
+    The daemon path (hermes_cli/kanban.py _on_tick closure) uses this logic:
+        intentionally_deferred = (
+            res.skipped_global_capped
+            or bool(res.skipped_per_profile_capped)
+            or bool(res.skipped_locked)
+            or bool(res.respawn_guarded)
+        )
+        if ready_pending and not spawned_any and not intentionally_deferred:
+            bad_ticks += 1
+
+    This test verifies the predicate behavior by constructing real
+    DispatchResult objects and checking the condition.
+    """
+    from hermes_cli.kanban_db import DispatchResult
+
+    # Case 1: Deferral flags set → should NOT increment bad_ticks
+    res_deferred = DispatchResult(skipped_global_capped=True)
+    ready_pending = True
+    spawned_any = False
+    intentionally_deferred = (
+        res_deferred.skipped_global_capped
+        or bool(res_deferred.skipped_per_profile_capped)
+        or bool(res_deferred.skipped_locked)
+        or bool(res_deferred.respawn_guarded)
+    )
+    assert intentionally_deferred is True
+    assert not (ready_pending and not spawned_any and not intentionally_deferred)
+
+    # Case 2: No deferral but ready work → SHOULD increment bad_ticks
+    res_stuck = DispatchResult()  # Empty, no flags
+    intentionally_deferred = (
+        res_stuck.skipped_global_capped
+        or bool(res_stuck.skipped_per_profile_capped)
+        or bool(res_stuck.skipped_locked)
+        or bool(res_stuck.respawn_guarded)
+    )
+    assert intentionally_deferred is False
+    assert ready_pending and not spawned_any and not intentionally_deferred
+
+    # Case 3: Spawn → should NOT increment bad_ticks
+    res_spawned = DispatchResult(spawned=[("t1", "alice", "/tmp")])
+    spawned_any = True
+    assert not (ready_pending and not spawned_any)
+
+    # Case 4: skipped_locked flag
+    res_locked = DispatchResult(skipped_locked=True)
+    intentionally_deferred = (
+        res_locked.skipped_global_capped
+        or bool(res_locked.skipped_per_profile_capped)
+        or bool(res_locked.skipped_locked)
+        or bool(res_locked.respawn_guarded)
+    )
+    assert intentionally_deferred is True
+
+    # Case 5: skipped_per_profile_capped
+    res_profile_capped = DispatchResult(
+        skipped_per_profile_capped=[("t1", "alice", 5)]
+    )
+    intentionally_deferred = (
+        res_profile_capped.skipped_global_capped
+        or bool(res_profile_capped.skipped_per_profile_capped)
+        or bool(res_profile_capped.skipped_locked)
+        or bool(res_profile_capped.respawn_guarded)
+    )
+    assert intentionally_deferred is True
+
+    # Case 6: respawn_guarded
+    res_guarded = DispatchResult(respawn_guarded=[("t1", "recent_success")])
+    intentionally_deferred = (
+        res_guarded.skipped_global_capped
+        or bool(res_guarded.skipped_per_profile_capped)
+        or bool(res_guarded.skipped_locked)
+        or bool(res_guarded.respawn_guarded)
+    )
+    assert intentionally_deferred is True
 
 
 # ---------------------------------------------------------------------------

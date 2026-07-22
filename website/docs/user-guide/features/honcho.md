@@ -168,8 +168,11 @@ The setup wizard detects whether a gateway platform is connected and skips this 
 | **just me** | `pinUserPeer: true` — every non-agent gateway user collapses to your peer. Pin overrides all aliases, so pick this only when no user-side identity needs its own peer. If separate agents reach the gateway and each needs a distinct peer, do **not** pin — leave `pinUserPeer: false` and map them via `userPeerAliases` (the `[e]` editor) instead |
 | **me + other people** (pooled) | `pinUserPeer: false` + `userPeerAliases` mapping your runtime IDs to `peerName` — you stay on your shared history, others get their own peers |
 | **only other people** | `pinUserPeer: false`, optional `runtimePeerPrefix` — each user gets their own peer |
+| **a set of named agents** | `pinUserPeer: false` + `userPeerAliases` mapping each agent's runtime ID to its own peer — for deployments where every agent carries its own Honcho peer identity. Unmapped runtime IDs still get their own peer |
 
 Pick `[e]` at the prompt to set the three keys directly instead.
+
+The agent path uses the same `userPeerAliases` mechanism as the human paths — the resolver is identity-agnostic, so an agent peer is just another alias target. If the host exposes an agent roster it prompts one runtime ID per known agent; otherwise it accepts `runtime_id=agent_peer` pairs.
 
 The resolver tries the keys top-down, first match wins: `pinUserPeer` → `userPeerAliases[id]` → `runtimePeerPrefix + id` → raw runtime ID → `peerName` → session-key fallback.
 

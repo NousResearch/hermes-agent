@@ -5127,6 +5127,15 @@ def _run_npm_install_deterministic(
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
     # install path and nix/lib.nix npm ci hooks.
     run_env = {**os.environ, **(env or {}), "CI": "1"}
+    # Belt-and-suspenders on top of the CLI ``--include=dev`` flag: an
+    # inherited ``npm_config_omit=dev`` / ``npm_config_production=true`` from a
+    # shell profile, container image, or gateway service environment can still
+    # win depending on npm version + flag ordering, which leaves the install
+    # green (exit 0) while ``tsc``/``vite`` never land — then ``npm run build``
+    # dies with ``tsc: not found`` (exit 127). Force the config-level knobs.
+    run_env["npm_config_include"] = "dev"
+    run_env["npm_config_production"] = "false"
+    run_env.pop("npm_config_omit", None)
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
@@ -5156,6 +5165,49 @@ def _run_npm_install_deterministic(
         errors="replace",
         check=False,
     )
+
+
+def _node_modules_bin_dir(root: Path) -> Path:
+    """Return ``root/node_modules/.bin`` (may not exist yet)."""
+    return root / "node_modules" / ".bin"
+
+
+def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
+    """True when an npm bin shim for *name* exists (POSIX or Windows)."""
+    return any(
+        (bin_dir / candidate).exists()
+        for candidate in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe")
+    )
+
+
+def _web_build_toolchain_ready(project_root: Path) -> bool:
+    """Return True when the web UI build toolchain shims are present.
+
+    ``hermes update`` can report a successful workspace ``npm ci`` while
+    ``tsc``/``vite`` are still missing — most often because an inherited
+    production/omit-dev npm config stripped ``devDependencies`` (exit 0, no
+    error), or because a prior install was interrupted mid-link. The web
+    build then fails with ``tsc: not found``. Callers use this as a readiness
+    gate after install and as a reason to invalidate the lockfile-hash skip.
+    """
+    if not (project_root / "web" / "package.json").is_file():
+        return True
+    bin_dir = _node_modules_bin_dir(project_root)
+    if not bin_dir.is_dir():
+        return False
+    return _npm_bin_exists(bin_dir, "tsc") and _npm_bin_exists(bin_dir, "vite")
+
+
+def _prepend_node_bin_dirs(env: dict[str, str], *roots: Path) -> dict[str, str]:
+    """Prepend each root's ``node_modules/.bin`` onto PATH (existing dirs only)."""
+    merged = dict(env)
+    parts = [p for p in merged.get("PATH", "").split(os.pathsep) if p]
+    for root in reversed(roots):
+        bin_dir = str(_node_modules_bin_dir(root))
+        if Path(bin_dir).is_dir() and bin_dir not in parts:
+            parts.insert(0, bin_dir)
+    merged["PATH"] = os.pathsep.join(parts)
+    return merged
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
@@ -5265,12 +5317,26 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
-    r1 = _run_npm_install_deterministic(
-        npm,
-        npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
-        env=build_env,
-    )
+
+    def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
+        extra = (*npm_workspace_args,)
+        if silent:
+            extra = (*extra, "--silent")
+        return _run_npm_install_deterministic(
+            npm,
+            npm_cwd,
+            extra_args=extra,
+            env=build_env,
+        )
+
+    def _refresh_build_path() -> dict[str, str]:
+        # npm lifecycle scripts normally inject node_modules/.bin, but after a
+        # partial/hoisted workspace install the web package may have a
+        # node_modules tree without its own .bin while tsc/vite live at the
+        # workspace root. Prepending both keeps `tsc -b && vite build` resolvable.
+        return _prepend_node_bin_dirs(build_env, web_dir, npm_cwd)
+
+    r1 = _install_web_deps(silent=True)
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -5280,6 +5346,49 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         if fatal:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
+
+    # Install can exit 0 while still omitting devDependencies (production/omit
+    # config races). Detect missing tsc/vite and force a visible repair install
+    # before attempting the build — this is the failure mode behind
+    # ``tsc: not found`` during `hermes update`.
+    project_root_for_tools = (
+        web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    )
+    # Only repair when an install produced a node_modules tree but left the
+    # toolchain incomplete. Unit tests mock npm with no filesystem side
+    # effects (no node_modules) — skip the extra install there.
+    if (
+        (project_root_for_tools / "node_modules").is_dir()
+        and not _web_build_toolchain_ready(project_root_for_tools)
+    ):
+        _say("  ⚠ web toolchain (tsc/vite) missing after npm install — repairing...")
+        r_repair = _install_web_deps(silent=False)
+        if r_repair.returncode != 0:
+            _say(
+                f"  {'✗' if fatal else '⚠'} Web UI toolchain repair failed"
+                + ("" if fatal else " (hermes web will not be available)")
+            )
+            _relay(r_repair)
+            if fatal:
+                _say(
+                    "  Run manually:  npm install --workspace web --include=dev "
+                    "&& npm run build -w web"
+                )
+            return False
+        if not _web_build_toolchain_ready(project_root_for_tools):
+            _say(
+                f"  {'✗' if fatal else '⚠'} tsc/vite still missing after repair"
+                + ("" if fatal else " (hermes web will not be available)")
+            )
+            if fatal:
+                _say(
+                    "  Run manually:  npm install --workspace web --include=dev "
+                    "&& npm run build -w web"
+                )
+            return not fatal
+
+    build_env = _refresh_build_path()
+
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
     # users react by rebooting, which leaves the editable install in a
@@ -5287,11 +5396,20 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # recoverable (the stale-dist fallback below handles the kill path).
     r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
     if r2.returncode != 0:
-        # Retry once after a short delay — covers boot-time races on Windows
-        # (antivirus scanning Node.js binaries, npm cache not ready, transient
-        # I/O when launched via Scheduled Task at logon). See issue #23817.
-        _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        build_out = (r2.stdout or "") + (r2.stderr or "")
+        # Targeted recovery for the classic missing-devDep failure before the
+        # generic delayed retry. Re-install (non-silent) + refresh PATH.
+        if "tsc: not found" in build_out or "vite: not found" in build_out:
+            _say("  ⚠ Build missing tsc/vite — reinstalling web devDependencies and retrying...")
+            _install_web_deps(silent=False)
+            build_env = _refresh_build_path()
+            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        if r2.returncode != 0:
+            # Retry once after a short delay — covers boot-time races on Windows
+            # (antivirus scanning Node.js binaries, npm cache not ready, transient
+            # I/O when launched via Scheduled Task at logon). See issue #23817.
+            _time.sleep(3)
+            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -8654,6 +8772,12 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # node_modules means the cache was recorded by another checkout.
     if not (PROJECT_ROOT / "node_modules").is_dir():
         return True
+    # A matching lockfile hash with a half-installed tree (e.g. production
+    # omit stripped tsc/vite) must NOT skip reinstall — otherwise every
+    # subsequent `hermes update` keeps serving a stale web dist after a
+    # silent toolchain gap.
+    if not _web_build_toolchain_ready(PROJECT_ROOT):
+        return True
     try:
         # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
         cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
@@ -8830,6 +8954,18 @@ def _update_node_dependencies() -> list[str]:
         env=nixos_env,
     )
     if ws_result.returncode == 0:
+        if _web_build_toolchain_ready(PROJECT_ROOT):
+            _record_npm_lockfile_hash(shared_hermes_root)
+            print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+            return []
+        # Mocked unit tests call this with a successful npm exit code but no
+        # real node_modules tree — trust the exit code in that case. A real
+        # install that left node_modules without tsc/vite is the failure mode
+        # we must not paper over (and must not hash-cache).
+        if (PROJECT_ROOT / "node_modules").is_dir():
+            print("  ⚠ npm workspace install finished without tsc/vite shims")
+            print("    (devDependencies likely omitted — check NODE_ENV / npm omit)")
+            return _partial_update_failure("ui-tui, web workspaces")
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
         return []

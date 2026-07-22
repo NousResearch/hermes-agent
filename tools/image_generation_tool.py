@@ -943,9 +943,9 @@ def image_generate_tool(
             )
             endpoint = edit_endpoint
             logger.info(
-                "Editing image with %s (%s) — %d source image(s), prompt: %s",
+                "Editing image with %s (%s) — %d source image(s), prompt_chars=%d",
                 meta.get("display", model_id), endpoint, len(clamped_sources),
-                prompt[:80],
+                len(prompt),
             )
         else:
             arguments = _build_fal_payload(
@@ -953,8 +953,8 @@ def image_generate_tool(
             )
             endpoint = model_id
             logger.info(
-                "Generating image with %s (%s) — prompt: %s",
-                meta.get("display", model_id), model_id, prompt[:80],
+                "Generating image with %s (%s) — prompt_chars=%d",
+                meta.get("display", model_id), model_id, len(prompt),
             )
 
         handler = _submit_fal_request(endpoint, arguments=arguments)

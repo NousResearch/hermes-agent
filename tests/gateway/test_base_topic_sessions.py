@@ -334,6 +334,39 @@ class TestTelegramAutoTtsCaptionDelivery:
         ]
 
     @pytest.mark.asyncio
+    async def test_long_auto_tts_passes_full_cleaned_reply_to_chunker(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(
+            return_value=SendResult(success=True, message_id="tts-1")
+        )
+        long_reply = "A" * 2500 + " **middle** " + "B" * 2500
+        expected_tts_text = "A" * 2500 + " middle " + "B" * 2500
+        adapter.set_message_handler(
+            lambda _event: asyncio.sleep(0, result=long_reply)
+        )
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+        received_text = []
+
+        def fake_tts(*, text, output_path=None):
+            received_text.append(text)
+            return json.dumps({"file_path": str(tts_path)})
+
+        with patch(
+            "tools.tts_tool.check_tts_requirements", return_value=True
+        ), patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
+            await adapter._process_message_background(
+                event, build_session_key(event.source)
+            )
+
+        assert received_text == [expected_tts_text]
+        assert len(received_text[0]) > 4000
+
+    @pytest.mark.asyncio
     async def test_telegram_auto_tts_send_failure_keeps_followup_text(self, tmp_path):
         adapter = DummyTelegramAdapter()
         adapter._keep_typing = self._hold_typing()
@@ -361,3 +394,42 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_multi_file_auto_tts_sends_all_clips_and_records_delivery(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(
+            side_effect=[
+                SendResult(success=True, message_id="tts-1"),
+                SendResult(success=True, message_id="tts-2"),
+            ]
+        )
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="Short reply"))
+
+        first = tmp_path / "reply.part01.ogg"
+        second = tmp_path / "reply.part02.ogg"
+        first.write_text("audio one", encoding="utf-8")
+        second.write_text("audio two", encoding="utf-8")
+        event = self._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({
+                "file_path": str(first),
+                "file_paths": [str(first), str(second)],
+            }),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.play_tts.await_count == 2
+        assert [
+            call.kwargs["caption"] for call in adapter.play_tts.await_args_list
+        ] == ["Short reply", None]
+        assert adapter.sent == []
+        assert adapter.processing_hooks[-1] == (
+            "complete", "voice-1", ProcessingOutcome.SUCCESS,
+        )
+        assert not first.exists()
+        assert not second.exists()

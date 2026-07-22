@@ -3556,9 +3556,10 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare text for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Default strips markdown formatting. Provider-safe chunking and
+        platform delivery limits are enforced by the TTS tool.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        return re.sub(r'[*_`#\[\]()]', '', text).strip()
 
     async def play_tts(
         self,
@@ -5185,7 +5186,7 @@ class BasePlatformAdapter(ABC):
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
-                _tts_path = None
+                _tts_paths: List[str] = []
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -5201,17 +5202,24 @@ class BasePlatformAdapter(ABC):
                                 text_to_speech_tool, text=speech_text
                             )
                             tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            raw_tts_paths = tts_data.get("file_paths") or [
+                                tts_data.get("file_path")
+                            ]
+                            _tts_paths = [
+                                str(path) for path in raw_tts_paths
+                                if path and Path(path).exists()
+                            ]
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
-                if _tts_path and Path(_tts_path).exists():
+                for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         telegram_tts_caption = None
                         if (
-                            self.platform == Platform.TELEGRAM
+                            _tts_index == 0
+                            and self.platform == Platform.TELEGRAM
                             and text_content
                             and text_content[:1024] == text_content
                         ):
@@ -5222,8 +5230,13 @@ class BasePlatformAdapter(ABC):
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
                         )
+                        _record_delivery(tts_result)
                         _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
+                            _tts_caption_delivered
+                            or (
+                                telegram_tts_caption
+                                and getattr(tts_result, "success", False)
+                            )
                         )
                     finally:
                         try:

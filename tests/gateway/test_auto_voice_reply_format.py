@@ -71,6 +71,41 @@ class TestAutoVoiceReplyFormat:
         adapter.send_voice.assert_awaited_once()
         assert adapter.send_voice.await_args.kwargs["audio_path"].endswith(".mp3")
 
+    @pytest.mark.asyncio
+    async def test_multi_file_fallback_sends_every_audio_file_in_order(self):
+        runner = _make_runner()
+        adapter = _make_adapter(Platform.TELEGRAM)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        event = _make_event(Platform.TELEGRAM)
+
+        def fake_tts(*, text, output_path):
+            first = str(Path(output_path).with_name("reply.part01.ogg"))
+            second = str(Path(output_path).with_name("reply.part02.ogg"))
+            for path in (first, second):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(b"valid audio")
+            return json.dumps({
+                "success": True,
+                "file_path": first,
+                "file_paths": [first, second],
+                "provider": "gemini",
+                "voice_compatible": True,
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
+            await runner._send_voice_reply(event, "A" * 5000)
+
+        assert adapter.send_voice.await_count == 2
+        sent_paths = [
+            call.kwargs["audio_path"]
+            for call in adapter.send_voice.await_args_list
+        ]
+        assert [Path(path).name for path in sent_paths] == [
+            "reply.part01.ogg", "reply.part02.ogg",
+        ]
+        assert all(call.kwargs["metadata"]["notify"] for call in adapter.send_voice.await_args_list)
+        assert all(not Path(path).exists() for path in sent_paths)
+
 
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):

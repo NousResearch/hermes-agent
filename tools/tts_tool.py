@@ -48,8 +48,9 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -291,7 +292,7 @@ def _resolve_max_text_length(
       6. ``FALLBACK_MAX_TEXT_LENGTH`` (4000)
 
     Non-positive or non-integer overrides fall through to the default so a
-    broken config can't accidentally disable truncation entirely.
+    broken config can't accidentally disable provider request chunking.
     """
     if not provider:
         return FALLBACK_MAX_TEXT_LENGTH
@@ -328,6 +329,161 @@ def _resolve_max_text_length(
             return DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH
 
     return FALLBACK_MAX_TEXT_LENGTH
+
+
+@dataclass(frozen=True)
+class AudioDeliveryProfile:
+    """Destination-platform constraints for generated TTS audio."""
+
+    platform: str
+    max_file_bytes: int
+    safety_ratio: float = 0.85
+
+    @property
+    def target_file_bytes(self) -> int:
+        """Conservative packing target below the platform hard limit."""
+        return max(1, int(self.max_file_bytes * self.safety_ratio))
+
+
+_PLATFORM_AUDIO_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "discord": {
+        "max_file_bytes": 10 * 1024 * 1024,
+        "safety_ratio": 0.85,
+    },
+    "telegram": {
+        "max_file_bytes": 50 * 1024 * 1024,
+        "safety_ratio": 0.85,
+    },
+    "default": {
+        "max_file_bytes": 10 * 1024 * 1024,
+        "safety_ratio": 0.85,
+    },
+}
+
+
+def _resolve_audio_delivery_profile(
+    platform: Optional[str],
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> AudioDeliveryProfile:
+    """Resolve upload constraints, including optional per-platform overrides."""
+    key = (platform or "default").lower().strip() or "default"
+    defaults = dict(
+        _PLATFORM_AUDIO_DEFAULTS.get(key) or _PLATFORM_AUDIO_DEFAULTS["default"]
+    )
+    cfg = tts_config or {}
+    profiles = cfg.get("delivery_profiles")
+    overrides = profiles.get(key, {}) if isinstance(profiles, dict) else {}
+    if isinstance(overrides, dict):
+        defaults.update({k: v for k, v in overrides.items() if v is not None})
+
+    max_file_bytes = defaults.get("max_file_bytes")
+    if (
+        isinstance(max_file_bytes, bool)
+        or not isinstance(max_file_bytes, int)
+        or max_file_bytes <= 0
+    ):
+        max_file_bytes = _PLATFORM_AUDIO_DEFAULTS["default"]["max_file_bytes"]
+
+    safety_ratio = defaults.get("safety_ratio", 0.85)
+    if (
+        isinstance(safety_ratio, bool)
+        or not isinstance(safety_ratio, (int, float))
+        or not 0 < safety_ratio <= 1
+    ):
+        safety_ratio = 0.85
+
+    return AudioDeliveryProfile(
+        platform=key,
+        max_file_bytes=max_file_bytes,
+        safety_ratio=float(safety_ratio),
+    )
+
+
+def _split_oversized_sentence(sentence: str, max_chars: int) -> List[str]:
+    """Split one over-limit sentence on word boundaries, then hard boundaries."""
+    words = sentence.split()
+    chunks: List[str] = []
+    current = ""
+    for word in words:
+        if len(word) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(word[i:i + max_chars] for i in range(0, len(word), max_chars))
+            continue
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_text_for_tts(text: str, max_chars: int) -> List[str]:
+    """Split text under a provider cap without dropping normalized content."""
+    if max_chars <= 0:
+        max_chars = FALLBACK_MAX_TEXT_LENGTH
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?;:,])\s+", normalized)
+        if sentence.strip()
+    ]
+    expanded: List[str] = []
+    for sentence in sentences:
+        if len(sentence) <= max_chars:
+            expanded.append(sentence)
+        else:
+            expanded.extend(_split_oversized_sentence(sentence, max_chars))
+
+    chunks: List[str] = []
+    current = ""
+    for sentence in expanded:
+        candidate = f"{current} {sentence}".strip()
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _pack_audio_files_for_delivery(
+    audio_paths: List[str],
+    profile: AudioDeliveryProfile,
+) -> List[List[str]]:
+    """Group already-final-encoded chunks under the conservative size target."""
+    groups: List[List[str]] = []
+    current: List[str] = []
+    current_size = 0
+    current_suffix = ""
+    for path in audio_paths:
+        size = Path(path).stat().st_size
+        suffix = Path(path).suffix.lower()
+        if current and (
+            current_size + size > profile.target_file_bytes
+            or suffix != current_suffix
+        ):
+            groups.append(current)
+            current = []
+            current_size = 0
+            current_suffix = ""
+        current.append(path)
+        current_size += size
+        current_suffix = suffix
+    if current:
+        groups.append(current)
+    return groups
 
 
 # ===========================================================================
@@ -939,6 +1095,178 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     except Exception as e:
         logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
     return None
+
+
+def _concat_audio_files(
+    audio_paths: List[str],
+    output_path: str,
+    *,
+    voice_compatible: bool = False,
+) -> Optional[str]:
+    """Combine independently encoded chunks with ffmpeg.
+
+    Voice-compatible OGG/Opus is always decoded and re-encoded. A failed or
+    unavailable combine returns ``None`` so callers can preserve the original,
+    individually valid files. Structured audio containers are never byte-joined.
+    """
+    if not audio_paths:
+        raise ValueError("No audio chunks to combine")
+    if len(audio_paths) == 1:
+        source = audio_paths[0]
+        if os.path.abspath(source) != os.path.abspath(output_path):
+            shutil.copyfile(source, output_path)
+        return output_path
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    concat_path = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.concat.txt")
+    temp_output = destination.with_name(
+        f".{destination.stem}.{uuid.uuid4().hex}.combining{destination.suffix}"
+    )
+    try:
+        with concat_path.open("w", encoding="utf-8") as concat_file:
+            for path in audio_paths:
+                concat_file.write(f"file {shlex.quote(os.path.abspath(path))}\n")
+
+        command = [
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
+            "-vn",
+        ]
+        if voice_compatible:
+            command.extend([
+                "-c:a", "libopus", "-ac", "1", "-b:a", "64k", "-vbr", "off",
+            ])
+        command.append(str(temp_output))
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=120,
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+        )
+        if (
+            result.returncode == 0
+            and temp_output.exists()
+            and temp_output.stat().st_size > 0
+        ):
+            os.replace(temp_output, destination)
+            return str(destination)
+        logger.warning(
+            "ffmpeg audio combine failed: %s",
+            result.stderr.decode("utf-8", errors="ignore")[:500],
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("ffmpeg audio combine failed: %s", exc)
+    finally:
+        for path in (concat_path, temp_output):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return None
+
+
+def _build_audio_delivery_files(
+    audio_paths: List[str],
+    output_path: str,
+    profile: AudioDeliveryProfile,
+    *,
+    voice_compatible: bool = False,
+) -> Tuple[List[str], bool]:
+    """Pack final-encoded chunks and enforce the hard upload limit.
+
+    Packing uses the conservative target. Every combined artifact is then
+    checked at its actual post-encoding size; an over-limit group is split and
+    retried. If combining fails, the valid constituent files are returned
+    separately. A single final-encoded chunk above the hard limit fails closed
+    rather than returning an upload that the destination will reject.
+    """
+    if not audio_paths:
+        raise ValueError("No final-encoded TTS audio chunks")
+    for path in audio_paths:
+        size = Path(path).stat().st_size
+        if size > profile.max_file_bytes:
+            raise ValueError(
+                f"Final-encoded TTS chunk exceeds {profile.platform} delivery "
+                f"limit ({size} > {profile.max_file_bytes} bytes): {path}"
+            )
+
+    base = Path(output_path)
+    scratch_outputs: List[str] = []
+    combined_any = False
+    combine_index = 0
+
+    def emit(group: List[str]) -> List[str]:
+        nonlocal combined_any, combine_index
+        if len(group) == 1:
+            return list(group)
+
+        combine_index += 1
+        scratch = base.with_name(
+            f".{base.stem}.delivery{combine_index:03d}.{uuid.uuid4().hex}{base.suffix}"
+        )
+        combined = _concat_audio_files(
+            group, str(scratch), voice_compatible=voice_compatible,
+        )
+        if not combined:
+            return list(group)
+        scratch_outputs.append(combined)
+        combined_size = Path(combined).stat().st_size
+        if combined_size <= profile.max_file_bytes:
+            combined_any = True
+            return [combined]
+
+        try:
+            Path(combined).unlink()
+        except OSError:
+            pass
+        midpoint = max(1, len(group) // 2)
+        return emit(group[:midpoint]) + emit(group[midpoint:])
+
+    packed: List[str] = []
+    for group in _pack_audio_files_for_delivery(audio_paths, profile):
+        packed.extend(emit(group))
+
+    final_paths: List[str] = []
+    for index, source in enumerate(packed, start=1):
+        if len(packed) == 1:
+            destination = base
+        else:
+            source_suffix = Path(source).suffix or base.suffix
+            destination = base.with_name(
+                f"{base.stem}.part{index:02d}{source_suffix}"
+            )
+        if os.path.abspath(source) != os.path.abspath(destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+        if destination.stat().st_size > profile.max_file_bytes:
+            raise ValueError(
+                f"Final TTS deliverable exceeds {profile.platform} delivery limit: "
+                f"{destination}"
+            )
+        final_paths.append(str(destination))
+
+    for scratch in scratch_outputs:
+        if scratch not in final_paths:
+            try:
+                Path(scratch).unlink()
+            except OSError:
+                pass
+    return final_paths, combined_any
 
 
 # ===========================================================================
@@ -1832,11 +2160,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     )
     max_len = _resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
-        logger.warning(
-            "Gemini TTS composed prompt too long (%d chars), truncating to %d",
-            len(prompt_text), max_len,
+        raise ValueError(
+            "Gemini TTS composed prompt exceeds the provider request limit "
+            f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
+            "prompt or lower tts.gemini.max_text_length so long-form text is "
+            "split with enough prompt headroom."
         )
-        prompt_text = prompt_text[:max_len]
 
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
@@ -2281,31 +2610,25 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
-def text_to_speech_tool(
+def _text_to_speech_single(
     text: str,
     output_path: Optional[str] = None,
+    *,
+    tts_config_override: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """
-    Convert text to speech audio.
+    """Synthesize one provider-safe text chunk and return one final-encoded file.
 
-    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
-    The model sends text; the user configures voice and provider.
-
-    On messaging platforms, the returned MEDIA:<path> tag is intercepted
-    by the send pipeline and delivered as a native voice message.
-    In CLI mode, the file is saved to ~/voice-memos/.
-
-    Args:
-        text: The text to convert to speech.
-        output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
-
-    Returns:
-        str: JSON result with success, file_path, and optionally MEDIA tag.
+    The public :func:`text_to_speech_tool` wrapper owns long-form splitting,
+    delivery packing, and post-encoding size enforcement.
     """
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    tts_config = _load_tts_config()
+    tts_config = (
+        tts_config_override
+        if tts_config_override is not None
+        else _load_tts_config()
+    )
     provider = _get_provider(tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)
@@ -2602,6 +2925,163 @@ def text_to_speech_tool(
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
         return tool_error(error_msg, success=False)
+
+
+def text_to_speech_tool(
+    text: str,
+    output_path: Optional[str] = None,
+) -> str:
+    """Convert all input text to provider-safe, delivery-safe audio files.
+
+    Long text is split without truncation. Each provider request is encoded to
+    its final format before files are packed for the destination. Multi-chunk
+    voice output is re-encoded when combined; failed combines preserve separate
+    valid files, and no over-limit final artifact is returned.
+    """
+    if not text or not text.strip():
+        return tool_error("Text is required", success=False)
+
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    max_len = _resolve_max_text_length(provider, tts_config)
+    chunks = _split_text_for_tts(text, max_len)
+    if not chunks:
+        return tool_error("Text is required", success=False)
+    if len(chunks) > 1:
+        logger.info(
+            "TTS text for provider %s split into %d chunks (input=%d chars, cap=%d)",
+            provider,
+            len(chunks),
+            len(text),
+            max_len,
+        )
+
+    from gateway.session_context import get_session_env
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    want_opus = platform == "telegram"
+    delivery_profile = _resolve_audio_delivery_profile(platform, tts_config)
+
+    if output_path:
+        from tools.path_security import has_traversal_component
+        if has_traversal_component(output_path):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"output_path contains '..' traversal component: {output_path}. "
+                    "Use an absolute path or one relative to the current directory "
+                    "without '..'."
+                ),
+            }, ensure_ascii=False)
+        base_path = Path(output_path).expanduser()
+        if command_provider_config is not None:
+            base_path = _configured_command_tts_output_path(
+                base_path, command_provider_config,
+            )
+    else:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if command_provider_config is not None:
+            fmt = _get_command_tts_output_format(command_provider_config)
+            base_path = out_dir / f"tts_{timestamp}.{fmt}"
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+            base_path = out_dir / f"tts_{timestamp}.ogg"
+        else:
+            base_path = out_dir / f"tts_{timestamp}.mp3"
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+
+    generated_artifacts: set[str] = set()
+    final_paths: List[str] = []
+    chunk_results: List[Dict[str, Any]] = []
+    try:
+        encoded_paths: List[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            if len(chunks) == 1:
+                chunk_path = base_path
+            else:
+                chunk_path = base_path.with_name(
+                    f"{base_path.stem}.chunk{index:03d}{base_path.suffix}"
+                )
+            generated_artifacts.add(str(chunk_path))
+            raw_result = _text_to_speech_single(
+                text=chunk,
+                output_path=str(chunk_path),
+                tts_config_override=tts_config,
+            )
+            try:
+                chunk_result = json.loads(raw_result)
+            except (json.JSONDecodeError, TypeError):
+                raise RuntimeError(
+                    f"TTS chunk {index} returned invalid JSON: {str(raw_result)[:200]}"
+                )
+            if not chunk_result.get("success"):
+                return json.dumps(chunk_result, ensure_ascii=False)
+            actual_path = str(chunk_result.get("file_path") or chunk_path)
+            if not os.path.isfile(actual_path) or os.path.getsize(actual_path) <= 0:
+                raise RuntimeError(
+                    f"TTS chunk {index} produced no final audio: {actual_path}"
+                )
+            generated_artifacts.add(actual_path)
+            encoded_paths.append(actual_path)
+            chunk_results.append(chunk_result)
+
+        voice_compatible = bool(chunk_results) and all(
+            bool(result.get("voice_compatible")) for result in chunk_results
+        )
+        delivery_base = base_path.with_suffix(Path(encoded_paths[0]).suffix)
+        final_paths, combined_chunks = _build_audio_delivery_files(
+            encoded_paths,
+            str(delivery_base),
+            delivery_profile,
+            voice_compatible=voice_compatible,
+        )
+
+        for path in final_paths:
+            logger.info(
+                "TTS audio saved: %s (%s bytes, provider: %s)",
+                path,
+                f"{os.path.getsize(path):,}",
+                provider,
+            )
+        media_tag = "\n".join(f"MEDIA:{path}" for path in final_paths)
+        if voice_compatible:
+            media_tag = f"[[audio_as_voice]]\n{media_tag}"
+
+        return json.dumps({
+            "success": True,
+            "file_path": final_paths[0],
+            "file_paths": final_paths,
+            "media_tag": media_tag,
+            "provider": chunk_results[0].get("provider", provider),
+            "voice_compatible": voice_compatible,
+            "chunks": len(chunks),
+            "chunk_count": len(chunks),
+            "delivery_file_count": len(final_paths),
+            "combined_chunks": bool(combined_chunks),
+            "delivery_profile": {
+                "platform": delivery_profile.platform,
+                "max_file_bytes": delivery_profile.max_file_bytes,
+                "target_file_bytes": delivery_profile.target_file_bytes,
+            },
+        }, ensure_ascii=False)
+    except ValueError as exc:
+        error_msg = f"TTS delivery error ({provider}): {exc}"
+        logger.error("%s", error_msg)
+        return tool_error(error_msg, success=False)
+    except Exception as exc:
+        error_msg = f"TTS long-form generation failed ({provider}): {exc}"
+        logger.error("%s", error_msg, exc_info=True)
+        return tool_error(error_msg, success=False)
+    finally:
+        final_absolute = {os.path.abspath(path) for path in final_paths}
+        for artifact in generated_artifacts:
+            if os.path.abspath(artifact) in final_absolute:
+                continue
+            try:
+                os.unlink(artifact)
+            except OSError:
+                pass
 
 
 # ===========================================================================
@@ -3004,7 +3484,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+                "description": "The text to convert to speech. Provider-specific per-request character caps apply automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); longer input is split into ordered chunks without silent truncation."
             },
             "output_path": {
                 "type": "string",

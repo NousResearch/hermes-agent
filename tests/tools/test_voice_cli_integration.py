@@ -1105,11 +1105,11 @@ class TestVoiceSpeakResponseReal:
     @patch("cli._cprint")
     @patch("cli.os.makedirs")
     @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
-    def test_long_text_truncated(self, mock_tts, _mkd, _cp):
+    def test_long_text_reaches_tts_tool_without_caller_truncation(self, mock_tts, _mkd, _cp):
         cli = _make_voice_cli(_voice_tts=True)
         cli._voice_speak_response("A" * 5000)
         call_text = mock_tts.call_args.kwargs["text"]
-        assert len(call_text) <= 4000
+        assert len(call_text) == 5000
 
     @patch("cli._cprint")
     @patch("cli.os.makedirs")

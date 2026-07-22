@@ -11216,8 +11216,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
 
-            # Strip markdown and non-speech content for cleaner TTS
-            tts_text = text[:4000] if len(text) > 4000 else text
+            # Strip markdown and non-speech content for cleaner TTS. Provider
+            # request limits and long-form chunking belong to the TTS tool.
+            tts_text = text
             tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
             tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
             tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
@@ -11232,25 +11233,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not tts_text:
                 return
 
-            # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
-            # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
+            # Prefer MP3 for local playback (afplay doesn't handle OGG well).
+            # The tool result remains authoritative if a provider rewrites the
+            # path or long-form delivery produces more than one file.
             os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
             mp3_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
                 f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
             )
 
-            text_to_speech_tool(text=tts_text, output_path=mp3_path)
-
-            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
-            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-                play_audio_file(mp3_path)
-                # Clean up
+            import json as _json
+            result = _json.loads(
+                text_to_speech_tool(text=tts_text, output_path=mp3_path)
+            )
+            play_paths = result.get("file_paths") or [
+                result.get("file_path") or mp3_path
+            ]
+            for play_path in play_paths if result.get("success") else []:
+                if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
+                    play_audio_file(play_path)
+            for cleanup_path in set(play_paths + [
+                mp3_path, mp3_path.rsplit(".", 1)[0] + ".ogg",
+            ]):
                 try:
-                    os.unlink(mp3_path)
-                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                    if os.path.isfile(ogg_path):
-                        os.unlink(ogg_path)
+                    os.unlink(cleanup_path)
                 except OSError:
                     pass
         except Exception as e:

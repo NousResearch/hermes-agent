@@ -6347,6 +6347,116 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
+def _print_fts_optimize_available_notice() -> None:
+    """Advertise the opt-in v23 search-index optimization after `hermes update`.
+
+    Only fires when the current profile's state.db is still on the legacy
+    (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
+    points at the exact command. Honors ``sessions.fts_optimize_notice``:
+    ``advise`` (default) prints an advisory notice, ``require`` prints a
+    firmer required-upgrade notice, ``off`` suppresses it. Silent for
+    fresh/already-optimized installs.
+    """
+    mode = "advise"
+    try:
+        from hermes_cli.config import load_config
+
+        mode = str(
+            ((load_config() or {}).get("sessions") or {}).get(
+                "fts_optimize_notice", "advise"
+            )
+        ).strip().lower()
+    except Exception:
+        mode = "advise"
+    if mode == "off":
+        return
+
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+    except Exception:
+        return
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        size_gb = db_path.stat().st_size / (1024 ** 3)
+    except OSError:
+        return
+    # Skip the notice for trivially small DBs — the win isn't worth the nag.
+    if size_gb < 0.5:
+        return
+    db = None
+    interrupted = False
+    try:
+        db = SessionDB(db_path=db_path, read_only=True)
+        # read_only opens skip schema init, so probe the layout directly.
+        row = db._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'messages_fts'"
+        ).fetchone()
+        # An interrupted `optimize-storage` run: the table is already the
+        # v23 shape, but backfill markers / demoted trash tables remain.
+        # Offer the command again — re-running resumes and finishes it.
+        interrupted = bool(
+            db._conn.execute(
+                "SELECT 1 FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
+            ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
+            ).fetchone()
+        )
+    except Exception:
+        return
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    sql = (row[0] if row else "") or ""
+    if not sql or ("tool_name" in sql and not interrupted):
+        # v23 layout already present (fresh/optimized) — nothing to offer.
+        return
+
+    if interrupted:
+        print()
+        print("◆ Session database optimization incomplete")
+        print(
+            "  A previous `hermes sessions optimize-storage` run was "
+            "interrupted. Search still works; re-run the command to resume "
+            "and finish reclaiming disk:"
+        )
+        print("    hermes sessions optimize-storage")
+        return
+
+    # Concrete size framing — lead with the savings the user cares about.
+    est_reclaim = size_gb * 0.6
+    print()
+    if mode == "require":
+        print("◆ Session database upgrade required")
+        print(
+            f"  Your search index uses the OLD storage layout and should be "
+            f"upgraded. The new layout typically frees ~60% of state.db "
+            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+            f"required for continued optimal operation."
+        )
+    else:
+        print("◆ Reclaim ~60% of your session database disk")
+        print(
+            f"  Your search index uses the old storage layout. Upgrading it "
+            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+            f"of your current {size_gb:.1f} GB."
+        )
+    print("  Run when convenient:  hermes sessions optimize-storage")
+    print(
+        "  It runs in the foreground with a progress bar, is safe to "
+        "interrupt/re-run, and never changes your conversations."
+    )
+
+
 def _print_curator_recent_run_notice() -> None:
     """Print the most recent curator run summary, exactly once.
 
@@ -10951,6 +11061,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             print("✓ Update complete!")
 
+        # Search-index optimization notice (v23). Existing installs keep their
+        # working search index untouched on update; the compact v23 layout —
+        # which reclaims a large fraction of state.db on heavy users — is
+        # opt-in. Surface it here (the moment the user is already thinking
+        # about their install) with the exact command and the concrete size
+        # win. Show-once-ish: only when a legacy index is actually present.
+        try:
+            _print_fts_optimize_available_notice()
+        except Exception as e:
+            logger.debug("FTS optimize notice failed: %s", e)
+
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
         # have fired against a fresh skill library. Kept silent on steady
@@ -14630,6 +14751,33 @@ def main():
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
 
+    sessions_optimize_storage = sessions_subparsers.add_parser(
+        "optimize-storage",
+        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",
+        description=(
+            "Rebuild the full-text search index in the compact v23 "
+            "external-content layout. On large databases this reclaims a "
+            "large fraction of state.db (the old layout stored duplicate "
+            "copies of every message and indexed tool output). Runs "
+            "foreground with a progress bar, throttles so a running gateway "
+            "stays responsive, and VACUUMs at the end. Safe to interrupt and "
+            "re-run — it resumes where it left off. No conversation data is "
+            "changed; only the search index is rebuilt."
+        ),
+    )
+    sessions_optimize_storage.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        default=False,
+        help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)",
+    )
+    sessions_optimize_storage.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the disk-space confirmation prompt",
+    )
+
     sessions_repair = sessions_subparsers.add_parser(
         "repair",
         help="Repair a malformed state.db schema so hidden sessions reappear",
@@ -15411,6 +15559,96 @@ def main():
                 f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
                 f"(reclaimed {saved:.1f} MB)"
             )
+
+        elif action == "optimize-storage":
+            db_path = db.db_path
+            if not db.fts_optimize_available():
+                print("Search index is already on the compact layout — nothing to do.")
+                db.close()
+                return
+
+            before_bytes = os.path.getsize(db_path) if db_path.exists() else 0
+            before_mb = before_bytes / (1024 * 1024)
+
+            # Disk preflight: the rebuild adds the new index before the old is
+            # torn down, and the final VACUUM needs a full second copy of the
+            # file. Require headroom ≈ current file size to finish cleanly.
+            do_vacuum = not getattr(args, "no_vacuum", False)
+            try:
+                import shutil as _shutil
+                free_bytes = _shutil.disk_usage(db_path.parent).free
+            except Exception:
+                free_bytes = None
+            need_bytes = before_bytes if do_vacuum else int(before_bytes * 0.3)
+            print(f"Search-index optimization for {db_path}")
+            print(f"  Current database size: {before_mb:.1f} MB")
+            if free_bytes is not None:
+                print(f"  Free disk: {free_bytes / (1024*1024):.0f} MB "
+                      f"(need ~{need_bytes / (1024*1024):.0f} MB to complete"
+                      f"{' incl. VACUUM' if do_vacuum else ''})")
+                if free_bytes < need_bytes:
+                    print()
+                    print("⚠ Not enough free disk to complete safely. Free up "
+                          "space, or run with --no-vacuum (rebuilds the index "
+                          "but doesn't reclaim space until a later VACUUM).")
+                    db.close()
+                    return
+            if before_mb > 500:
+                print("  This may take a while on a large database. It runs in "
+                      "the foreground with progress below; safe to Ctrl-C and "
+                      "re-run (it resumes).")
+            if not getattr(args, "yes", False):
+                try:
+                    resp = input("Proceed? [y/N] ").strip().lower()
+                except EOFError:
+                    resp = ""
+                if resp not in ("y", "yes"):
+                    print("Cancelled.")
+                    db.close()
+                    return
+
+            _last = {"phase": None}
+
+            def _progress(info):
+                phase = info.get("phase")
+                pct = info.get("percent", 0)
+                if phase == "backfill":
+                    print(f"\r  Rebuilding index: {pct:3d}% "
+                          f"({info.get('indexed',0):,}/{info.get('total',0):,})",
+                          end="", flush=True)
+                elif phase != _last["phase"]:
+                    label = {"teardown": "Reclaiming old index",
+                             "vacuum": "Compacting database (VACUUM)",
+                             "done": "Done"}.get(phase, phase)
+                    print(f"\n  {label}…", flush=True)
+                _last["phase"] = phase
+
+            print("Optimizing search-index storage…")
+            try:
+                result = db.optimize_fts_storage(
+                    progress_cb=_progress, vacuum=do_vacuum
+                )
+            except Exception as e:
+                print(f"\nError: optimization failed: {e}")
+                print("No data was lost. Re-run to resume.")
+                db.close()
+                return
+            if not result.get("ok"):
+                print(f"\nCould not optimize: {result.get('reason', 'unknown')}")
+                db.close()
+                return
+            after_mb = (
+                os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
+            )
+            saved = before_mb - after_mb
+            print(f"\n✓ Search index optimized.")
+            print(
+                f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                f"(reclaimed {saved:.1f} MB)"
+            )
+            if result.get("vacuumed") is False:
+                print("  (VACUUM was skipped or failed — run "
+                      "`hermes sessions optimize` later to reclaim freed space.)")
 
         elif action == "stats":
             total = db.session_count()

@@ -2866,6 +2866,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return result
 
+            # Resolve readable @Name references into real <@id> mentions (opt-in
+            # via DISCORD_RESOLVE_MENTIONS) so the model can actually ping a user or
+            # another bot by name; a bare "@Name" from an LLM is otherwise inert text.
+            content = await self._resolve_outbound_mentions(content, channel)
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -4783,6 +4787,46 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to get chat info for %s: %s", self.name, chat_id, e, exc_info=True)
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
+
+    async def _resolve_outbound_mentions(self, content: str, channel: Any) -> str:
+        """Rewrite readable ``@Name`` references in an OUTGOING message into real
+        Discord mentions (``<@id>``) so the bot can actually ping a user or another
+        bot by name. Opt-in via ``DISCORD_RESOLVE_MENTIONS`` (unset/false = no change).
+
+        LLMs reliably emit a friendly ``@Display Name`` instead of the raw ``<@id>``
+        Discord requires, so without this a bot's attempt to tag someone is inert
+        plain text. Matching is against the guild's own members (name / display_name /
+        global_name, case-insensitive, longest name first so ``@neko bot`` wins over a
+        member named ``neko``); ``@everyone``/roles stay governed by ``allowed_mentions``.
+        """
+        if os.getenv("DISCORD_RESOLVE_MENTIONS", "false").strip().lower() not in ("1", "true", "yes"):
+            return content
+        if not content or "@" not in content:
+            return content
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return content
+        pairs = []
+        seen = set()
+        for member in (getattr(guild, "members", None) or []):
+            uid = str(member.id)
+            for nm in (getattr(member, "display_name", None),
+                       getattr(member, "global_name", None),
+                       getattr(member, "name", None)):
+                key = (nm.lower(), uid) if nm else None
+                if nm and key not in seen:
+                    seen.add(key)
+                    pairs.append((nm, uid))
+        # Longest names first so "@neko bot" resolves before a member named "neko".
+        pairs.sort(key=lambda p: len(p[0]), reverse=True)
+        for nm, uid in pairs:
+            token = f"<@{uid}>"
+            if token in content:
+                continue  # already a real mention
+            pat = re.compile(r"(?<![\w<@])@" + re.escape(nm) + r"(?![\w])", re.IGNORECASE)
+            if pat.search(content):
+                content = pat.sub(token, content)
+        return content
 
     async def _resolve_allowed_usernames(self) -> None:
         """

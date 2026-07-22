@@ -1435,6 +1435,10 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
             _lazy_ensure("stt.mistral", prompt=False)
         except ImportError:
             pass
+        except Exception as e:  # FeatureUnavailable or any unexpected error
+            logger.debug(
+                "lazy_deps.ensure(stt.mistral) failed: %s. Attempting raw import.", e
+            )
         from mistralai.client import Mistral
 
         with Mistral(api_key=api_key) as client:

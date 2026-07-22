@@ -91,7 +91,9 @@ def _import_edge_tts():
     except ImportError:
         pass
     except Exception as e:
-        raise ImportError(str(e))
+        logger.debug(
+            "lazy_deps.ensure(tts.edge) failed: %s. Attempting raw import.", e
+        )
     import edge_tts
     return edge_tts
 
@@ -101,18 +103,21 @@ def _import_elevenlabs():
     Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
     demand if the user picked ElevenLabs as their TTS provider but never ran
     the post-setup hook (e.g. enabled it by editing config.yaml directly).
-    Raises ``ImportError`` on lazy-install failure so existing callers'
-    error-handling paths keep working.
+    If lazy installation fails, fall through to the raw import so packages
+    supplied by ``PYTHONPATH`` or a container image layer still work.
     """
     try:
-        from tools.lazy_deps import FeatureUnavailable, ensure
+        from tools.lazy_deps import ensure
         ensure("tts.elevenlabs", prompt=False)
     except ImportError:
         # lazy_deps module itself missing — fall through to the raw import
         # so older code paths still get a clean ImportError.
         pass
     except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+        logger.debug(
+            "lazy_deps.ensure(tts.elevenlabs) failed: %s. Attempting raw import.",
+            e,
+        )
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -127,7 +132,8 @@ def _import_mistral_client():
     Calls :func:`tools.lazy_deps.ensure` first so the ``mistralai`` SDK gets
     installed on demand if the user picked Mistral as their STT/TTS provider
     but never ran the post-setup hook (e.g. enabled it by editing config.yaml
-    directly). Mirrors the ElevenLabs lazy-import path.
+    directly). If lazy installation fails, fall through to the raw import so
+    packages supplied by ``PYTHONPATH`` or a container image layer still work.
     """
     try:
         from tools.lazy_deps import ensure
@@ -135,7 +141,9 @@ def _import_mistral_client():
     except ImportError:
         pass
     except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+        logger.debug(
+            "lazy_deps.ensure(tts.mistral) failed: %s. Attempting raw import.", e
+        )
     from mistralai.client import Mistral
     return Mistral
 

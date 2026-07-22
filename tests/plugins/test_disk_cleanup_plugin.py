@@ -663,7 +663,7 @@ class TestPostToolCallHook:
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
-            result="OK",
+            result=json.dumps({"created_paths": [str(p)]}),
             task_id="t1", session_id="s1",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
@@ -691,12 +691,40 @@ class TestPostToolCallHook:
         pi._on_post_tool_call(
             tool_name="terminal",
             args={"command": f"touch {p}"},
-            result=f"created {p}\n",
+            result=json.dumps({
+                "output": f"created {p}\n",
+                "created_paths": [str(p)],
+            }),
             task_id="t3", session_id="s3",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert any(Path(i["path"]) == p.resolve() for i in data)
+
+    def test_terminal_read_only_output_cannot_track_preexisting_test_file(
+        self, _isolate_env
+    ):
+        """Mentioning a user file in terminal output is not creation evidence."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_user_notes.py"
+        p.write_text("keep me")
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "python inspect_only.py"},
+            result=json.dumps({
+                "output": f"inspected {p}",
+                "exit_code": 0,
+                "error": None,
+            }),
+            task_id="readonly-task", session_id="readonly-session",
+        )
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+        pi._on_session_end(
+            session_id="readonly-session", completed=True, interrupted=False
+        )
+        assert p.exists(), "pre-existing user file must survive session cleanup"
 
     def test_terminal_command_extracts_windows_drive_paths(self):
         pi = _load_plugin_init()
@@ -729,7 +757,7 @@ class TestOnSessionEndHook:
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
-            result="OK",
+            result=json.dumps({"created_paths": [str(p)]}),
             task_id="", session_id="s1",
         )
         assert p.exists()

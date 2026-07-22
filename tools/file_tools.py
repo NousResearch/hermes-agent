@@ -48,6 +48,47 @@ def _expand_tilde(path: str) -> str:
     return os.path.expanduser(path)
 
 
+def _canonical_local_path(path: str | None) -> str | None:
+    """Return an absolute local path, or ``None`` for an ambiguous target."""
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        expanded = _expand_tilde(path)
+        return expanded if os.path.isabs(expanded) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _local_path_existed_before(path: str | None) -> bool | None:
+    """Return local pre-write existence, or ``None`` when it is unknown.
+
+    Creation provenance is deliberately fail-closed.  The disk-cleanup
+    plugin may use the resulting ``created_paths`` field only when this probe
+    conclusively observed that the target was absent before a successful
+    write; path strings and free-form tool output are not substitutes.
+    """
+    path = _canonical_local_path(path)
+    if path is None:
+        return None
+    try:
+        os.lstat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _add_created_path_evidence(
+    result_dict: dict, path: str | None, existed_before: bool | None
+) -> None:
+    """Attach trusted creation metadata for a newly-created local target."""
+    if result_dict.get("error") or existed_before is not False:
+        return
+    if isinstance(path, str) and path:
+        result_dict["created_paths"] = [path]
+
+
 # ---------------------------------------------------------------------------
 # Read-size guard: cap the character count returned to the model.
 # We're model-agnostic so we can't count tokens; characters are a safe proxy.
@@ -1601,6 +1642,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _resolved = str(_resolve_path_for_task(path, task_id))
         except Exception:
             _resolved = None
+        provenance_path = _canonical_local_path(_resolved) or _canonical_local_path(path)
+        existed_before = _local_path_existed_before(provenance_path)
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
@@ -1610,6 +1653,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
+                _add_created_path_evidence(result_dict, provenance_path, existed_before)
                 _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
@@ -1637,6 +1681,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict["resolved_path"] = _resolved
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
+                _add_created_path_evidence(result_dict, _resolved, existed_before)
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.

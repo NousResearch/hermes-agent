@@ -3,6 +3,38 @@
 import tools.terminal_tool as terminal_tool
 
 
+def test_terminal_creation_evidence_requires_absent_before_and_successful_present_after(
+    tmp_path,
+):
+    target = tmp_path / "test_created.py"
+    before = terminal_tool._snapshot_terminal_creation_candidates(
+        f"touch {target}"
+    )
+    assert before[str(target)] is False
+
+    target.write_text("created")
+    assert terminal_tool._created_terminal_paths(before, 0) == [str(target)]
+
+
+def test_terminal_creation_evidence_preserves_preexisting_and_failed_targets(
+    tmp_path,
+):
+    target = tmp_path / "test_existing.py"
+    target.write_text("user-owned")
+    before = terminal_tool._snapshot_terminal_creation_candidates(
+        f"inspect_only {target}"
+    )
+    assert before[str(target)] is True
+    assert terminal_tool._created_terminal_paths(before, 0) == []
+
+    missing = tmp_path / "test_failed.py"
+    failed_before = terminal_tool._snapshot_terminal_creation_candidates(
+        f"touch {missing}"
+    )
+    missing.write_text("ambiguous")
+    assert terminal_tool._created_terminal_paths(failed_before, 1) == []
+
+
 def test_cleanup_does_not_remove_unproven_scratch_directory(tmp_path, monkeypatch):
     scratch = tmp_path / "scratch"
     orphan = scratch / "hermes-unknown"

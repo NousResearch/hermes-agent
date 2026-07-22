@@ -137,6 +137,13 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
+# A scratch workspace is removable only when this marker proves the exact
+# task/board/tenant/path owner. The marker is created with O_EXCL so a
+# pre-existing directory (or an existing marker) is never silently claimed by
+# a different task.
+_SCRATCH_OWNER_MARKER_NAME = ".hermes-kanban-owner.json"
+_SCRATCH_OWNER_VERSION = 1
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -4655,13 +4662,18 @@ def _merge_completion_prose_artifacts(
     exists so cleanup cannot erase the file the user was promised.
     """
     row = conn.execute(
-        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        "SELECT workspace_kind, workspace_path, tenant FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
         return metadata
     workspace = Path(row["workspace_path"]).expanduser()
-    if not _is_managed_scratch_path(workspace):
+    if not _scratch_workspace_is_owned(
+        workspace,
+        task_id=task_id,
+        board=_connection_board(conn),
+        tenant=row["tenant"],
+    ):
         return metadata
     text = "\n".join(part for part in (summary, result) if part)
     if not text:
@@ -4698,15 +4710,20 @@ def _persist_scratch_completion_artifacts(
         return
 
     row = conn.execute(
-        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        "SELECT workspace_kind, workspace_path, tenant FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
         return
 
     workspace = Path(row["workspace_path"]).expanduser()
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
+    board = _connection_board(conn)
+    if not _scratch_workspace_is_owned(
+        workspace,
+        task_id=task_id,
+        board=board,
+        tenant=row["tenant"],
+    ):
         return
 
     try:
@@ -4889,6 +4906,229 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def _same_canonical_path(left: Path, right: Path) -> bool:
+    """Compare absolute paths with the host's case rules without resolving links."""
+    try:
+        return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
+            os.path.normpath(str(right))
+        )
+    except (OSError, TypeError):
+        return False
+
+
+def _canonical_scratch_workspace(task_id: str, board: Optional[str]) -> Optional[Path]:
+    """Return the one canonical scratch path allowed for ``task_id``."""
+    if not board:
+        return None
+    try:
+        root = workspaces_root(board=board).expanduser().resolve(strict=False)
+        candidate = (root / task_id).resolve(strict=False)
+    except (OSError, ValueError):
+        return None
+    # A task id is a leaf name, never a relative path. Keep this explicit so
+    # malformed rows cannot turn the canonical path into a sibling/parent.
+    if candidate.parent != root or candidate.name != task_id:
+        return None
+    return candidate
+
+
+def _owner_marker_payload(
+    *,
+    task_id: str,
+    board: str,
+    tenant: Optional[str],
+    workspace: Path,
+) -> dict[str, Any]:
+    return {
+        "version": _SCRATCH_OWNER_VERSION,
+        "task_id": task_id,
+        "board": board,
+        "tenant": tenant,
+        "workspace": str(workspace),
+    }
+
+
+def _read_scratch_owner_marker(
+    workspace: Path,
+    *,
+    task_id: str,
+    board: Optional[str],
+    tenant: Optional[str],
+) -> bool:
+    """Validate the exact owner marker; malformed evidence fails closed."""
+    if not board:
+        return False
+    marker = workspace / _SCRATCH_OWNER_MARKER_NAME
+    try:
+        if marker.is_symlink() or not marker.is_file():
+            return False
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if set(payload) != {"version", "task_id", "board", "tenant", "workspace"}:
+        return False
+    if payload["version"] != _SCRATCH_OWNER_VERSION:
+        return False
+    if payload["task_id"] != task_id or payload["board"] != board:
+        return False
+    if payload["tenant"] != tenant or not isinstance(payload["workspace"], str):
+        return False
+    # The marker must name the canonical workspace text, not an alias that
+    # merely resolves to it.
+    return _same_canonical_path(Path(payload["workspace"]), workspace)
+
+
+def _create_scratch_owner_marker(
+    workspace: Path,
+    *,
+    task_id: str,
+    board: str,
+    tenant: Optional[str],
+) -> None:
+    """Create a new marker without overwriting any pre-existing evidence."""
+    marker = workspace / _SCRATCH_OWNER_MARKER_NAME
+    payload = _owner_marker_payload(
+        task_id=task_id,
+        board=board,
+        tenant=tenant,
+        workspace=workspace,
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(str(marker), flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, separators=(",", ":"), ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        # The marker may be partial after an interrupted write. Do not remove
+        # or replace it: future cleanup must fail closed on that evidence.
+        raise
+
+
+def _materialize_owned_scratch_workspace(
+    task: Task,
+    *,
+    board: Optional[str],
+) -> Path:
+    """Create/reuse only the canonical, marker-owned scratch directory."""
+    board_slug = _normalize_board_slug(board) or get_current_board()
+    canonical = _canonical_scratch_workspace(task.id, board_slug)
+    if canonical is None:
+        raise ValueError(
+            f"task {task.id} has no canonical scratch workspace for board {board_slug!r}"
+        )
+    try:
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        created = False
+        try:
+            canonical.mkdir()
+            created = True
+        except FileExistsError:
+            if canonical.is_symlink() or not canonical.is_dir():
+                raise ValueError(f"scratch workspace is not a regular directory: {canonical}")
+        if created:
+            _create_scratch_owner_marker(
+                canonical,
+                task_id=task.id,
+                board=board_slug,
+                tenant=task.tenant,
+            )
+        elif not _read_scratch_owner_marker(
+            canonical,
+            task_id=task.id,
+            board=board_slug,
+            tenant=task.tenant,
+        ):
+            raise ValueError(
+                f"cannot prove ownership of existing scratch workspace: {canonical}"
+            )
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(f"could not materialize scratch workspace {canonical}: {exc}") from exc
+    return canonical
+
+
+def _connection_board(conn: sqlite3.Connection) -> Optional[str]:
+    """Infer the board identity from the DB file used by ``conn``."""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        db_file = row[2] if row is not None else None
+        if not db_file:
+            return None
+        db_path = Path(db_file).resolve(strict=False)
+        root = kanban_home().expanduser().resolve(strict=False)
+        candidates = [(DEFAULT_BOARD, root / "kanban.db")]
+        boards = root / "kanban" / "boards"
+        try:
+            entries = list(boards.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if entry.is_dir():
+                try:
+                    slug = _normalize_board_slug(entry.name)
+                except ValueError:
+                    continue
+                if slug:
+                    candidates.append((slug, entry / "kanban.db"))
+        for slug, candidate in candidates:
+            if _same_canonical_path(db_path, candidate.resolve(strict=False)):
+                return slug
+        # A dispatcher may deliberately pin a custom DB path. Only accept its
+        # explicit board identity when that override is present; without that
+        # independent context, ownership cannot be proven.
+        if os.environ.get("HERMES_KANBAN_DB", "").strip():
+            try:
+                env_board = _normalize_board_slug(os.environ.get("HERMES_KANBAN_BOARD"))
+            except ValueError:
+                return None
+            if env_board and board_exists(env_board):
+                return env_board
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+    return None
+
+
+def _scratch_workspace_is_owned(
+    workspace_path: Path,
+    *,
+    task_id: str,
+    board: Optional[str],
+    tenant: Optional[str],
+) -> bool:
+    """Prove exact task/board/tenant ownership of a path before deletion."""
+    expected = _canonical_scratch_workspace(task_id, board)
+    if expected is None:
+        return False
+    raw = workspace_path.expanduser()
+    try:
+        if not raw.is_absolute() or raw.is_symlink():
+            return False
+        canonical = raw.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    # Reject symlink/junction aliases and any path that is not the task's
+    # canonical root. The marker alone is not enough for an aliased path.
+    if os.path.normcase(str(raw)) != os.path.normcase(str(canonical)):
+        return False
+    if not _same_canonical_path(canonical, expected):
+        return False
+    if not canonical.is_dir():
+        return False
+    return _read_scratch_owner_marker(
+        canonical,
+        task_id=task_id,
+        board=board,
+        tenant=tenant,
+    )
+
+
 def _is_managed_scratch_path(p: Path) -> bool:
     """Return True iff *p* is a strict descendant of a kanban-managed scratch root.
 
@@ -4922,33 +5162,36 @@ def _remove_managed_scratch_workspace(
     task_id: str,
     workspace_kind: Optional[str],
     workspace_path: Optional[str],
+    *,
+    board: Optional[str],
+    tenant: Optional[str],
 ) -> None:
-    """Remove one scratch workspace after proving its ownership.
+    """Remove a scratch workspace only after exact owner proof.
 
-    This helper deliberately accepts a captured kind/path instead of looking
-    the task up in SQLite.  Delete paths remove the row before their post-
-    commit cleanup runs, while completion/archive paths still use the normal
-    row-backed wrapper.  An absent or ambiguous path is retained.
+    The task row may already be gone on delete paths, so callers capture the
+    board/tenant before deleting it. Missing, malformed, aliased, or mismatched
+    owner evidence is retained.
     """
     if workspace_kind != "scratch" or not workspace_path:
         return
     wp = Path(workspace_path).expanduser()
-    if not wp.is_dir() and not wp.is_symlink():
-        return
-    if not _is_managed_scratch_path(wp):
+    if not _scratch_workspace_is_owned(
+        wp,
+        task_id=task_id,
+        board=board,
+        tenant=tenant,
+    ):
         _log.warning(
-            "Refusing to remove out-of-scratch workspace for task %s: %s "
-            "(workspace_kind='scratch' but path is outside any "
-            "kanban-managed workspaces root)",
+            "Refusing to remove scratch workspace without exact owner proof "
+            "for task %s: %s (board=%r, tenant=%r)",
             task_id,
             wp,
+            board,
+            tenant,
         )
         return
     try:
-        if wp.is_symlink():
-            wp.unlink()
-        else:
-            shutil.rmtree(wp)
+        shutil.rmtree(wp)
         _log.debug("Removed scratch workspace: %s", wp)
     except OSError as exc:
         _log.warning("Could not remove scratch workspace for task %s: %s", task_id, exc)
@@ -4964,7 +5207,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """
     try:
         row = conn.execute(
-            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            "SELECT workspace_kind, workspace_path, tenant FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row:
@@ -4994,7 +5237,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
                 task_id, path,
             )
             return
-        _remove_managed_scratch_workspace(task_id, kind, path)
+        _remove_managed_scratch_workspace(
+            task_id,
+            kind,
+            path,
+            board=_connection_board(conn),
+            tenant=row["tenant"],
+        )
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)
@@ -5021,7 +5270,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
         ).fetchall()
         for (parent_id,) in parents:
             row = conn.execute(
-                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                "SELECT workspace_kind, workspace_path, tenant FROM tasks WHERE id = ?",
                 (parent_id,),
             ).fetchone()
             if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
@@ -5036,12 +5285,15 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             ).fetchone()
             if active:
                 continue  # still has active children
-            # All children done — safe to clean up parent workspace
-            import shutil
-            wp = Path(row["workspace_path"])
-            if wp.is_dir() and _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
-                _log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+            # All children done — remove only after proving the parent's
+            # exact marker ownership too.
+            _remove_managed_scratch_workspace(
+                parent_id,
+                row["workspace_kind"],
+                row["workspace_path"],
+                board=_connection_board(conn),
+                tenant=row["tenant"],
+            )
     except Exception:
         pass  # best-effort
 
@@ -5929,15 +6181,15 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     tasks must be explicitly archived first so accidental data loss requires a
     second deliberate action.
     """
-    workspace: tuple[Optional[str], Optional[str]] | None = None
+    workspace: tuple[Optional[str], Optional[str], Optional[str]] | None = None
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            "SELECT status, workspace_kind, workspace_path, tenant FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
-        workspace = (row["workspace_kind"], row["workspace_path"])
+        workspace = (row["workspace_kind"], row["workspace_path"], row["tenant"])
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -5949,7 +6201,12 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         deleted = cur.rowcount == 1
     if deleted and workspace is not None:
-        _remove_managed_scratch_workspace(task_id, *workspace)
+        _remove_managed_scratch_workspace(
+            task_id,
+            *workspace[:2],
+            board=_connection_board(conn),
+            tenant=workspace[2],
+        )
     return deleted
 
 
@@ -5963,15 +6220,15 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
-    workspace: tuple[Optional[str], Optional[str]] | None = None
+    workspace: tuple[Optional[str], Optional[str], Optional[str]] | None = None
     with write_txn(conn):
         row = conn.execute(
-            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            "SELECT workspace_kind, workspace_path, tenant FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if row is None:
             return False
-        workspace = (row["workspace_kind"], row["workspace_path"])
+        workspace = (row["workspace_kind"], row["workspace_path"], row["tenant"])
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
@@ -5981,7 +6238,12 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
     if workspace is not None:
-        _remove_managed_scratch_workspace(task_id, *workspace)
+        _remove_managed_scratch_workspace(
+            task_id,
+            *workspace[:2],
+            board=_connection_board(conn),
+            tenant=workspace[2],
+        )
     recompute_ready(conn)
     return True
 
@@ -6237,20 +6499,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """
     kind = task.workspace_kind or "scratch"
     if kind == "scratch":
-        if task.workspace_path:
-            # Legacy scratch tasks that were set to an explicit path get the
-            # same absolute-path guard as dir: — consistent with the
-            # threat model.
-            p = Path(task.workspace_path).expanduser()
-            if not p.is_absolute():
-                raise ValueError(
-                    f"task {task.id} has non-absolute workspace_path "
-                    f"{task.workspace_path!r}; workspace paths must be absolute"
-                )
-        else:
-            p = workspaces_root(board=board) / task.id
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        return _materialize_owned_scratch_workspace(task, board=board)
     if kind == "dir":
         if not task.workspace_path:
             raise ValueError(

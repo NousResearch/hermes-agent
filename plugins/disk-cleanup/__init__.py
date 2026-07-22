@@ -2,10 +2,10 @@
 
 Wires three behaviours:
 
-1. ``post_tool_call`` hook — inspects ``write_file`` and ``terminal``
-   tool results for newly-created paths matching test/temp patterns
-   under ``HERMES_HOME`` and tracks them silently.  Zero agent
-   compliance required.
+1. ``post_tool_call`` hook — consumes explicit ``created_paths`` /
+   ``files_created`` metadata emitted by write-capable tools, then tracks
+   paths matching test/temp patterns under ``HERMES_HOME`` silently.  Raw
+   command text and terminal output are never creation evidence.
 
 2. ``on_session_end`` hook — when any test files were auto-tracked
    during the just-finished turn, runs :func:`disk_cleanup.quick` and
@@ -20,6 +20,7 @@ needs to remember to run commands.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -41,7 +42,6 @@ _lock = threading.Lock()
 
 
 # Tool-call result shapes we can parse
-_WRITE_FILE_PATH_KEY = "path"
 _TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+)")
 _WINDOWS_PATH_REGEX = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/][^\s'\"`]+)")
 
@@ -88,24 +88,12 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
         return
 
 
-def _extract_paths_from_write_file(args: Dict[str, Any]) -> Set[str]:
-    path = args.get(_WRITE_FILE_PATH_KEY)
-    return {path} if isinstance(path, str) and path else set()
-
-
-def _extract_paths_from_patch(args: Dict[str, Any]) -> Set[str]:
-    # The patch tool creates new files via the `mode="patch"` path too, but
-    # most of its use is editing existing files — we only care about new
-    # ephemeral creations, so treat patch conservatively and only pick up
-    # the single-file `path` arg.  Track-then-cleanup is idempotent, so
-    # re-tracking an already-tracked file is a no-op (dedup in track()).
-    path = args.get("path")
-    return {path} if isinstance(path, str) and path else set()
-
-
 def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
-    """Best-effort: pull candidate filesystem paths from a terminal command
-    and its output, then let ``guess_category`` / ``is_safe_path`` filter.
+    """Extract display/debug candidates from terminal command text.
+
+    This helper deliberately is *not* used for auto-tracking.  Keeping the
+    Windows-aware extractor available preserves callers that use it for
+    diagnostics, while raw command/output text has no destructive authority.
     """
     paths: Set[str] = set()
     cmd = args.get("command") or ""
@@ -115,16 +103,44 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
         # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`
         try:
             for tok in shlex.split(cmd, posix=True):
-                if tok.startswith(("/", "~")) or _WINDOWS_PATH_REGEX.match(tok):
+                if tok.startswith(("/", "~/")):
                     paths.add(tok)
         except ValueError:
             pass
-    # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
+    # Preserve diagnostic extraction (including Windows drive paths) for
+    # callers that display candidates.  This result is never fed to
+    # ``_on_post_tool_call`` and therefore has no cleanup authority.
     if isinstance(result, str) and len(result) < 4096:
-        for match in _TERMINAL_PATH_REGEX.findall(result):
-            paths.add(match)
-        for match in _WINDOWS_PATH_REGEX.finditer(result):
-            paths.add(match.group(1))
+        paths.update(_TERMINAL_PATH_REGEX.findall(result))
+        paths.update(match.group(1) for match in _WINDOWS_PATH_REGEX.finditer(result))
+    return paths
+
+
+def _extract_trusted_created_paths(result: Any) -> Set[str]:
+    """Return only explicit creation metadata from a tool result.
+
+    ``created_paths`` is emitted by write-capable tools after they establish
+    that a target was absent before a successful write.  ``files_created`` is
+    the existing equivalent emitted by V4A patch application.  Neither field
+    is inferred from free-form output, command text, or the requested path.
+    Malformed or ambiguous result shapes return no paths (fail closed).
+    """
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return set()
+    if not isinstance(result, dict):
+        return set()
+
+    paths: Set[str] = set()
+    for key in ("created_paths", "files_created"):
+        values = result.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str) and value:
+                paths.add(value)
     return paths
 
 
@@ -145,15 +161,14 @@ def _on_post_tool_call(
     if not isinstance(args, dict):
         return
 
-    candidates: Set[str] = set()
-    if tool_name == "write_file":
-        candidates = _extract_paths_from_write_file(args)
-    elif tool_name == "patch":
-        candidates = _extract_paths_from_patch(args)
-    elif tool_name == "terminal":
-        candidates = _extract_paths_from_terminal(args, result if isinstance(result, str) else "")
-    else:
+    if tool_name not in {"write_file", "patch", "terminal"}:
         return
+
+    # Never infer ownership from args or free-form terminal output.  The
+    # result metadata is produced by the tool implementation only after it
+    # has observed a successful newly-created target; absent/invalid metadata
+    # is intentionally ambiguous and therefore preserved.
+    candidates = _extract_trusted_created_paths(result)
 
     for path_str in candidates:
         _attempt_track(path_str, task_id, session_id)

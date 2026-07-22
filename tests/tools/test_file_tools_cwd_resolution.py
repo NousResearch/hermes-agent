@@ -362,6 +362,26 @@ def test_write_file_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     assert (workspace / "newfile.txt").read_text() == "hello\n"
 
 
+def test_write_file_reports_creation_provenance_only_for_new_target(
+    _isolated_cwd, monkeypatch
+):
+    """Creation metadata distinguishes a new file from an overwrite."""
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("t1", str(workspace))
+
+    import json
+    new_path = workspace / "test_created.py"
+    created = json.loads(ft.write_file_tool(
+        "test_created.py", "hello\n", task_id="t1"
+    ))
+    assert created.get("created_paths") == [str(new_path.resolve())]
+
+    overwritten = json.loads(ft.write_file_tool(
+        "test_created.py", "changed\n", task_id="t1"
+    ))
+    assert "created_paths" not in overwritten
+
+
 def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -2624,8 +2625,8 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="ext")
-        scratch_dir = workspaces_override / t
-        scratch_dir.mkdir()
+        task = kb.get_task(conn, t)
+        scratch_dir = kb.resolve_workspace(task)
         conn.execute(
             "UPDATE tasks SET workspace_kind=?, workspace_path=? WHERE id=?",
             ("scratch", str(scratch_dir), t),
@@ -2634,6 +2635,133 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
         kb.complete_task(conn, t, result="ok")
 
     assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
+
+
+def test_scratch_workspace_has_exact_owner_marker(kanban_home):
+    """Scratch materialization records the task/board/tenant owner atomically."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="owned", tenant="tenant-a")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+
+    marker = workspace / ".hermes-kanban-owner.json"
+    assert marker.is_file()
+    assert json.loads(marker.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "task_id": task_id,
+        "board": "default",
+        "tenant": "tenant-a",
+        "workspace": str(workspace.resolve()),
+    }
+
+
+def test_scratch_cleanup_preserves_cross_task_workspace(kanban_home):
+    """A task cannot delete another task's marked scratch workspace."""
+    with kb.connect() as conn:
+        victim_id = kb.create_task(conn, title="victim", tenant="tenant-a")
+        victim = kb.get_task(conn, victim_id)
+        victim_workspace = kb.resolve_workspace(victim)
+        (victim_workspace / "user-work.txt").write_text("keep", encoding="utf-8")
+
+        attacker_id = kb.create_task(conn, title="attacker", tenant="tenant-a")
+        conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            (str(victim_workspace), attacker_id),
+        )
+        conn.commit()
+        assert kb.complete_task(conn, attacker_id, result="done")
+
+    assert victim_workspace.is_dir()
+    assert (victim_workspace / "user-work.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_scratch_cleanup_preserves_cross_tenant_workspace(kanban_home):
+    """A tenant-mismatched task cannot delete a marked scratch workspace."""
+    with kb.connect() as conn:
+        victim_id = kb.create_task(conn, title="victim", tenant="tenant-a")
+        victim = kb.get_task(conn, victim_id)
+        victim_workspace = kb.resolve_workspace(victim)
+        (victim_workspace / "tenant-data.txt").write_text("keep", encoding="utf-8")
+
+        attacker_id = kb.create_task(conn, title="attacker", tenant="tenant-b")
+        conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            (str(victim_workspace), attacker_id),
+        )
+        conn.commit()
+        assert kb.complete_task(conn, attacker_id, result="done")
+
+    assert victim_workspace.is_dir()
+    assert (victim_workspace / "tenant-data.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_scratch_cleanup_preserves_cross_board_workspace(kanban_home):
+    """A task on another board cannot delete a marked scratch workspace."""
+    kb.create_board("victim-board")
+    with kb.connect(board="victim-board") as victim_conn:
+        victim_id = kb.create_task(
+            victim_conn,
+            title="victim",
+            tenant="tenant-a",
+            board="victim-board",
+        )
+        victim = kb.get_task(victim_conn, victim_id)
+        victim_workspace = kb.resolve_workspace(victim, board="victim-board")
+        (victim_workspace / "board-data.txt").write_text("keep", encoding="utf-8")
+
+    with kb.connect(board="default") as attacker_conn:
+        attacker_id = kb.create_task(
+            attacker_conn,
+            title="attacker",
+            tenant="tenant-a",
+            board="default",
+        )
+        attacker_conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            (str(victim_workspace), attacker_id),
+        )
+        attacker_conn.commit()
+        assert kb.complete_task(attacker_conn, attacker_id, result="done")
+
+    assert victim_workspace.is_dir()
+    assert (victim_workspace / "board-data.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_scratch_cleanup_preserves_aliased_workspace_path(kanban_home):
+    """A path alias must not authorize cleanup of the canonical workspace."""
+    with kb.connect() as conn:
+        victim_id = kb.create_task(conn, title="victim", tenant="tenant-a")
+        victim = kb.get_task(conn, victim_id)
+        victim_workspace = kb.resolve_workspace(victim)
+        (victim_workspace / "alias-data.txt").write_text("keep", encoding="utf-8")
+        alias = victim_workspace.parent / ".." / victim_workspace.parent.name / victim_workspace.name
+
+        attacker_id = kb.create_task(conn, title="attacker", tenant="tenant-a")
+        conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            (str(alias), attacker_id),
+        )
+        conn.commit()
+        assert kb.complete_task(conn, attacker_id, result="done")
+
+    assert victim_workspace.is_dir()
+    assert (victim_workspace / "alias-data.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_scratch_cleanup_preserves_malformed_owner_marker(kanban_home):
+    """Malformed or unknown owner evidence fails closed and preserves data."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="corrupt owner", tenant="tenant-a")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        (workspace / "important.txt").write_text("keep", encoding="utf-8")
+        (workspace / ".hermes-kanban-owner.json").write_text(
+            '{"version": 999, "task_id": "unknown"}', encoding="utf-8"
+        )
+        assert kb.complete_task(conn, task_id, result="done")
+
+    assert workspace.is_dir()
+    assert (workspace / "important.txt").read_text(encoding="utf-8") == "keep"
 
 
 # ---------------------------------------------------------------------------

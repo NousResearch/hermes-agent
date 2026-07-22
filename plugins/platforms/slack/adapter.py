@@ -763,6 +763,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        self._THREAD_CACHE_MAX = 2500
         # Persistent sessions survive gateway restarts, but messages that
         # arrived while the gateway was DOWN never reached the session.
         # Track which threads have been rehydration-checked this process so
@@ -5694,6 +5695,14 @@ class SlackAdapter(BasePlatformAdapter):
                 parent_user_id=parent_user_id,
                 messages=list(messages),
             )
+            if len(self._thread_context_cache) > self._THREAD_CACHE_MAX:
+                stale_keys = [
+                    k
+                    for k, v in self._thread_context_cache.items()
+                    if now - v.fetched_at >= self._THREAD_CACHE_TTL
+                ]
+                for k in stale_keys:
+                    del self._thread_context_cache[k]
             if after_ts:
                 delta, _ = await self._format_thread_context(
                     messages,

@@ -27,8 +27,8 @@ if (-not (Test-Path $installScript)) {
 
 $failures = 0
 function Assert-Equal {
-    param([Parameter(Mandatory = $true)] $Expected,
-          [Parameter(Mandatory = $true)] $Actual,
+    param($Expected,
+          $Actual,
           [Parameter(Mandatory = $true)] [string]$Label)
     if ($Expected -ne $Actual) {
         Write-Host "FAIL: $Label" -ForegroundColor Red
@@ -61,7 +61,7 @@ Write-Host ""
 Write-Host "-- ConvertTo-LongPath --"
 
 Assert-Equal -Expected "" -Actual (ConvertTo-LongPath "") -Label "empty string returns empty"
-Assert-Equal -Expected $null -Actual (ConvertTo-LongPath $null) -Label "null returns null"
+Assert-Equal -Expected "" -Actual (ConvertTo-LongPath $null) -Label "null input returns empty string"
 
 # No 8.3 component -> returned verbatim (even with spaces).
 $longish = "C:\Users\First Last\AppData\Local\Temp"
@@ -75,12 +75,75 @@ Assert-Equal -Expected $noTilde -Actual (ConvertTo-LongPath $noTilde) -Label "ti
 $fakeShort = "C:\Users\FIRST~1.LAS\does\not\exist"
 Assert-Equal -Expected $fakeShort -Actual (ConvertTo-LongPath $fakeShort) -Label "nonexistent 8.3 path falls back to input"
 
+# --- Load Normalize-ProfileEnvVars (the accented-username fix, GH #52842) ---
+$normAst = $ast.FindAll(
+    {
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Normalize-ProfileEnvVars'
+    }, $true) | Select-Object -First 1
+
+if (-not $normAst) {
+    throw "Normalize-ProfileEnvVars not found in install.ps1 -- did the helper get renamed/removed?"
+}
+. ([scriptblock]::Create($normAst.Extent.Text))
+
+# --- Tests for Normalize-ProfileEnvVars ---
+# On a host where ConvertTo-LongPath can't resolve a short alias (COM/PInvoke
+# both unavailable, e.g. non-Windows pwsh), the function must at least not
+# throw and must leave an already-long path untouched.
+Write-Host ""
+Write-Host "-- Normalize-ProfileEnvVars --"
+
+# Snapshot and restore the actual process variables: Normalize-ProfileEnvVars
+# deliberately reads these five names, not arbitrary test-prefixed values.
+$targetVars = @('TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE')
+$originalValues = @{}
+foreach ($var in $targetVars) {
+    $originalValues[$var] = [Environment]::GetEnvironmentVariable($var, 'Process')
+}
+$unrelatedOriginal = [Environment]::GetEnvironmentVariable('HermesTest_MARKER', 'Process')
+
+try {
+    # Deterministic test double: do not depend on Windows COM/PInvoke or the
+    # host's actual 8.3 aliases. Every target input must be transformed.
+    function ConvertTo-LongPath {
+        param([string]$Path)
+        return "long::$Path"
+    }
+
+    foreach ($var in $targetVars) {
+        Set-Item -Path "Env:$var" -Value "short::$var"
+    }
+    $env:HermesTest_MARKER = 'untouched'
+
+    Normalize-ProfileEnvVars
+
+    foreach ($var in $targetVars) {
+        Assert-Equal -Expected "long::short::$var" -Actual [Environment]::GetEnvironmentVariable($var, 'Process') -Label "$var normalized"
+    }
+    Assert-Equal -Expected 'untouched' -Actual $env:HermesTest_MARKER -Label 'unrelated env var left untouched'
+} finally {
+    foreach ($var in $targetVars) {
+        if ($null -eq $originalValues[$var]) {
+            Remove-Item -Path "Env:$var" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:$var" -Value $originalValues[$var]
+        }
+    }
+    if ($null -eq $unrelatedOriginal) {
+        Remove-Item -Path 'Env:HermesTest_MARKER' -ErrorAction SilentlyContinue
+    } else {
+        $env:HermesTest_MARKER = $unrelatedOriginal
+    }
+}
+
 # --- Summary ---
 Write-Host ""
 if ($failures -gt 0) {
     Write-Host "FAILED: $failures assertion(s) failed" -ForegroundColor Red
     exit 1
 } else {
-    Write-Host "All ConvertTo-LongPath tests passed." -ForegroundColor Green
+    Write-Host "All install.ps1 path-normalization tests passed." -ForegroundColor Green
     exit 0
 }

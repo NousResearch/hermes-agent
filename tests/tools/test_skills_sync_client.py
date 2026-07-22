@@ -580,3 +580,90 @@ class TestOptInFlag:
         monkeypatch.setattr(su, "is_curation_eligible", lambda name, *a, **k: False)
         su.set_sync("bundled-skill", True)
         assert su.is_sync_enabled("bundled-skill") is False
+
+
+# ---------------------------------------------------------------------------
+# §2.8 sync-manifest — opt-in as content in the sync plane (cross-device)
+# ---------------------------------------------------------------------------
+
+class TestSyncManifest:
+    def test_build_parse_roundtrip(self):
+        data = ssc.build_sync_manifest_bytes({"beta": True, "alpha": False})
+        parsed = ssc.parse_sync_manifest(data)
+        assert parsed == {"alpha": False, "beta": True}
+
+    def test_manifest_wire_shape(self):
+        # Must match gateway-gateway src/sync/manifest.ts: type + version:1 +
+        # skills:[{name,enabled}]. Skills sorted by name for a stable address.
+        import json
+        data = ssc.build_sync_manifest_bytes({"z": True, "a": True})
+        obj = json.loads(data.decode("utf-8"))
+        assert obj["type"] == "sync-manifest"
+        assert obj["version"] == 1
+        assert obj["skills"] == [
+            {"name": "a", "enabled": True},
+            {"name": "z", "enabled": True},
+        ]
+
+    def test_parse_rejects_malformed(self):
+        # Strict: unknown type, bad version, non-array skills, malformed entry.
+        assert ssc.parse_sync_manifest(b"not json") is None
+        assert ssc.parse_sync_manifest(b'{"type":"nope","version":1,"skills":[]}') is None
+        assert ssc.parse_sync_manifest(b'{"type":"sync-manifest","version":2,"skills":[]}') is None
+        assert ssc.parse_sync_manifest(b'{"type":"sync-manifest","version":1,"skills":{}}') is None
+        assert (
+            ssc.parse_sync_manifest(
+                b'{"type":"sync-manifest","version":1,"skills":[{"name":"x"}]}'
+            )
+            is None
+        )
+        # A malformed manifest must NOT be mistaken for "no skills opted in".
+        assert ssc.parse_sync_manifest(b'{"type":"sync-manifest","version":1,"skills":[]}') == {}
+
+    def test_snapshot_embeds_manifest_root_blob(self, mock_server, synced_env):
+        # snapshot_profile must add a root-level `sync-manifest` blob recording
+        # the opted-in set, alongside the skill subtrees, so opt-in is durable
+        # plane content. Read it back via read_manifest_of_root.
+        base, state = mock_server
+        home, skills, identity = synced_env
+        client = ssc.HSPClient(base, identity["api_key"])
+
+        objs, root_hash, skill_map = ssc.snapshot_profile(["alpha", "beta"])
+        client.put_objects(objs.objects)
+
+        manifest = ssc.read_manifest_of_root(client, root_hash)
+        assert manifest == {"alpha": True, "beta": True}
+
+        # The manifest is a root-level BLOB, not a skill subtree, so the skill
+        # walk must not surface it as a skill.
+        trees = ssc._skill_trees_of_root(client, root_hash)
+        assert "sync-manifest" not in trees
+        assert set(trees) == {"alpha", "devops/beta"}
+
+    def test_pull_adopts_opt_in_from_manifest(self, mock_server, synced_env, monkeypatch):
+        # A skill opted in on device A (present + enabled in the plane manifest)
+        # becomes opted in locally on pull, even if this device had it disabled.
+        base, state = mock_server
+        home, skills, identity = synced_env
+        client = ssc.HSPClient(base, identity["api_key"])
+
+        # Device A pushes alpha+beta (manifest enables both).
+        ssc.push_skills(client, identity=identity)
+
+        # Simulate device B: local opt-in intent is EMPTY, but eligibility passes.
+        adopted = {}
+        import tools.skill_usage as su
+        monkeypatch.setattr(su, "is_curation_eligible", lambda name, *a, **k: True)
+        monkeypatch.setattr(su, "is_sync_enabled", lambda name: False)
+        monkeypatch.setattr(su, "set_sync", lambda name, val: adopted.__setitem__(name, val))
+        # Local head unknown so the pull actually runs.
+        monkeypatch.setattr(ssc, "read_sync_manifest", lambda: {"head": None, "skills": {}})
+        monkeypatch.setattr(ssc, "write_sync_manifest", lambda d: None)
+        # No local opt-in gate (so materialize isn't the thing under test).
+        monkeypatch.setattr(ssc, "_opted_in_rel_paths", lambda: [])
+
+        result = ssc.pull_skills(client, identity=identity)
+        assert result["ok"] is True
+        # Both skills from the plane manifest were adopted into local opt-in.
+        assert adopted == {"alpha": True, "beta": True}
+        assert set(result["opt_in_adopted"]) == {"alpha", "beta"}

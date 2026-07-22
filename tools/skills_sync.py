@@ -28,7 +28,7 @@ from tools.skill_usage import _read_skill_name, read_suppressed_names
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
-from utils import atomic_write_text
+from utils import atomic_write_text, copy_file_writable, copytree_writable, make_tree_owner_writable
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ def _move_dir(src: Path, dest: Path) -> None:
 
 def _copy_dir(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dest, ignore=_ignore_runtime_cache)
+    copytree_writable(src, dest, ignore=_ignore_runtime_cache)
 
 
 def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
@@ -302,7 +302,7 @@ def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
         _rmtree_writable(backup)
     shutil.move(str(dest), str(backup))
     try:
-        shutil.copytree(skill_src, dest, ignore=_ignore_runtime_cache)
+        copytree_writable(skill_src, dest, ignore=_ignore_runtime_cache)
     except OSError:
         if backup.exists():  # clear a partially-written dest so it can't shadow/block the restore
             if dest.exists():
@@ -323,12 +323,15 @@ def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
 def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str) -> None:
     """Handle a skill that is in the manifest AND on disk."""
     origin_hash = st.manifest.get(skill_name, "")
-    if origin_hash and bundled_hash == origin_hash:  # bundled unchanged: skip without hashing the user copy
+    if origin_hash and bundled_hash == origin_hash:  # bundled unchanged: repair pre-fix copies in place
+        make_tree_owner_writable(dest)
         st.skipped += 1
         return
     user_hash = _dir_hash(dest)
     if not origin_hash:  # v1 migration: baseline from user's copy (can't tell edit from upstream)
         st.manifest[skill_name] = user_hash
+        if user_hash == bundled_hash:
+            make_tree_owner_writable(dest)
         st.skipped += 1
         return
     if not _matches_origin_hash(dest, origin_hash, user_hash):
@@ -355,7 +358,7 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]
             continue
         try:
             dest_desc.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(desc_md, dest_desc)
+            copy_file_writable(desc_md, dest_desc)
         except OSError as e:
             logger.debug("Could not copy %s: %s", desc_md, e)
 

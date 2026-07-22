@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
+from utils import copy_file_writable, copytree_writable
 
 logger = logging.getLogger(__name__)
 
@@ -770,7 +771,7 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
         return
     dst = profile_dir / relpath
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    copy_file_writable(src, dst)
     if relpath == ".env":
         with contextlib.suppress(OSError):
             os.chmod(str(dst), 0o600)
@@ -779,7 +780,7 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
-    shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    copytree_writable(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
     # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -812,7 +813,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+        copytree_writable(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
 

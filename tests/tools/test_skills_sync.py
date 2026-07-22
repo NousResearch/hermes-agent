@@ -703,6 +703,141 @@ class TestResetBundledSkill:
         assert (dest / "SKILL.md").exists()
 
 
+class TestSyncSkillsReadOnlyBundledSource:
+    """Regression: bundled skills served from a read-only filesystem (such as
+    the Nix store, mode 0444/0555) must end up writable in ~/.hermes/skills/.
+
+    Without the fix, the user copy inherits the read-only mode bits via
+    ``shutil.copy2`` / ``shutil.copytree`` and a later ``skill_manage`` /
+    curator edit fails with ``PermissionError``.
+    """
+
+    def _setup_readonly_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled_skills_ro"
+        skill_dir = bundled / "category" / "ro-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: ro-skill\n---\n# RO\n"
+        )
+        (skill_dir / "main.py").write_text("print(1)\n")
+        # Lock down depth-first like the Nix store.
+        import os
+
+        for path in sorted(bundled.rglob("*"), reverse=True):
+            if path.is_dir():
+                os.chmod(path, 0o555)
+            else:
+                os.chmod(path, 0o444)
+        os.chmod(bundled, 0o555)
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch("tools.skills_sync._get_bundled_dir", return_value=bundled)
+        )
+        stack.enter_context(
+            patch("tools.skills_sync.SKILLS_DIR", skills_dir)
+        )
+        stack.enter_context(
+            patch("tools.skills_sync.MANIFEST_FILE", manifest_file)
+        )
+        return stack
+
+    def test_fresh_install_user_copy_is_writable(self, tmp_path):
+        import os
+        import stat as stat_mod
+
+        bundled = self._setup_readonly_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=True)
+
+            assert result["copied"] == ["ro-skill"]
+            user_skill = skills_dir / "category" / "ro-skill" / "SKILL.md"
+            assert user_skill.exists()
+            assert os.stat(user_skill).st_mode & stat_mod.S_IWUSR, (
+                "User copy of bundled skill must be writable after sync; see "
+                "tools.skills_sync.copytree_writable"
+            )
+            # skill_manage emulation: append must succeed.
+            with user_skill.open("a") as fh:
+                fh.write("\nappended\n")
+        finally:
+            # Restore writability on bundled tree so pytest tmp_path
+            # teardown does not fail.
+            for path in sorted(bundled.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(bundled, 0o755)
+
+    def test_preexisting_hash_identical_readonly_copy_is_repaired(self, tmp_path):
+        """Migration regression: a user copy made *before* the writable-copy
+        fix landed can be hash-identical to the bundled source (so the sync
+        logic takes the "bundled unchanged, user unchanged" no-op branch)
+        while still carrying the inherited 0444/0555 mode bits from that
+        earlier, unfixed copy. Nothing about the content differs, so this
+        skill would otherwise never reach an update/copy path that could
+        repair it — it would stay unwritable forever. sync_skills must sweep
+        write-permissions onto it on every run regardless.
+        """
+        import os
+        import stat as stat_mod
+
+        bundled = self._setup_readonly_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Pre-seed a user copy that is byte-identical to the bundled skill
+        # (simulating a copy made by a pre-fix Hermes build) and lock it
+        # down to Nix-store-style read-only modes, with a manifest entry
+        # already recording the matching origin hash.
+        bundled_skill_dir = bundled / "category" / "ro-skill"
+        bundled_hash = _dir_hash(bundled_skill_dir)
+
+        dest = skills_dir / "category" / "ro-skill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(
+            (bundled_skill_dir / "SKILL.md").read_text()
+        )
+        (dest / "main.py").write_text((bundled_skill_dir / "main.py").read_text())
+        os.chmod(dest / "SKILL.md", 0o444)
+        os.chmod(dest / "main.py", 0o444)
+        os.chmod(dest, 0o555)
+
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"ro-skill:{bundled_hash}\n")
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=True)
+
+            # No-op from the sync's perspective: not re-copied, just repaired.
+            assert "ro-skill" not in result["copied"]
+            assert "ro-skill" not in result["updated"]
+
+            user_skill = dest / "SKILL.md"
+            assert os.stat(user_skill).st_mode & stat_mod.S_IWUSR, (
+                "Pre-existing hash-identical read-only user copy must be "
+                "repaired in place by sync_skills"
+            )
+            assert os.stat(dest).st_mode & stat_mod.S_IWUSR
+            # skill_manage emulation: append must succeed.
+            with user_skill.open("a") as fh:
+                fh.write("\nappended\n")
+        finally:
+            for path in sorted(bundled.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(bundled, 0o755)
+            for path in sorted(dest.rglob("*"), reverse=True):
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            os.chmod(dest, 0o755)
+
+
 class TestNoBundledSkillsOptOut:
     """The .no-bundled-skills marker makes sync_skills() a no-op.
 

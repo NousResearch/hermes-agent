@@ -35,6 +35,38 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def ensure_owner_writable(path: Path) -> None:
+    """Grant owner-write without following symlinks; best-effort by design."""
+    if path.is_symlink():
+        return
+    try:
+        os.chmod(path, stat.S_IMODE(os.stat(path).st_mode) | stat.S_IWUSR)
+    except OSError as exc:
+        logger.debug("chmod on %s failed: %s", path, exc)
+
+
+def make_tree_owner_writable(root: Path) -> None:
+    """Make an existing tree owner-writable without chmod-ing symlink targets."""
+    if not root.exists():
+        return
+    ensure_owner_writable(root)
+    for path in root.rglob("*"):
+        ensure_owner_writable(path)
+
+
+def copy_file_writable(src, dst) -> None:
+    """Copy metadata and ensure the resulting file is owner-writable."""
+    shutil.copy2(src, dst)
+    ensure_owner_writable(Path(dst))
+
+
+def copytree_writable(src, dst, **kwargs) -> None:
+    """Copy a tree while repairing immutable-source permission bits on the copy."""
+    kwargs.setdefault("copy_function", copy_file_writable)
+    shutil.copytree(src, dst, **kwargs)
+    make_tree_owner_writable(Path(dst))
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Permission bits of *path* if it exists, else ``None``."""
     try:

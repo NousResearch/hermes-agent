@@ -27,6 +27,94 @@ _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # ---------------------------------------------------------------------------
+# Inline $skill-name mentions (#64601).
+#
+# Alongside the prefix-only ``/skill-name`` command, a skill may be mentioned
+# anywhere inside a message as ``$skill-name``.  Unlike ``/``, which replaces
+# the whole turn, a ``$`` mention *augments* it: the user's text is carried
+# through verbatim and the mentioned skill bodies ride along with it, in the
+# same wire format a stacked ``/a /b`` invocation produces.  That lets several
+# skills chain in one message ("clean this up $code-review then $commit it").
+#
+# False positives are the whole design problem here — ``$`` is shell syntax.
+# Three guards, in order of how much work they actually do:
+#
+#   1. Code is stripped before scanning.  A pasted shell snippet or a fenced
+#      block full of ``$VAR`` must never load a skill.  This is the guard that
+#      matters most and it runs first.
+#   2. Every candidate is resolved against the real skill map.  ``$API_KEY``
+#      lexes fine and then resolves to nothing, so it is dropped.  This is what
+#      makes the feature safe by default.
+#   3. A shell-env denylist.  Mostly belt-and-braces given (2) — it only earns
+#      its keep if a skill is ever literally named ``path`` or ``home``.
+# ---------------------------------------------------------------------------
+
+# Shell/env names that must never resolve to a skill even if one shares the
+# name.  Compared case-insensitively against the bare mention.
+_SHELL_ENV_DENYLIST = frozenset({
+    "path", "home", "user", "shell", "term", "lang",
+    "tmpdir", "xdg_config_home", "xdg_data_home", "xdg_cache_home",
+    "editor", "visual", "pager", "ps1", "ps2",
+    "ifs", "oldpwd", "pwd", "shlvl",
+    "hostname", "hosttype", "machtype",
+    "random", "lineno", "funcname", "bash_source",
+})
+
+# ``$name`` where name starts with a letter.  The lookbehind rejects ``$$foo``
+# (shell PID) and ``foo$bar`` (mid-word).  ``${VAR}`` never matches because
+# ``{`` is not a letter, so shell brace-expansion is excluded for free.
+_SKILL_MENTION_RE = re.compile(r"(?<![\w$])\$([a-zA-Z][a-zA-Z0-9_-]*)")
+
+# Fenced blocks first, then inline spans — a ``` block may contain backticks.
+_FENCED_CODE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def _strip_code_regions(text: str) -> str:
+    """Blank out fenced code blocks and inline code spans.
+
+    Replaces each code region with spaces rather than deleting it so that
+    match offsets in the returned string still line up with the original —
+    callers that want to highlight or rewrite mentions in place can rely on
+    that.  An unterminated fence (still being typed) simply doesn't match, so
+    its contents stay scannable; that is the conservative direction to err in,
+    since the alternative would silently swallow the rest of the message.
+    """
+    def _blank(match: re.Match) -> str:
+        # Preserve newlines so line numbers/offsets are unchanged.
+        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
+
+    text = _FENCED_CODE_RE.sub(_blank, text)
+    return _INLINE_CODE_RE.sub(_blank, text)
+
+
+def extract_skill_mentions(text: str) -> list[str]:
+    """Extract ``$skill-name`` mentions from user text.
+
+    Returns the bare names (no ``$``), de-duplicated, in first-appearance
+    order.  This is a purely lexical pass — names are *not* checked against the
+    installed skills here; :func:`build_mention_invocation_message` does that.
+    Mentions inside code blocks and code spans are ignored, as are shell env
+    vars in :data:`_SHELL_ENV_DENYLIST`.
+    """
+    if not text or "$" not in text:
+        return []
+
+    scannable = _strip_code_regions(text)
+
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in _SKILL_MENTION_RE.finditer(scannable):
+        name = match.group(1)
+        if name.lower() in _SHELL_ENV_DENYLIST:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        mentions.append(name)
+    return mentions
+
+# ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
 #
 # When a user invokes a /skill (or /bundle), Hermes expands the turn into a
@@ -688,6 +776,141 @@ def build_stacked_skill_invocation_message(
 
     header = "\n".join(header_lines)
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
+
+
+# Scaffolding this module (and skill_bundles) already produced.  A ``$`` scan
+# must never run over one of these: their bodies embed whole SKILL.md files,
+# and a skill that documents shell usage ("export $FOO") or the mention syntax
+# itself would otherwise re-trigger and load skills recursively.
+_SKILL_SCAFFOLD_PREFIXES = (
+    _SKILL_INVOCATION_PREFIX,  # /skill, stacked /a /b, and bundles
+    '[IMPORTANT: The user launched this CLI session with the ',  # --skill preload
+)
+
+
+def message_is_skill_scaffolding(text: Any) -> bool:
+    """True when *text* is a turn this module already expanded."""
+    return isinstance(text, str) and text.startswith(_SKILL_SCAFFOLD_PREFIXES)
+
+
+def build_mention_invocation_message(
+    user_message: str,
+    task_id: str | None = None,
+) -> Optional[tuple[str, list[str], list[str]]]:
+    """Build the augmented turn for inline ``$skill-name`` mentions (#64601).
+
+    Unlike the ``/`` commands, a mention does not replace the turn — the user's
+    text is carried through verbatim (mentions included, so the model can see
+    which skill was invoked where) and the skill bodies are appended.
+
+    Returns ``(message, loaded_skill_names, dropped_names)`` or ``None`` when
+    the message has no resolvable mention and should be left alone.
+    ``dropped_names`` are mentions that resolved but exceeded
+    ``_MAX_STACKED_SKILLS`` — the same ceiling stacked ``/a /b`` invocations
+    use, so one message cannot pull in unbounded skill content either way.
+    Callers should surface them rather than truncating silently.
+    """
+    if not isinstance(user_message, str) or message_is_skill_scaffolding(user_message):
+        return None
+
+    names = extract_skill_mentions(user_message)
+    if not names:
+        return None
+
+    # Per-platform disabled skills. ``get_skill_commands()`` only applies the
+    # *global* disabled list at scan time — its cache is process-global, so a
+    # gateway serving several platforms at once would otherwise let a mention
+    # load a skill the user disabled for that platform. The ``/`` path checks
+    # this in gateway/run.py; the mention path has no surface to check in, so
+    # it happens here. Called with no argument, it resolves the platform from
+    # HERMES_PLATFORM / HERMES_SESSION_PLATFORM and unions the global list —
+    # which correctly degrades to global-only in the CLI.
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        disabled = get_disabled_skill_names()
+    except Exception:
+        disabled = set()
+
+    commands = get_skill_commands()
+
+    # Resolve lexical candidates against installed skills. Anything that is not
+    # a real skill ($API_KEY, $ARTIFACT_DIR, …) is dropped silently — it is
+    # ordinary text that merely looks like a mention. Disabled skills are
+    # dropped here too, before the cap, so they cannot consume a slot.
+    cmd_keys: list[str] = []
+    for name in names:
+        cmd_key = resolve_skill_command_key(name)
+        if cmd_key is None or cmd_key in cmd_keys:
+            continue
+        if (commands.get(cmd_key) or {}).get("name") in disabled:
+            continue
+        cmd_keys.append(cmd_key)
+
+    if not cmd_keys:
+        return None
+
+    dropped = [k.lstrip("/") for k in cmd_keys[_MAX_STACKED_SKILLS:]]
+    cmd_keys = cmd_keys[:_MAX_STACKED_SKILLS]
+
+    loaded_names: list[str] = []
+    skill_blocks: list[str] = []
+
+    for cmd_key in cmd_keys:
+        skill_info = commands.get(cmd_key)
+        if not skill_info:
+            continue
+
+        loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+        if not loaded:
+            continue
+        loaded_skill, skill_dir, skill_name = loaded
+
+        # Track active usage for Curator lifecycle management (#17782)
+        try:
+            from tools.skill_usage import bump_use
+            bump_use(skill_name)
+        except Exception:
+            pass  # Non-critical
+
+        # NOTE: must start with "[Loaded as part of the " — that prefix is the
+        # bundle block marker the memory-scaffolding extractor cuts on.
+        activation_note = (
+            f'[Loaded as part of the inline $ mention "{skill_name}".]'
+        )
+        skill_blocks.append(
+            _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                activation_note,
+                session_id=task_id,
+            )
+        )
+        loaded_names.append(skill_name)
+
+    if not skill_blocks:
+        return None
+
+    # Header — reuses the bundle wire format on purpose. It must start with
+    # _SKILL_INVOCATION_PREFIX and contain " skill bundle," so that
+    # extract_user_instruction_from_skill_message() recovers the user's text
+    # unchanged. That keeps memory providers clean even on paths that do not
+    # pass persist_user_message.
+    typed = " ".join(f"${k.lstrip('/')}" for k in cmd_keys)
+    header_lines = [
+        f'[IMPORTANT: The user has invoked the "{typed}" skills as inline $ mentions, '
+        f"which load as a skill bundle, {len(loaded_names)} together. The user's "
+        "message is reproduced verbatim below — treat every skill that follows as "
+        "active guidance for this turn.]",
+    ]
+    if dropped:
+        header_lines.append(
+            f"Skills mentioned but not loaded (limit {_MAX_STACKED_SKILLS}): "
+            f"{', '.join(dropped)}"
+        )
+    header_lines.extend(["", f"User instruction: {user_message}"])
+
+    header = "\n".join(header_lines)
+    return ("\n\n".join([header, *skill_blocks]), loaded_names, dropped)
 
 
 def build_preloaded_skills_prompt(

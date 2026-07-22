@@ -6404,6 +6404,102 @@ class AIAgent:
                 reset_accounting_context(acct_token)
                 reset_conversation_context(token)
 
+    def _expand_skill_mentions(
+        self,
+        user_message: Any,
+        persist_user_message: Optional[Any],
+        task_id: Optional[str],
+    ) -> tuple[Any, Optional[Any]]:
+        """Load any inline ``$skill-name`` mentions in *user_message* (#64601).
+
+        Called from ``agent.conversation_loop.run_conversation`` *after* hidden
+        MoA turns are decoded and *before* ``build_turn_context``, so every
+        surface (CLI, gateway, batch_runner) gets mentions — including
+        ``/moa … $skill`` prompts whose real text is base64-encoded until
+        decode. Hooking a surface instead would leave ``$`` mentions inert
+        elsewhere; hooking before MoA decode would miss encoded prompts.
+
+        The model sees the skill bodies; transcripts and memory keep the text
+        the user actually typed, via ``persist_user_message`` (the same
+        mechanism voice-mode prefixes and MoA turns already use). An explicit
+        ``persist_user_message`` from the caller always wins — it is a cleaner
+        rendering of this turn than anything we could reconstruct.
+
+        Returns the (possibly rewritten) ``(user_message, persist_user_message)``.
+        Never raises: a failure here must degrade to sending the turn unchanged.
+
+        Handles both plain-string turns and OpenAI-style multimodal turns
+        (``[{"type": "image_url", ...}, {"type": "text", "text": "..."}]``).
+        For the latter, only the first text part is rewritten and the image
+        parts keep their position, so mentions work when a prompt carries an
+        image without disturbing image ordering.
+        """
+        # Fast reject: nothing to do without a "$" somewhere in the text.
+        text, text_index = self._inline_mention_text(user_message)
+        if text is None or "$" not in text:
+            return user_message, persist_user_message
+
+        try:
+            from agent.skill_preprocessing import load_skills_config
+            if not load_skills_config().get("mentions", True):
+                return user_message, persist_user_message
+
+            from agent.skill_commands import build_mention_invocation_message
+
+            result = build_mention_invocation_message(text, task_id=task_id)
+            if not result:
+                return user_message, persist_user_message
+
+            expanded_text, loaded_names, dropped = result
+            logger.info(
+                "Inline $ mention loaded %d skill(s): %s",
+                len(loaded_names), ", ".join(loaded_names),
+            )
+            if dropped:
+                logger.warning(
+                    "Inline $ mention exceeded the skill limit; not loaded: %s",
+                    ", ".join(dropped),
+                )
+
+            if text_index is None:
+                expanded_message: Any = expanded_text
+            else:
+                # Rewrite the text part in place; copy the parts we touch so the
+                # caller's original message object is left untouched.
+                expanded_message = [
+                    dict(part) if isinstance(part, dict) else part
+                    for part in user_message
+                ]
+                expanded_message[text_index]["text"] = expanded_text
+
+            if persist_user_message is None:
+                persist_user_message = user_message
+            return expanded_message, persist_user_message
+        except Exception:
+            logger.debug("Inline $ skill mention expansion failed", exc_info=True)
+            return user_message, persist_user_message
+
+    @staticmethod
+    def _inline_mention_text(user_message: Any) -> tuple[Optional[str], Optional[int]]:
+        """Return the scannable text of a turn and where it lives.
+
+        ``(text, None)``  — a plain-string turn; ``text`` is the whole message.
+        ``(text, index)`` — a multimodal list turn; ``text`` is the first text
+        part and ``index`` is its position in the list.
+        ``(None, None)``  — nothing to scan (non-text turn, or no text part).
+        """
+        if isinstance(user_message, str):
+            return user_message, None
+        if isinstance(user_message, list):
+            for index, part in enumerate(user_message):
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") == "text"
+                    and isinstance(part.get("text"), str)
+                ):
+                    return part["text"], index
+        return None, None
+
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """
         Simple chat interface that returns just the final response.

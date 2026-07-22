@@ -8283,3 +8283,128 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+# ── Inline $skill-name mentions: multimodal turn handling (#64601) ──
+
+class TestInlineMentionText:
+    """AIAgent._inline_mention_text locates the scannable text of a turn."""
+
+    def test_plain_string_turn(self):
+        assert AIAgent._inline_mention_text("do $code-review") == ("do $code-review", None)
+
+    def test_multimodal_returns_first_text_part_and_index(self):
+        msg = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "text", "text": "review this $code-review"},
+        ]
+        assert AIAgent._inline_mention_text(msg) == ("review this $code-review", 1)
+
+    def test_image_only_turn_has_no_text(self):
+        msg = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+        assert AIAgent._inline_mention_text(msg) == (None, None)
+
+    def test_non_message_types_ignored(self):
+        assert AIAgent._inline_mention_text(None) == (None, None)
+        assert AIAgent._inline_mention_text(42) == (None, None)
+
+
+def test_expand_mentions_rewrites_multimodal_text_part_only(agent):
+    """A mention in a multimodal turn rewrites the text part, not the image."""
+    original = [
+        {"type": "text", "text": "review this $code-review"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    with (
+        patch("agent.skill_preprocessing.load_skills_config", return_value={"mentions": True}),
+        patch(
+            "agent.skill_commands.build_mention_invocation_message",
+            return_value=("EXPANDED SKILL BODY\n\nreview this $code-review", ["code-review"], []),
+        ),
+    ):
+        message, persist = agent._expand_skill_mentions(original, None, task_id=None)
+
+    # text part rewritten in place
+    assert message[0]["text"] == "EXPANDED SKILL BODY\n\nreview this $code-review"
+    # image part untouched and still second
+    assert message[1] == original[1]
+    # caller's original object not mutated
+    assert original[0]["text"] == "review this $code-review"
+    # transcript/memory keeps the original multimodal turn verbatim
+    assert persist == original
+
+
+def test_expand_mentions_multimodal_without_text_is_untouched(agent):
+    msg = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+    with patch("agent.skill_preprocessing.load_skills_config", return_value={"mentions": True}):
+        message, persist = agent._expand_skill_mentions(msg, None, task_id=None)
+    assert message is msg
+    assert persist is None
+
+
+def test_expand_mentions_multimodal_config_off(agent):
+    original = [{"type": "text", "text": "do $code-review"}]
+    with patch("agent.skill_preprocessing.load_skills_config", return_value={"mentions": False}):
+        message, persist = agent._expand_skill_mentions(original, None, task_id=None)
+    assert message is original
+    assert persist is None
+
+
+def test_encoded_moa_turn_expands_skill_mentions_after_decode(agent):
+    """Encoded /moa prompts must expand $mentions after decode (#64601 review).
+
+    encode_moa_turn() base64-hides the real prompt, so a pre-decode `$` scan
+    cannot see `$code-review`. Expansion runs in conversation_loop after
+    decode_moa_turn and before build_turn_context; this pins that order.
+    """
+    from hermes_cli.moa_config import encode_moa_turn
+
+    typed = "review this $code-review"
+    encoded = encode_moa_turn(typed)
+    assert "$" not in encoded  # guard: the bug is specifically "no $ until decode"
+
+    captured: dict = {}
+
+    def _capture_build_turn_context(
+        _agent,
+        user_message,
+        _system_message,
+        _conversation_history,
+        _task_id,
+        _stream_callback,
+        persist_user_message,
+        _persist_user_timestamp,
+        **_kwargs,
+    ):
+        captured["user_message"] = user_message
+        captured["persist_user_message"] = persist_user_message
+        raise RuntimeError("stop-after-mention-expansion")
+
+    with (
+        patch(
+            "agent.skill_preprocessing.load_skills_config",
+            return_value={"mentions": True},
+        ),
+        patch(
+            "agent.skill_commands.build_mention_invocation_message",
+            return_value=(
+                "EXPANDED SKILL BODY\n\nreview this $code-review",
+                ["code-review"],
+                [],
+            ),
+        ),
+        patch(
+            "agent.conversation_loop.build_turn_context",
+            side_effect=_capture_build_turn_context,
+        ),
+        pytest.raises(RuntimeError, match="stop-after-mention-expansion"),
+    ):
+        agent.run_conversation(encoded)
+
+    # Model-facing turn got the skill body after MoA decode revealed `$`.
+    assert captured["user_message"] == (
+        "EXPANDED SKILL BODY\n\nreview this $code-review"
+    )
+    # Transcript/memory keep the decoded typed prompt, not the base64 marker
+    # and not the injected skill scaffolding.
+    assert captured["persist_user_message"] == typed

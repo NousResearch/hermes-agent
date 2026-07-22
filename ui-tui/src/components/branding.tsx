@@ -3,9 +3,13 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { mix } from '../lib/color.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
+
+import { ShimmerRows } from './loaders.js'
+import { WidgetGrid } from './widgetGrid.js'
 
 const LOADER_TICK_MS = 120
 
@@ -28,8 +32,13 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
 }
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
+  // No `opaque`: the banner is top-level content with nothing behind it, so
+  // it never needs the opaque space-fill (that's for absolute overlays). On a
+  // transparent terminal (terminal.background #00000000) the fill's "default
+  // background" spaces composite to black bars instead of the intended
+  // see-through — the reported ugly banner. Glyphs paint fine on their own.
   return (
-    <Box flexDirection="column" height={lines.length} opaque width={artWidth(lines)}>
+    <Box flexDirection="column" height={lines.length} width={artWidth(lines)}>
       {lines.map(([c, text], i) => (
         <Text color={c} key={i} wrap="truncate-end">
           {text}
@@ -72,11 +81,18 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
   const w = Math.max(28, cols - 4)
 
+  // No `opaque` (see ArtLines): the dashed rules are glyphs and the tagline's
+  // centering spaces carry the text's own fg style, so every cell paints with
+  // a real see-through background. The opaque fill was writing default-bg
+  // spaces that a transparent terminal renders as black bars.
+  // NOT bold: on Cursor's transparent-background terminal, a full-width run
+  // of BOLD box-drawing dashes renders with an opaque black cell background
+  // (the plain-dash rule right below renders clean — pixel-diffed live; the
+  // only stylistic delta was bold). Bold on short label runs is fine; bold on
+  // full-width box-drawing rows is what triggers the slab.
   return (
-    <Box flexDirection="column" height={3} marginBottom={1} opaque width={w}>
-      <Text bold color={t.color.primary}>
-        {ruleIn(t.brand.name, w)}
-      </Text>
+    <Box flexDirection="column" height={3} marginBottom={1} width={w}>
+      <Text color={t.color.primary}>{ruleIn(t.brand.name, w)}</Text>
       <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
       <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
     </Box>
@@ -94,19 +110,48 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   const logoLines = logo(t.color, t.bannerLogo || undefined)
   const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
 
+  // Each tier renders its rows through a single-column WidgetGrid sized to
+  // the available columns — same visual output as the old plain flex column
+  // (cells clip where truncate-end used to), but the banner is now a
+  // layout-engine surface.
   if (cols >= logoW + 2) {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <ArtLines lines={logoLines} />
-        <Text color={t.color.muted} wrap="truncate-end">
-          {t.brand.icon} {TAG_FULL}
-        </Text>
+        <WidgetGrid
+          cols={cols}
+          columns={1}
+          gap={0}
+          paddingX={0}
+          paddingY={0}
+          rowGap={0}
+          widgets={[
+            { children: <ArtLines lines={logoLines} />, id: 'banner-art' },
+            {
+              children: (
+                <Text color={t.color.muted} wrap="truncate-end">
+                  {t.brand.icon} {TAG_FULL}
+                </Text>
+              ),
+              id: 'banner-tagline'
+            }
+          ]}
+        />
       </Box>
     )
   }
 
   if (cols >= COMPACT_FROM) {
-    return <CompactBanner cols={cols} t={t} />
+    return (
+      <WidgetGrid
+        cols={cols}
+        columns={1}
+        gap={0}
+        paddingX={0}
+        paddingY={0}
+        rowGap={0}
+        widgets={[{ children: <CompactBanner cols={cols} t={t} />, id: 'banner-compact' }]}
+      />
+    )
   }
 
   const name = cols >= 52 ? t.brand.name : (t.brand.name.split(' ')[0] ?? t.brand.name)
@@ -114,15 +159,49 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text bold color={t.color.primary} wrap="truncate-end">
-        {t.brand.icon} {name}
-      </Text>
-      <Text color={t.color.muted} wrap="truncate-end">
-        {t.brand.icon} {tag}
-      </Text>
+      <WidgetGrid
+        cols={cols}
+        columns={1}
+        gap={0}
+        paddingX={0}
+        paddingY={0}
+        rowGap={0}
+        widgets={[
+          {
+            children: (
+              <Text bold color={t.color.primary} wrap="truncate-end">
+                {t.brand.icon} {name}
+              </Text>
+            ),
+            id: 'banner-name'
+          },
+          {
+            children: (
+              <Text color={t.color.muted} wrap="truncate-end">
+                {t.brand.icon} {tag}
+              </Text>
+            ),
+            id: 'banner-tag'
+          }
+        ]}
+      />
     </Box>
   )
 }
+
+// ── Skeleton ─────────────────────────────────────────────────────────
+//
+// Lazy sections render shimmer rows shaped like the real content (label
+// block + value run) instead of a blank gap that pops when data lands.
+// Row widths mirror the typical toolsets listing.
+const SKELETON_ROWS: readonly (readonly [number, number])[] = [
+  [7, 30],
+  [7, 9],
+  [14, 12],
+  [12, 12],
+  [7, 7],
+  [10, 13]
+]
 
 // ── Collapsible helpers ──────────────────────────────────────────────
 
@@ -168,6 +247,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
+  // Hierarchy: labels lead in the label tone; member lists recede in the
+  // muted/text midpoint. Anchoring on MUTED (mid-luminance by construction)
+  // keeps the fade readable on both poles even when polarity detection is
+  // wrong — surface-relative blends go invisible when text is already pale.
+  const listFade = mix(t.color.muted, t.color.text, 0.5)
+
   // ── Local collapse state for each section ──
   const [toolsOpen, setToolsOpen] = useState(true)
   const [skillsOpen, setSkillsOpen] = useState(false)
@@ -209,8 +294,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.label}>{strip(k)}: </Text>
+            <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more categories…)</Text>}
@@ -229,6 +314,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const mcpConnected = mcpServers.filter(s => s.connected).length
 
   const toolsBody = () => {
+    if (info.lazy && toolEntries.length === 0) {
+      return <ShimmerRows color={listFade} highlight={t.color.label} rows={SKELETON_ROWS} />
+    }
+
     const shown = toolEntries.slice(0, TOOLSETS_MAX)
     const overflow = toolEntries.length - TOOLSETS_MAX
 
@@ -236,8 +325,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.label}>{strip(k)}: </Text>
+            <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
         {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
@@ -282,24 +371,57 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     return <Text color={t.color.muted}>{info.system_prompt}</Text>
   }
 
-  return (
-    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
-      {wide && (
-        <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={heroLines} />
-          <Text />
+  // The wide layout is a real two-column grid: a fixed-width hero track and a
+  // flexible info track (grid-template-columns: <leftW> 1fr, gap 2) — the
+  // terminal equivalent of the desktop pane shell's fixed-vs-flex tracks.
+  // Narrow drops to a single flexible track. Track math reproduces the old
+  // hand-rolled widths exactly: usable = (leftW + 2 + w) - gap = leftW + w.
+  const heroColumn = wide ? (
+    <Box flexDirection="column" width="100%">
+      <ArtLines lines={heroLines} />
+      <Text />
 
-          <Text color={t.color.accent}>
+      <Text color={t.color.accent}>
+        {info.model.split('/').pop()}
+        <Text color={t.color.muted}> · Nous Research</Text>
+      </Text>
+
+      <Text color={t.color.muted} wrap="truncate-end">
+        {info.cwd || process.cwd()}
+      </Text>
+
+      {sid && (
+        <Text>
+          <Text color={t.color.sessionLabel}>Session: </Text>
+          <Text color={t.color.sessionBorder}>{sid}</Text>
+        </Text>
+      )}
+    </Box>
+  ) : null
+
+  const infoColumn = (
+    <Box flexDirection="column" width="100%">
+      {wide ? (
+        <Box justifyContent="center" marginBottom={1}>
+          <Text bold color={t.color.primary}>
+            {t.brand.name}
+            {info.version ? ` v${info.version}` : ''}
+            {info.release_date ? ` (${info.release_date})` : ''}
+          </Text>
+        </Box>
+      ) : (
+        // Narrow layout hides the hero column; surface model/cwd/session
+        // here so they aren't lost.
+        <Box flexDirection="column" marginBottom={1}>
+          <Text color={t.color.accent} wrap="truncate-end">
             {info.model.split('/').pop()}
             <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
-
           <Text color={t.color.muted} wrap="truncate-end">
             {info.cwd || process.cwd()}
           </Text>
-
           {sid && (
-            <Text>
+            <Text wrap="truncate-end">
               <Text color={t.color.sessionLabel}>Session: </Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
@@ -307,118 +429,108 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         </Box>
       )}
 
-      <Box flexDirection="column" width={w}>
-        {wide ? (
-          <Box justifyContent="center" marginBottom={1}>
-            <Text bold color={t.color.primary}>
-              {t.brand.name}
-              {info.version ? ` v${info.version}` : ''}
-              {info.release_date ? ` (${info.release_date})` : ''}
-            </Text>
-          </Box>
-        ) : (
-          // Narrow layout hides the hero column; surface model/cwd/session
-          // here so they aren't lost.
-          <Box flexDirection="column" marginBottom={1}>
-            <Text color={t.color.accent} wrap="truncate-end">
-              {info.model.split('/').pop()}
-              <Text color={t.color.muted}> · Nous Research</Text>
-            </Text>
-            <Text color={t.color.muted} wrap="truncate-end">
-              {info.cwd || process.cwd()}
-            </Text>
-            {sid && (
-              <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
-                <Text color={t.color.sessionBorder}>{sid}</Text>
-              </Text>
-            )}
-          </Box>
-        )}
+      {/* ── Tools (expanded by default) ── */}
+      <Box flexDirection="column" marginTop={1}>
+        <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
+        {toolsOpen && toolsBody()}
+      </Box>
 
-        {/* ── Tools (expanded by default) ── */}
-        <Box flexDirection="column" marginTop={1}>
-          <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
-          {toolsOpen && toolsBody()}
-        </Box>
+      {/* ── Skills (collapsed by default) ── */}
+      <Box flexDirection="column" marginTop={1}>
+        <CollapseToggle
+          count={skillsTotal}
+          onToggle={() => setSkillsOpen(v => !v)}
+          open={skillsOpen}
+          suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+          t={t}
+          title="Available Skills"
+        />
+        {skillsOpen && skillsBody()}
+      </Box>
 
-        {/* ── Skills (collapsed by default) ── */}
+      {/* ── System Prompt (collapsed by default) ── */}
+      {sysPromptLen > 0 && (
         <Box flexDirection="column" marginTop={1}>
           <CollapseToggle
-            count={skillsTotal}
-            onToggle={() => setSkillsOpen(v => !v)}
-            open={skillsOpen}
-            suffix={
-              skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined
-            }
+            onToggle={() => setSystemOpen(v => !v)}
+            open={systemOpen}
+            suffix={`— ${sysPromptLen.toLocaleString()} chars`}
             t={t}
-            title="Available Skills"
+            title="System Prompt"
           />
-          {skillsOpen && skillsBody()}
+          {systemOpen && systemBody()}
         </Box>
+      )}
 
-        {/* ── System Prompt (collapsed by default) ── */}
-        {sysPromptLen > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <CollapseToggle
-              onToggle={() => setSystemOpen(v => !v)}
-              open={systemOpen}
-              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
-              t={t}
-              title="System Prompt"
-            />
-            {systemOpen && systemBody()}
-          </Box>
-        )}
+      {/* ── MCP Servers (collapsed by default) ── */}
+      {mcpServers.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <CollapseToggle
+            count={mcpConnected}
+            onToggle={() => setMcpOpen(v => !v)}
+            open={mcpOpen}
+            suffix="connected"
+            t={t}
+            title="MCP Servers"
+          />
+          {mcpOpen && mcpBody()}
+        </Box>
+      )}
 
-        {/* ── MCP Servers (collapsed by default) ── */}
-        {mcpServers.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <CollapseToggle
-              count={mcpConnected}
-              onToggle={() => setMcpOpen(v => !v)}
-              open={mcpOpen}
-              suffix="connected"
-              t={t}
-              title="MCP Servers"
-            />
-            {mcpOpen && mcpBody()}
-          </Box>
-        )}
+      <Text />
 
-        <Text />
+      <Text color={t.color.text}>
+        {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
+        {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
+        {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
+        {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
+        {' · '}
+        <Text color={t.color.muted}>/help for commands</Text>
+      </Text>
 
-        <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
-          {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
-          {' · '}
-          <Text color={t.color.muted}>/help for commands</Text>
-        </Text>
-
-        {typeof info.update_behind === 'number' && info.update_behind > 0 && (
+      {typeof info.update_behind === 'number' && info.update_behind > 0 && (
+        <Text bold color={t.color.warn}>
+          ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+          <Text bold={false} color={t.color.warn} dimColor>
+            {' '}
+            - run{' '}
+          </Text>
           <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              - run{' '}
-            </Text>
-            <Text bold color={t.color.warn}>
-              {info.update_command || 'hermes update'}
-            </Text>
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              to update
-            </Text>
+            {info.update_command || 'hermes update'}
           </Text>
-        )}
+          <Text bold={false} color={t.color.warn} dimColor>
+            {' '}
+            to update
+          </Text>
+        </Text>
+      )}
 
-        {info.install_warning && (
-          <Text bold color={t.color.warn} wrap="wrap">
-            ! {info.install_warning}
-          </Text>
-        )}
-      </Box>
+      {info.install_warning && (
+        <Text bold color={t.color.warn} wrap="wrap">
+          ! {info.install_warning}
+        </Text>
+      )}
+    </Box>
+  )
+
+  return (
+    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
+      <WidgetGrid
+        cols={wide ? leftW + 2 + w : w}
+        columns={wide ? [leftW, { fr: 1 }] : 1}
+        gap={2}
+        paddingX={0}
+        paddingY={0}
+        rowGap={0}
+        widgets={
+          wide
+            ? [
+                { children: heroColumn, id: 'session-hero' },
+                { children: infoColumn, id: 'session-info' }
+              ]
+            : [{ children: infoColumn, id: 'session-info' }]
+        }
+      />
     </Box>
   )
 }

@@ -70,6 +70,22 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
+  it('opens the grid-test overlay locally', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/grid-test 6x4')).toBe(true)
+    expect(getOverlayState().gridTest).toMatchObject({ cols: 6, nested: false, rows: 4, streams: false })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('opens the grid-test streams demo via /grid-test streams', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/grid-test streams')).toBe(true)
+    expect(getOverlayState().gridTest).toMatchObject({ streamFocus: 0, streamMain: 0, streams: true })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('handles /redraw locally without slash worker fallback', () => {
     const ctx = buildCtx()
 
@@ -267,6 +283,55 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('reads /reasoning status for the active session', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', {
+      key: 'reasoning',
+      session_id: 'sid-abc'
+    })
+  })
+
+  it.each(['low', 'max', 'ultra'])('sends plain /reasoning %s without a scope (session default)', effort => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/reasoning ${effort}`)).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: 'sid-abc',
+      value: effort
+    })
+  })
+
+  it('sends /reasoning <level> --global as global config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning high --global')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'global',
+      session_id: 'sid-abc',
+      value: 'high'
+    })
+  })
+
+  it('strips /reasoning session flags before config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning low --session')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'session',
+      session_id: 'sid-abc',
+      value: 'low'
+    })
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 
@@ -365,6 +430,25 @@ describe('createSlashHandler', () => {
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('routes the /reset catalog alias through the local fresh-session lifecycle', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/new': '/new',
+            '/reset': '/new'
+          }
+        }
+      }
+    })
+
+    createSlashHandler(ctx)('/reset')
+    getOverlayState().confirm?.onConfirm()
+
+    expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', undefined)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   it('keeps visible scrollback when branching a TUI session', async () => {

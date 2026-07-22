@@ -13,6 +13,20 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
+    """Return a provider-safe cache key without changing session identity."""
+    if value is None:
+        return None
+    key = str(value).strip()
+    if not key:
+        return None
+    if len(key) <= 64:
+        return key
+    # Match _content_cache_key's compact, collision-resistant routing-key shape.
+    digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"pck_{digest}"
+
+
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
     """Content-address the prompt cache key from the static request prefix.
 
@@ -304,6 +318,13 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
+        if "prompt_cache_key" in kwargs:
+            bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])
+            if bounded_cache_key:
+                kwargs["prompt_cache_key"] = bounded_cache_key
+            else:
+                kwargs.pop("prompt_cache_key", None)
+
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing
         # mode lingers from a prior model in the same session, or when a
@@ -337,7 +358,7 @@ class ResponsesApiTransport(ProviderTransport):
             # remain high.  Send session_id / x-client-request-id as HTTP
             # headers while keeping ``prompt_cache_key`` in the body for
             # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = str(session_id or "").strip()
+            cache_scope_id = _bounded_prompt_cache_key(session_id)
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
@@ -381,6 +402,14 @@ class ResponsesApiTransport(ProviderTransport):
                 merged_extra_body.update(existing_extra_body)
             merged_extra_body.setdefault("prompt_cache_key", cache_key)
             kwargs["extra_body"] = merged_extra_body
+
+        extra_body = kwargs.get("extra_body")
+        if isinstance(extra_body, dict) and "prompt_cache_key" in extra_body:
+            bounded_cache_key = _bounded_prompt_cache_key(extra_body["prompt_cache_key"])
+            if bounded_cache_key:
+                extra_body["prompt_cache_key"] = bounded_cache_key
+            else:
+                extra_body.pop("prompt_cache_key", None)
 
         return kwargs
 
@@ -435,15 +464,27 @@ class ResponsesApiTransport(ProviderTransport):
     def validate_response(self, response: Any) -> bool:
         """Check Codex Responses API response has valid output structure.
 
-        Returns True only if response.output is a non-empty list.
-        Does NOT check output_text fallback — the caller handles that
-        with diagnostic logging for stream backfill recovery.
+        Returns True only if response.output is a non-empty list. Also treats
+        terminal content-filter incomplete responses as valid: the Responses API
+        may return status=incomplete with incomplete_details.reason='content_filter'
+        and no output items. That is a provider refusal signal, not a malformed
+        response, and must reach normalization so the agent loop can use the
+        content-policy / fallback path instead of invalid-response retries.
+
+        Does NOT check output_text fallback — the caller handles that with
+        diagnostic logging for stream backfill recovery.
         """
         if response is None:
             return False
         output = getattr(response, "output", None)
         if not isinstance(output, list) or not output:
-            return False
+            status = str(getattr(response, "status", "") or "").strip().lower()
+            incomplete_details = getattr(response, "incomplete_details", None)
+            if isinstance(incomplete_details, dict):
+                reason = str(incomplete_details.get("reason") or "").strip().lower()
+            else:
+                reason = str(getattr(incomplete_details, "reason", "") or "").strip().lower()
+            return status == "incomplete" and reason == "content_filter"
         return True
 
     def preflight_kwargs(
@@ -458,11 +499,26 @@ class ResponsesApiTransport(ProviderTransport):
         Normalizes input items, strips unsupported fields, validates structure.
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-        return _preflight_codex_api_kwargs(
+
+        normalized = _preflight_codex_api_kwargs(
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
         )
+        if "prompt_cache_key" in normalized:
+            bounded = _bounded_prompt_cache_key(normalized["prompt_cache_key"])
+            if bounded:
+                normalized["prompt_cache_key"] = bounded
+            else:
+                normalized.pop("prompt_cache_key", None)
+        extra_body = normalized.get("extra_body")
+        if isinstance(extra_body, dict) and "prompt_cache_key" in extra_body:
+            bounded = _bounded_prompt_cache_key(extra_body["prompt_cache_key"])
+            if bounded:
+                extra_body["prompt_cache_key"] = bounded
+            else:
+                extra_body.pop("prompt_cache_key", None)
+        return normalized
 
     def map_finish_reason(self, raw_reason: str) -> str:
         """Map Codex response.status to OpenAI finish_reason.

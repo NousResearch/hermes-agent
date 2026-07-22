@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import socket
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -164,6 +165,52 @@ class TestValidateSignature:
         adapter = _make_adapter()
         req = _mock_request(headers={})  # no sig headers at all
         assert adapter._validate_signature(req, b"{}", "my-secret") is False
+
+    def test_non_ascii_signature_headers_reject_without_raising(self):
+        """The signature headers are attacker-controlled on a public, unauth
+        endpoint. A non-ASCII byte in one must be rejected (False), not crash
+        the handler: hmac.compare_digest raises TypeError on a non-ASCII str."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        hostile = "ské-not-a-valid-signature"
+        for header in (
+            "X-Hub-Signature-256",
+            "X-Gitlab-Token",
+            "X-Webhook-Signature",
+        ):
+            req = _mock_request(headers={header: hostile})
+            # Must return False, never raise.
+            assert adapter._validate_signature(req, body, secret) is False
+
+    def test_non_ascii_generic_v2_signature_rejected(self):
+        """V2 branch (timestamp-bound) also rejects a non-ASCII signature."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "ské-bad",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_non_ascii_svix_signature_rejected(self):
+        """The Svix branch also runs its `v1,<sig>` comparison through the
+        hardened helper: a valid svix-id + fresh timestamp reaches the compare,
+        and a non-ASCII signature must reject rather than raise."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "svix-id": "msg_2xabc",
+            "svix-timestamp": str(int(time.time())),  # inside the replay window
+            "svix-signature": "v1,ské-not-a-valid-base64-sig",
+        })
+        assert adapter._validate_signature(req, b'{"x":1}', "shh-secret") is False
+
+    def test_non_ascii_secret_still_validates_a_matching_token(self):
+        """A non-ASCII configured secret must still match its exact GitLab
+        token value byte for byte (bytes comparison keeps this working)."""
+        adapter = _make_adapter()
+        secret = "gl-tökén-välue"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret) is True
 
     def test_validate_no_secret_allows_all(self):
         """When the secret is empty/falsy, the validator is never even called
@@ -1525,3 +1572,118 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
+
+
+class TestDualStackBind:
+    """The default bind host must serve BOTH IPv4 and IPv6.
+
+    Regression guard for the hosted-agent webhook reachability bug: Fly.io 6PN
+    (the private network the edge router reverse-proxies webhook traffic over)
+    is IPv6-only — an agent's ``<app>.internal`` name resolves to an ``fdaa:…``
+    address. The adapter used to default to ``host="0.0.0.0"`` (IPv4 only), so
+    the router's dial to ``<app>.internal:8644`` hit an address nothing was
+    listening on → connection refused → public webhooks unreachable.
+
+    The fix is ``DEFAULT_HOST = None`` (dual-stack). ``"::"`` is NOT a valid
+    substitute: on hosts with the ``bindv6only`` sysctl set (verified on Fly
+    machines) it yields an IPv6-ONLY socket, which would then break the IPv4
+    loopback health check and the AF_INET port-conflict probe.
+    """
+
+    def test_default_host_is_none_for_dual_stack(self):
+        """The module default is None (bind all families), not 0.0.0.0/::."""
+        from gateway.platforms.webhook import DEFAULT_HOST
+        assert DEFAULT_HOST is None
+
+    def test_missing_host_key_resolves_to_none(self):
+        """Config with no host key → dual-stack (None), not a literal string."""
+        cfg = PlatformConfig(enabled=True, extra={"port": 0, "routes": {}})
+        adapter = WebhookAdapter(cfg)
+        assert adapter._host is None
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_empty_host_normalises_to_none(self, empty):
+        """An explicit empty-string/null host means dual-stack, not host=''.
+
+        Guards the old footgun where host='' was passed straight to TCPSite
+        AND treated as non-loopback — now it collapses to the None default.
+        """
+        adapter = _make_adapter(host=empty, port=0)
+        assert adapter._host is None
+
+    def test_pinned_host_is_preserved(self):
+        """A user can still pin a specific bind host via config.extra.host."""
+        adapter = _make_adapter(host="127.0.0.1", port=0)
+        assert adapter._host == "127.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_default_bind_serves_both_families(self):
+        """Binding the real server with the default host opens v4 AND v6 sockets.
+
+        This is the behavioural proof: with host=None, asyncio.create_server
+        opens a listening socket per resolved family, so both 127.0.0.1 (v4)
+        and ::1 (v6) are reachable — exactly what 6PN needs. Uses a real bind
+        on an OS-assigned port (no mock) and inspects the runner's addresses.
+        """
+        # Build config WITHOUT a host key so the real DEFAULT_HOST (None)
+        # applies — _make_adapter's helper injects host="0.0.0.0" by default,
+        # which would mask the dual-stack default under test here.
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": 0,
+                "routes": {"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        assert adapter._host is None
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+            # runner.addresses lists one bound address per listening socket.
+            # An IPv6 sockaddr is a 4-tuple (host, port, flowinfo, scopeid);
+            # an IPv4 sockaddr is a 2-tuple (host, port). With the dual-stack
+            # default we expect BOTH — that is precisely what makes the adapter
+            # reachable over 6PN (v6) AND on the loopback health check (v4).
+            addrs = list(adapter._runner.addresses)  # type: ignore[union-attr]
+            has_v6 = any(len(a) == 4 for a in addrs)
+            has_v4 = any(len(a) == 2 for a in addrs)
+            assert has_v4, f"IPv4 bind missing — got {addrs}"
+            assert has_v6, (
+                f"IPv6 bind missing (the 6PN reachability bug) — got {addrs}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_default_bind_rejects_existing_ipv6_listener(self):
+        """A specific IPv6 listener must block the wildcard dual-stack bind."""
+        blocker = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host="::1",
+            port=0,
+            family=socket.AF_INET6,
+            reuse_address=False,
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": port,
+                "routes": {
+                    "r1": {"secret": "real-secret-abc123", "prompt": "x"}
+                },
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()

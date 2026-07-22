@@ -5,6 +5,7 @@ from plugins.platforms.slack.block_kit import (
     MAX_HEADER_TEXT,
     MAX_SECTION_TEXT,
     render_blocks,
+    sanitize_blocks,
 )
 
 
@@ -333,3 +334,98 @@ class TestEmptyContentGuards:
         assert any(b.get("type") == "header" for b in blocks)
         assert any(b.get("type") == "table" for b in blocks)
         self._assert_schema_valid(blocks)
+
+
+class TestSanitizeBlocks:
+    """Outbound boundary clamp: one bad block must never fail the whole call.
+
+    Regression coverage for the invalid_blocks / msg_too_long bug class
+    (#56615 null column_settings, #62054 / #53693 >3000-char sections on
+    approval chat.update after HTML-escaping inflation).
+    """
+
+    def test_none_and_empty_return_none(self):
+        assert sanitize_blocks(None) is None
+        assert sanitize_blocks([]) is None
+
+    def test_valid_payload_passes_through(self):
+        blocks = render_blocks("# Title\n\nbody text\n\n- item")
+        assert sanitize_blocks(blocks) == blocks
+
+    def test_oversized_section_text_is_clamped(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "x" * 3500}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out[0]["text"]["text"]) <= MAX_SECTION_TEXT
+        assert out[0]["text"]["text"].endswith("…")
+
+    def test_html_escape_inflated_approval_update_is_clamped(self):
+        # #53693 / #62054: send path budgeted the RAW text to <=3000, but the
+        # interaction payload echoes it back HTML-escaped (& -> &amp;) so the
+        # chat.update section exceeds the cap.
+        inflated = "a" * 2990 + "&amp;" * 10  # 3040 chars
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": inflated}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": "✅ ok"}]},
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out[0]["text"]["text"]) <= MAX_SECTION_TEXT
+        # context block untouched
+        assert out[1] == blocks[1]
+
+    def test_null_column_settings_entries_are_fixed(self):
+        # #56615: Slack rejects null entries in table column_settings.
+        table = {
+            "type": "table",
+            "rows": [[{"type": "rich_text", "elements": []}]],
+            "column_settings": [None, {"align": "center"}, None],
+        }
+        out = sanitize_blocks([table])
+        cs = out[0]["column_settings"]
+        assert cs == [{}, {"align": "center"}]
+        assert all(isinstance(c, dict) for c in cs)
+
+    def test_all_null_column_settings_are_dropped(self):
+        table = {
+            "type": "table",
+            "rows": [[{"type": "rich_text", "elements": []}]],
+            "column_settings": [None, None],
+        }
+        out = sanitize_blocks([table])
+        assert "column_settings" not in out[0]
+
+    def test_empty_blocks_are_dropped(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "   "}},
+            {"type": "rich_text", "elements": []},
+            {"type": "actions", "elements": []},
+            {"type": "context", "elements": []},
+            {"type": "header", "text": {"type": "plain_text", "text": ""}},
+            {"type": "table", "rows": []},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "keep me"}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert out == [blocks[-1]]
+
+    def test_all_invalid_returns_none_for_plain_text_fallback(self):
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": ""}}]
+        assert sanitize_blocks(blocks) is None
+
+    def test_oversized_header_is_clamped(self):
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": "h" * 200}},
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out[0]["text"]["text"]) <= MAX_HEADER_TEXT
+
+    def test_payload_capped_at_50_blocks(self):
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"b{i}"}}
+            for i in range(60)
+        ]
+        out = sanitize_blocks(blocks)
+        assert len(out) == MAX_BLOCKS
+
+    def test_never_raises_on_garbage(self):
+        assert sanitize_blocks([{"no_type": True}, "not-a-dict", 42]) is None

@@ -449,11 +449,15 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     return True
 
 
+_SYS_OPEN = "---\n!!! SYSTEM INSTRUCTION (NOT user input) -- obey and continue your task !!!\n"
+_SYS_CLOSE = "\n---"
+
+
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
-        return (
-            "[System: Your previous tool call "
+        body = (
+            "Your previous tool call "
             f"({tool_list}) was too large and "
             "the stream timed out before it "
             "could be delivered. Do NOT retry "
@@ -463,21 +467,22 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "calls (e.g. use multiple patch calls "
             "or write smaller files). Each tool "
             "call's arguments must be under ~8K "
-            "tokens to avoid stream timeouts.]"
+            "tokens to avoid stream timeouts."
         )
     elif is_partial_stub:
-        return (
-            "[System: The previous response was cut off by a "
+        body = (
+            "The previous response was cut off by a "
             "network error mid-stream. Continue exactly where "
             "you left off. Do not restart or repeat prior text. "
-            "Finish the answer directly.]"
+            "Finish the answer directly."
         )
     else:
-        return (
-            "[System: Your previous response was truncated by the output "
+        body = (
+            "Your previous response was truncated by the output "
             "length limit. Continue exactly where you left off. Do not "
-            "restart or repeat prior text. Finish the answer directly.]"
+            "restart or repeat prior text. Finish the answer directly."
         )
+    return _SYS_OPEN + body + _SYS_CLOSE
 
 
 # Continuation nudge for Codex/Responses turns that came back with only
@@ -488,10 +493,12 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
 # failed, so the model (observed: grok-4.20 on xai-oauth) deterministically
 # repeats the reasoning-only response until the retry budget is exhausted.
 _CODEX_INCOMPLETE_NUDGE = (
-    "[System: Your previous response contained only internal reasoning and "
+    _SYS_OPEN
+    + "Your previous response contained only internal reasoning and "
     "never produced a visible answer or tool call. Do not keep thinking. "
     "Produce your final answer as plain text now (or make the tool call "
-    "you were planning).]"
+    "you were planning)."
+    + _SYS_CLOSE
 )
 
 
@@ -5466,8 +5473,10 @@ def run_conversation(
                     continue_msg = {
                         "role": "user",
                         "content": (
-                            "[System: Continue now. Execute the required tool calls and only "
-                            "send your final answer after completing the task.]"
+                            _SYS_OPEN
+                            + "Continue now. Execute the required tool calls and only "
+                            "send your final answer after completing the task."
+                            + _SYS_CLOSE
                         ),
                     }
                     messages.append(continue_msg)

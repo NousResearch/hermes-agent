@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
   app,
+  autoUpdater,
   BrowserWindow,
   clipboard,
   dialog,
@@ -10635,6 +10636,11 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // Explicitly disable the Electron built-in autoUpdater (Squirrel.Mac on macOS).
+  // The app uses a git-based self-update mechanism — no zip-based Electron
+  // auto-update feed is published to GitHub Releases.
+  autoUpdater.autoDownload = false
+
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {

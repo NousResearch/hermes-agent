@@ -1,11 +1,11 @@
 # Gateway Monitoring
 
-Service health monitoring plus redacted operational diagnostics for the
+Service health monitoring plus structured operational diagnostics for the
 Hermes gateway daemon, exported over OTLP/HTTP to an operator-configured
 endpoint (OpenTelemetry Collector, DataDog, or any OTLP receiver).
 
 This plane is content-free by construction. It exports gateway lifecycle
-state, platform connector health, and redacted warning/error diagnostics.
+state, platform connector health, and content-free warning/error diagnostics.
 It never exports prompts, messages, tool arguments or results, session
 history, usage analytics, audit logs, or execution traces. Run/model/tool
 trajectory capture is a separate plane served by the NeMo Relay integration
@@ -17,7 +17,7 @@ trajectory capture is a separate plane served by the NeMo Relay integration
 | --- | --- | --- |
 | Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
-| Diagnostics | `/v1/logs` | Warning/error gateway log events with secrets AND PII scrubbed in-process before egress (`[redacted]` / `[email]`), bounded error classes |
+| Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
 
 Signals carry `service.name`, version, supervision mode, and a stable one-way
 hash of the install id so an operator can distinguish instances without
@@ -85,7 +85,7 @@ python scripts/observability/otel_capture_collector.py \
   --host 127.0.0.1 --port 4318 --log /tmp/hermes_otel_capture.jsonl
 
 # terminal 2: drive the real exporter through lifecycle transitions,
-# a fatal platform, and a redacted warning log, then flush
+# a fatal platform, and a structured warning event, then flush
 python scripts/observability/gateway_health_export_probe.py \
   --endpoint http://127.0.0.1:4318/v1/traces \
   --log /tmp/hermes_otel_capture.jsonl --wait 8

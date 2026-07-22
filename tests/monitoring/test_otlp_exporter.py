@@ -42,16 +42,19 @@ def test_gateway_health_event_maps_to_span_with_attrs():
     assert attrs["hermes.active_agents"] == 2
 
 
-def test_gateway_diagnostic_event_maps_redacted_message():
+def test_gateway_diagnostic_event_drops_arbitrary_message_content():
     provider, mem = _mem_provider()
     OE.export_batch(provider, [{
         "event": "gateway_diagnostic", "name": "platform.fatal",
         "subsystem": "platform.slack", "error_class": "auth_failed",
-        "redacted_message": "token [redacted] rejected", "severity": "error",
+        "redacted_message": "Unauthorized user: acct_7f3a (Alice Smith)",
+        "severity": "error",
     }])
     attrs = dict(mem.get_finished_spans()[0].attributes or {})
     assert attrs["hermes.error_class"] == "auth_failed"
-    assert attrs["hermes.redacted_message"] == "token [redacted] rejected"
+    assert "hermes.redacted_message" not in attrs
+    assert "acct_7f3a" not in str(attrs)
+    assert "Alice Smith" not in str(attrs)
 
 
 def test_unknown_event_kind_exports_no_attrs_beyond_kind():

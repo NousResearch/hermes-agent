@@ -111,8 +111,8 @@ def test_gateway_health_snapshot_emits_content_free_diagnostic_event():
     assert health["fatal_platform_count"] == 1
     assert platform["platform"] == "slack"
     assert platform["error_code"] == "auth_failed"
-    assert "secret" not in platform["redacted_message"].lower()
-    assert "Bearer" not in platform["redacted_message"]
+    assert "redacted_message" not in platform
+    assert "Bearer" not in str(platform)
 
 
 def test_gateway_health_snapshot_preserves_real_bounded_platform_states():
@@ -147,7 +147,7 @@ def test_gateway_health_snapshot_preserves_real_bounded_platform_states():
     assert observed == expected
 
 
-def test_gateway_diagnostic_log_handler_redacts_and_filters(caplog):
+def test_gateway_diagnostic_log_handler_never_carries_rendered_message(caplog):
     from agent.monitoring import emitter
     from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
 
@@ -166,7 +166,10 @@ def test_gateway_diagnostic_log_handler_redacts_and_filters(caplog):
         logger.addHandler(handler)
         try:
             logger.info("ignore info token sk-live-secret")
-            logger.warning("Slack token sk-live-secret failed for user@example.com")
+            logger.warning(
+                "Unauthorized user: acct_7f3a (Alice Smith) on slack; "
+                "token «redacted:sk-…»"
+            )
         finally:
             logger.removeHandler(handler)
     finally:
@@ -178,8 +181,9 @@ def test_gateway_diagnostic_log_handler_redacts_and_filters(caplog):
     assert event["name"] == "gateway.log.warning"
     assert event["subsystem"] == "platform.slack"
     assert event["error_class"] == "auth_failed"
-    assert "***" not in event["redacted_message"]
-    assert "user@example.com" not in event["redacted_message"]
+    assert "redacted_message" not in event
+    assert "acct_7f3a" not in str(event)
+    assert "Alice Smith" not in str(event)
 
 
 def test_runtime_status_transition_emits_lifecycle_and_platform_events(monkeypatch):
@@ -223,7 +227,7 @@ def test_runtime_status_transition_emits_lifecycle_and_platform_events(monkeypat
     assert platform["old_state"] == "running"
     assert platform["new_state"] == "fatal"
     assert platform["error_code"] == "auth_failed"
-    assert "Bearer" not in platform["redacted_message"]
+    assert "redacted_message" not in platform
 
 
 def test_runtime_status_transition_emits_startup_failed_and_exit():
@@ -256,7 +260,7 @@ def test_runtime_status_transition_emits_startup_failed_and_exit():
     assert "gateway.startup_failed" in names
     assert "gateway.exit" in names
     failed = next(e for e in captured if e["name"] == "gateway.startup_failed")
-    assert "***" not in failed["redacted_message"]
+    assert "redacted_message" not in failed
     lifecycle = next(e for e in captured if e["name"] == "gateway.lifecycle")
     assert lifecycle["exit_reason"] == "auth_failed"
     exit_event = next(e for e in captured if e["name"] == "gateway.exit")

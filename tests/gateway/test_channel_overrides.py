@@ -122,6 +122,50 @@ class TestGetChannelOverride:
         )
         assert result.model == "thread-model"
 
+    def test_telegram_composite_topic_key_precedes_chat_and_thread(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123:42": ChannelOverride(model="topic-model"),
+                        "123": ChannelOverride(model="chat-model"),
+                        "42": ChannelOverride(model="bare-thread-model"),
+                    },
+                ),
+            },
+        )
+
+        result = _get_channel_override(
+            config, Platform.TELEGRAM, "123", thread_id="42"
+        )
+
+        assert result is not None
+        assert result.model == "topic-model"
+
+    def test_telegram_composite_topic_keys_do_not_collide_across_chats(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123:42": ChannelOverride(model="first-chat-model"),
+                        "456:42": ChannelOverride(model="second-chat-model"),
+                    },
+                ),
+            },
+        )
+
+        first = _get_channel_override(
+            config, Platform.TELEGRAM, "123", thread_id="42"
+        )
+        second = _get_channel_override(
+            config, Platform.TELEGRAM, "456", thread_id="42"
+        )
+
+        assert first is not None and first.model == "first-chat-model"
+        assert second is not None and second.model == "second-chat-model"
+
 
 class TestResolveModelForChannel:
     def test_uses_channel_override_when_present(self):
@@ -231,6 +275,86 @@ class TestResolveSessionAgentRuntimePriority:
             )
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
+
+    def test_telegram_provider_only_topic_adopts_provider_model(self):
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "123:42": ChannelOverride(provider="openrouter"),
+                    },
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            thread_id="42",
+            user_id="u1",
+        )
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "anthropic",
+                 "api_key": "k",
+                 "model": "global/runtime-model",
+             }), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                 return_value={
+                     "provider": "openrouter",
+                     "api_key": "k2",
+                     "base_url": "https://openrouter.ai/api/v1",
+                     "api_mode": "chat_completions",
+                     "model": "openrouter/provider-default",
+                 },
+             ):
+            model, runtime = runner._resolve_session_agent_runtime(source=source)
+
+        assert model == "openrouter/provider-default"
+        assert runtime["provider"] == "openrouter"
+
+
+class TestResolveEnabledToolsets:
+    def _runner(self, override: ChannelOverride) -> tuple[GatewayRunner, SessionSource]:
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={"123:42": override},
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            thread_id="42",
+            user_id="u1",
+        )
+        return runner, source
+
+    def test_topic_toolsets_use_standard_platform_resolver(self):
+        runner, source = self._runner(ChannelOverride(toolsets=["web", "file", "no_mcp"]))
+
+        enabled = runner._resolve_enabled_toolsets(
+            {"platform_toolsets": {"telegram": ["hermes-telegram"]}},
+            "telegram",
+            source,
+        )
+
+        assert "web" in enabled
+        assert "file" in enabled
+
+    def test_empty_topic_toolsets_preserve_platform_surface(self):
+        runner, source = self._runner(ChannelOverride(toolsets=[]))
+        user_config = {"platform_toolsets": {"telegram": ["hermes-telegram"]}}
+
+        enabled = runner._resolve_enabled_toolsets(user_config, "telegram", source)
+
+        assert enabled
 
     def test_session_model_beats_channel_override(self):
         runner = object.__new__(GatewayRunner)

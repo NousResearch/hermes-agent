@@ -513,7 +513,7 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel override for model, provider, system prompt, and toolsets.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
@@ -522,6 +522,7 @@ class ChannelOverride:
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    toolsets: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -531,16 +532,26 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.toolsets is not None:
+            out["toolsets"] = list(self.toolsets)
         return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
         if not data:
             return cls()
+        raw_toolsets = data.get("toolsets")
+        if isinstance(raw_toolsets, str):
+            toolsets = [raw_toolsets]
+        elif isinstance(raw_toolsets, list):
+            toolsets = [str(item) for item in raw_toolsets]
+        else:
+            toolsets = None
         return cls(
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            toolsets=toolsets,
         )
 
 
@@ -599,7 +610,7 @@ class PlatformConfig:
     # Telegram, Matrix, …) ignore it.
     typing_status_text: Optional[str] = None
 
-    # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
+    # Per-channel runtime overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
     # Platform-specific settings

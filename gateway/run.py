@@ -2692,8 +2692,10 @@ def _get_channel_override(
 ) -> Optional[ChannelOverride]:
     """Return per-channel override for this platform/chat_id, or None.
 
-    Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
-    ``parent_id`` (forum threads / child channels inherit the parent entry).
+    Telegram topic IDs are only unique within a chat, so Telegram first checks
+    the composite ``chat_id:thread_id`` key. All platforms then check
+    ``chat_id``, ``thread_id``, and ``parent_id`` in that order (forum threads /
+    child channels inherit the parent entry).
     """
     platforms = getattr(config, "platforms", None)
     if not platforms:
@@ -2702,9 +2704,15 @@ def _get_channel_override(
     if not platform_config or not platform_config.channel_overrides:
         return None
     overrides = platform_config.channel_overrides
-    for key in _channel_override_lookup_keys(
-        chat_id, thread_id=thread_id, parent_id=parent_id
-    ):
+    lookup_keys: list[str] = []
+    if platform == Platform.TELEGRAM and chat_id and thread_id:
+        lookup_keys.append(f"{chat_id}:{thread_id}")
+    lookup_keys.extend(
+        _channel_override_lookup_keys(
+            chat_id, thread_id=thread_id, parent_id=parent_id
+        )
+    )
+    for key in lookup_keys:
         ov = overrides.get(key)
         if ov is not None:
             return ov
@@ -4279,6 +4287,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_good["*"] = model
 
         return model, runtime_kwargs
+
+    def _resolve_enabled_toolsets(
+        self,
+        user_config: dict,
+        platform_key: str,
+        source: Optional[SessionSource],
+    ) -> list[str]:
+        """Resolve platform tools, honoring a non-empty channel override.
+
+        Channel/topic overrides use the normal platform tool resolver so they
+        retain its platform restrictions, plugin handling, MCP semantics, and
+        global disabled-toolset policy. A malformed or empty override falls
+        back to the platform surface instead of constructing an agent with no
+        tool schemas.
+        """
+        from hermes_cli.tools_config import _get_platform_tools
+
+        platform_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        if source is None:
+            return platform_toolsets
+
+        cfg = getattr(self, "config", None)
+        if cfg is None:
+            return platform_toolsets
+        override = _get_channel_override(
+            cfg,
+            source.platform,
+            str(source.chat_id or ""),
+            thread_id=(
+                str(source.thread_id)
+                if getattr(source, "thread_id", None)
+                else None
+            ),
+            parent_id=(
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            ),
+        )
+        if override is None or override.toolsets is None:
+            return platform_toolsets
+        if not override.toolsets:
+            logger.warning(
+                "Ignoring empty channel toolset override for %s/%s thread=%s; "
+                "preserving platform tools",
+                source.platform.value,
+                source.chat_id,
+                getattr(source, "thread_id", None),
+            )
+            return platform_toolsets
+
+        override_config = dict(user_config or {})
+        per_platform = dict(override_config.get("platform_toolsets") or {})
+        per_platform[platform_key] = list(override.toolsets)
+        override_config["platform_toolsets"] = per_platform
+        resolved = sorted(_get_platform_tools(override_config, platform_key))
+        if resolved:
+            return resolved
+
+        logger.warning(
+            "Ignoring empty channel toolset override for %s/%s thread=%s; "
+            "preserving platform tools",
+            source.platform.value,
+            source.chat_id,
+            getattr(source, "thread_id", None),
+        )
+        return platform_toolsets
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -14801,8 +14876,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             platform_key = _platform_config_key(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = self._resolve_enabled_toolsets(
+                user_config, platform_key, source
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -19000,8 +19076,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = self._resolve_enabled_toolsets(
+            user_config, platform_key, source
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

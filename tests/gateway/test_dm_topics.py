@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 
 
 def _ensure_telegram_mock():
@@ -663,6 +663,55 @@ def test_build_message_event_preserves_true_dm_topic_thread_id():
 
     assert event.source.thread_id == "200"
     assert event.source.chat_topic == "General"
+
+
+def test_dm_topic_event_resolves_composite_provider_runtime():
+    """The plugin adapter's topic source feeds the shared channel override path."""
+    from gateway.platforms.base import MessageType
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [{"name": "Research", "thread_id": 200}],
+        }
+    ])
+    adapter._dm_topics["111:Research"] = 200
+    event = adapter._build_message_event(
+        _make_mock_message(chat_id=111, thread_id=200),
+        MessageType.TEXT,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {}
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                channel_overrides={
+                    "111:200": ChannelOverride(provider="openrouter"),
+                },
+            ),
+        },
+    )
+
+    with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+             "provider": "anthropic",
+             "api_key": "global-key",
+         }), \
+         patch(
+             "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+             return_value={
+                 "provider": "openrouter",
+                 "api_key": "topic-key",
+                 "model": "openrouter/topic-default",
+             },
+         ):
+        model, runtime = runner._resolve_session_agent_runtime(source=event.source)
+
+    assert event.source.thread_id == "200"
+    assert model == "openrouter/topic-default"
+    assert runtime["provider"] == "openrouter"
 
 
 # ── _build_message_event: group_topics skill binding ──

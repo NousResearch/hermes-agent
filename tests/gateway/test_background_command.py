@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
@@ -280,6 +280,67 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dm_topic_background_uses_provider_and_nonempty_tools(self):
+        runner = _make_runner()
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    channel_overrides={
+                        "67890:42": ChannelOverride(
+                            provider="openrouter",
+                            toolsets=[],
+                        ),
+                    },
+                ),
+            },
+        )
+        runner._session_model_overrides = {}
+        runner.session_store.get_model_override.return_value = None
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="42",
+        )
+        user_config = {
+            "platform_toolsets": {"telegram": ["hermes-telegram"]},
+        }
+
+        with patch("gateway.run._load_gateway_config", return_value=user_config), \
+             patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "anthropic",
+                 "api_key": "global-key",
+             }), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                 return_value={
+                     "provider": "openrouter",
+                     "api_key": "topic-key",
+                     "model": "openrouter/topic-default",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "done"}
+            MockAgent.return_value = mock_agent
+
+            await runner._run_background_task("say hello", source, "bg_topic")
+
+        agent_kwargs = MockAgent.call_args.kwargs
+        assert agent_kwargs["model"] == "openrouter/topic-default"
+        assert agent_kwargs["provider"] == "openrouter"
+        assert agent_kwargs["enabled_toolsets"]
 
     @pytest.mark.asyncio
     async def test_media_files_routed_by_type(self, monkeypatch):

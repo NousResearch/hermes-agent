@@ -2585,20 +2585,35 @@ class APIServerAdapter(BasePlatformAdapter):
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
+                # Read the actual turn outcome from the result dict instead of
+                # hardcoding ``completed=True`` — a non-retryable provider error
+                # (safety filter, credential rejection, etc.) returns
+                # ``completed=False, failed=True`` and must be surfaced to the
+                # client so Desktop shows an error banner rather than silently
+                # ending the turn with the last tool card visible. (#69236)
+                _completed = result.get("completed", True) if isinstance(result, dict) else True
+                _failed = result.get("failed", False) if isinstance(result, dict) else False
+                _partial = result.get("partial", False) if isinstance(result, dict) else False
+                _interrupted = result.get("interrupted", False) if isinstance(result, dict) else False
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
                     "content": final_response,
-                    "completed": True,
-                    "partial": False,
-                    "interrupted": False,
+                    "completed": _completed,
+                    "failed": _failed,
+                    "partial": _partial,
+                    "interrupted": _interrupted,
+                    "error": result.get("error") if isinstance(result, dict) and _failed else None,
                 }))
                 await queue.put(_event_payload("run.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
-                    "completed": True,
+                    "completed": _completed,
+                    "failed": _failed,
+                    "interrupted": _interrupted,
                     "messages": turn_messages,
                     "usage": usage,
+                    "error": result.get("error") if isinstance(result, dict) and _failed else None,
                 }))
             except Exception as exc:
                 logger.exception("[api_server] session chat stream failed")

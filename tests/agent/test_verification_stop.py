@@ -128,6 +128,40 @@ def test_verify_on_stop_auto_on_for_programmatic_surfaces(clear_verify_env, plat
     assert verify_on_stop_enabled({"agent": {"verify_on_stop": "auto"}}) is True
 
 
+def test_verify_on_stop_auto_off_for_subagent(clear_verify_env):
+    # Subagents dispatched via delegate_task set platform="subagent". The
+    # "auto" default resolves OFF for them: their output is consumed
+    # programmatically by the parent agent, and verify-on-stop would silently
+    # replace the subagent's actual findings with verification output (#58490).
+    # Even on an interactive surface (CLI), the subagent platform wins.
+    clear_verify_env.setenv("HERMES_SESSION_SOURCE", "cli")
+    assert verify_on_stop_enabled(
+        {"agent": {"verify_on_stop": "auto"}}, platform="subagent"
+    ) is False
+
+
+def test_verify_on_stop_default_off_for_subagent(clear_verify_env):
+    # Missing config value still resolves OFF for subagents.
+    clear_verify_env.setenv("HERMES_SESSION_SOURCE", "cli")
+    assert verify_on_stop_enabled({"agent": {}}, platform="subagent") is False
+
+
+def test_verify_on_stop_env_overrides_subagent_off(clear_verify_env):
+    # An explicit HERMES_VERIFY_ON_STOP env var still wins — a user who
+    # genuinely wants subagent verification can opt in.
+    clear_verify_env.setenv("HERMES_VERIFY_ON_STOP", "1")
+    assert verify_on_stop_enabled(
+        {"agent": {}}, platform="subagent"
+    ) is True
+
+
+def test_verify_on_stop_config_true_overrides_subagent_off(clear_verify_env):
+    # An explicit agent.verify_on_stop=true still forces ON for subagents.
+    assert verify_on_stop_enabled(
+        {"agent": {"verify_on_stop": True}}, platform="subagent"
+    ) is True
+
+
 def test_default_auto_on_for_interactive_surface(clear_verify_env):
     # The default is surface-aware "auto": an interactive coding surface
     # resolves ON without any explicit opt-in.

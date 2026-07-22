@@ -171,6 +171,50 @@ class TestCheckPackageForMalware:
             assert call_data["package"]["ecosystem"] == "PyPI"
             assert call_data["package"]["name"] == "mcp-server-fetch"
 
+    def test_query_osv_bounds_response_read(self):
+        """OSV JSON should be read with a defensive size cap."""
+        import tools.osv_check as osv_check
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                captured["size"] = size
+                data = json.dumps({"vulns": [{"id": "MAL-1"}]}).encode()
+                return data if size < 0 else data[:size]
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=_Resp()):
+            result = _query_osv("evil-pkg", "npm")
+
+        assert result == [{"id": "MAL-1"}]
+        assert captured["size"] == osv_check._OSV_RESPONSE_BODY_MAX_BYTES + 1
+
+    def test_oversized_osv_response_fails_open(self, monkeypatch):
+        """Oversized OSV responses should use the existing fail-open behavior."""
+        import tools.osv_check as osv_check
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return b"x" * size
+
+        monkeypatch.setattr(osv_check, "_OSV_RESPONSE_BODY_MAX_BYTES", 8)
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=_Resp()):
+            result = check_package_for_malware("npx", ["evil-pkg"])
+
+        assert result is None
+
 
 class TestLiveOsvQuery:
     """Live integration test against the real OSV API. Skipped if offline."""

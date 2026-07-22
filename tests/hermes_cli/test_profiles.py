@@ -740,6 +740,55 @@ class TestActiveProfile:
         with pytest.raises(FileNotFoundError):
             set_active_profile("nonexistent")
 
+    def test_manually_edited_mixed_case_is_normalized(self, profile_env):
+        """A hand-edited active_profile with mixed case resolves to canonical id.
+
+        ``set_active_profile`` always normalizes before writing, but the file is
+        user-visible at ``~/.hermes/active_profile`` and may be edited by hand or
+        carried over from an older release that stored display labels. The reader
+        must return the canonical on-disk id so callers (delete/rename cleanup,
+        path resolution) compare against the same value ``normalize_profile_name``
+        produces.
+        """
+        tmp_path = profile_env
+        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path.write_text("Coder\n")
+        assert get_active_profile() == "coder"
+        assert get_active_profile() == normalize_profile_name("Coder")
+
+    def test_manually_edited_surrounding_whitespace_is_normalized(self, profile_env):
+        """Leading/trailing whitespace around a name is stripped and lowered."""
+        tmp_path = profile_env
+        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path.write_text("  MyProfile  \n")
+        assert get_active_profile() == "myprofile"
+
+    def test_default_alias_is_case_folded(self, profile_env):
+        """A hand-written ``Default`` alias folds to the special ``default`` id."""
+        tmp_path = profile_env
+        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path.write_text("Default\n")
+        assert get_active_profile() == "default"
+
+    def test_delete_clears_active_pointer_for_legacy_mixed_case(self, profile_env):
+        """Deleting a profile clears a non-canonical active_profile pointer.
+
+        Regression: the cleanup in ``delete_profile`` compares the reader's
+        result against the normalized ``canon``. If the reader returned the raw
+        ``Coder`` text, the comparison ``"Coder" == "coder"`` would fail and the
+        active pointer would survive, dangling at a now-deleted profile.
+        """
+        tmp_path = profile_env
+        create_profile("coder", no_alias=True)
+        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path.write_text("Coder\n")  # legacy / hand-edited, non-canonical
+
+        delete_profile("coder", yes=True)
+
+        # Pointer must have been reset to default (file removed).
+        assert not active_path.exists()
+        assert get_active_profile() == "default"
+
 
 # ===================================================================
 # TestGetActiveProfileName

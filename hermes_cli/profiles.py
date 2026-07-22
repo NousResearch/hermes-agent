@@ -1793,14 +1793,27 @@ def get_active_profile() -> str:
     """Read the sticky active profile name.
 
     Returns ``"default"`` if no active_profile file exists or it's empty.
+
+    The on-disk ``~/.hermes/active_profile`` file is user-visible and may be
+    hand-edited (or carried over from an older release that stored display
+    labels), so the raw contents are normalized to the canonical id before
+    returning. This keeps the result consistent with what
+    :func:`set_active_profile` writes and with the ``canon`` values that
+    delete/rename cleanup paths compare against; a stray ``Coder`` or
+    ``" my-profile "`` would otherwise dodge those equality checks and leave a
+    dangling active pointer.
     """
     path = _get_active_profile_path()
     try:
         name = path.read_text().strip()
         if not name:
             return "default"
-        return name
+        return normalize_profile_name(name)
     except (FileNotFoundError, UnicodeDecodeError, OSError):
+        return "default"
+    except ValueError:
+        # normalize_profile_name rejects a blank/whitespace-only name; treat a
+        # corrupt active_profile file as "no active profile" rather than raising.
         return "default"
 
 

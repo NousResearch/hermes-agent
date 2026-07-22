@@ -1018,7 +1018,7 @@ class ContextCompressor(ContextEngine):
         self,
         *,
         prompt_messages: List[Dict[str, Any]],
-        max_tokens: int,
+        max_tokens: int | None,
         duration_ms: int,
         aux_provider: str | None = None,
         aux_model: str | None = None,
@@ -2643,7 +2643,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             finally:
                 self._record_aux_compression_call(
                     prompt_messages=call_kwargs["messages"],
-                    max_tokens=call_kwargs["max_tokens"],
+                    # Current main intentionally omits max_tokens from the aux
+                    # call (summary_budget is prompt-level guidance only) —
+                    # use .get() so the telemetry hook never breaks the call.
+                    max_tokens=call_kwargs.get("max_tokens"),
                     duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
                     aux_provider=_aux_provider,
                     aux_model=_aux_model,

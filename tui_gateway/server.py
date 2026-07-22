@@ -3824,6 +3824,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "model": mirror.get("model", getattr(agent, "model", "")),
         "provider": mirror.get("provider", getattr(agent, "provider", "")),
         "reasoning_effort": reasoning_effort,
+        "reasoning_session_scope": True,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
@@ -11620,7 +11621,11 @@ def _(rid, params: dict) -> dict:
 
             arg = str(value or "").strip().lower()
             scope = str(params.get("scope") or "").strip().lower()
+            if scope not in {"", "session", "global"}:
+                return _err(rid, 4002, f"unknown reasoning scope: {scope}")
             global_scope = scope == "global"
+            if scope == "session" and session is None:
+                return _err(rid, 4001, "session not found")
             if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
@@ -11719,7 +11724,8 @@ def _(rid, params: dict) -> dict:
                     params.get("session_id", ""),
                     _session_info(session["agent"], session),
                 )
-            return _ok(rid, {"key": key, "value": arg})
+            result_scope = "global" if global_scope or session is None else "session"
+            return _ok(rid, {"key": key, "value": arg, "scope": result_scope})
         except Exception as e:
             return _err(rid, 5001, str(e))
 

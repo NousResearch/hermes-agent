@@ -44,9 +44,10 @@ class TestSessionInfoReasoningEffort:
         info = _session_info(_agent({"enabled": False}))
         assert info["reasoning_effort"] == "none"
 
-    def test_enabled_reports_effort(self) -> None:
+    def test_enabled_reports_effort_and_session_scope_contract(self) -> None:
         info = _session_info(_agent({"enabled": True, "effort": "high"}))
         assert info["reasoning_effort"] == "high"
+        assert info["reasoning_session_scope"] is True
 
     def test_unset_reports_empty(self) -> None:
         info = _session_info(_agent(None))
@@ -68,9 +69,18 @@ class TestConfigSetReasoningSessionScope:
                 patch.object(server, "_persist_live_session_runtime"), \
                 patch.object(server, "_emit"):
             resp = self._dispatch(
-                {"key": "reasoning", "session_id": "s1", "value": "none"}
+                {
+                    "key": "reasoning",
+                    "session_id": "s1",
+                    "scope": "session",
+                    "value": "none",
+                }
             )
-        assert resp["result"]["value"] == "none"
+        assert resp["result"] == {
+            "key": "reasoning",
+            "value": "none",
+            "scope": "session",
+        }
         assert agent.reasoning_config == {"enabled": False}
         write_key.assert_not_called()
 
@@ -81,19 +91,54 @@ class TestConfigSetReasoningSessionScope:
         with patch.dict(server._sessions, {"s2": session}, clear=False), \
                 patch.object(server, "_write_config_key") as write_key:
             resp = self._dispatch(
-                {"key": "reasoning", "session_id": "s2", "value": "high"}
+                {
+                    "key": "reasoning",
+                    "session_id": "s2",
+                    "scope": "session",
+                    "value": "high",
+                }
             )
-        assert resp["result"]["value"] == "high"
+        assert resp["result"] == {
+            "key": "reasoning",
+            "value": "high",
+            "scope": "session",
+        }
         assert session["create_reasoning_override"] == {
             "enabled": True,
             "effort": "high",
         }
         write_key.assert_not_called()
 
+    def test_explicit_session_scope_rejects_missing_session(self) -> None:
+        with patch.dict(server._sessions, {}, clear=True), \
+                patch.object(server, "_write_config_key") as write_key:
+            resp = self._dispatch(
+                {
+                    "key": "reasoning",
+                    "session_id": "missing",
+                    "scope": "session",
+                    "value": "low",
+                }
+            )
+        assert resp["error"]["code"] == 4001
+        write_key.assert_not_called()
+
+    def test_unknown_scope_is_rejected_without_global_write(self) -> None:
+        with patch.object(server, "_write_config_key") as write_key:
+            resp = self._dispatch(
+                {"key": "reasoning", "scope": "sesion", "value": "low"}
+            )
+        assert resp["error"]["code"] == 4002
+        write_key.assert_not_called()
+
     def test_no_session_persists_globally(self) -> None:
         with patch.object(server, "_write_config_key") as write_key:
             resp = self._dispatch({"key": "reasoning", "value": "low"})
-        assert resp["result"]["value"] == "low"
+        assert resp["result"] == {
+            "key": "reasoning",
+            "value": "low",
+            "scope": "global",
+        }
         write_key.assert_called_once_with("agent.reasoning_effort", "low")
 
     def test_unknown_value_rejected(self) -> None:

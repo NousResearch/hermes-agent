@@ -718,6 +718,18 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
   return ''
 }
 
+/** Lightweight preview metadata extraction for the authoritative transcript.
+ * Keep this independent of buildToolView so paginated tool rows do not need to
+ * mount (or stringify their full result) before the composer can surface an
+ * artifact produced by a completed tool call. */
+export function toolPreviewTargetForPart(part: ToolPart): string {
+  if (part.result === undefined) {
+    return ''
+  }
+
+  return toolPreviewTarget(part.toolName, parseMaybeObject(part.args), parseMaybeObject(part.result))
+}
+
 function toolImageUrl(args: Record<string, unknown>, result: Record<string, unknown>): string {
   const candidate =
     firstStringField(result, ['image_url', 'url', 'path', 'image_path']) ||

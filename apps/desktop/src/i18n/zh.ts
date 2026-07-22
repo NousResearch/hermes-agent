@@ -2630,7 +2630,8 @@ export const zh: Translations = {
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
-      showEarlier: '显示更早的消息',
+      showEarlierMessages: '显示更早的消息',
+      showEarlierToolCalls: '显示更早的工具调用',
       loadingResponse: 'Hermes 正在加载回复',
       resumeWhenBackgroundDone: count =>
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,

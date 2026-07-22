@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { chunkByLines, exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
+import { tokenizeShikiCode } from '@/components/chat/shiki-worker'
+import { getShikiWorkerClientSnapshotForTests, startShikiHighlight } from '@/components/chat/shiki-worker-client'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('exceedsHighlightBudget', () => {
   it('highlights normal-sized blocks', () => {
@@ -33,5 +39,204 @@ describe('chunkByLines', () => {
     expect(chunks).toHaveLength(5)
     expect(chunks.map(chunk => chunk.text).join('\n')).toBe(code)
     expect(chunks.reduce((sum, chunk) => sum + chunk.lines, 0)).toBe(1000)
+  })
+})
+
+describe('Shiki worker client lifecycle', () => {
+  it('normalizes constructor failures without exposing their message', async () => {
+    const constructorCause = new Error('secret-bearing constructor detail')
+
+    class ThrowingWorker {
+      constructor() {
+        throw constructorCause
+      }
+    }
+
+    vi.stubGlobal('Worker', ThrowingWorker)
+    const job = startShikiHighlight('const a = 1', 'ts')
+    const error = await job.promise.catch(reason => reason)
+
+    expect(error).toMatchObject({
+      cause: constructorCause,
+      message: 'Shiki worker construction failed',
+      name: 'ShikiWorkerRetryableError',
+      retryable: true
+    })
+    expect(error.message).not.toContain(constructorCause.message)
+    expect(getShikiWorkerClientSnapshotForTests()).toEqual({
+      activeGeneration: null,
+      activeLeases: 0,
+      pending: 0
+    })
+    expect(() => job.dispose()).not.toThrow()
+  })
+
+  it('shares one worker and terminates it after the final consumer disposes', async () => {
+    class TestWorker {
+      static instances: TestWorker[] = []
+      messages: Array<{ code: string; id: number; language: string }> = []
+      onerror: ((event: ErrorEvent) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      terminated = false
+
+      constructor() {
+        TestWorker.instances.push(this)
+      }
+
+      postMessage(message: { code: string; id: number; language: string }) {
+        this.messages.push(message)
+      }
+
+      terminate() {
+        this.terminated = true
+      }
+    }
+
+    vi.stubGlobal('Worker', TestWorker)
+    const first = startShikiHighlight('const a = 1', 'ts')
+    const second = startShikiHighlight('print(1)', 'python')
+    const worker = TestWorker.instances[0]
+
+    expect(TestWorker.instances).toHaveLength(1)
+    expect(worker.messages).toHaveLength(2)
+
+    for (const message of worker.messages) {
+      worker.onmessage?.({ data: { id: message.id, tokens: [[{ content: message.code }]] } } as MessageEvent)
+    }
+
+    await expect(first.promise).resolves.toEqual([[{ content: 'const a = 1' }]])
+    await expect(second.promise).resolves.toEqual([[{ content: 'print(1)' }]])
+
+    first.dispose()
+    expect(worker.terminated).toBe(false)
+    second.dispose()
+    expect(worker.terminated).toBe(true)
+  })
+
+  it('returns a plain-code-compatible rejection when Worker is unavailable', async () => {
+    vi.stubGlobal('Worker', undefined)
+    const job = startShikiHighlight('const a = 1', 'ts')
+
+    await expect(job.promise).rejects.toThrow('Web Workers are unavailable')
+    expect(() => job.dispose()).not.toThrow()
+  })
+
+  it('rejects pending jobs and recreates the worker after a runtime error', async () => {
+    class FailingWorker {
+      static instances: FailingWorker[] = []
+      messages: Array<{ code: string; id: number; language: string }> = []
+      onerror: ((event: ErrorEvent) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+
+      constructor() {
+        FailingWorker.instances.push(this)
+      }
+
+      postMessage(message: { code: string; id: number; language: string }) {
+        this.messages.push(message)
+      }
+
+      terminate() {}
+    }
+
+    vi.stubGlobal('Worker', FailingWorker)
+    const first = startShikiHighlight('const a = 1', 'ts')
+    const second = startShikiHighlight('print(1)', 'python')
+    const failedWorker = FailingWorker.instances[0]
+    const firstRejection = expect(first.promise).rejects.toThrow('worker crashed')
+    const secondRejection = expect(second.promise).rejects.toThrow('worker crashed')
+
+    failedWorker.onerror?.({ message: 'worker crashed' } as ErrorEvent)
+    await Promise.all([firstRejection, secondRejection])
+    first.dispose()
+    second.dispose()
+
+    const recovered = startShikiHighlight('echo ok', 'bash')
+    const recoveredWorker = FailingWorker.instances[1]
+    const message = recoveredWorker.messages[0]
+
+    expect(FailingWorker.instances).toHaveLength(2)
+    recoveredWorker.onmessage?.({ data: { id: message.id, tokens: [[{ content: message.code }]] } } as MessageEvent)
+    await expect(recovered.promise).resolves.toEqual([[{ content: 'echo ok' }]])
+    recovered.dispose()
+  })
+
+  it('cancels one of two jobs, ignores its late reply, and terminates after the final lease', async () => {
+    class ConcurrentWorker {
+      static instances: ConcurrentWorker[] = []
+      messages: Array<{ code: string; id: number; language: string }> = []
+      onerror: ((event: ErrorEvent) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      terminateCalls = 0
+
+      constructor() {
+        ConcurrentWorker.instances.push(this)
+      }
+
+      postMessage(message: { code: string; id: number; language: string }) {
+        this.messages.push(message)
+      }
+
+      terminate() {
+        this.terminateCalls += 1
+      }
+    }
+
+    vi.stubGlobal('Worker', ConcurrentWorker)
+    const first = startShikiHighlight('first', 'text')
+    const second = startShikiHighlight('second', 'text')
+    const worker = ConcurrentWorker.instances[0]
+    const [firstMessage, secondMessage] = worker.messages
+    const lateHandler = worker.onmessage
+    let firstOutcome = 'pending'
+
+    void first.promise.then(
+      () => {
+        firstOutcome = 'resolved'
+      },
+      () => {
+        firstOutcome = 'rejected'
+      }
+    )
+
+    expect(getShikiWorkerClientSnapshotForTests()).toMatchObject({ activeLeases: 2, pending: 2 })
+
+    first.dispose()
+    await Promise.resolve()
+
+    expect(firstOutcome).toBe('rejected')
+    expect(getShikiWorkerClientSnapshotForTests()).toMatchObject({ activeLeases: 1, pending: 1 })
+    expect(worker.terminateCalls).toBe(0)
+
+    lateHandler?.({ data: { id: firstMessage.id, tokens: [[{ content: 'late first' }]] } } as MessageEvent)
+    expect(getShikiWorkerClientSnapshotForTests()).toMatchObject({ activeLeases: 1, pending: 1 })
+
+    worker.onmessage?.({
+      data: { id: secondMessage.id, tokens: [[{ content: secondMessage.code }]] }
+    } as MessageEvent)
+    await expect(second.promise).resolves.toEqual([[{ content: 'second' }]])
+    expect(getShikiWorkerClientSnapshotForTests().pending).toBe(0)
+
+    second.dispose()
+    first.dispose()
+    second.dispose()
+
+    expect(worker.terminateCalls).toBe(1)
+    expect(getShikiWorkerClientSnapshotForTests()).toEqual({ activeGeneration: null, activeLeases: 0, pending: 0 })
+  })
+})
+
+describe('Shiki embedded language loading', () => {
+  it.each([
+    ['markdown', '```python\ndef greet():\n    return 42\n```', 'def'],
+    ['vue', '<script lang="ts">\nconst answer: number = 42\n</script>', 'const']
+  ])('tokenizes embedded code in %s', async (language, code, keyword) => {
+    const tokens = await tokenizeShikiCode(code, language)
+    const keywordTokens = tokens.flat().filter(token => token.content === keyword)
+    const reconstructed = tokens.map(line => line.map(token => token.content).join('')).join('\n')
+
+    expect(reconstructed).toBe(code)
+    expect(keywordTokens).toHaveLength(1)
+    expect(keywordTokens[0].htmlStyle).toBeTruthy()
   })
 })

@@ -876,9 +876,7 @@ export function useSessionActions({
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 
         const preferredMessages =
-          prefetchApplied &&
-          prefetchMatchesResumedSession &&
-          !hasLiveProjection
+          prefetchApplied && prefetchMatchesResumedSession && !hasLiveProjection
             ? localSnapshot
             : (() => {
                 const previousMessages = resumedSameSelectedSession

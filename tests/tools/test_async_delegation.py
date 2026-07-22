@@ -873,3 +873,28 @@ def test_gateway_cli_origin_event_left_unrouted():
     assert "platform" not in evt
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
+    """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
+    HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600
+    even under a permissive process umask, not the SessionDB-only path."""
+    import stat
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False, raising=False)
+    monkeypatch.setattr("hermes_cli.config._is_container", lambda: False, raising=False)
+    old_umask = os.umask(0o022)
+    try:
+        conn = ad._connect()
+        conn.close()
+    finally:
+        os.umask(old_umask)
+
+    db_path = tmp_path / "state.db"
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+    wal_path = tmp_path / "state.db-wal"
+    if wal_path.exists():
+        assert stat.S_IMODE(wal_path.stat().st_mode) == 0o600
+
+

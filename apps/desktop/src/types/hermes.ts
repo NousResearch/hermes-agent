@@ -5,6 +5,9 @@ export interface ConfigFieldSchema {
   /** When true, renders a SearchableSelect (Popover + cmdk) instead of the
    *  closed `<Select>` dropdown. For large option lists like IANA timezones. */
   searchable?: boolean
+  /** When true, a searchable select prepends a "clear" item that resets the
+   *  value to ''. Matches the existing <Select> EMPTY_SELECT_VALUE pattern. */
+  clearable?: boolean
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
 }
 

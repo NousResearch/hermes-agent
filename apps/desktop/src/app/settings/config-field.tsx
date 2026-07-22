@@ -101,6 +101,7 @@ export function ConfigField({
   if (selectOptions && schema.searchable) {
     return row(
       <SearchableSelect
+        clearLabel={schema.clearable ? c.systemDefault : undefined}
         emptyMessage={c.noResults}
         onChange={next => onChange(next)}
         options={selectOptions.filter(o => o !== '')}

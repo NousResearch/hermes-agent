@@ -1062,12 +1062,33 @@ class TestWeixinTextDebounce:
         assert dispatched == ["one\ntwo\nthree"]
 
 
+class _StubContent:
+    def __init__(self, response):
+        self._response = response
+
+    async def iter_chunked(self, size):
+        if self._response._delay:
+            await asyncio.sleep(self._response._delay)
+        body = self._response._body
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        for idx in range(0, len(body), size):
+            yield body[idx:idx + size]
+
+
 class _StubResponse:
     def __init__(self, *, status=200, body="{}", delay=0.0):
         self.status = status
         self.ok = 200 <= status < 300
         self._body = body
         self._delay = delay
+        self.headers = {}
+        self.charset = "utf-8"
+        self.content = _StubContent(self)
+        self.closed = False
+        self.text_called = False
+        self.read_called = False
+        self.release_called = False
 
     async def __aenter__(self):
         return self
@@ -1076,9 +1097,23 @@ class _StubResponse:
         return False
 
     async def text(self):
+        self.text_called = True
         if self._delay:
             await asyncio.sleep(self._delay)
         return self._body
+
+    async def read(self):
+        self.read_called = True
+        body = self._body
+        if isinstance(body, str):
+            return body.encode("utf-8")
+        return body
+
+    def close(self):
+        self.closed = True
+
+    def release(self):
+        self.release_called = True
 
 
 class _StubSession:
@@ -1190,6 +1225,88 @@ class TestWeixinApiTimeout:
                     timeout_ms=5000,
                 )
             )
+
+    def test_api_post_bounds_oversized_success_response(self):
+        response = _StubResponse(body=b"x" * (weixin.ILINK_JSON_BODY_MAX_BYTES + 1))
+        session = _StubSession(response)
+
+        with pytest.raises(
+            RuntimeError,
+            match=f"iLink POST ep response exceeded {weixin.ILINK_JSON_BODY_MAX_BYTES} bytes",
+        ):
+            asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    payload={"k": "v"},
+                    token="tok",
+                    timeout_ms=5000,
+                )
+            )
+
+        assert response.closed is True
+        assert response.text_called is False
+
+    def test_api_get_bounds_oversized_error_response(self):
+        response = _StubResponse(status=500, body=b"x" * (weixin.ILINK_ERROR_BODY_MAX_BYTES + 1))
+        session = _StubSession(response)
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                f"iLink GET ep error response exceeded "
+                f"{weixin.ILINK_ERROR_BODY_MAX_BYTES} bytes"
+            ),
+        ):
+            asyncio.run(
+                weixin._api_get(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    timeout_ms=5000,
+                )
+            )
+
+        assert response.closed is True
+        assert response.text_called is False
+
+    def test_upload_ciphertext_bounds_oversized_error_response(self):
+        response = _StubResponse(status=500, body=b"x" * (weixin.ILINK_ERROR_BODY_MAX_BYTES + 1))
+        session = _StubSession(response)
+
+        with pytest.raises(
+            RuntimeError,
+            match=f"CDN upload error response exceeded {weixin.ILINK_ERROR_BODY_MAX_BYTES} bytes",
+        ):
+            asyncio.run(
+                weixin._upload_ciphertext(
+                    session,
+                    ciphertext=b"encrypted",
+                    upload_url="https://novac2c.cdn.weixin.qq.com/c2c/upload",
+                )
+            )
+
+        assert response.closed is True
+        assert response.text_called is False
+
+    def test_upload_ciphertext_success_releases_without_reading_body(self):
+        response = _StubResponse(body=b"x" * (weixin.ILINK_JSON_BODY_MAX_BYTES + 1))
+        response.headers["x-encrypted-param"] = "encrypted-param"
+        session = _StubSession(response)
+
+        result = asyncio.run(
+            weixin._upload_ciphertext(
+                session,
+                ciphertext=b"encrypted",
+                upload_url="https://novac2c.cdn.weixin.qq.com/c2c/upload",
+            )
+        )
+
+        assert result == "encrypted-param"
+        assert response.release_called is True
+        assert response.read_called is False
+        assert response.text_called is False
 
     def test_get_updates_returns_empty_sentinel_on_timeout(self):
         # wait_for raises asyncio.TimeoutError, which _get_updates swallows into

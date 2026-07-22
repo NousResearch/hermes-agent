@@ -239,6 +239,33 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
 
+# ── Tool result forwarding ──────────────────────────────────────────────
+# When a whitelisted tool completes with ``success: true``, selected fields
+# from the tool's result JSON are forwarded in the ``hermes.tool.progress``
+# (status=completed) SSE event so consumers (bridges, frontends,
+# observability) can act on tool output without scraping assistant prose.
+#
+# To add a new tool:
+#   1. Add an entry to _TOOL_RESULT_FIELDS below mapping the tool name to
+#      a frozenset of field names to forward.
+#   2. Add a test in test_api_server.py covering:
+#      - Field forwarding on success
+#      - Skipping on failure (success=false)
+#      - Skipping for non-whitelisted tools with colliding field names
+#
+# Only success=true JSON results are unpacked.  Non-JSON results, failures,
+# and tools not in the whitelist emit the base {tool, toolCallId, status}
+# payload unchanged.
+#
+# Note: forwarded field values are sent verbatim in every SSE event.  Do
+# not whitelist fields that can carry large payloads (base64 blobs, long
+# text).  Keep forwarded values to identifier-sized data (URLs, IDs, short
+# tags).
+_TOOL_RESULT_FIELDS: dict[str, frozenset[str]] = {
+    "image_generate": frozenset({"image"}),
+}
+
+
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
 
@@ -2848,15 +2875,37 @@ class APIServerAdapter(BasePlatformAdapter):
                 Dropped if the start was filtered (internal tool, missing
                 id, or never seen) so clients never get an orphaned
                 ``completed`` they can't correlate to a prior ``running``.
+
+                When *function_name* is in ``_TOOL_RESULT_FIELDS`` and the
+                result is a JSON object with ``"success": true``, the
+                configured fields are forwarded so SSE consumers can act on
+                tool output without scraping assistant prose.
                 """
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put(("__tool_progress__", {
+
+                payload: dict = {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
-                }))
+                }
+
+                fields = _TOOL_RESULT_FIELDS.get(function_name)
+                if fields and isinstance(function_result, str):
+                    try:
+                        parsed = json.loads(function_result)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = None
+                    if isinstance(parsed, dict) and parsed.get("success") is True:
+                        for key in fields:
+                            if key in {"tool", "toolCallId", "status"}:
+                                continue  # never overwrite base payload keys
+                            value = parsed.get(key)
+                            if value is not None:
+                                payload[key] = value
+
+                _stream_q.put(("__tool_progress__", payload))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.

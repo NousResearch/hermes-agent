@@ -1737,6 +1737,17 @@ def _sess_nowait(params, rid):
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 
+def _validate_expected_stored_session(session: dict, params: dict, rid, *, action: str):
+    """Expand-compatible durable binding for Desktop session mutations."""
+    if "expected_stored_session_id" not in params:
+        return None
+    expected_key = str(params.get("expected_stored_session_id") or "").strip()
+    actual_key = str(session.get("session_key") or "").strip()
+    if expected_key != actual_key:
+        return _err(rid, 4091, f"{action} target mismatch; reload the conversation and retry")
+    return None
+
+
 def _sess(params, rid):
     s, err = _sess_nowait(params, rid)
     if err:
@@ -9276,6 +9287,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if binding_err := _validate_expected_stored_session(session, params, rid, action="interrupt"):
+        return binding_err
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         if session.get("running"):
@@ -9614,11 +9627,8 @@ def _(rid, params: dict) -> dict:
     # intended; reject a stale/cross-wired binding before touching transport,
     # busy queues, history, or persistence (#54527). Omission remains accepted
     # for expand-compatible rollout with Desktop clients predating this field.
-    if "expected_stored_session_id" in params:
-        expected_key = str(params.get("expected_stored_session_id") or "").strip()
-        actual_key = str(session.get("session_key") or "").strip()
-        if expected_key != actual_key:
-            return _err(rid, 4091, "prompt target mismatch; reload the conversation and retry")
+    if binding_err := _validate_expected_stored_session(session, params, rid, action="prompt"):
+        return binding_err
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps

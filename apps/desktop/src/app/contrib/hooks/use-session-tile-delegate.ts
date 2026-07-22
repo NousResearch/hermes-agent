@@ -53,8 +53,11 @@ export function useSessionTileDelegate({
       executeSlash: async (rawCommand, sessionId) => {
         await executeSlashCommand(rawCommand, { sessionId })
       },
-      interruptSession: async runtimeId => {
-        await requestGateway('session.interrupt', { session_id: runtimeId })
+      interruptSession: async (runtimeId, storedSessionId) => {
+        await requestGateway('session.interrupt', {
+          expected_stored_session_id: storedSessionId,
+          session_id: runtimeId
+        })
       },
       resumeTile: async storedSessionId => {
         const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
@@ -90,8 +93,12 @@ export function useSessionTileDelegate({
 
         return runtimeId
       },
-      submitToSession: async (runtimeId, text) => {
-        await requestGateway('prompt.submit', { session_id: runtimeId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+      submitToSession: async (runtimeId, storedSessionId, text) => {
+        await requestGateway(
+          'prompt.submit',
+          { expected_stored_session_id: storedSessionId, session_id: runtimeId, text },
+          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+        )
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })

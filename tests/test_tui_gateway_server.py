@@ -281,6 +281,44 @@ def test_desktop_prompt_submit_rejects_mismatched_durable_target_before_mutation
     assert mutations == []
 
 
+def test_desktop_interrupt_rejects_mismatched_durable_target_before_mutation():
+    class _Agent:
+        def __init__(self):
+            self.interrupts = 0
+
+        def interrupt(self):
+            self.interrupts += 1
+
+    agent = _Agent()
+    session = _session(agent=agent, source="desktop", session_key="stored-session-b", running=True)
+    server._sessions["runtime-session-b"] = session
+    try:
+        response = server.handle_request({
+            "id": "cross-wired-interrupt", "method": "session.interrupt",
+            "params": {"session_id": "runtime-session-b", "expected_stored_session_id": "stored-session-a"},
+        })
+    finally:
+        server._sessions.pop("runtime-session-b", None)
+    assert response["error"]["code"] == 4091
+    assert agent.interrupts == 0
+    assert session["running"] is True
+    assert session.get("_turn_cancel_requested") is not True
+
+
+def test_legacy_desktop_interrupt_accepts_omitted_durable_target():
+    session = _session(source="desktop", session_key="stored-session", running=False)
+    server._sessions["runtime-session"] = session
+    try:
+        response = server.handle_request({
+            "id": "legacy-desktop-interrupt", "method": "session.interrupt",
+            "params": {"session_id": "runtime-session"},
+        })
+    finally:
+        server._sessions.pop("runtime-session", None)
+    assert response["result"]["status"] == "interrupted"
+    assert session["_turn_cancel_requested"] is True
+
+
 def test_legacy_desktop_prompt_submit_accepts_omitted_durable_target(monkeypatch):
     session = _session(source="desktop", session_key="stored-session", running=True)
     server._sessions["runtime-session"] = session

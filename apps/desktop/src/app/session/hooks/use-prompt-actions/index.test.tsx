@@ -1,3 +1,4 @@
+import type { AppendMessage } from '@assistant-ui/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
@@ -60,6 +61,8 @@ async function actRender(ui: React.ReactElement) {
 interface HarnessHandle {
   activeSessionIdRef: MutableRefObject<string | null>
   cancelRun: () => Promise<void>
+  editMessage: (message: AppendMessage) => Promise<void>
+  reloadFromMessage: (parentId: string | null) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
@@ -158,6 +161,10 @@ function Harness({
       activeSessionIdRef,
       cancelRun: (...args: Parameters<typeof actions.cancelRun>) =>
         act(async () => actions.cancelRun(...args)) as Promise<void>,
+      editMessage: (...args: Parameters<typeof actions.editMessage>) =>
+        act(async () => actions.editMessage(...args)) as Promise<void>,
+      reloadFromMessage: (...args: Parameters<typeof actions.reloadFromMessage>) =>
+        act(async () => actions.reloadFromMessage(...args)) as Promise<void>,
       restoreToMessage: (...args: Parameters<typeof actions.restoreToMessage>) =>
         act(async () => actions.restoreToMessage(...args)) as Promise<void>,
       steerPrompt: (...args: Parameters<typeof actions.steerPrompt>) =>
@@ -167,6 +174,8 @@ function Harness({
     })
   }, [
     actions.cancelRun,
+    actions.editMessage,
+    actions.reloadFromMessage,
     actions.restoreToMessage,
     actions.steerPrompt,
     actions.submitText,
@@ -800,6 +809,7 @@ describe('usePromptActions restoreToMessage', () => {
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         seedMessages={$messages.get()}
+        storedSessionId="stored-main-session"
       />
     )
 
@@ -810,6 +820,7 @@ describe('usePromptActions restoreToMessage', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: 'stored-main-session',
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         truncate_before_user_ordinal: 0
@@ -818,6 +829,67 @@ describe('usePromptActions restoreToMessage', () => {
     )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
     expect(lastState.busy).toBe(true)
+  })
+
+  it('binds regenerate to the selected durable session id', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+        storedSessionId="stored-main-session"
+      />
+    )
+
+    await handle!.reloadFromMessage(null)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        expected_stored_session_id: 'stored-main-session',
+        session_id: RUNTIME_SESSION_ID,
+        text: 'second prompt',
+        truncate_before_user_ordinal: 1
+      },
+      1_800_000
+    )
+  })
+
+  it('binds edit rewind to the selected durable session id', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+        storedSessionId="stored-main-session"
+      />
+    )
+
+    await handle!.editMessage({
+      parentId: null,
+      role: 'user',
+      sourceId: 'u2',
+      content: [{ type: 'text', text: 'edited second prompt' }]
+    } as unknown as AppendMessage)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        expected_stored_session_id: 'stored-main-session',
+        session_id: RUNTIME_SESSION_ID,
+        text: 'edited second prompt',
+        truncate_before_user_ordinal: 1
+      },
+      1_800_000
+    )
   })
 
   it('rethrows gateway failures and clears the busy flags for the dialog to surface', async () => {
@@ -872,11 +944,15 @@ describe('usePromptActions restoreToMessage', () => {
 
     await handle!.restoreToMessage('u1')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', {
+      expected_stored_session_id: RUNTIME_SESSION_ID,
+      session_id: RUNTIME_SESSION_ID
+    })
     expect(submitAttempts).toBe(2)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         truncate_before_user_ordinal: 0
@@ -922,6 +998,7 @@ describe('usePromptActions restoreToMessage', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         truncate_before_user_ordinal: 0
@@ -1267,6 +1344,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let interruptAttempts = 0
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
@@ -1275,6 +1354,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
         interruptAttempts += 1
 
         if (interruptAttempts === 1) {
+          selectedStoredSessionIdRef.current = 'newly-selected-session'
+          activeSessionIdRef.current = 'newly-selected-runtime'
           throw new Error('session not found')
         }
 
@@ -1291,9 +1372,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     await actRender(
       <Harness
+        activeSessionIdRef={activeSessionIdRef}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={STORED_SESSION_ID}
       />
     )
@@ -1302,9 +1385,16 @@ describe('usePromptActions sleep/wake session recovery', () => {
     await handle!.cancelRun()
 
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
-    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[0]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RUNTIME_SESSION_ID
+    })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+    expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RECOVERED_SESSION_ID
+    })
+    expect(activeSessionIdRef.current).toBe('newly-selected-runtime')
   })
 
   it('clears the active and cached turn clocks when stopping a turn', async () => {

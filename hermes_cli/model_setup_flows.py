@@ -739,7 +739,11 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     status = get_qwen_auth_status()
     if not status.get("logged_in"):
         print("Not logged into Qwen CLI OAuth.")
-        print("Run: qwen auth qwen-oauth")
+        # The `qwen auth` CLI subcommand was removed in Qwen CLI 0.19.x;
+        # users now re-authenticate interactively with `qwen` + `/auth`,
+        # or by editing ~/.qwen/oauth_creds.json / settings.json.
+        print("Run: qwen    (then use /auth to re-authenticate)")
+        print("Or set up Qwen OAuth via ~/.qwen/oauth_creds.json / ~/.qwen/settings.json.")
         auth_file = status.get("auth_file")
         if auth_file:
             print(f"Expected credentials file: {auth_file}")

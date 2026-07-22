@@ -416,7 +416,9 @@ def test_get_qwen_auth_status_expired_unrefreshable_token_is_not_logged_in(qwen_
     with patch(
         "hermes_cli.auth._refresh_qwen_cli_tokens",
         side_effect=AuthError(
-            "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
+            "Qwen OAuth refresh failed. The `qwen auth` CLI subcommand was "
+            "removed in Qwen CLI 0.19.x — run `qwen` interactively and use "
+            "`/auth` to re-authenticate, or update ~/.qwen/oauth_creds.json.",
             provider="qwen-oauth",
             code="qwen_refresh_failed",
         ),
@@ -425,7 +427,10 @@ def test_get_qwen_auth_status_expired_unrefreshable_token_is_not_logged_in(qwen_
 
     mock_refresh.assert_called_once()
     assert status["logged_in"] is False
-    assert "qwen auth qwen-oauth" in status["error"]
+    assert "0.19.x" in status["error"]
+    assert "/auth" in status["error"]
+    # Old, removed subcommand must NOT appear in fresh guidance:
+    assert "qwen auth qwen-oauth" not in status["error"]
 
 
 def test_get_qwen_auth_status_not_logged_in(qwen_env):
@@ -446,7 +451,9 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
         "hermes_cli.auth._refresh_qwen_cli_tokens",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AuthError(
-                "Qwen refresh rejected. Re-run 'qwen auth qwen-oauth'.",
+                "Qwen OAuth refresh failed. The `qwen auth` CLI subcommand "
+                "was removed in Qwen CLI 0.19.x — run `qwen` interactively "
+                "and use `/auth` to re-authenticate.",
                 provider="qwen-oauth",
                 code="qwen_refresh_failed",
             )
@@ -468,7 +475,175 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
     _model_flow_qwen_oauth({}, current_model="qwen3-coder-plus")
 
     out = capsys.readouterr().out
-    assert "Run: qwen auth qwen-oauth" in out
-    assert "Qwen refresh rejected" in out
+    # Must point users at the supported replacement path:
+    assert "Run: qwen" in out
+    assert "/auth" in out
+    # Must NOT advertise the removed `qwen auth` subcommand:
+    assert "qwen auth qwen-oauth" not in out
+    # Underlying refresh error should be surfaced too:
+    assert "Qwen OAuth refresh failed" in out
     assert prompt_called["value"] is False
     assert update_called["value"] is False
+
+
+# ---------------------------------------------------------------------------
+# Guidance strings — Qwen CLI 0.19.x removed `qwen auth`
+# ---------------------------------------------------------------------------
+#
+# These tests pin the user-facing guidance produced by the Qwen OAuth code
+# paths against the current installed Qwen CLI (0.19.x). The
+# `qwen auth qwen-oauth` subcommand was removed upstream, so every error
+# and prompt must point at `qwen` + `/auth` (or manual settings.json
+# editing) instead. See:
+#   https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/
+
+
+def test_missing_credentials_message_points_at_qwen_and_slash_auth(qwen_env):
+    """_read_qwen_cli_tokens() must advertise the supported login path."""
+    with pytest.raises(AuthError) as exc:
+        _read_qwen_cli_tokens()
+    assert exc.value.code == "qwen_auth_missing"
+    msg = str(exc.value)
+    # The interactive replacement the Qwen CLI docs prescribe:
+    assert "0.19.x" in msg
+    assert "/auth" in msg
+    assert "qwen" in msg
+    # The removed subcommand must NOT appear:
+    assert "qwen auth qwen-oauth" not in msg
+    # The credentials file path must still be mentioned so users can fix it manually:
+    assert "oauth_creds.json" in msg or "settings.json" in msg
+
+
+def test_refresh_token_missing_message_points_at_qwen_and_slash_auth(qwen_env):
+    """Missing refresh token in oauth_creds.json must steer users to /auth."""
+    # Write a token file with NO refresh_token field.
+    tokens = _make_qwen_tokens(access_token="at", refresh_token="")
+    _write_qwen_creds(qwen_env, tokens)
+
+    with pytest.raises(AuthError) as exc:
+        _refresh_qwen_cli_tokens(tokens)
+    assert exc.value.code == "qwen_refresh_token_missing"
+    msg = str(exc.value)
+    assert "0.19.x" in msg
+    assert "/auth" in msg
+    assert "qwen auth qwen-oauth" not in msg
+
+
+def test_refresh_failed_message_mentions_removed_subcommand_and_replacement(qwen_env):
+    """A refresh 4xx response must explain the replacement, not the removed cmd."""
+    expired_ms = int((time.time() - 3600) * 1000)
+    tokens = _make_qwen_tokens(
+        access_token="dead-at",
+        refresh_token="rt",
+        expiry_date=expired_ms,
+    )
+    _write_qwen_creds(qwen_env, tokens)
+
+    fake_response = MagicMock()
+    fake_response.status_code = 400
+    fake_response.text = "invalid_grant"
+
+    with patch("hermes_cli.auth.httpx.post", return_value=fake_response):
+        with pytest.raises(AuthError) as exc:
+            _refresh_qwen_cli_tokens(tokens)
+    assert exc.value.code == "qwen_refresh_failed"
+    msg = str(exc.value)
+    assert "0.19.x" in msg
+    assert "/auth" in msg
+    assert "oauth_creds.json" in msg
+    assert "qwen auth qwen-oauth" not in msg
+    # The upstream response body should still be surfaced for debuggability:
+    assert "invalid_grant" in msg
+
+
+def test_access_token_missing_message_points_at_qwen_and_slash_auth(qwen_env, monkeypatch):
+    """resolve_qwen_runtime_credentials must explain /auth when access is empty."""
+    tokens = _make_qwen_tokens(access_token="", refresh_token="rt")
+    _write_qwen_creds(qwen_env, tokens)
+
+    with pytest.raises(AuthError) as exc:
+        resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+    assert exc.value.code == "qwen_access_token_missing"
+    msg = str(exc.value)
+    assert "0.19.x" in msg
+    assert "/auth" in msg
+    assert "qwen auth qwen-oauth" not in msg
+
+
+def test_model_flow_qwen_oauth_not_logged_in_guidance(qwen_env, monkeypatch, capsys):
+    """`hermes model` → qwen-oauth when not logged in must show /auth guidance."""
+    from hermes_cli.main import _model_flow_qwen_oauth
+
+    # No credentials file at all → get_qwen_auth_status() returns logged_in=False.
+    qwen_status = get_qwen_auth_status()
+    assert qwen_status.get("logged_in") is False
+    assert "error" in qwen_status
+
+    prompt_called = {"value": False}
+    update_called = {"value": False}
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *a, **kw: prompt_called.__setitem__("value", True),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._update_config_for_provider",
+        lambda *a, **kw: update_called.__setitem__("value", True),
+    )
+
+    _model_flow_qwen_oauth({}, current_model="qwen3-coder-plus")
+    out = capsys.readouterr().out
+    assert "Not logged into Qwen CLI OAuth" in out
+    assert "Run: qwen" in out
+    assert "/auth" in out
+    # Still tells the user where to write tokens manually:
+    assert "oauth_creds.json" in out or "settings.json" in out
+    # Never the removed subcommand:
+    assert "qwen auth qwen-oauth" not in out
+    # And we must NOT have proceeded to model selection / config update:
+    assert prompt_called["value"] is False
+    assert update_called["value"] is False
+
+
+def test_status_command_qwen_row_uses_slash_auth_guidance(qwen_env, capsys):
+    """`hermes status` Qwen OAuth row must point users at /auth, not `qwen auth`.
+
+    The Qwen status row is a literal f-string in hermes_cli/status.py —
+    assert against the new message directly so the regression cannot sneak
+    back in via a refactor.
+    """
+    # No credentials file → not logged in. get_qwen_auth_status is what the
+    # status code uses, and it now must report an error so the row reads
+    # "not logged in (run: qwen, then /auth — `qwen auth` was removed in 0.19.x)".
+    qwen_status = get_qwen_auth_status()
+    assert qwen_status.get("logged_in") is False
+
+    # Reproduce the literal format used in hermes_cli/status.py:282 so a
+    # future refactor that breaks the wording fails this test.
+    expected = (
+        "not logged in (run: qwen, then /auth — `qwen auth` was removed in 0.19.x)"
+    )
+    rendered = (
+        f"  {'Qwen OAuth':<12}  {'not logged in (run: qwen, then /auth — `qwen auth` was removed in 0.19.x)'}"
+    )
+    # The actual format used by the row:
+    assert expected in rendered
+    # Make sure the OLD guidance is gone from the source file (no regression):
+    src = Path("hermes_cli/status.py").read_text(encoding="utf-8")
+    assert "run: qwen auth qwen-oauth" not in src
+    # And the NEW guidance is present:
+    assert "run: qwen, then /auth" in src
+
+
+def test_qwen_cli_remove_hints_use_supported_replacement(qwen_env):
+    """The qwen-cli suppression hint must NOT advertise the removed subcommand."""
+    from agent.credential_sources import _remove_qwen_cli
+
+    result = _remove_qwen_cli("qwen-oauth", removed=None)
+    joined = "\n".join(result.hints)
+    assert "Suppressed qwen-cli credential" in joined
+    assert "oauth_creds.json" in joined
+    # New guidance:
+    assert "/auth" in joined
+    assert "settings.json" in joined
+    # Removed guidance must be gone:
+    assert "hermes auth add qwen-oauth" not in joined

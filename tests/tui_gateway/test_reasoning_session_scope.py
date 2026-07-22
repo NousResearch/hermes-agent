@@ -47,7 +47,7 @@ class TestSessionInfoReasoningEffort:
     def test_enabled_reports_effort_and_session_scope_contract(self) -> None:
         info = _session_info(_agent({"enabled": True, "effort": "high"}))
         assert info["reasoning_effort"] == "high"
-        assert info["reasoning_session_scope"] is True
+        assert info["reasoning_effort_session_scope"] is True
 
     def test_unset_reports_empty(self) -> None:
         info = _session_info(_agent(None))
@@ -130,6 +130,22 @@ class TestConfigSetReasoningSessionScope:
             )
         assert resp["error"]["code"] == 4002
         write_key.assert_not_called()
+
+    def test_session_scope_rejects_global_display_reasoning_operations(self) -> None:
+        session = {"session_key": "k1", "agent": _agent(None)}
+        for value in ("show", "hide", "full", "clamp"):
+            with patch.dict(server._sessions, {"s1": session}, clear=True), \
+                    patch.object(server, "_save_cfg") as save_cfg:
+                resp = self._dispatch(
+                    {
+                        "key": "reasoning",
+                        "session_id": "s1",
+                        "scope": "session",
+                        "value": value,
+                    }
+                )
+            assert resp["error"]["code"] == 4002
+            save_cfg.assert_not_called()
 
     def test_no_session_persists_globally(self) -> None:
         with patch.object(server, "_write_config_key") as write_key:

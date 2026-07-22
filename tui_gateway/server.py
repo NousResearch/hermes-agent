@@ -3824,7 +3824,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "model": mirror.get("model", getattr(agent, "model", "")),
         "provider": mirror.get("provider", getattr(agent, "provider", "")),
         "reasoning_effort": reasoning_effort,
-        "reasoning_session_scope": True,
+        "reasoning_effort_session_scope": True,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
@@ -11626,6 +11626,10 @@ def _(rid, params: dict) -> dict:
             global_scope = scope == "global"
             if scope == "session" and session is None:
                 return _err(rid, 4001, "session not found")
+            if scope == "session" and arg in {
+                "show", "on", "hide", "off", "full", "all", "clamp", "collapse", "short",
+            }:
+                return _err(rid, 4002, "reasoning display values require global scope")
             if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (

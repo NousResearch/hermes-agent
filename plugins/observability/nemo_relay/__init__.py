@@ -60,6 +60,140 @@ class _Settings:
     atif_model_name: str = "unknown"
 
 
+class _ProcessPluginConfiguration:
+    """Own Relay's process-global plugin configuration across profile runtimes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._key: str | None = None
+        self._plugin_mod: Any = None
+        self._activation: Any = None
+        self._owners: set[int] = set()
+
+    def acquire(
+        self,
+        owner: "_Runtime",
+        plugin_mod: Any,
+        plugin_config: dict[str, Any],
+        dynamic_plugins: list[dict[str, Any]],
+    ) -> tuple[bool, Any]:
+        owner_id = id(owner)
+        key = _plugin_configuration_key(plugin_config, dynamic_plugins)
+        with self._lock:
+            if owner_id in self._owners:
+                return True, self._activation
+            if self._owners:
+                if self._plugin_mod is plugin_mod and self._key == key:
+                    self._owners.add(owner_id)
+                    return True, self._activation
+                logger.warning(
+                    "NeMo Relay plugin configuration is already active for another "
+                    "Hermes profile; keeping the existing process-global configuration "
+                    "and using direct observability for this profile."
+                )
+                return False, None
+
+            activation = None
+            if dynamic_plugins:
+                initialize_dynamic = getattr(
+                    plugin_mod,
+                    "initialize_with_dynamic_plugins",
+                    None,
+                )
+                if callable(initialize_dynamic):
+                    try:
+                        activation = _resolve_awaitable(
+                            initialize_dynamic(plugin_config, dynamic_plugins)
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "NeMo Relay dynamic plugin activation failed; continuing "
+                            "with static observability only: %s",
+                            exc,
+                        )
+                else:
+                    logger.warning(
+                        "NeMo Relay dynamic plugins require a binding that exposes "
+                        "plugin.initialize_with_dynamic_plugins (available in NeMo "
+                        "Relay 0.6+). Continuing with static observability only."
+                    )
+
+            if activation is None:
+                initialize = getattr(plugin_mod, "initialize", None)
+                if not callable(initialize):
+                    return False, None
+                try:
+                    _resolve_awaitable(initialize(plugin_config))
+                except Exception as exc:
+                    logger.debug(
+                        "NeMo Relay plugins.toml init failed: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    return False, None
+
+            self._key = key
+            self._plugin_mod = plugin_mod
+            self._activation = activation
+            self._owners.add(owner_id)
+            return True, activation
+
+    def release(self, owner: "_Runtime", nemo_relay: Any) -> None:
+        owner_id = id(owner)
+        with self._lock:
+            if owner_id not in self._owners:
+                return
+            self._owners.remove(owner_id)
+            if self._owners:
+                return
+
+            failures: list[str] = []
+            activation = self._activation
+            plugin_mod = self._plugin_mod
+            try:
+                if activation is not None:
+                    try:
+                        _flush_relay_subscribers(nemo_relay)
+                    except Exception as exc:
+                        failures.append(f"subscriber flush failed: {exc}")
+                    close = getattr(activation, "close", None)
+                    if callable(close):
+                        try:
+                            _resolve_awaitable(close())
+                        except Exception as exc:
+                            failures.append(
+                                f"dynamic plugin activation close failed: {exc}"
+                            )
+                    else:
+                        failures.append("dynamic plugin activation has no close method")
+                else:
+                    clear = getattr(plugin_mod, "clear", None)
+                    if callable(clear):
+                        try:
+                            _resolve_awaitable(clear())
+                        except Exception as exc:
+                            failures.append(
+                                f"static plugin configuration clear failed: {exc}"
+                            )
+            finally:
+                self._key = None
+                self._plugin_mod = None
+                self._activation = None
+
+            if failures:
+                raise RuntimeError("; ".join(failures))
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._key = None
+            self._plugin_mod = None
+            self._activation = None
+            self._owners.clear()
+
+
+_PLUGIN_CONFIGURATION = _ProcessPluginConfiguration()
+
+
 class _Runtime:
     def __init__(
         self,
@@ -107,38 +241,17 @@ class _Runtime:
         if plugin_mod is None:
             return False
         plugin_config = _static_plugin_config(self.settings.plugins_config)
-        if self.settings.dynamic_plugins:
-            activate_dynamic = getattr(plugin_mod, "activate_dynamic_plugins", None)
-            if callable(activate_dynamic):
-                try:
-                    self._ensure_plugin_config_output_dirs(plugin_config)
-                    self._plugin_activation = _resolve_awaitable(
-                        activate_dynamic(plugin_config, self.settings.dynamic_plugins)
-                    )
-                    self._ensure_shutdown_registered()
-                    return True
-                except Exception as exc:
-                    logger.warning(
-                        "NeMo Relay dynamic plugin activation failed; continuing with static "
-                        "observability only: %s",
-                        exc,
-                    )
-            else:
-                logger.warning(
-                    "NeMo Relay dynamic plugins require a binding that exposes "
-                    "plugin.activate_dynamic_plugins (available in NeMo Relay 0.6+). "
-                    "Continuing with static observability only."
-                )
-        initialize = getattr(plugin_mod, "initialize", None)
-        if not callable(initialize):
-            return False
-        try:
-            self._ensure_plugin_config_output_dirs(plugin_config)
-            _resolve_awaitable(initialize(plugin_config))
-            return True
-        except Exception as exc:
-            logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
-            return False
+        self._ensure_plugin_config_output_dirs(plugin_config)
+        initialized, activation = _PLUGIN_CONFIGURATION.acquire(
+            self,
+            plugin_mod,
+            plugin_config,
+            self.settings.dynamic_plugins,
+        )
+        self._plugin_activation = activation
+        if activation is not None:
+            self._ensure_shutdown_registered()
+        return initialized
 
     def _ensure_shutdown_registered(self) -> None:
         if self._shutdown_registered:
@@ -149,43 +262,12 @@ class _Runtime:
     def _clear_plugins_toml(self) -> None:
         if not self._plugin_config_initialized:
             return
-        failures: list[str] = []
-        if self._plugin_activation is not None:
-            activation = self._plugin_activation
-            try:
-                _flush_relay_subscribers(self.nemo_relay)
-            except Exception as exc:
-                failures.append(f"subscriber flush failed: {exc}")
-
-            close = getattr(activation, "close", None)
-            if callable(close):
-                try:
-                    _resolve_awaitable(close())
-                except Exception as exc:
-                    failures.append(f"dynamic plugin activation close failed: {exc}")
-                finally:
-                    # Retain the owned activation through the complete close
-                    # attempt. The binding transitions it to a terminal state
-                    # before its awaitable resolves, including error results.
-                    self._plugin_activation = None
-                    self._plugin_config_initialized = False
-                    self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
-            else:
-                failures.append("dynamic plugin activation has no close method")
-        else:
-            try:
-                plugin_mod = getattr(self.nemo_relay, "plugin", None)
-                clear = getattr(plugin_mod, "clear", None)
-                if callable(clear):
-                    _resolve_awaitable(clear())
-            except Exception as exc:
-                failures.append(f"static plugin configuration clear failed: {exc}")
-            finally:
-                self._plugin_config_initialized = False
-                self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
-
-        if failures:
-            raise RuntimeError("; ".join(failures))
+        try:
+            _PLUGIN_CONFIGURATION.release(self, self.nemo_relay)
+        finally:
+            self._plugin_activation = None
+            self._plugin_config_initialized = False
+            self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
 
     def _activate_direct_fallbacks(self) -> None:
         self._plugin_config_needs_reinit = False
@@ -610,6 +692,18 @@ def _static_plugin_config(plugins_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _plugin_configuration_key(
+    plugin_config: dict[str, Any],
+    dynamic_plugins: list[dict[str, Any]],
+) -> str:
+    return json.dumps(
+        {"config": plugin_config, "dynamic_plugins": dynamic_plugins},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
 def _dynamic_plugin_specs(
     plugins_config: dict[str, Any] | None,
     plugins_toml_path: str = "",
@@ -926,3 +1020,4 @@ def reset_for_tests() -> None:
     for runtime in runtimes:
         if isinstance(runtime, _Runtime):
             runtime.shutdown()
+    _PLUGIN_CONFIGURATION.reset_for_tests()

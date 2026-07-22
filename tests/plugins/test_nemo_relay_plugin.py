@@ -53,7 +53,7 @@ class _FakeNemoRelay:
         self.plugin = SimpleNamespace(
             initialize=self._plugin_initialize,
             clear=self._plugin_clear,
-            activate_dynamic_plugins=self._plugin_activate_dynamic,
+            initialize_with_dynamic_plugins=self._plugin_initialize_with_dynamic,
         )
         self.subscribers = SimpleNamespace(
             register=self._register_subscriber,
@@ -159,7 +159,7 @@ class _FakeNemoRelay:
     async def _plugin_clear(self):
         self.events.append(("plugin.clear",))
 
-    async def _plugin_activate_dynamic(self, config, dynamic_plugins):
+    async def _plugin_initialize_with_dynamic(self, config, dynamic_plugins):
         self.events.append(("plugin.activate_dynamic", config, dynamic_plugins))
         return _FakePluginActivation(self.events)
 
@@ -770,6 +770,190 @@ def test_nemo_relay_plugin_activates_and_owns_dynamic_plugins(tmp_path, monkeypa
     assert event_names.index("atif.deregister") < event_names.index("plugin.activation.close")
 
 
+def test_nemo_relay_plugin_uses_real_0_6_dynamic_activation_api(
+    tmp_path,
+    monkeypatch,
+):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+    plugin = _fresh_plugin(monkeypatch, relay)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    calls = []
+
+    class _NativeActivation:
+        def __init__(self):
+            self.report = {"diagnostics": []}
+            self.is_active = True
+
+        async def close(self):
+            self.is_active = False
+
+    async def _initialize_with_dynamic_plugins(config, dynamic_plugins):
+        calls.append((config, dynamic_plugins))
+        return _NativeActivation()
+
+    monkeypatch.setattr(
+        relay.plugin,
+        "_initialize_with_dynamic_plugins",
+        _initialize_with_dynamic_plugins,
+    )
+
+    plugin.on_session_start(session_id="s1")
+    runtime = plugin._get_runtime()
+
+    assert runtime is not None
+    assert isinstance(runtime._plugin_activation, relay.plugin.PluginHostActivation)
+    assert calls == [
+        (
+            {"version": 1},
+            [
+                {
+                    "plugin_id": "fixture",
+                    "kind": "rust_dynamic",
+                    "manifest_ref": str(tmp_path / "fixture" / "relay-plugin.toml"),
+                    "config": {"mode": "test"},
+                }
+            ],
+        )
+    ]
+
+    activation = runtime._plugin_activation
+    runtime.shutdown()
+    assert activation.is_active is False
+
+
+def test_real_binding_shares_plugin_configuration_across_two_profiles(
+    tmp_path,
+    monkeypatch,
+):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+    plugin = _fresh_plugin(monkeypatch, relay)
+    original_initialize = relay.plugin.initialize
+    original_clear = relay.plugin.clear
+    original_clear()
+    initialize_calls = []
+    clear_calls = 0
+
+    async def _initialize(config):
+        initialize_calls.append(config)
+        return await original_initialize(config)
+
+    def _clear():
+        nonlocal clear_calls
+        clear_calls += 1
+        return original_clear()
+
+    monkeypatch.setattr(relay.plugin, "initialize", _initialize)
+    monkeypatch.setattr(relay.plugin, "clear", _clear)
+    monkeypatch.setattr(
+        plugin,
+        "_load_settings",
+        lambda: plugin._Settings(plugins_config={"version": 1}),
+    )
+    profile_a = str(tmp_path / "profile-a")
+    profile_b = str(tmp_path / "profile-b")
+    host_a = relay_runtime.RelayRuntime(relay=relay, profile_key=profile_a)
+    host_b = relay_runtime.RelayRuntime(relay=relay, profile_key=profile_b)
+
+    try:
+        runtime_a = plugin._get_runtime(profile_key=profile_a, host=host_a)
+        runtime_b = plugin._get_runtime(profile_key=profile_b, host=host_b)
+        assert runtime_a is not None
+        assert runtime_b is not None
+        runtime_a.ensure_session({"session_id": "session-a"})
+        runtime_b.ensure_session({"session_id": "session-b"})
+
+        assert initialize_calls == [{"version": 1}]
+        assert relay.plugin.report() is not None
+
+        runtime_a.close_session({"session_id": "session-a"})
+
+        assert clear_calls == 0
+        assert relay.plugin.report() is not None
+        assert runtime_b.host.get_session("session-b") is not None
+
+        runtime_b.close_session({"session_id": "session-b"})
+
+        assert clear_calls == 1
+        assert relay.plugin.report() is None
+    finally:
+        plugin.reset_for_tests()
+        host_a.shutdown()
+        host_b.shutdown()
+        original_clear()
+
+
+def test_real_binding_does_not_replace_another_profiles_plugin_configuration(
+    tmp_path,
+    monkeypatch,
+):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+    plugin = _fresh_plugin(monkeypatch, relay)
+    original_initialize = relay.plugin.initialize
+    original_clear = relay.plugin.clear
+    original_clear()
+    initialize_calls = []
+    clear_calls = 0
+
+    async def _initialize(config):
+        initialize_calls.append(config)
+        return await original_initialize(config)
+
+    def _clear():
+        nonlocal clear_calls
+        clear_calls += 1
+        return original_clear()
+
+    settings = iter((
+        plugin._Settings(
+            plugins_config={"version": 1, "policy": {"unsupported": "warn"}}
+        ),
+        plugin._Settings(
+            plugins_config={"version": 1, "policy": {"unsupported": "ignore"}}
+        ),
+    ))
+    monkeypatch.setattr(relay.plugin, "initialize", _initialize)
+    monkeypatch.setattr(relay.plugin, "clear", _clear)
+    monkeypatch.setattr(plugin, "_load_settings", lambda: next(settings))
+    profile_a = str(tmp_path / "profile-a")
+    profile_b = str(tmp_path / "profile-b")
+    host_a = relay_runtime.RelayRuntime(relay=relay, profile_key=profile_a)
+    host_b = relay_runtime.RelayRuntime(relay=relay, profile_key=profile_b)
+
+    try:
+        runtime_a = plugin._get_runtime(profile_key=profile_a, host=host_a)
+        runtime_b = plugin._get_runtime(profile_key=profile_b, host=host_b)
+        assert runtime_a is not None
+        assert runtime_b is not None
+
+        assert initialize_calls == [
+            {"version": 1, "policy": {"unsupported": "warn"}}
+        ]
+        assert runtime_a._plugin_config_initialized is True
+        assert runtime_b._plugin_config_initialized is False
+        assert relay.plugin.report() is not None
+
+        runtime_b.shutdown()
+
+        assert clear_calls == 0
+        assert relay.plugin.report() is not None
+
+        runtime_a.shutdown()
+
+        assert clear_calls == 1
+        assert relay.plugin.report() is None
+    finally:
+        plugin.reset_for_tests()
+        host_a.shutdown()
+        host_b.shutdown()
+        original_clear()
+
+
 def test_nemo_relay_rejects_gateway_dynamic_config_with_actionable_diagnostic(
     tmp_path, monkeypatch, caplog
 ):
@@ -897,7 +1081,7 @@ def test_nemo_relay_plugin_degrades_to_static_config_on_relay_0_5(
     tmp_path, monkeypatch, caplog
 ):
     fake = _FakeNemoRelay()
-    delattr(fake.plugin, "activate_dynamic_plugins")
+    delattr(fake.plugin, "initialize_with_dynamic_plugins")
     plugin = _fresh_plugin(monkeypatch, fake)
     _enable_dynamic_plugin(tmp_path, monkeypatch)
 
@@ -976,7 +1160,7 @@ def test_nemo_relay_plugin_registers_shutdown_after_dynamic_retry(tmp_path, monk
             raise RuntimeError("temporary activation failure")
         return _FakePluginActivation(fake.events)
 
-    fake.plugin.activate_dynamic_plugins = _flaky_activate
+    fake.plugin.initialize_with_dynamic_plugins = _flaky_activate
     plugin = _fresh_plugin(monkeypatch, fake)
     _enable_dynamic_plugin(tmp_path, monkeypatch)
 

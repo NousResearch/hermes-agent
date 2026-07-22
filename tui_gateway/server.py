@@ -9745,6 +9745,12 @@ def _(rid, params: dict) -> dict:
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    if params.get("interrupted"):
+        # Client-side barge-in (desktop VAD / typing over playback) — latch it
+        # so this turn's model message carries the interruption note.
+        from tools.tts_streaming import mark_speech_interrupted
+
+        mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -10430,7 +10436,21 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             # Streaming TTS: voice-mode replies are spoken sentence-by-sentence
             # as tokens arrive (CLI parity) instead of after the full turn.
+            # begin() first — it cuts any still-speaking previous turn, and
+            # that cut IS this turn's barge-in, so it must latch before we
+            # consume the latch below.
             tts_queue = _tts_stream_begin()
+
+            # Barged mid-speech? Tell the model (API-message note, same
+            # enrichment channel as attached images) so it can react
+            # ("rude!") instead of being oblivious to its own interruption.
+            from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+
+            if take_speech_interrupted():
+                if isinstance(run_message, str):
+                    run_message = f"{SPEECH_INTERRUPTED_NOTE}\n\n{run_message}"
+                elif isinstance(run_message, list):
+                    run_message = [{"type": "text", "text": SPEECH_INTERRUPTED_NOTE}, *run_message]
 
             def _stream(delta):
                 with session["history_lock"]:
@@ -15568,13 +15588,22 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     return text_queue
 
 
-def _tts_stream_stop() -> None:
-    """Barge-in: cut any in-flight streaming TTS (new turn, interrupt, /voice off)."""
+def _tts_stream_stop(user_barge: bool = True) -> None:
+    """Cut any in-flight streaming TTS (new turn, interrupt, /voice off).
+
+    *user_barge* latches the interruption for the next turn's model note
+    (``mark_speech_interrupted``) — pass ``False`` for mode changes like
+    ``/voice off`` where the user isn't talking over the reply.
+    """
     global _tts_stream_state
     with _tts_stream_lock:
         state, _tts_stream_state = _tts_stream_state, None
     if state is None:
         return
+    if user_barge and not state["done"].is_set():
+        from tools.tts_streaming import mark_speech_interrupted
+
+        mark_speech_interrupted()
     state["stop"].set()
     try:
         from tools.voice_mode import stop_playback
@@ -15594,6 +15623,7 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
     lost between detection and the next recording start.
     """
     try:
+        from tools.tts_streaming import mark_speech_interrupted
         from tools.voice_mode import listen_for_speech, stop_playback, transcribe_recording
 
         barged = threading.Event()
@@ -15601,6 +15631,7 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
         def _cut_playback():
             if not done.is_set():
                 barged.set()
+                mark_speech_interrupted()
                 stop.set()
                 stop_playback()
                 _voice_emit("voice.interrupted")
@@ -15716,7 +15747,7 @@ def _(rid, params: dict) -> dict:
             # Clear TTS so it can be toggled independently after voice is off,
             # and silence any in-flight streaming speech.
             os.environ["HERMES_VOICE_TTS"] = "0"
-            _tts_stream_stop()
+            _tts_stream_stop(user_barge=False)
 
         return _ok(
             rid,
@@ -15734,7 +15765,7 @@ def _(rid, params: dict) -> dict:
         # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
         os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
         if not new_value:
-            _tts_stream_stop()
+            _tts_stream_stop(user_barge=False)
         # Include ``record_key`` on every branch so a /voice tts toggle
         # doesn't reset the TUI's cached shortcut to the default when a
         # user has a custom binding configured (Copilot review, round 2

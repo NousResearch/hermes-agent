@@ -11580,3 +11580,75 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_secret_capture_routes_to_owning_session_not_last_wired(monkeypatch):
+    """A skill credential prompt must reach the session that started the skill
+    setup flow, even when a newer session wired its callbacks afterwards.
+
+    Regression for #68261: ``set_secret_capture_callback`` stores one
+    process-global callback, so wiring session B replaced the closure session A
+    installed, and A's ``secret.request`` was emitted with B's sid. The prompt
+    is now routed by the per-turn ``HERMES_UI_SESSION_ID`` contextvar (bound at
+    turn start via ``_set_session_context``) rather than the last-wired ``sid``.
+    """
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import skills_tool
+
+    routed: list = []
+    monkeypatch.setattr(
+        server,
+        "_block",
+        lambda event, sid, payload, timeout=300: routed.append((event, sid)) or "",
+    )
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+
+    prev_cb = skills_tool._secret_capture_callback
+    tokens = None
+    try:
+        server._wire_callbacks("session-A")
+        server._wire_callbacks("session-B")  # clobbers the process-global callback
+
+        # Session A's turn is running: its ui session id is bound for this context.
+        tokens = set_session_vars(ui_session_id="session-A")
+
+        skills_tool._capture_required_environment_variables(
+            "demo-skill",
+            [{"name": "API_KEY", "prompt": "Enter API key"}],
+        )
+    finally:
+        if tokens is not None:
+            clear_session_vars(tokens)
+        skills_tool.set_secret_capture_callback(prev_cb)
+
+    assert routed == [("secret.request", "session-A")]
+
+
+def test_secret_capture_falls_back_to_wired_sid_without_session_context(monkeypatch):
+    """With no session context engaged (single-session / CLI), the callback
+    still routes to the sid it was wired with — the fallback path of #68261."""
+    from tools import skills_tool
+
+    routed: list = []
+    monkeypatch.setattr(
+        server,
+        "_block",
+        lambda event, sid, payload, timeout=300: routed.append((event, sid)) or "",
+    )
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.setattr(
+        "gateway.session_context.get_session_env",
+        lambda name, default="": default,
+    )
+
+    prev_cb = skills_tool._secret_capture_callback
+    try:
+        server._wire_callbacks("only-session")
+        skills_tool._capture_required_environment_variables(
+            "demo-skill",
+            [{"name": "API_KEY", "prompt": "Enter API key"}],
+        )
+    finally:
+        skills_tool.set_secret_capture_callback(prev_cb)
+
+    assert routed == [("secret.request", "only-session")]

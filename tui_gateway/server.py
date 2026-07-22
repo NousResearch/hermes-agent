@@ -4547,10 +4547,19 @@ def _wire_callbacks(sid: str):
     set_project_workspace_callback(_apply_project_workspace)
 
     def secret_cb(env_var, prompt, metadata=None):
+        # set_secret_capture_callback stores ONE process-global callback, so the
+        # most-recently-wired session's `sid` would otherwise own every prompt.
+        # When several sessions share this gateway process, route to the session
+        # whose turn is actually running by reading the per-turn contextvar
+        # (bound via _set_session_context(ui_session_id=...) at turn start);
+        # fall back to the wired `sid` when no session context is engaged.
+        from gateway.session_context import get_session_env
+
+        target_sid = get_session_env("HERMES_UI_SESSION_ID") or sid
         pl = {"prompt": prompt, "env_var": env_var}
         if metadata:
             pl["metadata"] = metadata
-        val = _block("secret.request", sid, pl)
+        val = _block("secret.request", target_sid, pl)
         if not val:
             return {
                 "success": True,

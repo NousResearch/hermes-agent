@@ -174,6 +174,19 @@ def _provider_default_routes(provider: str) -> set[str]:
     return routes
 
 
+def _normalize_custom_provider_name(value: Any) -> str:
+    """Mirror runtime normalization for a requested custom-provider identity."""
+    return str(value or "").strip().lower().replace(" ", "-")
+
+
+def _custom_provider_runtime_ids(value: Any) -> set[str]:
+    """Return raw/menu identities that runtime accepts for a configured name."""
+    normalized = _normalize_custom_provider_name(value)
+    if not normalized:
+        return set()
+    return {normalized, f"custom:{normalized}"}
+
+
 def _build_codex_gpt5_autoraise_notice(
     autoraise: Dict[str, Any], context_length: Optional[int] = None
 ) -> str:
@@ -1901,17 +1914,98 @@ def init_agent(
         _configured_base_url = _normalize_route_base_url(
             _model_cfg.get("base_url")
         )
-        if not _configured_base_url and _configured_provider.lower().startswith("custom:"):
-            _configured_custom_name = _configured_provider.split(":", 1)[1].lower()
-            for _provider_entry in _custom_providers:
-                if not isinstance(_provider_entry, dict):
-                    continue
-                if str(_provider_entry.get("name") or "").strip().lower() != _configured_custom_name:
-                    continue
-                _configured_base_url = _normalize_route_base_url(
-                    _provider_entry.get("base_url")
+        _configured_provider_norm = _normalize_custom_provider_name(
+            _configured_provider
+        )
+        _custom_provider_candidate = bool(_configured_provider_norm)
+        _runtime_first_provider_ids = {
+            "auto",
+            "moa",
+            "vertex",
+            "google-vertex",
+            "vertex-ai",
+            "gcp-vertex",
+            "vertexai",
+        }
+        if _configured_provider_norm in _runtime_first_provider_ids:
+            _custom_provider_candidate = False
+        elif (
+            _custom_provider_candidate
+            and _configured_provider_norm != "custom"
+            and not _configured_provider_norm.startswith("custom:")
+        ):
+            try:
+                from hermes_cli.auth import resolve_provider as resolve_auth_provider
+
+                _resolved_auth_provider = resolve_auth_provider(
+                    _configured_provider_norm
                 )
-                break
+                _custom_provider_candidate = (
+                    str(_resolved_auth_provider or "").strip().lower()
+                    != _configured_provider_norm
+                )
+            except Exception:
+                pass
+        if not _configured_base_url and _custom_provider_candidate:
+            _configured_custom_provider = _normalize_custom_provider_name(
+                _configured_provider
+            )
+            _user_providers = _agent_cfg.get("providers")
+            _disabled_custom_provider_ids: set[str] = set()
+            if isinstance(_user_providers, dict):
+                from hermes_cli.config import is_provider_enabled
+
+                for _provider_key, _provider_entry in _user_providers.items():
+                    if not isinstance(_provider_entry, dict):
+                        continue
+                    _entry_name = str(
+                        _provider_entry.get("name") or ""
+                    ).strip()
+                    _entry_provider_ids = _custom_provider_runtime_ids(
+                        _provider_key
+                    ) | _custom_provider_runtime_ids(_entry_name)
+                    if not is_provider_enabled(_provider_entry):
+                        _disabled_custom_provider_ids.update(
+                            provider_id
+                            for provider_id in _entry_provider_ids
+                            if provider_id
+                        )
+                        continue
+                    if _configured_custom_provider not in _entry_provider_ids:
+                        continue
+                    _configured_base_url = _normalize_route_base_url(
+                        _provider_entry.get("api")
+                        or _provider_entry.get("url")
+                        or _provider_entry.get("base_url")
+                    )
+                    if _configured_base_url:
+                        break
+            if not _configured_base_url:
+                for _provider_entry in _custom_providers:
+                    if not isinstance(_provider_entry, dict):
+                        continue
+                    _entry_name = str(
+                        _provider_entry.get("name") or ""
+                    ).strip()
+                    _entry_provider_key = str(
+                        _provider_entry.get("provider_key") or ""
+                    ).strip().lower()
+                    _entry_provider_ids = _custom_provider_runtime_ids(
+                        _entry_name
+                    ) | _custom_provider_runtime_ids(_entry_provider_key)
+                    if (
+                        _entry_provider_key
+                        and _custom_provider_runtime_ids(_entry_provider_key)
+                        & _disabled_custom_provider_ids
+                    ):
+                        continue
+                    if _configured_custom_provider not in _entry_provider_ids:
+                        continue
+                    _configured_base_url = _normalize_route_base_url(
+                        _provider_entry.get("base_url")
+                    )
+                    if _configured_base_url:
+                        break
         _active_route_url = str(agent.base_url or "")
         _requested_route_url = str(base_url or "")
         if "?" in _requested_route_url.split("#", 1)[0]:

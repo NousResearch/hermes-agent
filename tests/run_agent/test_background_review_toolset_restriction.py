@@ -23,6 +23,7 @@ def _make_agent_stub(agent_cls):
     agent.platform = "test"
     agent.provider = "openai"
     agent.session_id = "sess-123"
+    agent._chat_type = None
     agent.quiet_mode = True
     agent._memory_store = None
     agent._memory_enabled = True

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+import pytest
+
+import agent.background_review as background_review
 import run_agent as run_agent_module
 from run_agent import AIAgent
 
@@ -29,6 +34,7 @@ def _bare_agent() -> AIAgent:
     agent.background_review_callback = None
     agent.status_callback = None
     agent._safe_print = lambda *_args, **_kwargs: None
+    agent._chat_type = None
     return agent
 
 
@@ -38,6 +44,64 @@ class ImmediateThread:
 
     def start(self):
         self._target()
+
+
+@pytest.mark.parametrize(
+    ("chat_type", "expected"),
+    [
+        (None, True),
+        ("", True),
+        (False, False),
+        (0, False),
+        ("dm", True),
+        (" DM ", True),
+        ("direct", True),
+        ("private", True),
+        ("group", False),
+        ("channel", False),
+        ("forum", False),
+        ("thread", False),
+        ("room", False),
+        ("webhook", False),
+        ("unknown", False),
+    ],
+)
+def test_background_review_allowed_for_direct_chats_only(chat_type, expected):
+    assert background_review.background_review_allowed(chat_type) is expected
+
+
+@pytest.mark.parametrize(
+    "chat_type",
+    ["group", "channel", "forum", "thread", "room", "webhook", "unknown"],
+)
+def test_background_review_does_not_start_for_multi_user_chat(monkeypatch, chat_type):
+    thread = Mock()
+    monkeypatch.setattr(run_agent_module.threading, "Thread", thread)
+
+    agent = _bare_agent()
+    agent._chat_type = chat_type
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    thread.assert_not_called()
+
+
+def test_background_review_does_not_start_without_chat_type(monkeypatch):
+    thread = Mock()
+    monkeypatch.setattr(run_agent_module.threading, "Thread", thread)
+
+    agent = _bare_agent()
+    del agent._chat_type
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    thread.assert_not_called()
 
 
 def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):

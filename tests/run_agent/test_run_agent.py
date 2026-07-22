@@ -7840,6 +7840,38 @@ class TestPersistUserMessageOverride:
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 
+    def test_persist_session_uses_clean_structured_override_for_timestamped_turn(
+        self, agent
+    ):
+        agent._session_db = MagicMock()
+        agent.session_id = "session-123"
+        agent._last_flushed_db_idx = 0
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_timestamp = 1777376530.0
+        clean_content = [
+            {"type": "text", "text": "What color is this?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ]
+        timestamped_content = [
+            {
+                "type": "text",
+                "text": "[Tue 2026-04-28 13:42:10 CEST] What color is this?",
+            },
+            clean_content[1],
+        ]
+        agent._persist_user_message_override = clean_content
+        messages = [{"role": "user", "content": timestamped_content}]
+
+        agent._persist_session(messages, [])
+
+        assert messages[0]["content"] == timestamped_content
+        first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
+        assert first_db_write["content"] == "What color is this?\n[screenshot]"
+        assert first_db_write["timestamp"] == 1777376530.0
+
 
 class TestReasoningReplayForStrictProviders:
     """Assistant replay must preserve provider-native reasoning fields."""

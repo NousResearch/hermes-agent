@@ -117,6 +117,18 @@ def test_message_timestamps_enabled_when_opted_in():
     assert _message_timestamps_enabled({"gateway": {"message_timestamps": True}}) is True
 
 
+def test_global_message_timestamps_setting_is_canonical_with_gateway_compatibility():
+    from gateway.run import _message_timestamps_enabled
+
+    assert _message_timestamps_enabled({"message_timestamps": {"enabled": True}}) is True
+    assert _message_timestamps_enabled(
+        {
+            "message_timestamps": {"enabled": False},
+            "gateway": {"message_timestamps": {"enabled": True}},
+        }
+    ) is False
+
+
 def test_build_history_injects_only_when_enabled():
     from gateway.run import _build_gateway_agent_history
 

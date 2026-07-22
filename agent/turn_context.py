@@ -359,6 +359,31 @@ def build_turn_context(
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
 
+    # Preserve clean input for transcripts before adding timestamp context.
+    original_user_message = (
+        persist_user_message if persist_user_message is not None else user_message
+    )
+    try:
+        from agent.message_timestamps import render_turn_with_message_timestamps
+        from hermes_cli.config import load_config_readonly
+        from hermes_time import get_timezone
+
+        conversation_history, user_message, rendered_timestamp = (
+            render_turn_with_message_timestamps(
+                conversation_history,
+                user_message,
+                config=load_config_readonly(),
+                current_timestamp=persist_user_timestamp,
+                tz=get_timezone(),
+            )
+        )
+        if rendered_timestamp is not None:
+            if persist_user_message is None:
+                persist_user_message = original_user_message
+            persist_user_timestamp = rendered_timestamp
+    except Exception:
+        logger.debug("message timestamp rendering skipped", exc_info=True)
+
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
@@ -486,9 +511,6 @@ def build_turn_context(
     think_scrubber = getattr(agent, "_stream_think_scrubber", None)
     if think_scrubber is not None:
         think_scrubber.reset()
-
-    # Preserve the original user message (no nudge injection).
-    original_user_message = persist_user_message if persist_user_message is not None else user_message
 
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False

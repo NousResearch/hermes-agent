@@ -1009,6 +1009,12 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # Agent-wide timestamp rendering. ``None`` means the canonical setting was
+    # not explicitly chosen, so existing gateway.message_timestamps.enabled
+    # configurations remain authoritative. The effective default is still off.
+    "message_timestamps": {
+        "enabled": None,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

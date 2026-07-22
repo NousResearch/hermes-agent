@@ -369,6 +369,8 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
             "gpt-test",
             "--provider",
             "openai",
+            "--skills",
+            "demo-skill",
             "--usage-file",
             "usage.json",
         ],
@@ -402,6 +404,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
+        "skills": ["demo-skill"],
         "usage_file": "usage.json",
     }
 
@@ -608,6 +611,8 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
             "hello",
             "--toolsets",
             "web,terminal",
+            "--skills",
+            "demo-skill",
             "--usage-file",
             "usage.json",
         ],
@@ -656,6 +661,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "skills": ["demo-skill"],
         "usage_file": "usage.json",
     }
 
@@ -1633,6 +1639,113 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+
+
+def test_oneshot_run_agent_preloads_available_skills_when_some_are_missing(
+    monkeypatch,
+    tmp_path,
+):
+    """A missing skill must not discard other successfully loaded skills."""
+    from hermes_cli.oneshot import _run_agent
+    import tools.skills_tool as skills_tool_module
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return {"final_response": "ok", "failed": False, "partial": False}
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod(
+            "hermes_cli.models",
+            detect_provider_for_model=lambda *_args, **_kwargs: None,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod(
+            "hermes_cli.tools_config",
+            _get_platform_tools=lambda *_args, **_kwargs: set(),
+        ),
+    )
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "demo-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: demo-skill
+description: Demo skill.
+---
+
+# Demo Skill
+
+Follow the demo instruction.
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_root)
+
+    text, result = _run_agent(
+        "use the skill",
+        skills=["demo-skill,missing-skill"],
+    )
+
+    assert text == "ok"
+    assert not result.get("failed")
+    assert "demo-skill" in captured["ephemeral_system_prompt"]
+    assert "Follow the demo instruction." in captured["ephemeral_system_prompt"]
+    assert captured["prompt"] == "use the skill"
+
+
+def test_oneshot_rejects_when_all_preloaded_skills_are_missing(
+    monkeypatch,
+    tmp_path,
+):
+    from hermes_cli.oneshot import _build_preloaded_skills_prompt
+    import tools.skills_tool as skills_tool_module
+
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_root)
+
+    with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
+        _build_preloaded_skills_prompt(["missing-skill"])
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

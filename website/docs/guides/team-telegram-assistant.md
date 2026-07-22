@@ -417,7 +417,7 @@ hermes gateway stop && hermes gateway start
 | What | Location |
 |------|----------|
 | Gateway logs | `journalctl --user -u hermes-gateway` (Linux) or `~/.hermes/logs/gateway.log` (macOS) |
-| Cron job output | `~/.hermes/cron/output/{job_id}/{timestamp}.md` |
+| Cron job output | `~/.hermes/cron/output/{name-slug}-{job_id}/{timestamp}.md` |
 | Cron job definitions | `~/.hermes/cron/jobs.json` |
 | Pairing data | `~/.hermes/pairing/` |
 | Session history | `~/.hermes/sessions/` |

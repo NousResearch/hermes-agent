@@ -95,6 +95,11 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+    # Regional Portuguese tags should both land on the shared `pt` catalog
+    # rather than silently falling back to English (#26665).
+    assert i18n._normalize_lang("pt-BR") == "pt"
+    assert i18n._normalize_lang("pt-PT") == "pt"
+    assert i18n._normalize_lang("brazilian") == "pt"
 
 
 def test_normalize_lang_unknown_falls_back():

@@ -4616,7 +4616,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
         from hermes_cli.banner import check_for_updates
         from hermes_cli.config import recommended_update_command
 
-        behind = check_for_updates()
+        behind = check_for_updates(force=True)
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             print(
@@ -7056,11 +7056,11 @@ OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
-def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    """Get the URL of the origin remote, or None if not set."""
+def _get_remote_url(git_cmd: list[str], cwd: Path, remote: str) -> Optional[str]:
+    """Get the URL of a git remote, or None if it is not set."""
     try:
         result = subprocess.run(
-            git_cmd + ["remote", "get-url", "origin"],
+            git_cmd + ["remote", "get-url", remote],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -7070,6 +7070,11 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Get the URL of the origin remote, or None if not set."""
+    return _get_remote_url(git_cmd, cwd, "origin")
 
 
 def _is_fork(origin_url: Optional[str]) -> bool:
@@ -8615,7 +8620,8 @@ def _resolve_node_runtime_npm() -> str | None:
     # The first resolution was a Windows npm. Re-scan PATH skipping the
     # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native npm that
     # came later on PATH is still found.
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
+    path_separator = os.pathsep if _is_windows() else ":"
+    for directory in os.environ.get("PATH", "").split(path_separator):
         if not directory or directory.lower().startswith("/mnt/"):
             continue
         candidate = shutil.which("npm", path=directory)
@@ -10231,6 +10237,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
 
+        update_remote = "origin"
+        update_ref = f"origin/{branch}"
+        if is_fork and branch == "main":
+            # A fork's origin/main can be stale while the official upstream has
+            # new releases. Prefer upstream/main only when upstream is the
+            # official repository AND origin/main has no fork-only commits.
+            # Otherwise preserve the existing fork-divergence guard: applying
+            # upstream/main directly would make the later ff-only pull fail and
+            # the reset fallback could trample fork commits.
+            upstream_url = _get_remote_url(git_cmd, PROJECT_ROOT, "upstream")
+            if upstream_url and not _is_fork(upstream_url):
+                upstream_fetch = subprocess.run(
+                    git_cmd + ["fetch", "upstream", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if upstream_fetch.returncode == 0:
+                    origin_ahead = _count_commits_between(
+                        git_cmd, PROJECT_ROOT, f"upstream/{branch}", f"origin/{branch}"
+                    )
+                    if origin_ahead == 0:
+                        update_remote = "upstream"
+                        update_ref = f"upstream/{branch}"
+                    elif origin_ahead > 0:
+                        print(
+                            "  ℹ Fork has commits not on upstream/main; preserving origin/main update path."
+                        )
+                    else:
+                        print(
+                            "  ⚠ Could not compare origin/main with upstream/main; falling back to origin/main."
+                        )
+                else:
+                    stderr = (upstream_fetch.stderr or "").strip()
+                    print("  ⚠ Could not fetch upstream/main; falling back to origin/main.")
+                    if stderr:
+                        print(f"    {stderr.splitlines()[0]}")
+
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
@@ -10298,7 +10342,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{update_ref}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -10309,8 +10353,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _invalidate_update_cache()
 
-            # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
+            # If upstream was unavailable above, keep the legacy fork-sync
+            # fallback so a stale origin still gets one last upstream probe.
+            if is_fork and branch == "main" and update_remote != "upstream":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
             # Restore stash and switch back to original branch if we moved
@@ -10396,7 +10441,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", update_remote, branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -10409,17 +10454,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", update_ref],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {update_ref}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  Try manually: git fetch {update_remote} {branch} && git reset --hard {update_ref}"
                     )
                     sys.exit(1)
 
@@ -10503,8 +10548,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
 
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        # Fork upstream sync fallback (only needed if the main update path had
+        # to fall back to origin because upstream was unavailable).
+        if is_fork and branch == "main" and update_remote != "upstream":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra

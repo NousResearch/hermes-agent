@@ -152,7 +152,12 @@ import {
   sandboxFallbackFromEnv,
   sandboxPreflight
 } from './update-relaunch'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import {
+  isOfficialSshRemote,
+  OFFICIAL_REPO_HTTPS_URL,
+  selectBranchHealingRemote,
+  selectUpdateRemote
+} from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
@@ -2183,10 +2188,22 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
-async function getOriginUrl(updateRoot) {
-  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
+async function getRemoteUrl(updateRoot, remoteName) {
+  const remote = await runGit(['remote', 'get-url', remoteName], { cwd: updateRoot })
+  return remote.code === 0 ? remote.stdout.trim() : ''
+}
 
-  return origin.code === 0 ? origin.stdout.trim() : ''
+async function getOriginUrl(updateRoot) {
+  return getRemoteUrl(updateRoot, 'origin')
+}
+
+async function getDesktopUpdateRemote(updateRoot) {
+  const [originUrl, upstreamUrl] = await Promise.all([
+    getRemoteUrl(updateRoot, 'origin'),
+    getRemoteUrl(updateRoot, 'upstream')
+  ])
+
+  return selectUpdateRemote({ originUrl, upstreamUrl })
 }
 
 function emitUpdateProgress(payload) {
@@ -2210,14 +2227,13 @@ async function resolveHealedBranch(updateRoot, branch) {
   }
 
   const originUrl = await getOriginUrl(updateRoot)
-  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
-
+  const branchRemote = selectBranchHealingRemote({ originUrl })
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', branchRemote.remote, branch], { cwd: updateRoot })
   if (probe.code !== 2) {
     return branch
   }
 
-  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
+  rememberLog(`[updates] update branch ${branch} is gone (merged?); falling back to main`)
   const config = readDesktopUpdateConfig()
 
   if (config.branch !== 'main') {
@@ -2243,47 +2259,10 @@ async function checkUpdates() {
   }
 
   branch = await resolveHealedBranch(updateRoot, branch)
-  const originUrl = await getOriginUrl(updateRoot)
+  const updateRemote = await getDesktopUpdateRemote(updateRoot)
+  const targetRef = updateRemote.ref || `${updateRemote.remote}/${branch}`
 
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
-
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-
-    if (target.code !== 0 || !targetSha) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
-    }
-
-    return {
-      supported: true,
-      branch,
-      currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
-      currentSha,
-      targetSha,
-      commits: [],
-      dirty: dirtyStr.length > 0,
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
-
+  const fetched = await runGit(['fetch', '--quiet', updateRemote.remote, branch], { cwd: updateRoot })
   if (fetched.code !== 0) {
     return {
       supported: true,
@@ -2299,13 +2278,13 @@ async function checkUpdates() {
 
   const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
+    git(['rev-parse', targetRef]),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     git(['rev-parse', '--is-shallow-repository']),
     // merge-base exits non-zero with empty stdout when HEAD shares no common
     // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
+    git(['merge-base', 'HEAD', targetRef])
   ])
 
   const isShallow = shallowStr === 'true'
@@ -2316,7 +2295,7 @@ async function checkUpdates() {
   // (thousands of commits, see #51922) and resolveBehindCount discards the
   // result anyway in favour of a SHA compare — so skip the expensive query.
   const countStr = shouldCountCommits({ isShallow, hasMergeBase })
-    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+    ? await git(['rev-list', `HEAD..${targetRef}`, '--count'])
     : ''
 
   const behind = resolveBehindCount({
@@ -2327,7 +2306,7 @@ async function checkUpdates() {
     hasMergeBase
   })
 
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const commits = behind > 0 ? await readCommitLog(updateRoot, targetRef) : []
 
   return {
     supported: true,
@@ -2343,12 +2322,12 @@ async function checkUpdates() {
   }
 }
 
-async function readCommitLog(cwd, branch) {
+async function readCommitLog(cwd, targetRef) {
   const SEP = '\x1f'
   const REC = '\x1e'
 
   const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `HEAD..${targetRef}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 

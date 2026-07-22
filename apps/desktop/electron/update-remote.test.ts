@@ -2,8 +2,8 @@
  * Tests for electron/update-remote.ts — the remote-detection helpers that
  * keep passive update checks off the SSH origin for official installs.
  *
- * Run with: node --test electron/update-remote.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * Run with: npx vitest run electron/update-remote.test.ts
+ * (Covered by the desktop test suite.)
  *
  * Why this matters: a public install can carry
  * origin=git@github.com:NousResearch/hermes-agent.git. A background
@@ -21,10 +21,13 @@ import { test } from 'vitest'
 
 import {
   canonicalGitHubRemote,
+  isOfficialRemote,
   isOfficialSshRemote,
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
-  OFFICIAL_REPO_HTTPS_URL
+  OFFICIAL_REPO_HTTPS_URL,
+  selectBranchHealingRemote,
+  selectUpdateRemote
 } from './update-remote'
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
@@ -76,4 +79,58 @@ test('isOfficialSshRemote does NOT match forks, other hosts, or HTTPS', () => {
 test('OFFICIAL_REPO_HTTPS_URL canonicalizes to OFFICIAL_REPO_CANONICAL', () => {
   // Invariant: the URL we substitute in must be the same repo we detect.
   assert.equal(canonicalGitHubRemote(OFFICIAL_REPO_HTTPS_URL), OFFICIAL_REPO_CANONICAL)
+})
+
+
+test('isOfficialRemote matches official HTTPS and SSH forms but not forks', () => {
+  assert.equal(isOfficialRemote('https://github.com/NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialRemote('git@github.com:NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialRemote('https://github.com/matantsevs/hermes-agent.git'), false)
+})
+
+test('selectUpdateRemote prefers official upstream when origin is a fork', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'https://github.com/matantsevs/hermes-agent.git',
+      upstreamUrl: 'https://github.com/NousResearch/hermes-agent.git'
+    }),
+    { kind: 'upstream', remote: 'upstream', ref: null }
+  )
+})
+
+test('selectUpdateRemote keeps official origin and falls back to origin without upstream', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'https://github.com/NousResearch/hermes-agent.git',
+      upstreamUrl: ''
+    }),
+    { kind: 'origin', remote: 'origin', ref: null }
+  )
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'https://github.com/matantsevs/hermes-agent.git',
+      upstreamUrl: ''
+    }),
+    { kind: 'origin', remote: 'origin', ref: null }
+  )
+})
+
+test('selectUpdateRemote uses anonymous HTTPS for official SSH remotes', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'git@github.com:matantsevs/hermes-agent.git',
+      upstreamUrl: 'git@github.com:NousResearch/hermes-agent.git'
+    }),
+    { kind: 'official-ssh', remote: OFFICIAL_REPO_HTTPS_URL, ref: 'FETCH_HEAD' }
+  )
+})
+
+
+test('selectBranchHealingRemote keeps fork-only configured branches on origin', () => {
+  assert.deepEqual(
+    selectBranchHealingRemote({
+      originUrl: 'https://github.com/matantsevs/hermes-agent.git'
+    }),
+    { kind: 'origin', remote: 'origin' }
+  )
 })

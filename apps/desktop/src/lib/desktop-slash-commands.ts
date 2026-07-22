@@ -190,7 +190,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // them, /steer falls back to a next-turn prompt, and /usage is a formatted
   // live report. Keep them on slash.exec until their RPC contracts are fully
   // equivalent.
-  { name: '/agents', description: 'Show active desktop sessions and running tasks', aliases: ['/tasks'], surface: exec() },
+  {
+    name: '/agents',
+    description: 'Show active desktop sessions and running tasks',
+    aliases: ['/tasks'],
+    surface: exec()
+  },
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
   // /compress must be an action (session.compress RPC), not exec: the slash
   // worker route times out on large sessions (30s WS / 45s pipe) before the

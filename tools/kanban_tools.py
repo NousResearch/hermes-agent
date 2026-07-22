@@ -48,6 +48,52 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
+# ``kanban_show`` is an orientation view, not a second copy of the canonical
+# board log. Keep recent, useful slices while preventing polling from rebuilding
+# incident-scale model context. The CLI/dashboard remain complete recovery paths.
+_KANBAN_SHOW_MAX_COMMENTS = 3
+_KANBAN_SHOW_MAX_EVENTS = 5
+_KANBAN_SHOW_MAX_RUNS = 3
+_KANBAN_SHOW_MAX_PARENT_HANDOFFS = 10
+_KANBAN_SHOW_MAX_ATTACHMENTS = 3
+_KANBAN_SHOW_BODY_PREVIEW_CHARS = 500
+_KANBAN_SHOW_FIELD_PREVIEW_CHARS = 300
+
+
+def _bounded_preview(value: str, limit: int) -> tuple[str, Optional[int]]:
+    if len(value) <= limit:
+        return value, None
+    marker = f"… [preview truncated; full field is {len(value):,} chars]"
+    return value[:max(0, limit - len(marker))] + marker, len(value)
+
+
+def _put_bounded_text(
+    target: dict[str, Any], key: str, value: Optional[str], *,
+    limit: int = _KANBAN_SHOW_FIELD_PREVIEW_CHARS,
+) -> None:
+    if value is None:
+        target[key] = None
+        return
+    preview, full_chars = _bounded_preview(str(value), limit)
+    target[key] = preview
+    if full_chars is not None:
+        target[f"{key}_truncated"] = True
+        target[f"{key}_full_chars"] = full_chars
+
+
+def _put_bounded_json(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is None:
+        target[key] = None
+        return
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    preview, full_chars = _bounded_preview(
+        serialized, _KANBAN_SHOW_FIELD_PREVIEW_CHARS
+    )
+    target[key] = value if full_chars is None else preview
+    if full_chars is not None:
+        target[f"{key}_truncated"] = True
+        target[f"{key}_full_chars"] = full_chars
+
 
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
@@ -365,8 +411,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _handle_show(args: dict, **kw) -> str:
-    """Read a task's full state: task row, parents, children, comments,
-    runs (attempt history), and the last N events."""
+    """Return a bounded model-facing orientation view of one canonical task."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -379,57 +424,147 @@ def _handle_show(args: dict, **kw) -> str:
             task = kb.get_task(conn, tid)
             if task is None:
                 return tool_error(f"task {tid} not found")
-            comments = kb.list_comments(conn, tid)
-            events = kb.list_events(conn, tid)
-            runs = kb.list_runs(conn, tid)
+            all_comments = kb.list_comments(conn, tid)
+            all_events = kb.list_events(conn, tid)
+            all_runs = kb.list_runs(conn, tid)
+            all_attachments = kb.list_attachments(conn, tid)
             parents = kb.parent_ids(conn, tid)
             children = kb.child_ids(conn, tid)
 
             def _task_dict(t):
-                return {
-                    "id": t.id, "title": t.title, "body": t.body,
-                    "assignee": t.assignee, "status": t.status,
-                    "tenant": t.tenant, "priority": t.priority,
-                    "workspace_kind": t.workspace_kind,
-                    "workspace_path": t.workspace_path,
-                    "created_by": t.created_by, "created_at": t.created_at,
-                    "started_at": t.started_at,
-                    "completed_at": t.completed_at,
-                    "result": t.result,
-                    "current_run_id": t.current_run_id,
-                    "model_override": t.model_override,
+                entry: dict[str, Any] = {}
+                for key, value in vars(t).items():
+                    if isinstance(value, str) or value is None:
+                        _put_bounded_text(
+                            entry, key, value,
+                            limit=(
+                                _KANBAN_SHOW_BODY_PREVIEW_CHARS
+                                if key == "body"
+                                else _KANBAN_SHOW_FIELD_PREVIEW_CHARS
+                            ),
+                        )
+                    elif isinstance(value, (dict, list, tuple)):
+                        _put_bounded_json(entry, key, value)
+                    else:
+                        entry[key] = value
+                return entry
+
+            def _comment_dict(c):
+                entry = {"id": c.id, "author": c.author, "created_at": c.created_at}
+                _put_bounded_text(entry, "body", c.body)
+                return entry
+
+            def _event_dict(e):
+                entry = {
+                    "id": e.id, "kind": e.kind, "created_at": e.created_at,
+                    "run_id": e.run_id,
                 }
+                _put_bounded_json(entry, "payload", e.payload)
+                return entry
 
             def _run_dict(r):
-                return {
+                entry = {
                     "id": r.id, "profile": r.profile,
+                    "step_key": r.step_key,
                     "status": r.status, "outcome": r.outcome,
-                    "summary": r.summary, "error": r.error,
-                    "metadata": r.metadata,
+                    "claim_lock": r.claim_lock, "claim_expires": r.claim_expires,
+                    "worker_pid": r.worker_pid,
+                    "max_runtime_seconds": r.max_runtime_seconds,
+                    "last_heartbeat_at": r.last_heartbeat_at,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
+                _put_bounded_text(entry, "summary", r.summary)
+                _put_bounded_text(entry, "error", r.error)
+                _put_bounded_json(entry, "metadata", r.metadata)
+                return entry
+
+            def _attachment_dict(a):
+                entry = {"id": a.id, "size": a.size, "created_at": a.created_at}
+                _put_bounded_text(entry, "filename", a.filename)
+                _put_bounded_text(entry, "stored_path", a.stored_path)
+                _put_bounded_text(entry, "content_type", a.content_type)
+                _put_bounded_text(entry, "uploaded_by", a.uploaded_by)
+                return entry
+
+            parent_handoffs = []
+            for parent_id in parents:
+                parent = kb.get_task(conn, parent_id)
+                if parent is None or parent.status != "done":
+                    continue
+                completed = [
+                    run for run in kb.list_runs(conn, parent_id)
+                    if run.outcome == "completed"
+                ]
+                latest = completed[-1] if completed else None
+                handoff = {
+                    "task_id": parent_id,
+                    "title": parent.title,
+                    "completed_at": parent.completed_at,
+                    "run_id": latest.id if latest else None,
+                }
+                _put_bounded_text(
+                    handoff, "summary",
+                    latest.summary if latest and latest.summary else parent.result,
+                )
+                _put_bounded_json(
+                    handoff, "metadata", latest.metadata if latest else None
+                )
+                parent_handoffs.append(handoff)
+            parent_handoffs.sort(
+                key=lambda handoff: (
+                    handoff.get("completed_at") or 0, handoff["task_id"]
+                )
+            )
+
+            shown_parent_handoffs = parent_handoffs[-_KANBAN_SHOW_MAX_PARENT_HANDOFFS:]
+            shown_comments = all_comments[-_KANBAN_SHOW_MAX_COMMENTS:]
+            shown_events = all_events[-_KANBAN_SHOW_MAX_EVENTS:]
+            shown_runs = all_runs[-_KANBAN_SHOW_MAX_RUNS:]
+            shown_attachments = all_attachments[-_KANBAN_SHOW_MAX_ATTACHMENTS:]
+            omitted = {
+                "parent_handoffs": len(parent_handoffs) - len(shown_parent_handoffs),
+                "attachments": len(all_attachments) - len(shown_attachments),
+                "comments": len(all_comments) - len(shown_comments),
+                "events": len(all_events) - len(shown_events),
+                "runs": len(all_runs) - len(shown_runs),
+            }
 
             return json.dumps({
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
-                "comments": [
-                    {"author": c.author, "body": c.body,
-                     "created_at": c.created_at}
-                    for c in comments
-                ],
-                "events": [
-                    {"kind": e.kind, "payload": e.payload,
-                     "created_at": e.created_at, "run_id": e.run_id}
-                    for e in events[-50:]   # cap; full log via CLI
-                ],
-                "runs": [_run_dict(r) for r in runs],
-                # Also surface the worker's own context block so the
-                # agent can include it directly if it wants. This is
-                # the same string build_worker_context returns to the
-                # dispatcher at spawn time.
-                "worker_context": kb.build_worker_context(conn, tid),
-            })
+                "parent_handoffs": shown_parent_handoffs,
+                "attachments": [_attachment_dict(a) for a in shown_attachments],
+                "comments": [_comment_dict(c) for c in shown_comments],
+                "events": [_event_dict(e) for e in shown_events],
+                "runs": [_run_dict(r) for r in shown_runs],
+                "totals": {
+                    "parent_handoffs": len(parent_handoffs),
+                    "attachments": len(all_attachments),
+                    "comments": len(all_comments),
+                    "events": len(all_events),
+                    "runs": len(all_runs),
+                },
+                "omitted": omitted,
+                "orientation": {
+                    "task_id": tid,
+                    "read_order": [
+                        "task", "attachments", "parent_handoffs", "runs",
+                        "comments", "events",
+                    ],
+                    "note": (
+                        "Task fields and recoverable history use bounded latest "
+                        "slices in chronological order. Original character counts "
+                        "and omitted counts are explicit."
+                    ),
+                },
+                "recovery": (
+                    f"Canonical board data is unchanged. Use `hermes kanban context {tid}`, "
+                    f"`hermes kanban show {tid} --json`, `hermes kanban runs {tid}`, "
+                    f"or `hermes kanban log {tid}` / the dashboard for complete data. "
+                    "Use the `kanban_attachments` tool for the full attachment manifest."
+                ),
+            }, ensure_ascii=False)
         finally:
             conn.close()
     except ValueError as e:
@@ -1361,12 +1496,11 @@ def _board_schema_prop() -> dict[str, str]:
 KANBAN_SHOW_SCHEMA = {
     "name": "kanban_show",
     "description": (
-        "Read a task's full state — title, body, assignee, parent task "
-        "handoffs, your prior attempts on this task if any, comments, "
-        "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "Read a task's bounded model-facing orientation view: task-field previews, "
+        "latest attachment metadata and parent handoffs, recent attempts/comments/"
+        "events, explicit truncation and omitted counts, and recovery instructions "
+        "for canonical board data. Use this to (re)orient yourself before starting "
+        "work, especially on retries. Canonical board data is never changed."
     ),
     "parameters": {
         "type": "object",

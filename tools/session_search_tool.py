@@ -55,6 +55,103 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Recall is navigational, not a bulk transcript export. Preserve stable ids and
+# exact original sizes while preventing one historical tool result from
+# rebuilding the active context.
+_MESSAGE_CONTENT_PREVIEW_CHARS = 12_000
+_TOTAL_OUTPUT_MAX_CHARS = 90_000
+_COMPACT_MESSAGE_CONTENT_CHARS = 256
+
+
+def _preview_message_content(
+    content: Any, limit: int = _MESSAGE_CONTENT_PREVIEW_CHARS,
+) -> tuple[Any, Optional[int]]:
+    if not isinstance(content, str) or len(content) <= limit:
+        return content, None
+    marker = (
+        "\n\n[session_search preview truncated; full content is "
+        f"{len(content):,} chars. Canonical content remains stored; recover it "
+        "with this session_id and message id, or inspect the original source.]"
+    )
+    return content[:max(0, limit - len(marker))] + marker, len(content)
+
+
+def _put_bounded_message_metadata(
+    entry: Dict[str, Any], key: str, value: Any, limit: int = 1_000,
+) -> None:
+    """Keep message metadata structured when small and recoverably preview it when large."""
+    serialized = (
+        value if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, sort_keys=True)
+    )
+    if len(serialized) <= limit:
+        entry[key] = value
+        return
+    marker = f"… [preview truncated; full field is {len(serialized):,} chars]"
+    entry[key] = serialized[:max(0, limit - len(marker))] + marker
+    entry[f"{key}_truncated"] = True
+    entry[f"{key}_full_chars"] = len(serialized)
+
+
+def _compact_search_value(value: Any, *, string_limit: int = 256) -> Any:
+    """Compact recoverable strings in an oversized response without losing ids."""
+    if isinstance(value, list):
+        return [_compact_search_value(item, string_limit=string_limit) for item in value]
+    if not isinstance(value, dict):
+        if isinstance(value, str) and len(value) > string_limit:
+            return value[:string_limit] + "…"
+        return value
+
+    compacted = {
+        key: _compact_search_value(item, string_limit=string_limit)
+        for key, item in value.items()
+        if key != "content"
+    }
+    if "content" in value:
+        content = value.get("content")
+        if isinstance(content, str) and len(content) > _COMPACT_MESSAGE_CONTENT_CHARS:
+            original_chars = value.get("full_content_chars", len(content))
+            marker = (
+                "\n[session_search preview truncated for aggregate bound; full content is "
+                f"{original_chars:,} chars]"
+            )
+            compacted["content"] = (
+                content[:max(0, _COMPACT_MESSAGE_CONTENT_CHARS - len(marker))]
+                + marker
+            )
+            compacted["content_truncated"] = True
+            compacted["full_content_chars"] = original_chars
+        else:
+            compacted["content"] = content
+    return compacted
+
+
+def _finalize_response(response: Dict[str, Any]) -> str:
+    """Serialize with recovery guidance and a hard model-facing size bound."""
+    response = dict(response)
+    response.setdefault(
+        "recovery",
+        "Canonical session rows are unchanged. Use session_search with session_id "
+        "and around_message_id (the message id) to navigate adjacent content, or "
+        "inspect the original source when one was provided.",
+    )
+    raw = json.dumps(response, ensure_ascii=False)
+    if len(raw) <= _TOTAL_OUTPUT_MAX_CHARS:
+        return raw
+
+    full_output_chars = len(raw)
+    compacted = _compact_search_value(response)
+    compacted["output_truncated"] = True
+    compacted["full_output_chars"] = full_output_chars
+    raw = json.dumps(compacted, ensure_ascii=False)
+    if len(raw) <= _TOTAL_OUTPUT_MAX_CHARS:
+        return raw
+
+    compacted = _compact_search_value(compacted, string_limit=64)
+    compacted["output_truncated"] = True
+    compacted["full_output_chars"] = full_output_chars
+    return json.dumps(compacted, ensure_ascii=False)
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -122,18 +219,22 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
+    content, full_content_chars = _preview_message_content(m.get("content"))
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
+    if full_content_chars is not None:
+        entry["content_truncated"] = True
+        entry["full_content_chars"] = full_content_chars
     if m.get("tool_name"):
-        entry["tool_name"] = m.get("tool_name")
+        _put_bounded_message_metadata(entry, "tool_name", m.get("tool_name"))
     if m.get("tool_calls"):
-        entry["tool_calls"] = m.get("tool_calls")
+        _put_bounded_message_metadata(entry, "tool_calls", m.get("tool_calls"))
     if m.get("tool_call_id"):
-        entry["tool_call_id"] = m.get("tool_call_id")
+        _put_bounded_message_metadata(entry, "tool_call_id", m.get("tool_call_id"))
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     # Strip None values to keep payload tight, but always keep content
@@ -254,7 +355,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
             f"Session has {total} messages; showing first {head} + last {tail}. "
             "Pass around_message_id (any id above) to scroll the middle."
         )
-    return json.dumps(response, ensure_ascii=False)
+    return _finalize_response(response)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
@@ -288,13 +389,13 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             if len(results) >= limit:
                 break
 
-        return json.dumps({
+        return _finalize_response({
             "success": True,
             "mode": "browse",
             "results": results,
             "count": len(results),
             "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
-        }, ensure_ascii=False)
+        })
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
         return tool_error(f"Failed to list recent sessions: {e}", success=False)
@@ -421,7 +522,7 @@ def _scroll(
     }
     if rebind_warning:
         response["warning"] = rebind_warning
-    return json.dumps(response, ensure_ascii=False)
+    return _finalize_response(response)
 
 
 def _normalize_title_query(query: str) -> str:
@@ -531,14 +632,14 @@ def _discover(
     raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
-        return json.dumps({
+        return _finalize_response({
             "success": True,
             "mode": "discover",
             "query": query,
             "results": [],
             "count": 0,
             "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+        })
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
@@ -606,14 +707,14 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    return _finalize_response({
         "success": True,
         "mode": "discover",
         "query": query,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
-    }, ensure_ascii=False)
+    })
 
 
 def session_search(
@@ -703,7 +804,7 @@ def session_search(
                 located.close()
             if found.get("success"):
                 found["profile"] = owner
-                return json.dumps(found, ensure_ascii=False)
+                return _finalize_response(found)
         return result
 
     # Limit clamp [1, 10]
@@ -753,6 +854,8 @@ SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
+        "Model-facing results are bounded: oversized message fields include exact "
+        "original character counts and explicit recovery guidance. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
         "shape returns actual messages from the DB.\n\n"
         "SOURCE-FIRST LIMIT\n\n"

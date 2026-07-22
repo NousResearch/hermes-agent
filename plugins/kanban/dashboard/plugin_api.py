@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -711,11 +712,14 @@ async def upload_task_attachment(
 
         # Stream to disk with a hard size cap so a huge upload can't fill
         # the disk. Read in chunks; abort + clean up if the cap is hit.
-        dest_dir = kanban_db.task_attachments_dir(task_id, board=board)
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir = kanban_db.validated_task_attachments_dir(
+            task_id, board=board, create=True,
+        )
 
         # Resolve name collisions: foo.pdf → foo (1).pdf, foo (2).pdf, …
         dest_path = _collision_free_path(dest_dir, safe_name)
+        if dest_path.parent != dest_dir:
+            raise HTTPException(status_code=400, detail="invalid attachment filename")
         candidate = dest_path.name
 
         total = 0
@@ -766,13 +770,17 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         att = kanban_db.get_attachment(conn, attachment_id)
         if att is None:
             raise HTTPException(status_code=404, detail="attachment not found")
-        # Confirm the blob still lives under the board's attachments root
+        # Confirm the blob still lives under the task's attachments root
         # before serving — defense in depth against a tampered DB row.
-        root = kanban_db.attachments_root(board=board).resolve()
         try:
-            stored = Path(att.stored_path).resolve()
+            root = kanban_db.validated_task_attachments_dir(att.task_id, board=board)
+            raw_stored = Path(os.path.abspath(att.stored_path))
+            if raw_stored.is_symlink():
+                raise ValueError("linked attachment")
+            stored = raw_stored.resolve()
             stored.relative_to(root)
-        except (ValueError, OSError):
+            stored.parent.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
             raise HTTPException(status_code=404, detail="attachment file unavailable")
         if not stored.is_file():
             raise HTTPException(status_code=404, detail="attachment file missing on disk")
@@ -790,7 +798,7 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        att = kanban_db.delete_attachment(conn, attachment_id)
+        att = kanban_db.delete_attachment(conn, attachment_id, board=board)
         if att is None:
             raise HTTPException(status_code=404, detail="attachment not found")
         return {"ok": True, "id": attachment_id}

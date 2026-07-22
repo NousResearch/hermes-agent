@@ -142,6 +142,157 @@ def test_delete_attachment_missing_returns_none(kanban_home):
         conn.close()
 
 
+def test_delete_attachment_refuses_to_unlink_outside_task_directory(kanban_home):
+    sentinel = kanban_home / "harmless-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        prefixed_external_path = (
+            kb.task_attachments_dir(task_id) / ".." / ".." / ".." / sentinel.name
+        )
+        assert prefixed_external_path.resolve() == sentinel.resolve()
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=sentinel.name,
+            stored_path=str(prefixed_external_path),
+            size=sentinel.stat().st_size,
+        )
+
+        removed = kb.delete_attachment(conn, attachment_id)
+
+        assert removed is not None
+        assert kb.get_attachment(conn, attachment_id) is None
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+    finally:
+        conn.close()
+
+
+def test_delete_attachment_unlinks_symbolic_link_without_following_it(kanban_home):
+    sentinel = kanban_home / "harmless-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        link = kb.task_attachments_dir(task_id) / "linked.txt"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(sentinel)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"file symlinks unavailable: {exc}")
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=link.name,
+            stored_path=str(link),
+            size=sentinel.stat().st_size,
+        )
+
+        removed = kb.delete_attachment(conn, attachment_id)
+
+        assert removed is not None
+        assert not link.exists()
+        assert not link.is_symlink()
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+    finally:
+        conn.close()
+
+
+def test_delete_attachment_refuses_linked_task_directory(kanban_home):
+    outside = kanban_home / "outside"
+    outside.mkdir()
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        task_dir = kb.task_attachments_dir(task_id)
+        task_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            task_dir.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+        sentinel = outside / "harmless-sentinel.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=sentinel.name,
+            stored_path=str(task_dir / sentinel.name),
+            size=sentinel.stat().st_size,
+        )
+
+        removed = kb.delete_attachment(conn, attachment_id)
+
+        assert removed is not None
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+        assert task_dir.is_symlink()
+    finally:
+        conn.close()
+
+
+def test_delete_attachment_uses_the_explicit_board_root(kanban_home):
+    board = "research"
+    kb.create_board(board)
+
+    conn = kb.connect(board=board)
+    try:
+        task_id = _make_task(conn)
+        destination = kb.task_attachments_dir(task_id, board=board) / "notes.txt"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("notes", encoding="utf-8")
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=destination.name,
+            stored_path=str(destination.resolve()),
+            size=destination.stat().st_size,
+        )
+
+        removed = kb.delete_attachment(conn, attachment_id, board=board)
+
+        assert removed is not None
+        assert not destination.exists()
+    finally:
+        conn.close()
+
+
+def test_delete_attachment_accepts_a_linked_configured_root(
+    kanban_home, monkeypatch,
+):
+    storage = kanban_home / "attachment-storage"
+    storage.mkdir()
+    linked_root = kanban_home / "attachments-link"
+    try:
+        linked_root.symlink_to(storage, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(linked_root))
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        legacy_path = linked_root / task_id / "notes.txt"
+        legacy_path.parent.mkdir(parents=True)
+        legacy_path.write_text("notes", encoding="utf-8")
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=legacy_path.name,
+            stored_path=str(legacy_path.absolute()),
+            size=legacy_path.stat().st_size,
+        )
+
+        removed = kb.delete_attachment(conn, attachment_id)
+
+        assert removed is not None
+        assert not legacy_path.exists()
+    finally:
+        conn.close()
+
+
 def test_attachments_root_is_per_board(kanban_home, monkeypatch):
     # default board uses <root>/kanban/attachments
     default_root = kb.attachments_root(board="default")
@@ -248,6 +399,30 @@ def test_upload_list_download_delete_roundtrip(client):
     ).json()["attachments"] == []
 
 
+def test_download_and_delete_refuse_another_tasks_attachment(client):
+    task_id = _create_task_via_api(client)
+    other_task_id = _create_task_via_api(client)
+    other_file = kb.task_attachments_dir(other_task_id) / "other.txt"
+    other_file.parent.mkdir(parents=True, exist_ok=True)
+    other_file.write_text("other task", encoding="utf-8")
+
+    with kb.connect() as conn:
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=other_file.name,
+            stored_path=str(other_file.resolve()),
+            size=other_file.stat().st_size,
+        )
+
+    response = client.get(f"/api/plugins/kanban/attachments/{attachment_id}")
+    assert response.status_code == 404
+
+    response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
+    assert response.status_code == 200
+    assert other_file.read_text(encoding="utf-8") == "other task"
+
+
 def test_upload_sanitizes_traversal_filename(client):
     task_id = _create_task_via_api(client)
     r = client.post(
@@ -260,6 +435,18 @@ def test_upload_sanitizes_traversal_filename(client):
     assert Path(stored_path).name == "passwd"
     task_dir = kb.task_attachments_dir(task_id).resolve()
     assert Path(stored_path).resolve().is_relative_to(task_dir)
+
+
+@pytest.mark.parametrize("filename", ["D:outside.txt", "notes.txt:stream"])
+def test_upload_rejects_windows_drive_and_ads_syntax(client, filename):
+    task_id = _create_task_via_api(client)
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": (filename, b"notes", "text/plain")},
+    )
+
+    assert response.status_code == 400
 
 
 def test_upload_name_collision_gets_suffixed(client):
@@ -277,6 +464,26 @@ def test_upload_name_collision_gets_suffixed(client):
         ).json()["attachments"]
     )
     assert names == ["dup (1).txt", "dup.txt"]
+
+
+def test_upload_rejects_linked_task_attachment_directory(client, kanban_home):
+    task_id = _create_task_via_api(client)
+    outside = kanban_home / "outside"
+    outside.mkdir()
+    task_dir = kb.task_attachments_dir(task_id)
+    task_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        task_dir.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("notes.txt", b"notes", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert not (outside / "notes.txt").exists()
 
 
 def test_upload_unknown_task_404(client):
@@ -341,6 +548,67 @@ def test_store_attachment_bytes_resolves_collisions(kanban_home):
         kb.store_attachment_bytes(conn, task_id, "dup.txt", b"b")
         names = sorted(a.filename for a in kb.list_attachments(conn, task_id))
         assert names == ["dup (1).txt", "dup.txt"]
+    finally:
+        conn.close()
+
+
+def test_store_attachment_bytes_avoids_broken_symlink_collision(kanban_home):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        task_dir = kb.task_attachments_dir(task_id)
+        task_dir.mkdir(parents=True)
+        occupied = task_dir / "dup.txt"
+        try:
+            occupied.symlink_to(task_dir / "missing-target.txt")
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"file symlinks unavailable: {exc}")
+
+        att_id = kb.store_attachment_bytes(conn, task_id, "dup.txt", b"safe")
+
+        attachment = kb.get_attachment(conn, att_id)
+        assert attachment is not None
+        assert attachment.filename == "dup (1).txt"
+        assert Path(attachment.stored_path).read_bytes() == b"safe"
+        assert occupied.is_symlink()
+    finally:
+        conn.close()
+
+
+def test_store_attachment_bytes_rejects_linked_task_directory(
+    kanban_home,
+):
+    outside = kanban_home / "outside-store"
+    outside.mkdir()
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        task_dir = kb.task_attachments_dir(task_id)
+        task_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            task_dir.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        with pytest.raises(ValueError, match="unsafe attachment directory"):
+            kb.store_attachment_bytes(conn, task_id, "notes.txt", b"notes")
+
+        assert not (outside / "notes.txt").exists()
+        assert kb.list_attachments(conn, task_id) == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("filename", ["D:outside.txt", "notes.txt:stream"])
+def test_store_attachment_bytes_rejects_nonportable_names(kanban_home, filename):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+
+        with pytest.raises(ValueError, match="invalid attachment filename"):
+            kb.store_attachment_bytes(conn, task_id, filename, b"notes")
+
+        assert kb.list_attachments(conn, task_id) == []
     finally:
         conn.close()
 

@@ -2399,6 +2399,241 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_only_registers_artifacts_copied_into_task_storage(kanban_home):
+    """A lexical attachment-dir prefix must not turn an external path into a row."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="render chart")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        deliverable = workspace / "chart.png"
+        deliverable.write_bytes(b"png-bytes")
+
+        sentinel = kanban_home / "harmless-sentinel.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+        prefixed_external_path = (
+            kb.task_attachments_dir(task_id) / ".." / ".." / ".." / sentinel.name
+        )
+        assert prefixed_external_path.resolve() == sentinel.resolve()
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="ok",
+            metadata={
+                "artifacts": [str(deliverable), str(prefixed_external_path)],
+            },
+        )
+
+        attachments = kb.list_attachments(conn, task_id)
+        completed = [
+            event for event in kb.list_events(conn, task_id) if event.kind == "completed"
+        ][-1]
+
+    assert len(attachments) == 1
+    assert Path(attachments[0].stored_path).parent == kb.task_attachments_dir(task_id)
+    assert Path(completed.payload["artifacts"][1]).resolve() == sentinel.resolve()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_complete_task_rejects_linked_task_attachment_directory(kanban_home):
+    outside = kanban_home / "outside"
+    outside.mkdir()
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="render report")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        deliverable = workspace / "report.txt"
+        deliverable.write_text("report", encoding="utf-8")
+
+        task_dir = kb.task_attachments_dir(task_id)
+        task_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            task_dir.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+
+        with pytest.raises(kb.ArtifactPreservationError, match="unsafe attachment"):
+            kb.complete_task(
+                conn,
+                task_id,
+                result="ok",
+                metadata={"artifacts": [str(deliverable)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert not (outside / deliverable.name).exists()
+    assert deliverable.read_text(encoding="utf-8") == "report"
+
+
+def test_complete_task_discards_artifact_copy_when_row_insert_fails(
+    kanban_home, monkeypatch,
+):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="render report")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        deliverable = workspace / "report.txt"
+        deliverable.write_text("report", encoding="utf-8")
+        metadata = {"artifacts": [str(deliverable)]}
+
+        def fail_insert(*args, **kwargs):
+            raise RuntimeError("injected attachment insert failure")
+
+        monkeypatch.setattr(kb, "_insert_completion_attachment", fail_insert)
+        with pytest.raises(RuntimeError, match="injected attachment insert failure"):
+            kb.complete_task(conn, task_id, result="ok", metadata=metadata)
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert metadata == {"artifacts": [str(deliverable)]}
+    assert deliverable.read_text(encoding="utf-8") == "report"
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_task_discards_artifact_copy_when_commit_fails(
+    kanban_home, monkeypatch,
+):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="render report")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        deliverable = workspace / "report.txt"
+        deliverable.write_text("report", encoding="utf-8")
+
+        execute_boundary = kb._execute_boundary_with_retry
+
+        def fail_commit(connection, sql):
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("injected commit failure")
+            return execute_boundary(connection, sql)
+
+        monkeypatch.setattr(kb, "_execute_boundary_with_retry", fail_commit)
+        with pytest.raises(sqlite3.OperationalError, match="injected commit failure"):
+            kb.complete_task(
+                conn,
+                task_id,
+                result="ok",
+                metadata={"artifacts": [str(deliverable)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert deliverable.read_text(encoding="utf-8") == "report"
+    assert not kb.task_attachments_dir(task_id).exists()
+
+
+def test_complete_task_preserves_artifact_when_commit_reports_after_success(
+    kanban_home, monkeypatch,
+):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="render report")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        deliverable = workspace / "report.txt"
+        deliverable.write_text("report", encoding="utf-8")
+
+        execute_boundary = kb._execute_boundary_with_retry
+
+        def commit_then_report_failure(connection, sql):
+            execute_boundary(connection, sql)
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("injected post-commit failure")
+
+        monkeypatch.setattr(
+            kb,
+            "_execute_boundary_with_retry",
+            commit_then_report_failure,
+        )
+        with pytest.raises(sqlite3.OperationalError, match="post-commit failure"):
+            kb.complete_task(
+                conn,
+                task_id,
+                result="ok",
+                metadata={"artifacts": [str(deliverable)]},
+            )
+
+        attachments = kb.list_attachments(conn, task_id)
+        assert kb.get_task(conn, task_id).status == "done"
+        assert len(attachments) == 1
+
+    assert Path(attachments[0].stored_path).read_text(encoding="utf-8") == "report"
+
+
+def test_complete_task_does_not_reregister_an_existing_task_attachment(kanban_home):
+    """Mixed input/output manifests keep an existing attachment's single row."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="annotate attachment")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+
+        existing_dir = kb.task_attachments_dir(task_id)
+        existing_dir.mkdir(parents=True, exist_ok=True)
+        existing = existing_dir / "input.pdf"
+        existing.write_bytes(b"input")
+        kb.add_attachment(
+            conn,
+            task_id,
+            filename=existing.name,
+            stored_path=str(existing.resolve()),
+            size=existing.stat().st_size,
+        )
+        deliverable = workspace / "annotated.pdf"
+        deliverable.write_bytes(b"output")
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="ok",
+            metadata={"artifacts": [str(deliverable), str(existing)]},
+        )
+        attachments = kb.list_attachments(conn, task_id)
+
+    assert len(attachments) == 2
+    assert {attachment.filename for attachment in attachments} == {
+        "input.pdf",
+        "annotated.pdf",
+    }
+    assert len({Path(attachment.stored_path).resolve() for attachment in attachments}) == 2
+    assert existing.read_bytes() == b"input"
+
+
+def test_complete_task_ignores_worker_supplied_internal_staging_metadata(kanban_home):
+    """Free-form handoff metadata cannot nominate attachment database paths."""
+    sentinel = kanban_home / "harmless-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="metadata handoff")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="ok",
+            metadata={"_staged_artifacts": [str(sentinel)]},
+        )
+        run = kb.latest_run(conn, task_id)
+
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert run is not None
+    assert not run.metadata or "_staged_artifacts" not in run.metadata
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
 def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
     """A declared scratch deliverable must not disappear behind a false Done."""
     with kb.connect() as conn:

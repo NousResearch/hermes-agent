@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -593,6 +593,24 @@ def attachments_root(board: Optional[str] = None) -> Path:
 def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     """Return the per-task attachment directory ``<root>/<task_id>/``."""
     return attachments_root(board=board) / task_id
+
+
+def validated_task_attachments_dir(
+    task_id: str,
+    board: Optional[str] = None,
+    *,
+    create: bool = False,
+) -> Path:
+    """Return a canonical per-task directory that does not traverse a link."""
+    root = attachments_root(board=board).resolve()
+    directory = root / task_id
+    if directory.parent != root or directory.resolve() != directory:
+        raise ValueError(f"unsafe attachment directory for task {task_id}")
+    if create:
+        directory.mkdir(parents=True, exist_ok=True)
+        if directory.resolve() != directory:
+            raise ValueError(f"unsafe attachment directory for task {task_id}")
+    return directory
 
 
 def worker_logs_dir(board: Optional[str] = None) -> Path:
@@ -2639,7 +2657,11 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection):
+def write_txn(
+    conn: sqlite3.Connection,
+    *,
+    rollback_cleanup: Optional[Callable[[], None]] = None,
+):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
@@ -2648,8 +2670,18 @@ def write_txn(conn: sqlite3.Connection):
 
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
-    shadow the original exception with a spurious rollback error.
+    shadow the original exception with a spurious rollback error. Optional
+    ``rollback_cleanup`` runs after body or COMMIT rollback, but never after a
+    successful commit's integrity check.
     """
+    def _run_rollback_cleanup() -> None:
+        if rollback_cleanup is None:
+            return
+        try:
+            rollback_cleanup()
+        except Exception:
+            _log.exception("kanban transaction rollback cleanup failed")
+
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
@@ -2661,17 +2693,24 @@ def write_txn(conn: sqlite3.Connection):
             # under EIO, lock contention, or corruption). Nothing to undo;
             # do not let this secondary failure shadow the real one.
             pass
+        _run_rollback_cleanup()
         raise
     else:
         try:
             _execute_boundary_with_retry(conn, "COMMIT")
         except Exception:
             # COMMIT exhausted retries with the txn still open; roll back so the
-            # connection isn't poisoned for the next BEGIN IMMEDIATE.
+            # connection isn't poisoned for the next BEGIN IMMEDIATE. A COMMIT
+            # can succeed and still report an error, so cleanup is only safe
+            # when this explicit rollback confirms the transaction was open.
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
-                pass
+                _log.warning(
+                    "kanban COMMIT outcome is uncertain; preserving rollback files"
+                )
+            else:
+                _run_rollback_cleanup()
             raise
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
@@ -3328,10 +3367,13 @@ def _safe_attachment_name(raw: str) -> str:
     """
     name = (raw or "").replace("\\", "/").split("/")[-1].strip()
     name = "".join(ch for ch in name if ch.isprintable() and ch not in "\x00").strip()
-    name = name.lstrip(".").strip()
-    if not name:
+    # Windows treats colons as drive/ADS syntax and silently normalises
+    # trailing spaces/dots. Reject colons and normalise surrounding dots and
+    # spaces on every platform so containment semantics do not vary by host.
+    name = name.lstrip(". ").rstrip(". ")[:200].rstrip(". ")
+    if not name or ":" in name:
         raise ValueError("invalid attachment filename")
-    return name[:200]
+    return name
 
 
 def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
@@ -3343,10 +3385,15 @@ def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
     stem, dot, ext = safe_name.partition(".")
     candidate = safe_name
     n = 1
-    while (dest_dir / candidate).exists():
+    # ``Path.exists`` is false for a broken symlink. Treat any directory entry
+    # as occupied so a write never follows or replaces a staged final link.
+    while os.path.lexists(dest_dir / candidate):
         candidate = f"{stem} ({n}){dot}{ext}"
         n += 1
-    return dest_dir / candidate
+    dest_path = dest_dir / candidate
+    if dest_path.parent != dest_dir:
+        raise ValueError("invalid attachment filename")
+    return dest_path
 
 
 def store_attachment_bytes(
@@ -3368,7 +3415,7 @@ def store_attachment_bytes(
     collision-resolution all behave identically everywhere.
 
     Steps: enforce ``max_bytes``, sanitise ``filename`` to a safe basename,
-    write the bytes under :func:`task_attachments_dir` with a
+    write the bytes under :func:`validated_task_attachments_dir` with a
     collision-free name, then insert the ``task_attachments`` row via
     :func:`add_attachment`. Returns the new attachment id.
 
@@ -3384,8 +3431,7 @@ def store_attachment_bytes(
             f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"
         )
     safe_name = _safe_attachment_name(filename)
-    dest_dir = task_attachments_dir(task_id, board=board)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir = validated_task_attachments_dir(task_id, board=board, create=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
     try:
@@ -3495,7 +3541,12 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
     )
 
 
-def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
+def delete_attachment(
+    conn: sqlite3.Connection,
+    attachment_id: int,
+    *,
+    board: Optional[str] = None,
+) -> Optional[Attachment]:
     """Delete an attachment row and its on-disk blob. Returns the removed row.
 
     Returns ``None`` when no row matched. The blob is removed best-effort
@@ -3511,10 +3562,18 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
             conn, att.task_id, "attachment_removed", {"filename": att.filename}
         )
     try:
-        p = Path(att.stored_path)
-        if p.is_file():
-            p.unlink()
-    except OSError:
+        attachment_dir = validated_task_attachments_dir(att.task_id, board=board)
+        stored_path = Path(os.path.abspath(att.stored_path))
+        resolved_parent = stored_path.parent.resolve()
+        if not resolved_parent.is_relative_to(attachment_dir):
+            _log.warning(
+                "Refusing to unlink attachment %s outside task %s attachment directory",
+                attachment_id,
+                att.task_id,
+            )
+        elif stored_path.is_symlink() or stored_path.is_file():
+            stored_path.unlink()
+    except (OSError, RuntimeError, ValueError):
         pass
     return att
 
@@ -4495,7 +4554,13 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
-    with write_txn(conn):
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+    staged_artifacts: list[Path] = []
+    with write_txn(
+        conn,
+        rollback_cleanup=lambda: _discard_artifact_copies(staged_artifacts),
+    ):
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4534,9 +4599,13 @@ def complete_task(
         if cur.rowcount != 1:
             return False
         if isinstance(metadata, dict):
-            _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
-                path = Path(stored_path)
+            # This name was previously used as an internal metadata channel.
+            # Never accept it from free-form worker metadata.
+            metadata.pop("_staged_artifacts", None)
+            staged_artifacts = _persist_scratch_completion_artifacts(
+                conn, task_id, metadata,
+            )
+            for path in staged_artifacts:
                 _insert_completion_attachment(
                     conn,
                     task_id,
@@ -4691,44 +4760,37 @@ def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection,
     task_id: str,
     metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+) -> list[Path]:
+    """Copy scratch artifacts and return only destinations created here."""
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
-        return
+        return []
 
     row = conn.execute(
         "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
-        return
+        return []
 
     workspace = Path(row["workspace_path"]).expanduser()
     is_managed, board = _managed_scratch_path_info(workspace)
     if not is_managed:
-        return
+        return []
 
     try:
         workspace_root = workspace.resolve()
     except OSError:
-        return
+        return []
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
+    staged_artifacts: list[Path] = []
     used_destinations: set[Path] = set()
     changed = False
 
     def _discard_copies() -> None:
-        for copied in used_destinations:
-            try:
-                copied.unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            attachment_dir.rmdir()
-        except OSError:
-            pass
+        _discard_artifact_copies(used_destinations)
 
     for item in raw_artifacts:
         artifact = str(item).strip() if isinstance(item, str) else ""
@@ -4761,7 +4823,9 @@ def _persist_scratch_completion_artifacts(
 
         dest: Optional[Path] = None
         try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
+            attachment_dir = validated_task_attachments_dir(
+                task_id, board=board, create=True,
+            )
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
                 copied = 0
@@ -4786,14 +4850,30 @@ def _persist_scratch_completion_artifacts(
             ) from exc
 
         used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
+        resolved_dest = dest.resolve()
+        persisted.append(str(resolved_dest))
+        staged_artifacts.append(resolved_dest)
         changed = True
 
     if changed:
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+    return staged_artifacts
+
+
+def _discard_artifact_copies(paths: Iterable[Path]) -> None:
+    """Best-effort cleanup for files created before a failed DB commit."""
+    directories: set[Path] = set()
+    for copied in paths:
+        directories.add(copied.parent)
+        try:
+            copied.unlink(missing_ok=True)
+        except OSError:
+            pass
+    for directory in directories:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
 
 
 def _insert_completion_attachment(
@@ -4824,7 +4904,7 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
     """Return a non-conflicting path under ``directory`` for ``filename``."""
     safe_name = Path(filename).name or "artifact"
     candidate = directory / safe_name
-    if candidate not in used and not candidate.exists():
+    if candidate not in used and not os.path.lexists(candidate):
         return candidate
 
     stem = Path(safe_name).stem or "artifact"
@@ -4832,7 +4912,7 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
     idx = 1
     while True:
         candidate = directory / f"{stem}_{idx}{suffix}"
-        if candidate not in used and not candidate.exists():
+        if candidate not in used and not os.path.lexists(candidate):
             return candidate
         idx += 1
 

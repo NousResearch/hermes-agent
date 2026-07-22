@@ -80,19 +80,6 @@ import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
-import { runNativeLogin } from './native-oauth-login'
-import {
-  nativeRefreshUrl,
-  parseTokenResponse,
-  resolveLoginStrategy,
-  tokenNeedsRefresh,
-  type NativeTokenSet
-} from './native-oauth'
-import {
-  oauthSessionIsLive,
-  resolveJsonBody,
-  resolveOauthRestAuth
-} from './native-auth-decisions'
 import { scanGitRepos } from './git-repo-scan'
 import {
   fileDiffVsHead,
@@ -129,6 +116,19 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import {
+  oauthSessionIsLive,
+  resolveJsonBody,
+  resolveOauthRestAuth
+} from './native-auth-decisions'
+import {
+  nativeRefreshUrl,
+  type NativeTokenSet,
+  parseTokenResponse,
+  resolveLoginStrategy,
+  tokenNeedsRefresh
+} from './native-oauth'
+import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -152,6 +152,7 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { buildTerminalShellEnv } from './terminal-shell-env'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -9817,39 +9818,6 @@ function safeTerminalCwd(cwd) {
   }
 }
 
-function terminalShellEnv() {
-  const env = { ...process.env }
-
-  // Electron is commonly launched through `npm run dev`; do not leak npm's
-  // managed prefix into a user's interactive shell (nvm/proto warn loudly).
-  for (const key of Object.keys(env)) {
-    if (key === 'npm_config_prefix' || key.startsWith('npm_config_') || key.startsWith('npm_package_')) {
-      delete env[key]
-    }
-  }
-
-  // Strip color/theme-detection vars that ride along when Electron is launched
-  // from a non-tty agent shell (Cursor's runner sets NO_COLOR/FORCE_COLOR=0
-  // /TERM=dumb; some terminals set COLORFGBG which would flip Hermes' TUI into
-  // light-mode). Our PTY is a real xterm-compat terminal — force truecolor.
-  delete env.NO_COLOR
-  delete env.FORCE_COLOR
-  delete env.COLORFGBG
-
-  env.COLORTERM = 'truecolor'
-  env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
-  env.TERM = 'xterm-256color'
-  env.TERM_PROGRAM = 'Hermes'
-  env.TERM_PROGRAM_VERSION = app.getVersion()
-
-  // Let a hermes/--tui launched in this pane know it's embedded in the desktop
-  // GUI (build_environment_hints surfaces this). Distinct from HERMES_DESKTOP,
-  // which marks the agent *backend* and gates cron/gateway behavior.
-  env.HERMES_DESKTOP_TERMINAL = '1'
-
-  return env
-}
-
 function terminalChannel(id, suffix) {
   return `hermes:terminal:${id}:${suffix}`
 }
@@ -10154,9 +10122,9 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
           ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
           : 'ssh',
         buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
-        { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
+        { cols, cwd: app.getPath('home'), env: buildTerminalShellEnv({ appVersion: app.getVersion() }), name: 'xterm-256color', rows }
       )
-    : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
+    : nodePty.spawn(command, args, { cols, cwd, env: buildTerminalShellEnv({ appVersion: app.getVersion() }), name: 'xterm-256color', rows })
 
   terminalSessions.set(id, {
     pty: ptyProcess,

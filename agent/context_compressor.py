@@ -3700,6 +3700,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         saved_estimate = pre_estimate - new_estimate
         savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
         self._last_compression_savings_pct = savings_pct
+        if saved_estimate <= 0:
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression estimate: compressed size >= original "
+                    "(%d tokens saved by rough estimate). Proceeding — "
+                    "provider-reported usage will set the real verdict.",
+                    saved_estimate,
+                )
+            self._ineffective_compression_count += 1
 
         # Message-only savings are diagnostic. The anti-thrashing verdict is
         # owned by the next provider-reported prompt count, which answers the

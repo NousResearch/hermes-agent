@@ -3741,3 +3741,144 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+# ---------------------------------------------------------------------------
+# Anti-thrashing: like-for-like estimate of summary vs replaced region
+# ---------------------------------------------------------------------------
+
+
+class TestIneffectiveCompressionGuard:
+    """Regression: when the LLM summary is longer than the message region
+    it replaced, the rough-estimate diagnostic counter must increment.
+    Compression still proceeds (the provider-reported prompt count is the
+    real arbiter), but _ineffective_compression_count tracks that the
+    estimator flagged the compaction as non-beneficial.
+
+    The comparison MUST be like-for-like:
+    pre-compression message-region tokens vs post-compression message-region
+    tokens — NOT full-context tokens (display_tokens) vs compressed messages.
+    """
+
+    def test_inflated_summary_increments_counter(self):
+        """Verbose summary that exceeds the messages it replaces triggers
+        the diagnostic counter but compression still proceeds."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "q3"},
+            {"role": "assistant", "content": "a3"},
+            {"role": "user", "content": "latest"},
+            {"role": "assistant", "content": "end"},
+        ]
+        verbose_summary = (
+            "[CONTEXT SUMMARY]: This is an intentionally verbose summary "
+            "that contains far more text than the short messages it replaces. "
+            "The purpose is to trigger the anti-thrashing diagnostic by "
+            "ensuring the compressed output is larger than the pre-compression "
+            "message-region estimate. " * 5
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = verbose_summary
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+        # Compression proceeds — result is shorter than original
+        assert len(result) < len(msgs)
+        # But the estimator flagged it as non-beneficial
+        assert c._ineffective_compression_count == 1
+        assert c._last_compression_savings_pct <= 0
+
+    def test_tool_pruning_before_inflated_summary(self):
+        """Tool-pruning pre-pass strips old tool results before the
+        estimate.  Even with pruning, a verbose summary can still
+        trigger the diagnostic counter."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "run search"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "search", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 2000},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "latest"},
+            {"role": "assistant", "content": "end"},
+        ]
+        verbose_summary = "[CONTEXT SUMMARY]: verbose " * 50
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = verbose_summary
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+        assert len(result) < len(msgs)
+        assert c._ineffective_compression_count == 1
+
+    def test_good_summary_no_counter_increment(self):
+        """A concise summary that genuinely reduces message tokens does
+        NOT increment the diagnostic counter."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ] + [
+            {"role": "user" if i % 2 == 0 else "assistant",
+             "content": f"message {i} with some content to compress " * 3}
+            for i in range(20)
+        ] + [
+            {"role": "user", "content": "latest"},
+            {"role": "assistant", "content": "end"},
+        ]
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: Brief summary."
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+        assert result is not msgs
+        assert c._ineffective_compression_count == 0
+        assert c._last_compression_savings_pct > 0
+
+    def test_estimate_uses_same_estimator_both_sides(self):
+        """Both pre- and post-compression estimates must use
+        estimate_messages_tokens_rough — not display_tokens (full context)
+        on one side.  This is the core of teknium1's review feedback."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2,
+            )
+        msgs = [
+            {"role": "user", "content": "short msg"},
+            {"role": "assistant", "content": "short reply"},
+        ] * 5
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: ok"
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            with patch("agent.context_compressor.estimate_messages_tokens_rough") as mock_est:
+                # The estimator is called for tool-pruning decisions and
+                # for the pre/post comparison.  Feed enough values.
+                mock_est.side_effect = [1000, 100, 1000, 100]
+                result = c.compress(msgs)
+                # At least 2 calls: pre_estimate and new_estimate
+                assert mock_est.call_count >= 2
+                # All calls received message lists, not display_tokens
+                for call_args in mock_est.call_args_list:
+                    arg = call_args[0][0]
+                    assert isinstance(arg, list)
+                    assert all(isinstance(m, dict) for m in arg)

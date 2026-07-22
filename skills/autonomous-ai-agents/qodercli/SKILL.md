@@ -1,7 +1,7 @@
 ---
 name: qodercli
 description: "Delegate coding to Qoder CLI (features, PRs, refactors)."
-version: 2.2.0
+version: 2.3.0
 author: explicitcontextualunderstanding
 license: MIT
 platforms: [linux, macos, windows]
@@ -115,6 +115,8 @@ process(action="write", session_id="<id>", data="\x03")
 - Maximum 10 process() calls before checking `git diff --stat` in the working directory for evidence of progress.
 - If files are being written, keep waiting. If no file changes after 5 minutes, then investigate with `process(action="log")`.
 
+**NDJSON progress (automatic):** Background qodercli tasks are automatically spawned in pipe mode with `--output-format stream-json`. `process(poll)` returns structured progress like `Tools used: Read (src/auth.py), Edit (src/routes.ts) | Thinking... (2400 chars)` instead of spinner glyphs. You will see exactly which tool qodercli is using — no patience guessing needed.
+
 ### Folder trust dialog (interactive mode only)
 
 On first launch in a new directory, Qoder shows a trust prompt. Send `1\n` to accept:
@@ -144,7 +146,7 @@ Print mode (`-p`) skips this dialog entirely.
 | `--attachment <file>` | Attach files to prompt |
 | `--agent <name>` | Use a named agent |
 | `--mcp-config <config>` | Load MCP servers from JSON |
-| `-o, --output-format <fmt>` | Output format (text, json) |
+| `-o, --output-format <fmt>` | Output format (text, json, stream-json). Background tasks auto-use stream-json for NDJSON progress. |
 | `--reasoning-effort <level>` | Set reasoning effort |
 | `--list-sessions` | List sessions |
 | `--list-models` | List available models |
@@ -237,6 +239,7 @@ When qodercli dies mid-task (credit limit, timeout, crash):
 - **Credit drain on vague prompts.** Tight scope = fewer turns = fewer credits.
 - **Spinner means working.** If `process(poll)` or `process(log)` shows only spinner characters (⠋⠙⠹⠸⠼⠴) with no meaningful text, qodercli is actively implementing. Do NOT kill it. Wait longer.
 - **Never rapid-poll.** Polling more than once per 30 seconds wastes context on spinner frames. Use `process(action="wait", timeout=120)`. Multi-file implementation takes 2–5 minutes. Prefer print mode to avoid monitoring entirely.
+- **Structured progress in background mode.** When qodercli runs as a background process, Hermes automatically uses pipe mode with `--output-format stream-json`. Poll output shows structured events (`Tools used: Read (file.py) | Thinking... | Completed (success, N turns, Ns)`) instead of spinner glyphs. No action needed — this is automatic.
 
 ## Verification
 

@@ -5235,6 +5235,49 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
     return custom_providers
 
 
+def custom_providers_dict_to_list(custom_providers: Any) -> Optional[List[Dict[str, Any]]]:
+    """Convert on-disk dict-shaped ``custom_providers`` into list form.
+
+    Supports both legacy keyed mappings:
+
+    ```yaml
+    custom_providers:
+      my-provider:
+        api: https://example.com/v1
+    ```
+
+    and the single-entry misindentation shape:
+
+    ```yaml
+    custom_providers:
+      name: my-provider
+      base_url: https://example.com/v1
+    ```
+
+    Returns ``None`` when the dict cannot be converted without dropping data.
+    """
+    if not isinstance(custom_providers, dict):
+        return None
+
+    single_entry = _normalize_custom_provider_entry(dict(custom_providers))
+    if single_entry is not None:
+        single_entry.pop("provider_key", None)
+        return [single_entry]
+
+    converted: List[Dict[str, Any]] = []
+    for provider_key, entry in custom_providers.items():
+        normalized = _normalize_custom_provider_entry(
+            dict(entry) if isinstance(entry, dict) else entry,
+            provider_key=str(provider_key),
+        )
+        if normalized is None:
+            return None
+        normalized.pop("provider_key", None)
+        converted.append(normalized)
+
+    return converted or None
+
+
 def get_compatible_custom_providers(
     config: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:

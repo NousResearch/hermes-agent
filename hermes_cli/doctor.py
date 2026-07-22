@@ -1179,10 +1179,28 @@ def run_doctor(args):
 
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
-            from hermes_cli.config import validate_config_structure
+            from hermes_cli.config import (
+                custom_providers_dict_to_list,
+                validate_config_structure,
+            )
             config_issues = validate_config_structure()
             if config_issues:
                 _section("Config Structure")
+                if should_fix and config_path.exists():
+                    import yaml
+                    with open(config_path, encoding="utf-8") as f:
+                        raw_config = yaml.safe_load(f) or {}
+                    converted_custom_providers = custom_providers_dict_to_list(
+                        raw_config.get("custom_providers")
+                    )
+                    if converted_custom_providers is not None:
+                        from utils import atomic_yaml_write
+
+                        raw_config["custom_providers"] = converted_custom_providers
+                        atomic_yaml_write(config_path, raw_config)
+                        check_ok("Converted custom_providers from dict to list format")
+                        fixed_count += 1
+                        config_issues = validate_config_structure(raw_config)
                 for ci in config_issues:
                     if ci.severity == "error":
                         check_fail(ci.message)

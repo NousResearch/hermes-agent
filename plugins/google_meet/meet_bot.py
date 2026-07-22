@@ -570,6 +570,11 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             _try_guest_name(page, guest_name)
             _click_join(page, state)
 
+            # Signed-in users see a preview screen after clicking "Join now"
+            # (camera/mic preview with ANOTHER "Join now" button). We need to
+            # click that second "Join now" to actually enter the meeting.
+            _collapse_preview_if_needed(page)
+
             # Install caption observer and attempt to enable captions.
             try:
                 page.evaluate(_enable_captions_js())
@@ -690,10 +695,18 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             # Try to leave cleanly — click "Leave call" button if present.
             try:
-                page.evaluate(
-                    "() => { const b = document.querySelector('button[aria-label*=\"eave call\"]');"
-                    " if (b) b.click(); }"
-                )
+                page.evaluate("""
+                    () => {
+                      const btns = document.querySelectorAll('button');
+                      for (const b of btns) {
+                        const a = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (a.includes('eave call') || a.includes('leave') || a.includes('ออกจาก')) {
+                          b.click();
+                          break;
+                        }
+                      }
+                    }
+                """)
             except Exception:
                 pass
 
@@ -752,16 +765,21 @@ def _detect_admission(page) -> bool:
     version. We check several high-signal indicators and declare admission
     on the first hit:
 
-      1. Leave-call button is present (``aria-label`` contains "eave call").
+      1. Leave-call button is present (``aria-label`` contains "eave call",
+         "leave", or Thai "ออกจาก").
       2. Caption region has appeared (we installed the observer and it attached).
       3. The participant list container is visible.
 
+    Supports English, Thai, and generic locale labels.
     Conservative by default — returns False on any error.
     """
     probe = r"""
     (() => {
-      const leave = document.querySelector('button[aria-label*="eave call" i]');
-      if (leave) return true;
+      const btns = document.querySelectorAll('button');
+      for (const b of btns) {
+        const a = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (a.includes('eave call') || a.includes('leave') || a.includes('ออกจาก')) return true;
+      }
       if (window.__hermesMeetInstalled) {
         const caps = document.querySelector(
           '[role="region"][aria-label*="aption" i], ' +
@@ -785,11 +803,12 @@ def _detect_denied(page) -> bool:
     probe = r"""
     (() => {
       const text = document.body ? document.body.innerText || '' : '';
-      // English only — matches what shows up when the host denies or
-      // removes a guest.
+      // English + Thai locale — matches denial / removal / kicked text.
       if (/You can't join this video call/i.test(text)) return true;
       if (/You were removed from the meeting/i.test(text)) return true;
       if (/No one responded to your request to join/i.test(text)) return true;
+      if (/คุณไม่สามารถเข้าร่วม/i.test(text)) return true;       // "You can't join" (Thai)
+      if (/คุณถูกนำออกจากการประชุม/i.test(text)) return true;  // "You were removed" (Thai)
       return false;
     })();
     """
@@ -821,10 +840,55 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
 
 def _click_join(page, state: _BotState) -> None:
     """Click 'Join now' or 'Ask to join' if either button is visible.
-
+    Also handles Thai locale and 'Continue without microphone' alternatives.
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
+    # Step 1: Use JS to find any join/continue button regardless of locale.
+    # JS eval can't access Python state, so we just do click + return label.
+    try:
+        result = page.evaluate("""() => {
+            const btns = document.querySelectorAll('button');
+            // Pass 1: high-priority exact matches
+            for (const btn of btns) {
+                if (btn.offsetParent === null) continue;
+                const t = (btn.innerText || '').trim().toLowerCase();
+                const a = (btn.getAttribute('aria-label') || '').toLowerCase();
+                const prio = [
+                    'continue without', 'ดำเนินการต่อ',
+                    'join now', 'ask to join',
+                    'เปลี่ยนที่นี่',
+                    'เข้าร่วมที่นี่',
+                ];
+                for (const pat of prio) {
+                    if (t.includes(pat) || a.includes(pat)) {
+                        btn.click();
+                        return pat;
+                    }
+                }
+            }
+            // Pass 2: any "join" match (but NOT "other ways to join")
+            for (const btn of btns) {
+                if (btn.offsetParent === null) continue;
+                const t = (btn.innerText || '').trim().toLowerCase();
+                const a = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (t.includes('อื่นๆ') || a.includes('อื่นๆ')) continue;
+                if (t.includes('เข้าร่วม') || a.includes('เข้าร่วม') ||
+                    t.includes('join') || a.includes('join')) {
+                    btn.click();
+                    return 'join_fallback: ' + t.substring(0, 30);
+                }
+            }
+            return null;
+        }""")
+        if result:
+            if 'ask to' in result:
+                state.set(lobby_waiting=True)
+            return
+    except Exception:
+        pass
+
+    # Step 2: Fallback — Playwright native selectors
     for label in ("Join now", "Ask to join"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first
@@ -835,6 +899,46 @@ def _click_join(page, state: _BotState) -> None:
                 break
         except Exception:
             continue
+
+
+def _collapse_preview_if_needed(page) -> None:
+    """After clicking 'Join now', signed-in users see a preview screen with
+    camera/mic controls and ANOTHER 'Join now' button. Use JS to find and
+    click it regardless of locale/language. Also mute mic and camera.
+    """
+    import time as _time
+    _time.sleep(3)  # Wait for preview screen to fully render
+    
+    try:
+        # Mute mic and camera on the preview screen
+        page.evaluate("""() => {
+            document.querySelectorAll('button').forEach(b => {
+                const a = (b.getAttribute('aria-label') || '').toLowerCase();
+                if (a.includes('microphone') || a.includes('camera')) {
+                    if (a.includes('turn off') || a.includes('ปิด')) b.click();
+                }
+            });
+        }""")
+    except Exception:
+        pass
+    
+    try:
+        # Click any visible join-like button (handles all locales)
+        page.evaluate("""() => {
+            const btns = document.querySelectorAll('button');
+            for (const btn of btns) {
+                if (btn.offsetParent === null) continue;
+                const t = (btn.innerText || '').trim().toLowerCase();
+                const a = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (t.includes('join') || t.includes('เข้าร่วม') ||
+                    a.includes('join') || a.includes('เข้าร่วม')) {
+                    btn.click();
+                    break;
+                }
+            }
+        }""")
+    except Exception:
+        pass
 
 
 def _parse_duration(raw: str) -> Optional[float]:

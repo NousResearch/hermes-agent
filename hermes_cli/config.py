@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
@@ -1927,6 +1928,9 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Show a color-coded battery read-out as the first status-bar element in
+        # the CLI/TUI (off by default). No-op on machines without a battery.
+        "battery": False,
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
@@ -3212,6 +3216,23 @@ DEFAULT_CONFIG = {
         # GBs of disk on heavy users.  Opt in only if you have an external
         # tool that consumes the JSON files directly.
         "write_json_snapshots": False,
+        # Search-index (FTS) storage optimization — the compact v23 layout
+        # that drops duplicate content copies and stops trigram-indexing tool
+        # output (typically reclaims ~60%+ of state.db on heavy users). It is
+        # OPT-IN: existing databases keep their working legacy index until the
+        # user runs `hermes sessions optimize-storage`, because the rebuild is
+        # disk-heavy and long on large DBs (see that command's disk preflight).
+        #
+        #   "advise" (default): `hermes update` prints a one-line notice with
+        #     the reclaimable size and the command, when a legacy index is
+        #     detected. Nothing is changed automatically.
+        #   "require": the notice is shown as a REQUIRED upgrade (firmer copy),
+        #     and future tooling may gate on it. Flip this default in a future
+        #     release when we're ready to make the v23 layout mandatory — the
+        #     command, progress bar, and resumability are already in place, so
+        #     enforcement is a copy/gating change, not new migration code.
+        #   "off": suppress the notice entirely.
+        "fts_optimize_notice": "advise",
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
@@ -3370,8 +3391,18 @@ DEFAULT_CONFIG = {
             "access_token_env": "BWS_ACCESS_TOKEN",
             # UUID of the BSM project to sync from.
             "project_id": "",
-            # Seconds to cache fetched secrets in-process.  0 disables.
+            # Seconds to reuse a fresh disk/memory cache entry before contacting
+            # Bitwarden again. 0 disables normal fresh-cache reuse.
             "cache_ttl_seconds": 300,
+            # Optional encrypted last-good fallback for network/timeout outages.
+            # When enabled, successful BWS fetches write AES-GCM encrypted cache
+            # material under ~/.hermes/cache/. If a later startup cannot reach
+            # Bitwarden due to NETWORK/TIMEOUT, Hermes may use this encrypted
+            # cache for up to max_stale_seconds. Auth failures do not fall back.
+            "encrypted_cache": {
+                "enabled": False,
+                "max_stale_seconds": 0,
+            },
             # When True, BSM values overwrite existing env vars.  Default
             # True because the point of using BSM is centralized rotation —
             # if .env had the final say, rotating in Bitwarden wouldn't
@@ -5225,6 +5256,8 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
 
     custom_providers: List[Dict[str, Any]] = []
     for key, entry in providers_dict.items():
+        if isinstance(entry, dict) and not is_provider_enabled(entry):
+            continue
         normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
         if normalized is not None:
             custom_providers.append(normalized)
@@ -5310,16 +5343,11 @@ def get_custom_provider_tls_settings(
     if not base_url or not isinstance(custom_providers, list):
         return {}
 
-    # Case-insensitive compare: elsewhere custom_providers are keyed on a
-    # lowercased base_url (see get_compatible_custom_providers dedup), and
-    # scheme/host are case-insensitive anyway — so a config entry written as
-    # https://Ollama.Example.com/v1 must still match a lowercased runtime
-    # base_url. Exact match after rstrip('/') + lower() (no prefix/substring).
-    target_url = (base_url or "").rstrip("/").lower()
+    target_url = normalize_route_base_url(base_url)
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
         out: Dict[str, Any] = {}
@@ -5371,10 +5399,9 @@ def get_custom_provider_extra_headers(
 ) -> Dict[str, str]:
     """Return ``extra_headers`` from a matching ``providers`` / ``custom_providers`` entry.
 
-    Matches the entry whose ``base_url`` equals *base_url* (trailing-slash and
-    case insensitive, mirroring :func:`get_custom_provider_tls_settings`) and
-    returns its ``extra_headers`` dict, or ``{}`` when no entry matches or the
-    entry declares none.
+    Matches the entry whose normalized route identity equals *base_url*,
+    mirroring :func:`get_custom_provider_tls_settings`, and returns its
+    ``extra_headers`` dict, or ``{}`` when no entry matches or declares none.
 
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Callers must never
@@ -5388,11 +5415,11 @@ def get_custom_provider_extra_headers(
     if not base_url or not isinstance(custom_providers, list):
         return {}
 
-    target_url = (base_url or "").rstrip("/").lower()
+    target_url = normalize_route_base_url(base_url)
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
         return normalize_extra_headers(entry.get("extra_headers"))
@@ -5430,9 +5457,9 @@ def get_custom_provider_context_length(
 ) -> Optional[int]:
     """Look up a per-model ``context_length`` override from ``custom_providers``.
 
-    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
-    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
-    if present and valid.  Returns ``None`` when no override applies.
+    Matches any entry whose normalized route identity equals ``base_url`` and
+    returns ``custom_providers[i].models.<model>.context_length`` if present and
+    valid.  Returns ``None`` when no override applies.
 
     This is the single source of truth for custom-provider context overrides,
     used by:
@@ -5459,14 +5486,14 @@ def get_custom_provider_context_length(
     if not isinstance(custom_providers, list):
         return None
 
-    target_url = (base_url or "").rstrip("/")
+    target_url = normalize_route_base_url(base_url)
     if not target_url:
         return None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/")
+        entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
         models = entry.get("models")
@@ -6672,19 +6699,76 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
+def _env_expand_match(m: re.Match) -> str:
+    """Expand one ``${...}`` config reference.
+
+    Two accepted shapes, matching what MCP server config already resolves
+    (``tools/mcp_tool.py::_env_ref_name``):
+
+    * ``${VAR}`` — legacy bare name, resolved via ``os.environ``.
+    * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
+      ``env:`` prefix is stripped.  Before this, the prefixed form worked in
+      MCP config but stayed a literal string in config.yaml — a confusing
+      half-support.
+
+    Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``, ...)
+    are NOT resolved here — external secret backends inject their values
+    into the environment at startup (the ``secrets:`` block), so a config
+    ref only ever needs the env shape.  Unknown prefixes warn once and stay
+    verbatim so callers can detect them.
+    """
+    raw = m.group(0)
+    inner = m.group(1).strip()
+    if inner.startswith("env:"):
+        name = inner[len("env:"):].strip()
+        if not name:
+            return raw
+        val = os.environ.get(name)
+        if val is not None:
+            return val
+        logger.warning(
+            "Config ref %r: %s is not set (check ~/.hermes/.env); "
+            "keeping the literal placeholder", raw, name,
+        )
+        return raw
+    if ":" in inner and re.match(r"^[a-z][a-z0-9_-]*:", inner):
+        # Looks like a SecretRef with a non-env source.  Values from vault
+        # backends arrive via the secrets: block as env vars — point there
+        # instead of silently treating "bitwarden:FOO" as a var named
+        # "bitwarden:FOO".
+        logger.warning(
+            "Config ref %r uses source %r which is not resolvable in "
+            "config.yaml — external secret sources inject env vars at "
+            "startup, so reference the variable as ${env:NAME} instead",
+            raw, inner.split(":", 1)[0],
+        )
+        return raw
+    # Legacy ``${VAR}`` — bare name.
+    return os.environ.get(inner, raw)
+
+
+def _env_ref_var_name(ref: str) -> Optional[str]:
+    """Normalize a ``${...}`` body to the env-var name it reads, or None
+    when the ref uses a non-env source and never touches the environment."""
+    ref = ref.strip()
+    if ref.startswith("env:"):
+        name = ref[len("env:"):].strip()
+        return name or None
+    if ":" in ref and re.match(r"^[a-z][a-z0-9_-]*:", ref):
+        return None
+    return ref
+
+
 def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+    """Recursively expand ``${VAR}`` / ``${env:VAR}`` references in config
+    values.
 
     Only string values are processed; dict keys, numbers, booleans, and
     None are left untouched.  Unresolved references (variable not in
     ``os.environ``) are kept verbatim so callers can detect them.
     """
     if isinstance(obj, str):
-        return re.sub(
-            r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
-            obj,
-        )
+        return re.sub(r"\${([^}]+)}", _env_expand_match, obj)
     if isinstance(obj, dict):
         return {k: _expand_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -6693,8 +6777,8 @@ def _expand_env_vars(obj):
 
 
 def _env_ref_snapshot(obj, snapshot=None):
-    """Map every ``${VAR}`` name referenced in config values to its current
-    ``os.environ`` value (``None`` when unset).
+    """Map every ``${VAR}`` / ``${env:VAR}`` name referenced in config values
+    to its current ``os.environ`` value (``None`` when unset).
 
     Stored alongside cached ``load_config()`` results so a cache hit can
     detect that the cached expansion was made against a *different*
@@ -6702,12 +6786,18 @@ def _env_ref_snapshot(obj, snapshot=None):
     ``load_hermes_dotenv()`` populated the process env, or an env var
     rotated in-process after the first load. File mtime/size alone cannot
     see either case (#58514).
+
+    ``${env:VAR}`` refs are tracked under the real variable name; refs
+    with a non-env source prefix never read the environment, so they are
+    excluded from the snapshot.
     """
     if snapshot is None:
         snapshot = {}
     if isinstance(obj, str):
-        for name in re.findall(r"\${([^}]+)}", obj):
-            snapshot[name] = os.environ.get(name)
+        for raw in re.findall(r"\${([^}]+)}", obj):
+            name = _env_ref_var_name(raw)
+            if name is not None:
+                snapshot[name] = os.environ.get(name)
     elif isinstance(obj, dict):
         for value in obj.values():
             _env_ref_snapshot(value, snapshot)
@@ -8219,9 +8309,17 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     if val:
         return val
     try:
-        from agent.secret_scope import get_secret as _get_secret
+        from agent.secret_scope import (
+            UnscopedSecretError,
+            get_secret as _get_secret,
+        )
+    except Exception:
+        return os.environ.get(key)
 
+    try:
         return _get_secret(key)
+    except UnscopedSecretError:
+        raise
     except Exception:
         return os.environ.get(key)
 

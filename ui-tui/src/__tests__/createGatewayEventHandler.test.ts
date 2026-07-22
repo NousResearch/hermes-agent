@@ -723,6 +723,40 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('picks the polarity-matching paired palette from gateway.ready skins', async () => {
+    const appended: Msg[] = []
+
+    const skin = {
+      colors: { banner_title: '#00FF88', banner_text: '#FFF8DC' },
+      light_colors: { banner_title: '#8B0000', banner_text: '#22201C' }
+    }
+
+    // Dark terminal (clean env): the dark-authored `colors` block wins.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '')
+    createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
+    expect(getUiState().theme.color.primary).toBe('#00FF88')
+
+    // Light terminal: the hand-tuned light_colors block wins over adaptation.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
+    createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
+    expect(getUiState().theme.color.primary).toBe('#8B0000')
+    vi.unstubAllEnvs()
+  })
+
+  it('infers polarity from the OSC-10 foreground only when the answer is decisive', async () => {
+    const { polarityBackgroundFromForeground } = await import('../app/createGatewayEventHandler.js')
+
+    // Bright foreground = dark theme; dark foreground = light theme.
+    expect(polarityBackgroundFromForeground('#cccccc')).toBe('#1e1e1e')
+    expect(polarityBackgroundFromForeground('#333333')).toBe('#ffffff')
+
+    // Unset-default fingerprints and ambiguous mid-grays commit nothing.
+    expect(polarityBackgroundFromForeground('#000000')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('#ffffff')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('#808080')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('not-a-color')).toBeUndefined()
+  })
+
   it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()

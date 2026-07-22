@@ -93,6 +93,11 @@ class _StubAgent:
     def _turn_completion_explainer_enabled(self):
         return False
 
+    def _format_turn_completion_explanation(self, reason):
+        if reason == "pending_tool_result":
+            return "⚠️ No reply: the turn stopped while a tool result was still pending."
+        return ""
+
     def _drain_pending_steer(self):
         return None
 
@@ -174,14 +179,23 @@ def test_interrupt_after_tool_keeps_delivered_text_when_present():
     assert messages[-1]["content"] == "Partial answer so far"
 
 
-def test_non_interrupted_tool_tail_is_left_untouched():
-    # A turn that ends on a tool tail WITHOUT an interrupt (mid-progress
-    # tool loop) must not get a synthetic close — that is normal dialog
-    # state handled elsewhere.
+def test_non_interrupted_tool_tail_gets_visible_no_reply_close():
+    # A turn that falls out of the loop after a tool result but without a
+    # follow-up assistant response is the Desktop/TUI "ready but no output"
+    # failure mode. Close it with a visible assistant message before
+    # persistence so the user sees the stop reason and the next user turn
+    # follows an assistant, not a raw tool result.
     agent = _StubAgent()
     messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=False, final_response=None)
-    assert messages[-1]["role"] == "tool"
+    result = _finalize(agent, messages, interrupted=False, final_response=None)
+    assert messages[-1]["role"] == "assistant"
+    assert "No reply" in messages[-1]["content"]
+    assert result["final_response"] == messages[-1]["content"]
+    assert result["turn_exit_reason"] == "pending_tool_result"
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["role"] == "assistant"
 
 
 def test_interrupt_without_tool_tail_adds_nothing():

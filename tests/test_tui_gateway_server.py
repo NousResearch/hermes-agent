@@ -1209,7 +1209,10 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
-    monkeypatch.delenv("HERMES_VOICE_TTS", raising=False)
+    # setenv (not delenv) — the handler writes HERMES_VOICE_TTS directly, and
+    # delenv on an absent var registers no teardown, leaking TTS=1 into every
+    # later test in the file (which now spins up the streaming TTS pipeline).
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
 
     tts_resp = server.dispatch(
         {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}
@@ -11733,3 +11736,127 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# ---------------------------------------------------------------------------
+# Streaming TTS — per-turn pipeline + barge-in
+# ---------------------------------------------------------------------------
+
+def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
+    """Install lightweight tools.tts_tool / tools.voice_mode fakes."""
+    started = {}
+
+    def fake_stream(text_queue, stop, done, **_kw):
+        started["queue"] = text_queue
+        stop.wait(5)
+        done.set()
+
+    def default_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        return None if capture else False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.tts_tool",
+        types.SimpleNamespace(
+            check_tts_requirements=lambda: requirements,
+            stream_tts_to_speaker=fake_stream,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
+            listen_for_speech=listen or default_listen,
+            transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),
+        ),
+    )
+    return started
+
+
+def test_tts_stream_begin_requires_voice_tts(monkeypatch):
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+    assert server._tts_stream_begin() is None
+
+
+def test_tts_stream_begin_requires_working_provider(monkeypatch):
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    _fake_tts_modules(monkeypatch, requirements=False)
+    assert server._tts_stream_begin() is None
+
+
+def test_tts_stream_begin_and_stop_lifecycle(monkeypatch):
+    """begin() spawns the consumer; stop() cuts it and clears the slot."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")  # no barge-in monitor (no mic)
+    playback_stops: list = []
+    started = _fake_tts_modules(monkeypatch, playback_stops=playback_stops)
+
+    text_queue = server._tts_stream_begin()
+    assert text_queue is not None
+    assert started["queue"] is text_queue
+
+    with server._tts_stream_lock:
+        state = server._tts_stream_state
+    assert state is not None and not state["stop"].is_set()
+
+    server._tts_stream_stop()
+    assert state["stop"].is_set()
+    assert playback_stops == [True]
+    with server._tts_stream_lock:
+        assert server._tts_stream_state is None
+
+
+def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
+    """A new turn's pipeline stops the previous turn's speech (one speaker)."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        first = server._tts_stream_state
+    server._tts_stream_begin()
+    assert first is not None and first["stop"].is_set()
+    server._tts_stream_stop()
+
+
+def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, tmp_path):
+    """User speech during playback cuts TTS at the moment of detection
+    (voice.interrupted), then the captured interruption is transcribed and
+    emitted as voice.transcript so the TUI submits it — complete from its
+    first syllable, no re-record round trip."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "barge.wav"
+    wav.write_bytes(b"RIFF")
+
+    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        assert capture is True
+        on_trigger()  # playback cut happens at detection, not after endpointing
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {"success": True, "transcript": "stop, actually—"},
+    )
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        state = server._tts_stream_state
+    assert state is not None
+    assert state["stop"].wait(2.0)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and wav.exists():
+        time.sleep(0.01)  # unlink (finally) runs after the transcript emit
+    assert ("voice.interrupted", None) in events
+    assert ("voice.transcript", {"text": "stop, actually—"}) in events
+    assert not wav.exists()  # capture temp file cleaned up
+    server._tts_stream_stop()

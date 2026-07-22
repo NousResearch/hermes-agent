@@ -27,6 +27,7 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
+import { $billingSettingsRequest } from '@/store/billing-block'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
@@ -126,6 +127,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  // Billing recovery routes to Settings → Billing from surfaces without router
+  // context (the sticky toast). The shell owns `navigate`, so it consumes the
+  // intent counter here; the ref skips the initial mount value.
+  const billingSettingsSeenRef = useRef(0)
   const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
@@ -133,7 +138,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
+  const billingSettingsRequest = useStore($billingSettingsRequest)
   const currentCwd = useStore($currentCwd)
+
+  useEffect(() => {
+    if (billingSettingsRequest === billingSettingsSeenRef.current) {
+      return
+    }
+
+    billingSettingsSeenRef.current = billingSettingsRequest
+
+    if (billingSettingsRequest > 0) {
+      navigate(`${SETTINGS_ROUTE}?tab=billing`)
+    }
+  }, [billingSettingsRequest, navigate])
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)

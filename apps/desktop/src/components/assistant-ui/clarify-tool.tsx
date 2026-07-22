@@ -88,12 +88,29 @@ const CLARIFY_SHELL_CLASS =
 
 const CLARIFY_ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
 
+/**
+ * Body defaults to user-select:none and `button` hard-sets none again, so long
+ * clarify options (tables / multi-line choices) cannot be copied. Mark the
+ * whole shell selectable — `[data-selectable-text] *` beats the button rule.
+ */
 function ClarifyShell({ children, className, ...props }: ComponentProps<'div'>) {
   return (
-    <div className={cn(CLARIFY_SHELL_CLASS, className)} data-slot="clarify-inline" {...props}>
+    <div
+      className={cn(CLARIFY_SHELL_CLASS, className)}
+      data-selectable-text="true"
+      data-slot="clarify-inline"
+      {...props}
+    >
       {children}
     </div>
   )
+}
+
+/** True when the user just finished a drag-select (mouseup still fires click). */
+function hasNonEmptyTextSelection(): boolean {
+  const selection = window.getSelection()
+
+  return Boolean(selection && !selection.isCollapsed && selection.toString().trim())
 }
 
 function ClarifyLine({
@@ -394,7 +411,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 data-choice
                 disabled={submitting}
                 key={`${index}-${choice}`}
-                onClick={() => selectChoice(choice)}
+                onClick={() => {
+                  // Drag-to-copy must not also pick the option.
+                  if (hasNonEmptyTextSelection()) {
+                    return
+                  }
+
+                  selectChoice(choice)
+                }}
                 type="button"
               >
                 <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />

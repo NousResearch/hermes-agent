@@ -1192,15 +1192,39 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
 
+    _writer_token = 0
+    _superseded_logged = False
+
+    def _live_writer_is_current() -> bool:
+        nonlocal _superseded_logged
+        if stream_writer_is_current(agent, _writer_token):
+            return True
+        if not _superseded_logged:
+            logger.warning(
+                "Codex streaming attempt superseded by a newer stream; "
+                "suppressing live deltas while continuing consumption so "
+                "final delivery is not truncated (model=%s).",
+                api_kwargs.get("model", "unknown"),
+            )
+            _superseded_logged = True
+        return False
+
     def _on_text_delta(text: str) -> None:
         agent._codex_streamed_text_parts.append(text)
-        agent._fire_stream_delta(text)
+        if _live_writer_is_current():
+            agent._fire_stream_delta(text)
 
     def _on_reasoning_delta(text: str) -> None:
-        agent._fire_reasoning_delta(text)
+        if _live_writer_is_current():
+            agent._fire_reasoning_delta(text)
 
     def _on_commentary_message(text: str) -> None:
-        agent._fire_streamed_codex_commentary(text)
+        if _live_writer_is_current():
+            agent._fire_streamed_codex_commentary(text)
+
+    def _on_first_delta() -> None:
+        if on_first_delta is not None and _live_writer_is_current():
+            on_first_delta()
 
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
@@ -1226,26 +1250,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 continue
             raise
 
-        # Claim the delta sink for THIS attempt (#65991) — parity with the
-        # chat_completions/anthropic/bedrock paths. If a prior attempt's
-        # stream is somehow still alive, this claim supersedes it so its
-        # late deltas are fenced out of the turn; conversely, a newer
-        # attempt supersedes us and the interrupt_check below stops our
-        # consumption immediately.
+        # Claim the live delta sink for THIS attempt (#65991). A newer attempt
+        # may supersede live display, but it must not abort provider stream
+        # consumption: gateway final delivery depends on the complete assembled
+        # response even when display streaming is disabled.
         _writer_token = claim_stream_writer(agent)
 
-        def _interrupt_or_superseded(_tok=_writer_token) -> bool:
-            if agent._interrupt_requested:
-                return True
-            if not stream_writer_is_current(agent, _tok):
-                logger.warning(
-                    "Codex streaming attempt superseded by a newer stream; "
-                    "stopping consumption to preserve the single-writer "
-                    "invariant (model=%s).",
-                    api_kwargs.get("model", "unknown"),
-                )
-                return True
-            return False
+        def _interrupt_requested() -> bool:
+            return bool(agent._interrupt_requested)
 
         try:
             # Compatibility: some mocks/providers return a concrete response
@@ -1267,9 +1279,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         )
                         else None
                     ),
-                    on_first_delta=on_first_delta,
+                    on_first_delta=_on_first_delta,
                     on_event=_on_event,
-                    interrupt_check=_interrupt_or_superseded,
+                    interrupt_check=_interrupt_requested,
                 )
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:

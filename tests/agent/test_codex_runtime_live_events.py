@@ -180,3 +180,64 @@ def test_one_broken_callback_does_not_hide_other_live_events():
     bridge({"method": "item/started", "params": {"item": item}})
 
     assert starts == [("codex_dyn_search_d1", "search", {})]
+
+
+class _FakeResponsesClient:
+    def __init__(self, events):
+        self._events = events
+
+    def create(self, **kwargs):
+        assert kwargs["stream"] is True
+        return iter(self._events)
+
+
+class _FakeCodexClient:
+    def __init__(self, events):
+        self.responses = _FakeResponsesClient(events)
+
+
+def test_codex_stream_supersession_keeps_consuming_for_complete_final_response():
+    from agent.codex_runtime import run_codex_stream
+
+    events = [
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "message", "role": "assistant"},
+        },
+        {"type": "response.output_text.delta", "delta": "I've added the live"},
+        {"type": "response.output_text.delta", "delta": " tail."},
+        {"type": "response.completed", "response": {"id": "resp_1", "status": "completed"}},
+    ]
+    live_deltas = []
+    current_checks = {"count": 0}
+
+    def is_current(_token):
+        current_checks["count"] += 1
+        # Simulate another stream claiming the live display sink after the
+        # first visible delta. The old turn must stop emitting live deltas, but
+        # it must keep consuming the provider stream so gateway final delivery
+        # receives the complete text instead of a silent partial.
+        return current_checks["count"] <= 1
+
+    agent = SimpleNamespace(
+        _interrupt_requested=False,
+        _codex_stream_last_event_ts=0,
+        _claim_stream_writer=lambda: 1,
+        _stream_writer_is_current=is_current,
+        _fire_stream_delta=lambda text: live_deltas.append(text),
+        _fire_reasoning_delta=lambda text: None,
+        _fire_streamed_codex_commentary=lambda text: None,
+        _touch_activity=lambda _message: None,
+        _client_log_context=lambda: "test-context",
+    )
+
+    final = run_codex_stream(
+        agent,
+        {"model": "gpt-5.6-terra"},
+        client=_FakeCodexClient(events),
+    )
+
+    assert final.output_text == "I've added the live tail."
+    assert final.status == "completed"
+    assert live_deltas == ["I've added the live"]
+    assert agent._codex_streamed_text_parts == ["I've added the live", " tail."]

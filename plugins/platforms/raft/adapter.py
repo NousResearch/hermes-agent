@@ -574,8 +574,11 @@ class RaftAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        logger.debug("[raft] adapter send is a no-op; agent delivers via raft CLI")
-        return SendResult(success=True)
+        logger.debug("[raft] adapter cannot confirm outbound delivery")
+        return SendResult(
+            success=False,
+            error="Outbound delivery is not supported by raft",
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": f"raft/{chat_id}", "type": "raft"}

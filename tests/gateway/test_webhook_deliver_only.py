@@ -440,6 +440,17 @@ class TestDeliverOnlySecurityInvariants:
 class TestDirectDeliverUnit:
 
     @pytest.mark.asyncio
+    async def test_log_only_direct_delivery_is_not_an_acknowledgement(self):
+        """The defensive log-only branch must fail closed without a target."""
+        result = await _make_adapter({})._direct_deliver(
+            "hello",
+            {"deliver": "log", "deliver_extra": {}},
+        )
+
+        assert result.success is False
+        assert result.error == "Webhook delivery is log-only"
+
+    @pytest.mark.asyncio
     async def test_dispatches_to_cross_platform_for_messaging_targets(self):
         adapter = _make_adapter({})
         mock_target = _wire_mock_target(adapter, "telegram")

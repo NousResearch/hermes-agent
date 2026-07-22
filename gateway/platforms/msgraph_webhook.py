@@ -187,8 +187,11 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        logger.info("[msgraph_webhook] Response for %s: %s", chat_id, content[:200])
-        return SendResult(success=True)
+        logger.warning("[msgraph_webhook] Outbound delivery is not supported")
+        return SendResult(
+            success=False,
+            error="Outbound delivery is not supported by msgraph_webhook",
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}

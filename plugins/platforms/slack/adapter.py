@@ -1142,9 +1142,9 @@ class SlackAdapter(BasePlatformAdapter):
         lets us swap the "Running /cmd…" placeholder with the real reply,
         and the message stays ephemeral ("Only visible to you").
 
-        Falls back to a simple ``True`` SendResult if the POST fails —
-        the user already saw the initial ack, so a delivery failure here
-        is non-critical.
+        A response URL update is only acknowledged after Slack accepts the
+        POST. Callers use a failed result to retry instead of treating the
+        initial slash acknowledgement as delivery of the final response.
         """
         formatted = self.format_message(content)
         # Slack's response_url has the same ~40k char limit as chat_postMessage.
@@ -1165,21 +1165,18 @@ class SlackAdapter(BasePlatformAdapter):
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
-                    if resp.status == 200:
+                    if 200 <= resp.status < 300:
                         return SendResult(success=True, message_id=None)
-                    body = await resp.text()
                     logger.warning(
-                        "[Slack] response_url POST returned %s: %s",
+                        "[Slack] response_url POST rejected with status %s",
                         resp.status,
-                        body[:200],
                     )
-        except Exception as e:
-            logger.warning(
-                "[Slack] response_url POST failed: %s",
-                e,
-            )
-        # Non-fatal — the user saw the initial ack already.
-        return SendResult(success=True, message_id=None)
+        except Exception:
+            logger.warning("[Slack] response_url POST failed")
+        return SendResult(
+            success=False,
+            error="Slack ephemeral response delivery failed",
+        )
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
         """Nudge existing installs to reinstall when group-DM scopes are absent.
@@ -1785,12 +1782,13 @@ class SlackAdapter(BasePlatformAdapter):
             # already showed an ephemeral "Running /cmd…" message.  If we have
             # a stashed response_url for this channel, replace that ack with
             # the actual command reply ephemerally instead of posting publicly.
-            slash_ctx = self._pop_slash_context(chat_id)
-            if slash_ctx:
-                return await self._send_slash_ephemeral(
-                    slash_ctx,
-                    content,
-                )
+            if not (metadata or {}).get("kanban_notification"):
+                slash_ctx = self._pop_slash_context(chat_id)
+                if slash_ctx:
+                    return await self._send_slash_ephemeral(
+                        slash_ctx,
+                        content,
+                    )
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)

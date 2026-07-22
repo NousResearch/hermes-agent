@@ -19,10 +19,16 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from gateway.platforms.base import SendResult
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+def _delivery_acknowledged(send_result: Any) -> bool:
+    """Return whether an adapter explicitly confirmed message delivery."""
+    return isinstance(send_result, SendResult) and send_result.success is True
 
 
 def _resolve_auto_decompose_settings(
@@ -177,10 +183,10 @@ class GatewayKanbanWatchersMixin:
         # task is genuinely done lets the cursor (advanced atomically by
         # claim_unseen_events_for_sub) handle dedup, and any retry-loop
         # event reaches the user.
-        # Per-subscription send-failure counter. Adapter.send raising
-        # means the chat is dead (deleted, bot kicked, etc.) — after N
-        # consecutive send failures the sub is dropped so we don't spin
-        # against a dead chat every 5 seconds forever.
+        # Per-subscription send-failure counter. Adapter.send raising or
+        # returning without an explicit successful SendResult means delivery
+        # was not confirmed. After N consecutive failures the sub is dropped
+        # so we don't spin against a dead chat every 5 seconds forever.
         MAX_SEND_FAILURES = 3
         sub_fail_counts: dict[tuple, int] = getattr(
             self, "_kanban_sub_fail_counts", {}
@@ -304,10 +310,20 @@ class GatewayKanbanWatchersMixin:
                     try:
                         plat = _Platform(platform_str)
                     except ValueError:
-                        # Unknown platform string; skip and advance cursor so
-                        # we don't replay forever.
+                        # An unknown platform has not acknowledged delivery.
+                        # Keep its claim recoverable in case the matching
+                        # adapter is installed or re-enabled later.
+                        logger.warning(
+                            "kanban notifier: unknown platform %s for %s; retaining notification",
+                            platform_str or "<missing>",
+                            sub["task_id"],
+                        )
                         await asyncio.to_thread(
-                            self._kanban_advance, sub, d["cursor"], board_slug,
+                            self._kanban_rewind,
+                            sub,
+                            d["cursor"],
+                            d.get("old_cursor", 0),
+                            board_slug,
                         )
                         continue
                     sub_profile = sub.get("notifier_profile") or ""
@@ -334,6 +350,10 @@ class GatewayKanbanWatchersMixin:
                             board_slug,
                         )
                         continue
+                    sub_key = (
+                        sub["task_id"], sub["platform"],
+                        sub["chat_id"], sub.get("thread_id") or "",
+                    )
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
                     for ev in d["events"]:
@@ -405,17 +425,18 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
-                        metadata: dict[str, Any] = {}
+                        metadata: dict[str, Any] = {"kanban_notification": True}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
-                        sub_key = (
-                            sub["task_id"], sub["platform"],
-                            sub["chat_id"], sub.get("thread_id") or "",
-                        )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            if not _delivery_acknowledged(send_result):
+                                # Adapter error text may include provider URLs,
+                                # response bodies, or credentials. Keep it out
+                                # of this shared gateway log boundary.
+                                raise RuntimeError("delivery not acknowledged")
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -443,16 +464,26 @@ class GatewayKanbanWatchersMixin:
                                         "kanban notifier: artifact delivery for %s failed: %s",
                                         sub["task_id"], art_exc,
                                     )
-                            # Reset the failure counter on success.
-                            sub_fail_counts.pop(sub_key, None)
-                        except Exception as exc:
+                        except asyncio.CancelledError:
+                            # A cancellation can land while adapter.send() is
+                            # in flight. Restore the claim before propagating
+                            # it so a later watcher can retry the event.
+                            await asyncio.to_thread(
+                                self._kanban_rewind,
+                                sub,
+                                d["cursor"],
+                                d.get("old_cursor", 0),
+                                board_slug,
+                            )
+                            raise
+                        except Exception:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
                             logger.warning(
                                 "kanban notifier: send failed for %s on %s "
-                                "(attempt %d/%d): %s",
+                                "(attempt %d/%d)",
                                 sub["task_id"], platform_str, fails,
-                                MAX_SEND_FAILURES, exc,
+                                MAX_SEND_FAILURES,
                             )
                             if fails >= MAX_SEND_FAILURES:
                                 logger.warning(
@@ -481,6 +512,11 @@ class GatewayKanbanWatchersMixin:
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
+                        # A success is durable only after every event in this
+                        # claimed batch sent and its cursor was advanced. Do
+                        # not let an earlier successful event reset the count
+                        # for a later failed event in the same batch.
+                        sub_fail_counts.pop(sub_key, None)
                         # Unsubscribe only when the task has reached a truly
                         # final status (done / archived). For blocked /
                         # gave_up / crashed / timed_out the subscription is

@@ -1076,6 +1076,22 @@ def run_conversation(
                 new_tcs.append(tc)
             am["tool_calls"] = new_tcs
 
+        # Strip thought_signature from tool_calls when sending through
+        # OpenAI-compatible proxies (e.g. Venice). These proxies strip
+        # Google-specific extra_content before forwarding to Gemini,
+        # causing HTTP 400 on strict signature enforcement (#69208).
+        if (
+            agent.api_mode == "chat_completions"
+            and "gemini" in (agent.model or "").lower()
+        ):
+            for am in api_messages:
+                tcs = am.get("tool_calls")
+                if not tcs:
+                    continue
+                for tc in tcs:
+                    if isinstance(tc, dict) and "extra_content" in tc:
+                        tc.pop("extra_content", None)
+
         # Proactively strip any surrogate characters before the API call.
         # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside

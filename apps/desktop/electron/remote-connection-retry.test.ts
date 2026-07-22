@@ -53,6 +53,7 @@ test('wrapped sign-in-required failures are never retried', async () => {
 
 test('deeply wrapped auth rejections are never retried', async () => {
   let attempts = 0
+
   const authError = Object.assign(new Error('connection resolution failed'), {
     cause: Object.assign(new Error('ticket mint failed'), {
       cause: Object.assign(new Error('forbidden'), { statusCode: 403 })

@@ -39,6 +39,26 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(expected)]
 
+    def test_windows_expansion_uses_effective_home_and_case_insensitive_env(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "tools.environments.local._read_terminal_shell_init_config",
+            lambda: ([r"~\rc.sh", r"%INITDIR%\profile.sh"], False),
+        )
+        monkeypatch.setattr(os.path, "isfile", lambda _path: True)
+
+        effective_env = {
+            "HOME": r"C:\effective-home",
+            "InitDir": r"C:\effective-init",
+        }
+
+        assert _resolve_shell_init_files(effective_env) == [
+            r"C:\effective-home\rc.sh",
+            r"C:\effective-init\profile.sh",
+        ]
+
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"
         bashrc.write_text('export MARKER=seen\n')

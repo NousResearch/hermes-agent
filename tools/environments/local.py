@@ -1207,6 +1207,15 @@ def _resolve_shell_init_files(effective_env: dict[str, str] | None = None) -> li
     """
     explicit, auto_bashrc = _read_terminal_shell_init_config()
     env = os.environ if effective_env is None else effective_env
+    casefolded_env = {key.upper(): value for key, value in env.items()} if _IS_WINDOWS else {}
+
+    def env_value(key: str, fallback: str) -> str:
+        value = env.get(key)
+        if value is not None:
+            return value
+        if _IS_WINDOWS:
+            return casefolded_env.get(key.upper(), fallback)
+        return fallback
 
     candidates: list[str] = []
     if explicit:
@@ -1234,7 +1243,7 @@ def _resolve_shell_init_files(effective_env: dict[str, str] | None = None) -> li
         try:
             path = re.sub(
                 r"\$(?:\{([^}]+)\}|([A-Za-z_][A-Za-z0-9_]*))",
-                lambda match: env.get(
+                lambda match: env_value(
                     match.group(1) or match.group(2) or "",
                     match.group(0),
                 ),
@@ -1243,14 +1252,14 @@ def _resolve_shell_init_files(effective_env: dict[str, str] | None = None) -> li
             if _IS_WINDOWS:
                 path = re.sub(
                     r"%([^%]+)%",
-                    lambda match: env.get(match.group(1), match.group(0)),
+                    lambda match: env_value(match.group(1), match.group(0)),
                     path,
                 )
-            home = env.get("HOME") or os.path.expanduser("~")
+            home = env_value("HOME", "") or os.path.expanduser("~")
             if path == "~":
                 path = home
-            elif path.startswith("~/"):
-                path = os.path.join(home, path[2:])
+            elif path.startswith("~/") or (_IS_WINDOWS and path.startswith("~\\")):
+                path = (ntpath if _IS_WINDOWS else os.path).join(home, path[2:])
             else:
                 path = os.path.expanduser(path)
         except Exception:

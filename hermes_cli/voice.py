@@ -217,6 +217,7 @@ from tools.voice_mode import (
     create_audio_recorder,
     is_whisper_hallucination,
     play_audio_file,
+    stop_playback,
     transcribe_recording,
 )
 
@@ -750,6 +751,11 @@ def speak_text(text: str) -> None:
     cleared so the continuous-recording loop knows to wait before
     re-arming the mic (otherwise the agent's spoken reply feedback-loops
     through the microphone and the agent ends up replying to itself).
+
+    If a previous TTS playback is still in progress (e.g. a new assistant
+    reply arrives before the previous one finished speaking), it is
+    interrupted immediately so the new reply plays instead.  This prevents
+    overlapping audio from concurrent agent responses.  (#63697)
     """
     if not text or not text.strip():
         return
@@ -757,6 +763,12 @@ def speak_text(text: str) -> None:
     import re
     import tempfile
     import time
+
+    # Interrupt any in-flight TTS playback before we start a new one.
+    # This handles the case where a new agent reply arrives while the
+    # previous one is still being read aloud — the old audio is killed
+    # immediately and the new reply plays instead.  (#63697)
+    stop_playback()
 
     # Cancel any live capture before we open the speakers — otherwise the
     # last ~200ms of the user's turn tail + the first syllables of our TTS

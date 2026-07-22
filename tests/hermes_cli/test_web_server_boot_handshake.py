@@ -72,7 +72,7 @@ def test_get_status_does_not_block_event_loop():
 
     with patch.object(
         web_server_mod,
-        "resolve_restart_drain_timeout",
+        "_resolve_restart_drain_timeout",
         _make_slow_drain(SLOW_SECONDS),
     ):
         asyncio.run(_run())
@@ -106,7 +106,7 @@ def test_concurrent_status_probes_all_respond():
 
     with patch.object(
         web_server_mod,
-        "resolve_restart_drain_timeout",
+        "_resolve_restart_drain_timeout",
         _make_slow_drain(SLOW_SECONDS),
     ):
         asyncio.run(_run())
@@ -131,7 +131,7 @@ def test_healthz_is_fixed_uncached_and_independent_of_status_state(
         "read_runtime_status",
         "load_config",
         "read_raw_config",
-        "resolve_restart_drain_timeout",
+        "_resolve_restart_drain_timeout",
     ):
         monkeypatch.setattr(web_server_mod, name, _fail_if_called)
     monkeypatch.setattr(

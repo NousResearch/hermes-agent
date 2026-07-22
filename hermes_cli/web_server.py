@@ -93,7 +93,6 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
-from gateway.restart import resolve_restart_drain_timeout
 from utils import env_var_enabled
 
 try:
@@ -162,6 +161,15 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, interval=interval)
+
+
+def _resolve_restart_drain_timeout() -> float:
+    try:
+        from hermes_cli.gateway import _get_restart_drain_timeout
+        return _get_restart_drain_timeout()
+    except ImportError:
+        from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 
 
 @asynccontextmanager
@@ -3063,7 +3071,7 @@ async def get_status(profile: Optional[str] = None):
         # without out-of-band knowledge. Keep the raw config read off the event
         # loop while sharing the same env > config > default resolver as the CLI.
         restart_drain_timeout = await asyncio.get_running_loop().run_in_executor(
-            None, resolve_restart_drain_timeout
+            None, _resolve_restart_drain_timeout
         )
 
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged

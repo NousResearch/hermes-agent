@@ -108,6 +108,7 @@ export class JsonRpcGatewayClient {
     }
 
     let url: URL
+
     try {
       url = new URL(wsUrl)
     } catch {

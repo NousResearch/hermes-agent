@@ -31,9 +31,9 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
 
   it('rejects a non-string IPC result object', async () => {
     const client = new JsonRpcGatewayClient()
-    await expect(
-      client.connect({ ok: true, wsUrl: 'ws://127.0.0.1:1/api/ws' } as unknown as string)
-    ).rejects.toThrow(/requires a ws:\/\/ or wss:\/\/ URL string, got type "object"/)
+    await expect(client.connect({ ok: true, wsUrl: 'ws://127.0.0.1:1/api/ws' } as unknown as string)).rejects.toThrow(
+      /requires a ws:\/\/ or wss:\/\/ URL string, got type "object"/
+    )
   })
 
   it('rejects a non-ws URL string', async () => {

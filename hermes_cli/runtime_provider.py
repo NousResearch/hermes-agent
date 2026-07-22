@@ -1574,8 +1574,12 @@ def resolve_runtime_provider(
     # failed at import — that produced "Could not resolve credentials …
     # Unknown provider 'cursor'" on /model despite a working adapter.
     if requested_provider in {"cursor", "cursor-agent", "cursor-sdk"}:
-        from hermes_cli.auth import AuthError, has_usable_secret
-
+        # NOTE: AuthError + has_usable_secret are imported at module scope
+        # (lines 22-39). A local re-import here rebinds has_usable_secret as a
+        # function-local for the ENTIRE resolve_runtime_provider body, so the
+        # openai/api-key path at ~line 2083 hit UnboundLocalError (500:
+        # "cannot access local variable 'has_usable_secret'") whenever this
+        # cursor branch was not taken. Rely on the module-level imports.
         api_key = (_getenv("CURSOR_API_KEY", "") or "").strip()
         if not has_usable_secret(api_key):
             try:

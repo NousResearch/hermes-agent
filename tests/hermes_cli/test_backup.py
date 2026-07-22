@@ -1608,6 +1608,42 @@ class TestQuickSnapshot:
         conn.close()
         assert len(rows) == 1
 
+    def test_restore_state_db_live_connection(self, hermes_home):
+        """Restoring state.db must update data visible through a live connection.
+
+        Regression test for #65942: when state.db is open with a live SQLite
+        connection (as happens with the gateway, dashboard, or another CLI
+        session), the restore must write pages through the backup API so the
+        live connection sees the restored data instead of stale cached pages.
+        """
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        # Open a live connection (simulating gateway/dashboard).
+        live_conn = sqlite3.connect(str(hermes_home / "state.db"))
+        live_conn.execute("PRAGMA journal_mode=wal")
+        # Insert data AFTER the snapshot — this is what must be reverted.
+        live_conn.execute("INSERT INTO sessions VALUES ('s2', 'new-data')")
+        live_conn.commit()
+
+        # Verify live connection sees the new data.
+        rows_before = live_conn.execute("SELECT * FROM sessions").fetchall()
+        assert len(rows_before) == 2
+
+        # Restore — the live connection stays open during restore.
+        result = restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert result is True
+
+        # The live connection must see the restored (single-row) state.
+        # A fresh connection would trivially work; the live one is the test.
+        live_conn.execute("SELECT count(*) FROM sessions").fetchall()
+        rows_after = live_conn.execute("SELECT * FROM sessions").fetchall()
+        live_conn.close()
+        assert len(rows_after) == 1, (
+            f"Live connection still sees {len(rows_after)} rows after restore "
+            f"(expected 1); the extra row 's2' should have been reverted."
+        )
+
     def test_restore_nonexistent(self, hermes_home):
         from hermes_cli.backup import restore_quick_snapshot
         assert restore_quick_snapshot("nonexistent", hermes_home=hermes_home) is False

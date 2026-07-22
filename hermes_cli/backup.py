@@ -283,6 +283,67 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
                     pass
 
 
+def _safe_restore_db(src: Path, dst: Path) -> bool:
+    """Restore a SQLite database from snapshot *src* into live *dst*.
+
+    Uses SQLite's backup() API to write snapshot pages into the live
+    database file, preserving the file's inode and WAL state so that
+    any other process still holding the DB open (gateway, dashboard,
+    another CLI session) sees the restored data on the next read —
+    instead of continuing to serve stale cached pages from a replaced
+    inode.
+
+    The old approach was ``unlink() + move()``, which replaced the file
+    under any live connection.  SQLite connections cache pages in
+    per-connection page caches keyed by inode; after an unlink+move the
+    old inode still existed (the live connection held a reference), so
+    that connection continued serving the pre-restore data while new
+    connections saw the restored snapshot — a partial/inconsistent
+    state (issue #65942).
+
+    By writing pages through the backup API the file inode is preserved,
+    the WAL journal is updated correctly, and all connections (old and
+    new) converge on the restored data.
+
+    Falls back to the unlink+move approach on failure so restore never
+    blocks on a transient error.
+    """
+    try:
+        dst_conn = sqlite3.connect(str(dst))
+        try:
+            # Force a WAL checkpoint so the backup starts from a clean
+            # state rather than writing on top of a deep WAL.
+            dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            src_conn.close()
+        dst_conn.close()
+        # Restore original file permissions from the snapshot
+        try:
+            mode = src.stat().st_mode
+            dst.chmod(mode)
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
+        # Fallback: unlink+move (the old approach).  This still works for
+        # the common case where no other process holds the DB open.
+        try:
+            tmp = dst.parent / f".{dst.name}.snap_restore"
+            shutil.copy2(src, tmp)
+            dst.unlink(missing_ok=True)
+            shutil.move(str(tmp), str(dst))
+            return True
+        except Exception as exc2:
+            logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
+            return False
+
+
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
@@ -1026,11 +1087,11 @@ def restore_quick_snapshot(
 
         try:
             if dst.suffix == ".db":
-                # Atomic-ish replace for databases
-                tmp = dst.parent / f".{dst.name}.snap_restore"
-                shutil.copy2(src, tmp)
-                dst.unlink(missing_ok=True)
-                shutil.move(str(tmp), str(dst))
+                # Restore through SQLite backup API so live connections
+                # (gateway, dashboard, another CLI session) see the
+                # restored data instead of continuing to serve stale
+                # cached pages from a replaced inode (issue #65942).
+                _safe_restore_db(src, dst)
             else:
                 shutil.copy2(src, dst)
             restored += 1

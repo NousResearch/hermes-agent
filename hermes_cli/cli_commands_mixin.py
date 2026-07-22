@@ -208,9 +208,24 @@ class CLICommandsMixin:
                     return
             except ValueError:
                 pass
+
+            # Close our local SessionDB connection before restore so the
+            # backup-API restore doesn't contend with a live connection to
+            # state.db from this same process (issue #65942).
+            local_session_db = getattr(self, "_session_db", None)
+            if local_session_db is not None:
+                try:
+                    local_session_db.close()
+                    self._session_db = None
+                except Exception:
+                    pass
+
             if restore_quick_snapshot(snap_id):
                 print(f"  Restored state from: {snap_id}")
-                print("  Restart recommended for state.db changes to take effect.")
+                print(
+                    "  Restart recommended for gateway/dashboard processes "
+                    "to pick up state.db changes."
+                )
             else:
                 print(f"  Snapshot not found: {snap_id}")
 

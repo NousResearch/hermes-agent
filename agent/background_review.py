@@ -21,11 +21,120 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
+
+
+_SESSION_END_REVIEW_WAIT_SECONDS = 30.0
+
+
+def _has_reviewable_user_turn(messages: List[Dict]) -> bool:
+    """Return whether a transcript contains a non-empty user turn."""
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user" and message.get("content"):
+            return True
+    return False
+
+
+def schedule_session_end_memory_review(
+    agent: Any,
+    messages: Optional[List[Dict]] = None,
+) -> Optional[threading.Thread]:
+    """Schedule one last memory review for turns below the nudge threshold.
+
+    The normal review loop runs every ``memory.nudge_interval`` user turns.
+    A session may end before reaching that boundary, leaving a tail of turns
+    that was never considered for durable memory. Claim that tail by resetting
+    the same counter used by the periodic loop, then launch the existing review
+    fork against the final transcript. The claim is protected by the agent's
+    review-state lock so overlapping session-finalization paths cannot schedule
+    the same review twice.
+    """
+    if not getattr(agent, "_memory_store", None):
+        return None
+    if not (
+        getattr(agent, "_memory_enabled", False)
+        or getattr(agent, "_user_profile_enabled", False)
+    ):
+        return None
+    if int(getattr(agent, "_memory_nudge_interval", 0) or 0) <= 0:
+        return None
+    spawn = getattr(agent, "_spawn_background_review", None)
+    if not callable(spawn):
+        return None
+
+    snapshot_source = (
+        messages
+        if isinstance(messages, list)
+        else getattr(agent, "_session_messages", None)
+    )
+    snapshot = list(snapshot_source) if isinstance(snapshot_source, list) else []
+    if not _has_reviewable_user_turn(snapshot):
+        return None
+
+    state_lock = getattr(agent, "_background_review_state_lock", None)
+    with state_lock if state_lock is not None else nullcontext():
+        pending_turns = int(getattr(agent, "_turns_since_memory", 0) or 0)
+        if pending_turns <= 0:
+            return None
+        agent._turns_since_memory = 0
+
+    try:
+        thread = spawn(
+            messages_snapshot=snapshot,
+            review_memory=True,
+            review_skills=False,
+        )
+    except Exception:
+        # Preserve the pending-tail signal so another lifecycle path can retry.
+        with state_lock if state_lock is not None else nullcontext():
+            current = int(getattr(agent, "_turns_since_memory", 0) or 0)
+            agent._turns_since_memory = max(current, pending_turns)
+        raise
+
+    logger.info(
+        "Scheduled session-end memory review for %d unreviewed turn(s) "
+        "(session=%s)",
+        pending_turns,
+        getattr(agent, "session_id", "") or "none",
+    )
+    return thread
+
+
+def wait_for_pending_memory_review(
+    agent: Any,
+    timeout: float = _SESSION_END_REVIEW_WAIT_SECONDS,
+) -> bool:
+    """Wait up to ``timeout`` seconds for the latest memory review thread."""
+    state_lock = getattr(agent, "_background_review_state_lock", None)
+    with state_lock if state_lock is not None else nullcontext():
+        thread = getattr(agent, "_last_memory_review_thread", None)
+
+    join = getattr(thread, "join", None)
+    if not callable(join):
+        return True
+    if thread is threading.current_thread():
+        return False
+
+    started = time.monotonic()
+    join(timeout=max(0.0, float(timeout)))
+    is_alive = getattr(thread, "is_alive", None)
+    if callable(is_alive) and is_alive():
+        logger.warning(
+            "Session-end memory review still running after %.1fs; continuing "
+            "teardown without blocking",
+            time.monotonic() - started,
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +727,7 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    review_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -645,6 +755,7 @@ def _run_review_in_thread(
     except Exception:
         pass
 
+    context = review_context or _capture_review_context(agent)
     review_agent = None
     review_messages: List[Dict] = []
     try:
@@ -670,7 +781,7 @@ def _run_review_in_thread(
             # set auxiliary.background_review.{provider,model} to a different
             # model — that model's runtime (routed=True). The codex_app_server
             # -> codex_responses downgrade is applied inside the resolver.
-            _rt = _resolve_review_runtime(agent)
+            _rt = context["runtime"]
             _routed = bool(_rt.get("routed"))
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
@@ -710,19 +821,19 @@ def _run_review_in_thread(
             if not _routed:
                 _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
             review_agent = AIAgent(
-                model=_rt.get("model") or agent.model,
+                model=_rt.get("model") or context["model"],
                 max_iterations=16,
                 quiet_mode=True,
-                platform=agent.platform,
-                provider=_rt.get("provider") or agent.provider,
+                platform=context["platform"],
+                provider=_rt.get("provider") or context["provider"],
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,
                 credential_pool=_rt.get("credential_pool"),
                 request_overrides=_rt.get("request_overrides") or {},
-                parent_session_id=agent.session_id,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                parent_session_id=context["session_id"],
+                enabled_toolsets=context["enabled_toolsets"],
+                disabled_toolsets=context["disabled_toolsets"],
                 skip_memory=True,
                 **_fork_kwargs,
             )
@@ -735,9 +846,9 @@ def _run_review_in_thread(
             # add late-connecting MCP tools to this fork and break that parity,
             # so opt the review fork out of it.
             review_agent._skip_mcp_refresh = True
-            review_agent._memory_store = agent._memory_store
-            review_agent._memory_enabled = agent._memory_enabled
-            review_agent._user_profile_enabled = agent._user_profile_enabled
+            review_agent._memory_store = context["memory_store"]
+            review_agent._memory_enabled = context["memory_enabled"]
+            review_agent._user_profile_enabled = context["user_profile_enabled"]
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
             # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
@@ -777,7 +888,7 @@ def _run_review_in_thread(
             # model the parent's cached prompt is for the wrong model/cache key
             # and would miss anyway, so let the routed fork build its own.
             if not _routed:
-                review_agent._cached_system_prompt = agent._cached_system_prompt
+                review_agent._cached_system_prompt = context["cached_system_prompt"]
                 # Defensive: pin session_start + session_id to the
                 # parent's so any code path that re-renders parts of
                 # the system prompt (compression, plugin hooks) still
@@ -785,8 +896,8 @@ def _run_review_in_thread(
                 # assignment above already short-circuits the normal
                 # rebuild path, but these pins guarantee parity even
                 # if a future code path bypasses the cache.
-                review_agent.session_start = agent.session_start
-            review_agent.session_id = agent.session_id
+                review_agent.session_start = context["session_start"]
+            review_agent.session_id = context["session_id"]
             # The fork shares the parent's live session_id (pinned above for
             # prefix-cache parity). It is single-lifecycle and calls close()
             # right after this run_conversation(); without opting out, close()
@@ -898,7 +1009,7 @@ def _run_review_in_thread(
             actions = summarize_background_review_actions(
                 review_messages,
                 messages_snapshot,
-                notification_mode=getattr(agent, "memory_notifications", "on"),
+                notification_mode=context["memory_notifications"],
             )
         except Exception as e:
             logger.warning(
@@ -911,10 +1022,10 @@ def _run_review_in_thread(
 
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
-            agent._safe_print(
+            context["safe_print"](
                 f"  💾 Self-improvement review: {summary}"
             )
-            _bg_cb = agent.background_review_callback
+            _bg_cb = context["background_review_callback"]
             if _bg_cb:
                 try:
                     _bg_cb(
@@ -925,7 +1036,7 @@ def _run_review_in_thread(
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
-        agent._emit_auxiliary_failure("background review", e)
+        context["emit_auxiliary_failure"]("background review", e)
     finally:
         # Safety-net cleanup for the exception path.  Normal completion already
         # shut down inside the thread-scoped silence above.  Re-enter the
@@ -953,6 +1064,36 @@ def _run_review_in_thread(
             pass
 
 
+def _capture_review_context(agent: Any) -> Dict[str, Any]:
+    """Capture parent state before a review thread can observe session rotation."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    return {
+        "runtime": dict(_resolve_review_runtime(agent)),
+        "model": getattr(agent, "model", ""),
+        "platform": getattr(agent, "platform", None),
+        "provider": getattr(agent, "provider", None),
+        "session_id": getattr(agent, "session_id", "") or "",
+        "enabled_toolsets": list(enabled) if isinstance(enabled, (list, tuple)) else enabled,
+        "disabled_toolsets": list(disabled) if isinstance(disabled, (list, tuple)) else disabled,
+        "memory_store": getattr(agent, "_memory_store", None),
+        "memory_enabled": bool(getattr(agent, "_memory_enabled", False)),
+        "user_profile_enabled": bool(
+            getattr(agent, "_user_profile_enabled", False)
+        ),
+        "cached_system_prompt": getattr(agent, "_cached_system_prompt", None),
+        "session_start": getattr(agent, "session_start", None),
+        "memory_notifications": getattr(agent, "memory_notifications", "on"),
+        "safe_print": getattr(agent, "_safe_print", lambda *_args, **_kwargs: None),
+        "background_review_callback": getattr(
+            agent, "background_review_callback", None
+        ),
+        "emit_auxiliary_failure": getattr(
+            agent, "_emit_auxiliary_failure", lambda *_args, **_kwargs: None
+        ),
+    }
+
+
 def spawn_background_review_thread(
     agent: Any,
     messages_snapshot: List[Dict],
@@ -975,8 +1116,10 @@ def spawn_background_review_thread(
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    review_context = _capture_review_context(agent)
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(agent, messages_snapshot, prompt, review_context)
 
     return _target, prompt
 
@@ -986,6 +1129,8 @@ __all__ = [
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
     "spawn_background_review_thread",
+    "schedule_session_end_memory_review",
+    "wait_for_pending_memory_review",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
 ]

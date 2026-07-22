@@ -79,6 +79,7 @@ export function ComposerControls({
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {busyAction === 'steer' ? (
         <Tip label={c.queueMessage}>
           <Button
@@ -94,7 +95,6 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : null}
-      <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>
           <Button

@@ -92,6 +92,9 @@ test.describe('chat interaction with mock backend', () => {
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
     const queue = page.locator('[data-slot="composer-root"] button[aria-label="Queue message"]')
     const dictation = page.locator('[data-slot="composer-root"] button[aria-label="Voice dictation"]')
+    const speakReplies = page.locator(
+      '[data-slot="composer-root"] button[aria-label="Read replies aloud"], [data-slot="composer-root"] button[aria-label="Stop reading replies aloud"]'
+    )
 
     await composer.click()
     await composer.type(BLOCKING_CLARIFY_TRIGGER)
@@ -105,8 +108,20 @@ test.describe('chat interaction with mock backend', () => {
     await composer.type('please answer tersely')
     await expect(primary).toHaveAttribute('aria-label', /Steer/)
     await expect(dictation).toBeVisible()
+    await expect(speakReplies).toBeVisible()
     await expect(queue).toBeVisible()
     await expect(queue.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
+    const controlLabels = await page
+      .locator('[data-slot="composer-root"] button')
+      .evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
+    const speakRepliesIndex = controlLabels.findIndex(
+      label => label === 'Read replies aloud' || label === 'Stop reading replies aloud'
+    )
+    expect(controlLabels.indexOf('Voice dictation')).toBeLessThan(speakRepliesIndex)
+    expect(speakRepliesIndex).toBeLessThan(controlLabels.indexOf('Queue message'))
+    expect(controlLabels.indexOf('Queue message')).toBeLessThan(
+      controlLabels.findIndex(label => label?.startsWith('Steer'))
+    )
     await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
     await expect(primary.locator('svg.tabler-icon-steering-wheel')).toBeVisible()
 

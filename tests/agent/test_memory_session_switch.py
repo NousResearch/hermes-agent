@@ -1,10 +1,14 @@
-"""Tests for the on_session_switch hook and session_id propagation.
+"""Tests for the on_session_switch hook, on_session_end hook, and session_id propagation.
 
 Covers #6672: memory providers must be notified when AIAgent.session_id
 rotates mid-process (via /resume, /branch, /reset, /new, or context
 compression). Without the notification, providers that cache per-session
 state in initialize() (Hindsight, and any plugin that stores session_id
 for scoped writes) keep writing into the old session's record.
+
+Also covers: Hindsight on_session_end must flush any buffered turns when
+a session is torn down (CLI exit, gateway idle expiry), preventing silent
+data loss for users with retain_every_n_turns > 1.
 """
 
 
@@ -327,3 +331,82 @@ def test_hindsight_preserves_parent_across_empty_parent_arg():
     provider._parent_session_id = "original-parent"
     provider.on_session_switch("new-sid")  # no parent passed
     assert provider._parent_session_id == "original-parent"
+
+
+# ---------------------------------------------------------------------------
+# Hindsight on_session_end — flush buffered turns on session teardown
+# ---------------------------------------------------------------------------
+
+
+def test_hindsight_on_session_end_flushes_buffered_turns():
+    """Buffered turns must be flushed via the writer queue on session end.
+
+    Users with retain_every_n_turns > 1 accumulate turns in _session_turns
+    until the modulo boundary is hit.  If the session ends before that
+    boundary (e.g. 5 turns with retain_every_n_turns=12), on_session_end
+    must enqueue a retain for whatever is buffered.
+    """
+    provider = _make_hindsight_provider()
+    provider._auto_retain = True
+    assert len(provider._session_turns) == 2  # pre-seeded by helper
+
+    provider.on_session_end([])
+
+    # Buffer must be cleared after flush.
+    assert provider._session_turns == []
+    assert provider._turn_counter == 0
+    assert provider._turn_index == 0
+    # A flush closure must have been enqueued on the writer queue.
+    assert not provider._retain_queue.empty()
+
+
+def test_hindsight_on_session_end_noop_when_buffer_empty():
+    """No flush should be enqueued when there are no buffered turns."""
+    provider = _make_hindsight_provider()
+    provider._auto_retain = True
+    provider._session_turns = []
+    provider._turn_counter = 0
+
+    provider.on_session_end([])
+
+    assert provider._retain_queue.empty()
+
+
+def test_hindsight_on_session_end_noop_when_auto_retain_disabled():
+    """Providers with auto_retain=False must not flush on session end."""
+    provider = _make_hindsight_provider()
+    provider._auto_retain = False
+    assert len(provider._session_turns) == 2  # pre-seeded
+
+    provider.on_session_end([])
+
+    # Turns should NOT be cleared — auto_retain is off, nothing happened.
+    assert len(provider._session_turns) == 2
+    assert provider._retain_queue.empty()
+
+
+def test_hindsight_on_session_end_noop_when_shutting_down():
+    """If shutdown has already fired, on_session_end must not enqueue."""
+    provider = _make_hindsight_provider()
+    provider._auto_retain = True
+    provider._shutting_down.set()  # simulate shutdown already in progress
+
+    provider.on_session_end([])
+
+    # Buffer untouched — we can't enqueue after shutdown.
+    assert len(provider._session_turns) == 2
+    assert provider._retain_queue.empty()
+
+
+def test_hindsight_on_session_end_then_shutdown_no_double_flush():
+    """on_session_end clears the buffer, so a subsequent shutdown()
+    draining the writer queue must not re-flush the same turns."""
+    provider = _make_hindsight_provider()
+    provider._auto_retain = True
+
+    provider.on_session_end([])
+    queue_size_after_end = provider._retain_queue.qsize()
+
+    # Simulate what shutdown() does — it should find an empty buffer.
+    assert provider._session_turns == []
+    assert queue_size_after_end == 1  # exactly one flush from on_session_end

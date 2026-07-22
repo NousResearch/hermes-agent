@@ -1938,9 +1938,11 @@ from gateway.platforms.base import (
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    _arm_loop_floor_timer,
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
     resolve_shutdown_watchdog_delay,
+    start_loop_liveness_watchdog,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -3091,10 +3093,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_ephemeral_pin: Dict[str, tuple] = {}
     _session_vc_last: Dict[str, str] = {}
     _startup_restore_in_progress: bool = False
-    # Loop-liveness heartbeat / shutdown-watchdog handles (#66892). Class-level
+    # Loop-liveness heartbeat / watchdog handles (#66892, #69089). Class-level
     # defaults so partial construction in tests doesn't blow up on access; the
     # real values are set in __init__ / start() / stop().
     _loop_heartbeat_task: Optional["asyncio.Task"] = None
+    _loop_floor_timer_handle: Optional[Any] = None
+    _loop_liveness_watchdog: Optional[Any] = None
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
     _platform_lock_takeover_on_start: bool = False
@@ -3465,6 +3469,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # updated_at to distinguish "process alive" from "loop frozen".
         self._gateway_started_at: float = time.time()
         self._loop_heartbeat_task: Optional[asyncio.Task] = None
+        self._loop_floor_timer_handle = None
+        self._loop_liveness_watchdog = None
 
         # scale-to-zero (Phase 0, F13): gateway-scoped "last inbound seen" clock.
         # There is no such clock today (only a per-agent _last_activity_ts), so the
@@ -7396,6 +7402,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return True
 
+    def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Arm the selector floor and out-of-loop watchdog before adapters."""
+        if getattr(self, "_loop_floor_timer_handle", None) is None:
+            try:
+                self._loop_floor_timer_handle = _arm_loop_floor_timer(loop)
+            except Exception:
+                logger.debug("Failed to arm gateway loop floor timer", exc_info=True)
+
+        watchdog = getattr(self, "_loop_liveness_watchdog", None)
+        if watchdog is None or not watchdog.is_alive():
+            try:
+                self._loop_liveness_watchdog = start_loop_liveness_watchdog(loop)
+            except Exception:
+                logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+
+    def _stop_loop_liveness_guards(self) -> None:
+        """Disarm lifetime liveness guards before shutdown can load the loop."""
+        watchdog = getattr(self, "_loop_liveness_watchdog", None)
+        self._loop_liveness_watchdog = None
+        if watchdog is not None:
+            try:
+                watchdog.stop()
+            except Exception:
+                logger.debug("Failed to stop gateway loop liveness watchdog", exc_info=True)
+
+        floor_timer = getattr(self, "_loop_floor_timer_handle", None)
+        self._loop_floor_timer_handle = None
+        if floor_timer is not None:
+            try:
+                floor_timer.cancel()
+            except Exception:
+                logger.debug("Failed to cancel gateway loop floor timer", exc_info=True)
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -7407,6 +7446,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._gateway_loop = None
+        if self._gateway_loop is not None:
+            self._start_loop_liveness_guards(self._gateway_loop)
         logger.info("Session storage: %s", self.config.sessions_dir)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
@@ -8938,6 +8979,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         service_restart: bool = False,
     ) -> None:
         """Stop the gateway and disconnect all adapters."""
+        self._stop_loop_liveness_guards()
         if restart:
             self._restart_requested = True
             self._restart_detached = detached_restart

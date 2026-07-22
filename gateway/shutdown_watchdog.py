@@ -1,4 +1,4 @@
-"""Out-of-loop shutdown backstop + event-loop liveness heartbeat (#66892).
+"""Out-of-loop shutdown and event-loop liveness backstops (#66892, #69089).
 
 When the asyncio loop freezes mid-drain, every asyncio-based recovery path is
 structurally unable to fire: the drain deadline, status rewrites, and forensics
@@ -15,6 +15,10 @@ This module provides:
 2. An event-loop heartbeat file at ``<HERMES_HOME>/state/gateway.heartbeat`` so
    external supervision can distinguish "process alive" from "loop frozen"
    (``gateway_state.json`` alone can't — it only rewrites on transitions/turns).
+3. A lifetime thread watchdog that can still diagnose and hard-exit when the
+   event loop is too frozen to run its own heartbeat or timeout callbacks.
+4. A self-rescheduling floor timer that keeps the loop selector's timeout
+   finite, giving existing async recovery tasks a chance to resume.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -40,8 +45,179 @@ logger = logging.getLogger(__name__)
 # drain is not cut short. Matches the issue #66892 suggested hardening.
 DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
+DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
+DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
+DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
+DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
+
+
+class _LoopFloorTimerHandle:
+    """Cancelable owner for the currently scheduled selector floor timer."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, interval: float):
+        self._loop = loop
+        self._interval = interval
+        self._cancelled = False
+        self._timer: Optional[asyncio.TimerHandle] = None
+        self._schedule()
+
+    def _schedule(self) -> None:
+        self._timer = self._loop.call_later(self._interval, self._tick)
+
+    def _tick(self) -> None:
+        if not self._cancelled:
+            self._schedule()
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if self._timer is not None:
+            self._timer.cancel()
+
+
+class _LoopLivenessWatchdogHandle:
+    """Small lifecycle handle for the daemon liveness thread."""
+
+    def __init__(self, stop_event: threading.Event, thread: threading.Thread):
+        self._stop_event = stop_event
+        self._thread = thread
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        self._thread.join(timeout=timeout)
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+
+def _arm_loop_floor_timer(
+    loop: asyncio.AbstractEventLoop,
+    interval: float = DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S,
+) -> _LoopFloorTimerHandle:
+    """Keep at least one timer pending so selector waits remain bounded."""
+    try:
+        resolved_interval = float(interval)
+        if resolved_interval <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        resolved_interval = DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S
+    return _LoopFloorTimerHandle(loop, resolved_interval)
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+    return value if value > 0 else float(default)
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = int(raw) if raw else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+    return value if value > 0 else int(default)
+
+
+def start_loop_liveness_watchdog(
+    loop: asyncio.AbstractEventLoop,
+    *,
+    probe_interval: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+    max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+) -> Optional[_LoopLivenessWatchdogHandle]:
+    """Start an out-of-loop watchdog that hard-exits after missed probes.
+
+    Environment overrides are intentionally read here, the owner module, like
+    other gateway runtime-only safety knobs. Set
+    ``HERMES_GATEWAY_LOOP_WATCHDOG=0`` to disable it.
+    """
+    enabled = os.environ.get("HERMES_GATEWAY_LOOP_WATCHDOG", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return None
+
+    interval = _positive_float_env(
+        "HERMES_GATEWAY_LOOP_WATCHDOG_INTERVAL", probe_interval
+    )
+    timeout = _positive_float_env("HERMES_GATEWAY_LOOP_WATCHDOG_TIMEOUT", probe_timeout)
+    strikes_limit = _positive_int_env(
+        "HERMES_GATEWAY_LOOP_WATCHDOG_STRIKES", max_strikes
+    )
+    stop_event = threading.Event()
+
+    def _wait_for_probe(probe_event: threading.Event) -> Optional[bool]:
+        deadline = time.monotonic() + timeout
+        while True:
+            if stop_event.is_set():
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return probe_event.is_set()
+            if probe_event.wait(timeout=min(remaining, 0.05)):
+                return True
+
+    def _watchdog() -> None:
+        strikes = 0
+        while not stop_event.wait(timeout=interval):
+            probe_event = threading.Event()
+            try:
+                loop.call_soon_threadsafe(probe_event.set)
+            except RuntimeError:
+                # A normally closed loop cannot be probed and no longer needs
+                # a process-liveness backstop.
+                return
+            except Exception:
+                logger.debug(
+                    "Failed to schedule gateway loop liveness probe", exc_info=True
+                )
+                return
+
+            responded = _wait_for_probe(probe_event)
+            if responded is None:
+                return
+            if responded:
+                strikes = 0
+                continue
+
+            strikes += 1
+            if strikes < strikes_limit:
+                continue
+
+            try:
+                logger.critical(
+                    "Gateway event loop missed %d consecutive liveness probes; "
+                    "dumping all thread stacks and exiting with code %d so the "
+                    "service supervisor can restart it.",
+                    strikes,
+                    exit_code,
+                )
+            except Exception:
+                pass
+            try:
+                faulthandler.dump_traceback(all_threads=True)
+            except Exception:
+                logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+            os._exit(exit_code)
+            return
+
+    thread = threading.Thread(
+        target=_watchdog,
+        daemon=True,
+        name="gateway-loop-liveness-watchdog",
+    )
+    try:
+        thread.start()
+    except Exception:
+        logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+        return None
+    return _LoopLivenessWatchdogHandle(stop_event, thread)
 
 
 def _process_hermes_home() -> Path:

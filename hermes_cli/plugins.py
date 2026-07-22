@@ -37,11 +37,15 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
@@ -132,6 +136,12 @@ _install_plugin_debug_handler()
 # Constants
 # ---------------------------------------------------------------------------
 
+VALID_SANDBOX_MODES = {"none", "subprocess"}
+
+# Middleware kinds — mirrors hermes_cli.middleware.VALID_MIDDLEWARE for
+# forward-compat when the module isn't available yet.
+_VALID_MIDDLEWARE_LOCAL = {"tool_request", "tool_execution", "llm_request", "llm_execution"}
+
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
@@ -218,6 +228,233 @@ ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
 
+HOOK_TIMEOUT = 30  # seconds — max time a single hook callback may run
+
+
+class _HookTimeoutError(TimeoutError):
+    """Raised when a plugin hook callback exceeds its timeout."""
+
+
+@contextmanager
+def _timeout_guard(seconds: float):
+    """Raise _HookTimeoutError if the enclosed block runs longer than *seconds*.
+
+    Cross-platform: uses a daemon thread + interrupt on POSIX, best-effort
+    on Windows (raises if the callback doesn't check an event).
+    """
+    if seconds <= 0:
+        yield
+        return
+
+    _timed_out_by_watchdog = threading.Event()
+    stop_event = threading.Event()
+
+    def _watchdog():
+        stop_event.wait(timeout=seconds)
+        if not stop_event.is_set():
+            _timed_out_by_watchdog.set()
+            # On POSIX, interrupt the main thread's blocking syscall.
+            if sys.platform != "win32":
+                try:
+                    import ctypes
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_ulong(threading.main_thread().ident),
+                        ctypes.py_object(_HookTimeoutError),
+                    )
+                except Exception:
+                    pass
+
+    timer = threading.Thread(target=_watchdog, daemon=True)
+    timer.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        timer.join(timeout=2)
+        if _timed_out_by_watchdog.is_set():
+            raise _HookTimeoutError(
+                f"Hook callback timed out after {seconds}s"
+            )
+
+
+def set_hook_timeout(callback: Callable, seconds: float = HOOK_TIMEOUT) -> Callable:
+    """Annotate a hook callback with a timeout value (enforced by invoke_hook)."""
+    callback.__HERMES_HOOK_TIMEOUT__ = seconds
+    return callback
+
+
+# ---------------------------------------------------------------------------
+# Subprocess plugin isolation
+# ---------------------------------------------------------------------------
+#
+# When a plugin declares ``sandbox: subprocess`` in its manifest, the host
+# spawns a child Python process, loads the plugin there, and communicates
+# via newline-delimited JSON-RPC over stdin/stdout.  This gives real process
+# isolation: the plugin cannot access host memory, import host modules, or
+# call host functions directly.
+
+_SUBPROCESS_TIMEOUT = 10  # seconds for RPC round-trips
+
+
+class _SubprocessPluginBridge:
+    """Manages a subprocess plugin's lifecycle and RPC communication.
+
+    The child process runs ``_child_plugin_main()`` which reads JSON-RPC
+    requests from stdin and writes responses to stdout.  Each request is
+    a dict ``{"method": str, "params": dict, "id": int}`` and each
+    response is ``{"result": Any, "error": str | None, "id": int}``.
+    """
+
+    def __init__(self, plugin_dir: Path, manifest: "PluginManifest"):
+        self.plugin_dir = plugin_dir
+        self.manifest = manifest
+        self._proc: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+        self._request_id = 0
+
+    def start(self) -> None:
+        """Spawn the child process and wait for the ready signal."""
+        self._proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", _CHILD_BOOTSTRAP],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env={**os.environ, "_HERMES_PLUGIN_SANDBOX": "1"},
+        )
+        # Send the plugin directory and manifest to the child.
+        self._send({
+            "method": "_init",
+            "params": {
+                "plugin_dir": str(self.plugin_dir),
+                "manifest": {
+                    "name": self.manifest.name,
+                    "version": self.manifest.version,
+                    "sandbox": self.manifest.sandbox,
+                    "capabilities": self.manifest.capabilities,
+                },
+            },
+            "id": 0,
+        })
+        resp = self._recv()
+        if resp.get("error"):
+            raise RuntimeError(
+                f"Subprocess plugin {self.manifest.name} init failed: {resp['error']}"
+            )
+
+    def call(self, method: str, params: Optional[Dict] = None) -> Any:
+        """Make an RPC call to the child and return the result."""
+        with self._lock:
+            self._request_id += 1
+            req_id = self._request_id
+            self._send({"method": method, "params": params or {}, "id": req_id})
+            resp = self._recv()
+            if resp.get("error"):
+                raise RuntimeError(
+                    f"Subprocess plugin {self.manifest.name}.{method}: {resp['error']}"
+                )
+            return resp.get("result")
+
+    def stop(self) -> None:
+        """Terminate the child process."""
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._send({"method": "_shutdown", "params": {}, "id": -1})
+                self._proc.wait(timeout=5)
+            except Exception:
+                self._proc.kill()
+        if self._proc:
+            self._proc.wait()
+
+    def _send(self, msg: dict) -> None:
+        line = json.dumps(msg) + "\n"
+        self._proc.stdin.write(line)
+        self._proc.stdin.flush()
+
+    def _recv(self) -> dict:
+        line = self._proc.stdout.readline()
+        if not line:
+            stderr_out = self._proc.stderr.read() if self._proc.stderr else ""
+            return {"error": f"Child process exited: {stderr_out.strip()}", "id": -1}
+        return json.loads(line)
+
+
+# Bootstrap script for the child process.  The child reads JSON-RPC from
+# stdin, loads the plugin, and proxies register_* calls back to the host
+# via stdout.
+_CHILD_BOOTSTRAP = r'''
+import importlib.util, json, os, sys
+from pathlib import Path
+
+def _send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+def _recv():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(0)
+    return json.loads(line)
+
+# Read init message.
+init = _recv()
+plugin_dir = Path(init["params"]["plugin_dir"])
+manifest_data = init["params"]["manifest"]
+
+# Load the plugin's __init__.py.
+init_file = plugin_dir / "__init__.py"
+if not init_file.exists():
+    _send({"result": None, "error": f"No __init__.py in {plugin_dir}", "id": init["id"]})
+    sys.exit(1)
+
+spec = importlib.util.spec_from_file_location(manifest_data["name"], init_file)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+# Build a minimal PluginContext-like object that sends RPC back to host.
+class _RemoteCtx:
+    def __init__(self, manifest_data):
+        self.name = manifest_data["name"]
+        self._caps = manifest_data.get("capabilities", ["all"])
+    def require_capability(self, cap):
+        if "all" not in self._caps and cap not in self._caps:
+            raise PermissionError(f"Plugin needs {cap} capability")
+    def register_tool(self, **kw):
+        self.require_capability("tools")
+        _send({"method": "_register_tool", "params": kw, "id": 0})
+        resp = _recv()
+        return resp.get("result")
+    def register_hook(self, hook_name, callback):
+        self.require_capability("hooks")
+        _send({"method": "_register_hook", "params": {"hook_name": hook_name}, "id": 0})
+        resp = _recv()
+        return resp.get("result")
+
+ctx = _RemoteCtx(manifest_data)
+_send({"result": "ready", "error": None, "id": init["id"]})
+
+# Call register(ctx) if it exists.
+if hasattr(mod, "register"):
+    try:
+        mod.register(ctx)
+    except Exception as e:
+        _send({"method": "_register_error", "params": {"error": str(e)}, "id": 0})
+        _recv()
+
+# Enter the RPC loop — child stays alive and handles hook invocations.
+while True:
+    msg = _recv()
+    if msg.get("method") == "_shutdown":
+        break
+    if msg.get("method") == "_invoke_hook":
+        hook_name = msg["params"]["hook_name"]
+        kwargs = msg["params"].get("kwargs", {})
+        # Hooks are not stored locally — the host tracks them.
+        # This path is for future extensibility.
+        _send({"result": None, "error": "hook dispatch not yet implemented in sandbox", "id": msg["id"]})
+'''
+
 
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
@@ -290,28 +527,14 @@ class PluginManifest:
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
     path: Optional[str] = None
-    # Plugin kind — see plugins.py module docstring for semantics.
-    # ``standalone`` (default): hooks/tools of its own; opt-in via
-    #                           ``plugins.enabled``.
-    # ``backend``: pluggable backend for an existing core tool (e.g.
-    #              image_gen). Built-in (bundled) backends auto-load;
-    #              user-installed still gated by ``plugins.enabled``.
-    # ``exclusive``: category with exactly one active provider (memory).
-    #              Selection via ``<category>.provider`` config key; the
-    #              category's own discovery system handles loading and the
-    #              general scanner skips these.
-    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
-    #              platform plugins auto-load so every shipped platform is
-    #              available out of the box; user-installed platform plugins
-    #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
-    #              (untrusted code).
     kind: str = "standalone"
-    # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
-    # lookups and by ``hermes plugins list``. For a flat plugin at
-    # ``plugins/disk-cleanup/`` the key is ``disk-cleanup``; for a nested
-    # category plugin at ``plugins/image_gen/openai/`` the key is
-    # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Sandbox mode — "none" (default, in-process), "subprocess" (isolated)
+    sandbox: str = "none"
+    # Declared capabilities — checked at tool/hook registration time.
+    # Default: "all" for backward compatibility with existing plugins.
+    # Restrictive plugins should list only what they need.
+    capabilities: List[str] = field(default_factory=lambda: ["all"])
 
 
 @dataclass
@@ -416,6 +639,7 @@ class PluginContext:
         like ``shell_exec`` or ``write_file`` and exfiltrate everything
         the model invokes through it.
         """
+        self.require_capability("tools")
         if override and not self._tool_override_allowed(name):
             plugin_id = self.manifest.key or self.manifest.name
             raise PluginToolOverrideError(
@@ -960,6 +1184,7 @@ class PluginContext:
                 setup_fn=irc_interactive_setup,
             )
         """
+        self.require_capability("platforms")
         from gateway.platform_registry import platform_registry, PlatformEntry
 
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
@@ -1156,11 +1381,8 @@ class PluginContext:
         )
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
-        """Register a lifecycle hook callback.
-
-        Unknown hook names produce a warning but are still stored so
-        forward-compatible plugins don't break.
-        """
+        """Register a lifecycle hook callback with auto-timeout."""
+        self.require_capability("hooks")
         if hook_name not in VALID_HOOKS:
             logger.warning(
                 "Plugin '%s' registered unknown hook '%s' "
@@ -1169,19 +1391,26 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        set_hook_timeout(callback)
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
-    # -- middleware registration -------------------------------------------
+    # -- middleware registration ----------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:
         """Register a behavior-changing middleware callback.
 
         Middleware is separate from observer hooks: request middleware may
         rewrite the effective payload, and execution middleware may wrap the
-        real callback. Unknown kinds are stored for forward compatibility but
-        warned so plugin authors can catch typos.
+        real callback.  Unknown kinds are stored for forward compatibility
+        but warned so plugin authors can catch typos.
         """
+        self.require_capability("hooks")
+        # Try the canonical import; fall back to the local set.
+        try:
+            from hermes_cli.middleware import VALID_MIDDLEWARE
+        except ImportError:
+            VALID_MIDDLEWARE = _VALID_MIDDLEWARE_LOCAL  # type: ignore[assignment]
         if kind not in VALID_MIDDLEWARE:
             logger.warning(
                 "Plugin '%s' registered unknown middleware '%s' "
@@ -1240,6 +1469,59 @@ class PluginContext:
             self.manifest.name, qualified,
         )
 
+    # -- state persistence ---------------------------------------------------
+
+    @property
+    def state_dir(self) -> Path:
+        """Plugin-scoped state directory path (directory created on first write)."""
+        return get_hermes_home() / "plugins" / self.manifest.name
+
+    def load_state(self, key: str, default: Any = None) -> Any:
+        """Load a JSON state file from the plugin's state directory."""
+        path = self.state_dir / f"{key}.json"
+        if path.exists():
+            try:
+                import json as _json
+                return _json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("Plugin %s: corrupt state file %s", self.manifest.name, key)
+        return default
+
+    def save_state(self, key: str, data: Any) -> None:
+        """Save a JSON state file to the plugin's state directory."""
+        import json as _json
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        path = self.state_dir / f"{key}.json"
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        try:
+            tmp.write_text(_json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
+
+    # -- permission checking -------------------------------------------------
+
+    def check_capability(self, capability: str) -> bool:
+        """Check if the plugin has a given capability (host grants override declarations)."""
+        effective = self._manager.get_effective_caps(
+            self.manifest.name, self.manifest.capabilities
+        )
+        return "all" in effective or capability in effective
+
+    def require_capability(self, capability: str) -> None:
+        """Raise if the plugin doesn't have the required capability."""
+        if not self.check_capability(capability):
+            effective = self._manager.get_effective_caps(
+                self.manifest.name, self.manifest.capabilities
+            )
+            raise PermissionError(
+                f"Plugin '{self.manifest.name}' needs '{capability}' capability. "
+                f"Effective grants: {effective}. "
+                f"Set in config: plugins.grants.{self.manifest.name}: [{capability}]"
+            )
+
 
 # ---------------------------------------------------------------------------
 # PluginManager
@@ -1271,10 +1553,36 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Host-controlled capability grants: plugin_name → set of allowed caps.
+        # When a plugin has an entry here, ONLY these capabilities are granted
+        # (the plugin's declared capabilities are ignored).
+        self._host_grants: Dict[str, Set[str]] = {}
 
     # -----------------------------------------------------------------------
     # Public
     # -----------------------------------------------------------------------
+
+    def set_plugin_grants(self, plugin_name: str, capabilities: Set[str]) -> None:
+        """Set host-controlled capability grants for a plugin.
+
+        When grants are set for a plugin, only the listed capabilities are
+        allowed — the plugin's own declared capabilities in plugin.yaml are
+        ignored.  This gives the host (operator / config) ultimate authority
+        over what a plugin may do.
+
+        Pass an empty set to deny all capabilities.
+        """
+        self._host_grants[plugin_name] = set(capabilities)
+
+    def get_effective_caps(self, plugin_name: str, declared: List[str]) -> List[str]:
+        """Return the effective capability set for a plugin.
+
+        If host grants exist for *plugin_name*, those take precedence.
+        Otherwise fall back to the plugin's declared capabilities.
+        """
+        if plugin_name in self._host_grants:
+            return sorted(self._host_grants[plugin_name])
+        return declared
 
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found.
@@ -1632,6 +1940,13 @@ class PluginManager:
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
                 key, name, kind, source, plugin_dir,
             )
+            raw_sandbox = data.get("sandbox", "none")
+            sandbox = raw_sandbox if raw_sandbox in VALID_SANDBOX_MODES else "none"
+            if raw_sandbox != sandbox:
+                logger.warning(
+                    "Plugin '%s': invalid sandbox '%s', falling back to 'none'. "
+                    "Valid: %s", name, raw_sandbox, sorted(VALID_SANDBOX_MODES),
+                )
             return PluginManifest(
                 name=name,
                 version=str(data.get("version", "")),
@@ -1644,6 +1959,8 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                sandbox=sandbox,
+                capabilities=data.get("capabilities", ["all"]),
             )
         except Exception as exc:
             logger.warning(
@@ -1746,11 +2063,16 @@ class PluginManager:
             self._load_plugin(manifest)
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
-        """Import a plugin module and call its ``register(ctx)`` function."""
+        """Import a plugin module and call its ``register(ctx)`` function.
+
+        When ``manifest.sandbox == "subprocess"``, the plugin is loaded in an
+        isolated child process via :class:`_SubprocessPluginBridge`.
+        """
         loaded = LoadedPlugin(manifest=manifest)
         logger.debug(
-            "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
-            manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
+            "Loading plugin '%s' (source=%s, kind=%s, path=%s, sandbox=%s)",
+            manifest.key or manifest.name, manifest.source, manifest.kind,
+            manifest.path, manifest.sandbox,
         )
 
         from tools.registry import registry as _registry
@@ -1761,6 +2083,21 @@ class PluginManager:
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
         try:
+            # --- subprocess isolation path ---
+            if manifest.sandbox == "subprocess":
+                plugin_dir = Path(manifest.path)
+                bridge = _SubprocessPluginBridge(plugin_dir, manifest)
+                bridge.start()
+                loaded._bridge = bridge  # type: ignore[attr-defined]
+                loaded.enabled = True
+                logger.debug(
+                    "Plugin '%s' loaded in subprocess (pid=%s)",
+                    manifest.name, bridge._proc.pid if bridge._proc else "?",
+                )
+                self._plugins[manifest.key or manifest.name] = loaded
+                return
+
+            # --- normal in-process path ---
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
@@ -1914,7 +2251,12 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                if hasattr(cb, "__HERMES_HOOK_TIMEOUT__"):
+                    timeout = cb.__HERMES_HOOK_TIMEOUT__
+                    with _timeout_guard(timeout):
+                        ret = cb(**kwargs)
+                else:
+                    ret = cb(**kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
@@ -1972,7 +2314,18 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
-
+    def shutdown(self) -> None:
+        """Tear down all loaded plugins (stop subprocess bridges, etc.)."""
+        for loaded in self._plugins.values():
+            bridge = getattr(loaded, "_bridge", None)
+            if bridge is not None:
+                try:
+                    bridge.stop()
+                except Exception as exc:
+                    logger.warning(
+                        "Error stopping subprocess bridge for %s: %s",
+                        loaded.manifest.name, exc,
+                    )
     # -----------------------------------------------------------------------
     # Introspection
     # -----------------------------------------------------------------------

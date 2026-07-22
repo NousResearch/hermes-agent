@@ -2237,6 +2237,7 @@ class TestPluginDebugLogging:
         # Snapshot, then force a re-evaluation.
         original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
         original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
         original_handlers = list(plugins_mod.logger.handlers)
         try:
             plugins_mod._DEBUG_HANDLER_INSTALLED = False
@@ -2248,7 +2249,229 @@ class TestPluginDebugLogging:
         finally:
             plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
             plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+# ── Isolation & security tests ──────────────────────────────────────────────
+
+from hermes_cli.plugins import (
+    _timeout_guard,
+    _HookTimeoutError,
+    set_hook_timeout,
+    VALID_SANDBOX_MODES,
+)
+
+
+class TestTimeoutGuard:
+    """Cross-platform hook timeout enforcement."""
+
+    def test_fast_callback_succeeds(self):
+        """Callback that finishes within timeout should not raise."""
+        with _timeout_guard(5):
+            pass
+
+    def test_slow_callback_raises(self):
+        """Callback that exceeds timeout should raise _HookTimeoutError."""
+        import time
+        with pytest.raises(_HookTimeoutError):
+            with _timeout_guard(0.1):
+                time.sleep(1)
+
+    def test_zero_timeout_passes_through(self):
+        """Zero or negative timeout should yield immediately."""
+        with _timeout_guard(0):
+            pass
+        with _timeout_guard(-1):
+            pass
+
+
+class TestSetHookTimeout:
+    def test_annotates_callback(self):
+        def my_hook():
+            pass
+        result = set_hook_timeout(my_hook, seconds=15)
+        assert result is my_hook
+        assert my_hook.__HERMES_HOOK_TIMEOUT__ == 15
+
+    def test_default_timeout(self):
+        def my_hook():
+            pass
+        set_hook_timeout(my_hook)
+        assert my_hook.__HERMES_HOOK_TIMEOUT__ == 30
+
+
+class TestHostControlledGrants:
+    """Host grants override plugin-declared capabilities."""
+
+    def test_no_grants_uses_declared(self):
+        """Without host grants, plugin's declared caps are used."""
+        mgr = PluginManager()
+        caps = mgr.get_effective_caps("myplugin", ["tools", "hooks"])
+        assert "tools" in caps
+        assert "hooks" in caps
+
+    def test_host_grants_override(self):
+        """Host grants replace plugin declarations entirely."""
+        mgr = PluginManager()
+        mgr.set_plugin_grants("myplugin", {"tools"})
+        caps = mgr.get_effective_caps("myplugin", ["tools", "hooks", "all"])
+        assert caps == ["tools"]
+        assert "hooks" not in caps
+
+    def test_empty_grants_deny_all(self):
+        """Empty host grant set denies all capabilities."""
+        mgr = PluginManager()
+        mgr.set_plugin_grants("myplugin", set())
+        caps = mgr.get_effective_caps("myplugin", ["all"])
+        assert caps == []
+
+    def test_check_capability_with_grants(self):
+        """PluginContext.check_capability uses host grants when set."""
+        mgr = PluginManager()
+        mgr.set_plugin_grants("myplugin", {"tools"})
+        manifest = PluginManifest(name="myplugin", capabilities=["all"])
+        ctx = PluginContext(manifest, mgr)
+        assert ctx.check_capability("tools") is True
+        assert ctx.check_capability("hooks") is False
+
+    def test_check_capability_without_grants(self):
+        """PluginContext.check_capability uses declared caps when no grants."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="myplugin", capabilities=["tools"])
+        ctx = PluginContext(manifest, mgr)
+        assert ctx.check_capability("tools") is True
+        assert ctx.check_capability("hooks") is False
+
+    def test_require_capability_raises_on_missing(self):
+        """require_capability raises PermissionError when capability missing."""
+        mgr = PluginManager()
+        mgr.set_plugin_grants("myplugin", {"tools"})
+        manifest = PluginManifest(name="myplugin", capabilities=["all"])
+        ctx = PluginContext(manifest, mgr)
+        with pytest.raises(PermissionError, match="hooks"):
+            ctx.require_capability("hooks")
+
+
+class TestRegisterMiddleware:
+    """Middleware registration with capability check."""
+
+    def test_registers_middleware(self):
+        """register_hook with a middleware kind stores it in _middleware."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="testplugin", capabilities=["hooks"])
+        ctx = PluginContext(manifest, mgr)
+        callback = lambda: None
+        ctx.register_middleware("tool_request", callback)
+        assert "tool_request" in mgr._middleware
+        assert callback in mgr._middleware["tool_request"]
+
+    def test_requires_hooks_capability(self):
+        """register_middleware requires 'hooks' capability."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="testplugin", capabilities=["tools"])
+        ctx = PluginContext(manifest, mgr)
+        with pytest.raises(PermissionError, match="hooks"):
+            ctx.register_middleware("tool_request", lambda: None)
+
+
+class TestManifestSandbox:
+    """Manifest sandbox validation."""
+
+    def test_valid_sandbox_modes(self):
+        assert "none" in VALID_SANDBOX_MODES
+        assert "subprocess" in VALID_SANDBOX_MODES
+
+    def test_manifest_default_sandbox(self):
+        m = PluginManifest(name="test")
+        assert m.sandbox == "none"
+
+    def test_manifest_subprocess_sandbox(self):
+        m = PluginManifest(name="test", sandbox="subprocess")
+        assert m.sandbox == "subprocess"
+
+    def test_manifest_capabilities_default(self):
+        m = PluginManifest(name="test")
+        assert m.capabilities == ["all"]
+
+    def test_manifest_capabilities_restrictive(self):
+        m = PluginManifest(name="test", capabilities=["tools"])
+        assert m.capabilities == ["tools"]
+
+
+class TestStatePersistence:
+    """PluginContext state save/load."""
+
+    def test_save_and_load_state(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_hermes_home",
+            lambda: tmp_path,
+        )
+        mgr = PluginManager()
+        manifest = PluginManifest(name="teststate")
+        ctx = PluginContext(manifest, mgr)
+        ctx.save_state("counter", {"value": 42})
+        loaded = ctx.load_state("counter")
+        assert loaded == {"value": 42}
+
+    def test_load_state_missing_key(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_hermes_home",
+            lambda: tmp_path,
+        )
+        mgr = PluginManager()
+        manifest = PluginManifest(name="teststate2")
+        ctx = PluginContext(manifest, mgr)
+        assert ctx.load_state("nonexistent") is None
+        assert ctx.load_state("nonexistent", default=99) == 99
+
+
+class TestParseManifestSandbox:
+    """_parse_manifest validates sandbox field."""
+
+    def test_invalid_sandbox_falls_back_to_none(self, tmp_path):
+        mgr = PluginManager()
+        manifest_dir = tmp_path / "bad_sandbox"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.yaml").write_text(yaml.dump({
+            "name": "bad_sandbox",
+            "sandbox": "invalid_mode",
+        }))
+        result = mgr._parse_manifest(
+            manifest_dir / "plugin.yaml", manifest_dir, "user", ""
+        )
+        assert result is not None
+        assert result.sandbox == "none"
+
+    def test_valid_subprocess_sandbox(self, tmp_path):
+        mgr = PluginManager()
+        manifest_dir = tmp_path / "sub_plug"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.yaml").write_text(yaml.dump({
+            "name": "sub_plug",
+            "sandbox": "subprocess",
+        }))
+        result = mgr._parse_manifest(
+            manifest_dir / "plugin.yaml", manifest_dir, "user", ""
+        )
+        assert result is not None
+        assert result.sandbox == "subprocess"
+
+    def test_capabilities_from_manifest(self, tmp_path):
+        mgr = PluginManager()
+        manifest_dir = tmp_path / "cap_plug"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.yaml").write_text(yaml.dump({
+            "name": "cap_plug",
+            "capabilities": ["tools"],
+        }))
+        result = mgr._parse_manifest(
+            manifest_dir / "plugin.yaml", manifest_dir, "user", ""
+        )
+        assert result is not None
+        assert result.capabilities == ["tools"]
 
     def test_debug_handler_installed_when_env_var_set(self, monkeypatch):
         """With HERMES_PLUGINS_DEBUG=1, a DEBUG-level stderr handler is attached."""

@@ -194,7 +194,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
           />
           <Input
             aria-label="Custom credit amount"
-            containerClassName="w-20"
+            containerClassName="w-16"
             disabled={controlsDisabled}
             inputMode="decimal"
             max={billing.max_usd ?? undefined}

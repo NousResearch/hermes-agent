@@ -30,6 +30,8 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
 - `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
 
+Credential paths default to `${HERMES_HOME:-~/.hermes}/google_token.json`, `${HERMES_HOME:-~/.hermes}/google_client_secret.json`, and `${HERMES_HOME:-~/.hermes}/google_oauth_pending.json`. For local/scripted runs, override them with `GOOGLE_TOKEN_PATH`, `GOOGLE_CLIENT_SECRET_PATH`, and `GOOGLE_PENDING_PATH`; blank override values are ignored and fall back to the profile defaults. Remote backend credential mounting still uses the `required_credential_files` entries above.
+
 ## First-Time Setup
 
 The setup is fully non-interactive — you drive it step by step so it works

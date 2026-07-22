@@ -49,6 +49,110 @@ class TestGetToolset:
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 
+    def test_static_and_mcp_alias_with_same_name_are_merged(self, monkeypatch):
+        # An MCP server with the same name as a built-in toolset (e.g. an
+        # MCP "homeassistant" server alongside the built-in `homeassistant`
+        # toolset) used to be shadowed.  Both sets of tools should now appear.
+        TOOLSETS["_mergetest"] = {
+            "description": "static",
+            "tools": ["builtin_tool_a"],
+            "includes": [],
+        }
+        try:
+            reg = ToolRegistry()
+            reg.register(
+                name="mcp__mergetest_call",
+                toolset="mcp-_mergetest",
+                schema=_make_schema("mcp__mergetest_call", "Call"),
+                handler=_dummy_handler,
+            )
+            reg.register_toolset_alias("_mergetest", "mcp-_mergetest")
+            monkeypatch.setattr("tools.registry.registry", reg)
+
+            ts = get_toolset("_mergetest")
+            assert ts is not None
+            assert "builtin_tool_a" in ts["tools"]
+            assert "mcp__mergetest_call" in ts["tools"]
+            assert "MCP server" in ts["description"]
+        finally:
+            del TOOLSETS["_mergetest"]
+
+    def test_static_and_mcp_alias_preserves_static_includes(self, monkeypatch):
+        # The merge must not drop the static toolset's `includes` list,
+        # otherwise transitive resolution silently loses tools.
+        TOOLSETS["_mergetest_inc"] = {
+            "description": "static with includes",
+            "tools": ["builtin_a"],
+            "includes": ["web"],
+        }
+        try:
+            reg = ToolRegistry()
+            reg.register(
+                name="mcp__mergetest_inc_call",
+                toolset="mcp-_mergetest_inc",
+                schema=_make_schema("mcp__mergetest_inc_call", "Call"),
+                handler=_dummy_handler,
+            )
+            reg.register_toolset_alias("_mergetest_inc", "mcp-_mergetest_inc")
+            monkeypatch.setattr("tools.registry.registry", reg)
+
+            ts = get_toolset("_mergetest_inc")
+            assert ts is not None
+            assert ts["includes"] == ["web"]
+        finally:
+            del TOOLSETS["_mergetest_inc"]
+
+    def test_static_and_mcp_alias_with_no_mcp_tools_yet(self, monkeypatch):
+        # Alias is registered but no MCP tools have landed yet (e.g. server
+        # connected but tool discovery hasn't completed).  The static
+        # toolset must be returned unchanged, not a "merged" empty version.
+        TOOLSETS["_mergetest_empty"] = {
+            "description": "static only",
+            "tools": ["builtin_only"],
+            "includes": [],
+        }
+        try:
+            reg = ToolRegistry()
+            # Alias registered but no tools under mcp-_mergetest_empty.
+            reg.register_toolset_alias("_mergetest_empty", "mcp-_mergetest_empty")
+            monkeypatch.setattr("tools.registry.registry", reg)
+
+            ts = get_toolset("_mergetest_empty")
+            assert ts is not None
+            assert ts["tools"] == ["builtin_only"]
+            # Description should NOT be annotated as merged when nothing was
+            # actually merged in.
+            assert "MCP server" not in ts["description"]
+        finally:
+            del TOOLSETS["_mergetest_empty"]
+
+    def test_get_all_toolsets_reflects_merge(self, monkeypatch):
+        # Listing surfaces (e.g. `/toolsets info`) should show the merged
+        # form, not the un-merged static.
+        TOOLSETS["_mergetest_listed"] = {
+            "description": "static",
+            "tools": ["builtin_b"],
+            "includes": [],
+        }
+        try:
+            reg = ToolRegistry()
+            reg.register(
+                name="mcp__mergetest_listed_call",
+                toolset="mcp-_mergetest_listed",
+                schema=_make_schema("mcp__mergetest_listed_call", "Call"),
+                handler=_dummy_handler,
+            )
+            reg.register_toolset_alias("_mergetest_listed", "mcp-_mergetest_listed")
+            monkeypatch.setattr("tools.registry.registry", reg)
+
+            from toolsets import get_all_toolsets
+            all_ts = get_all_toolsets()
+            assert "_mergetest_listed" in all_ts
+            assert "mcp__mergetest_listed_call" in all_ts["_mergetest_listed"]["tools"]
+            assert "builtin_b" in all_ts["_mergetest_listed"]["tools"]
+        finally:
+            del TOOLSETS["_mergetest_listed"]
+
 
 class TestResolveToolset:
     def test_leaf_toolset(self):

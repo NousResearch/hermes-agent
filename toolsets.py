@@ -625,12 +625,27 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
     except Exception:
         return toolset if toolset else None
 
+    # If a static toolset exists AND an MCP server registered itself under
+    # the same alias (e.g. an MCP server "homeassistant" running alongside
+    # the built-in `homeassistant` toolset), merge their tools so the MCP
+    # tools aren't shadowed by the static definition. Also merge any tools
+    # registered directly under the toolset name.
     if toolset:
-        merged_tools = sorted(
-            set(toolset.get("tools", []))
-            | set(registry.get_tool_names_for_toolset(name))
+        merged_tools = set(toolset.get("tools", [])) | set(
+            registry.get_tool_names_for_toolset(name)
         )
-        return {**toolset, "tools": merged_tools}
+        description = toolset.get("description", name)
+        alias_target = registry.get_toolset_alias_target(name)
+        if alias_target and alias_target.startswith("mcp-"):
+            mcp_tools = registry.get_tool_names_for_toolset(alias_target)
+            if mcp_tools:
+                merged_tools |= set(mcp_tools)
+                description = f"{description} (+ MCP server '{name}')"
+        return {
+            **toolset,
+            "description": description,
+            "tools": sorted(merged_tools),
+        }
 
     registry_toolset = name
     description = f"Plugin toolset: {name}"
@@ -818,12 +833,23 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     Get all available toolsets with their definitions.
 
     Includes both statically-defined toolsets and plugin-registered ones.
-    
+    For names that exist in both ``TOOLSETS`` and as an MCP alias, the
+    merged form from ``get_toolset()`` is returned so listing surfaces
+    (``/toolsets``, dashboard) reflect the same merge applied at lookup.
+
     Returns:
         Dict: All toolset definitions
     """
     result = dict(TOOLSETS)
     aliases = _get_registry_toolset_aliases()
+    # Re-merge static toolsets that also have an MCP alias of the same name
+    # so listings show the combined view rather than the static-only one.
+    for static_name in list(result):
+        target = aliases.get(static_name)
+        if target and target.startswith("mcp-"):
+            merged = get_toolset(static_name)
+            if merged:
+                result[static_name] = merged
     for ts_name in _get_plugin_toolset_names():
         display_name = ts_name
         for alias, canonical in aliases.items():

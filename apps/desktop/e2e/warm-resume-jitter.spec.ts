@@ -310,31 +310,31 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
       characterData: false,
     })
 
-    // Also track $messages setMessages calls by polling the viewport's
-    // innerHTML. The MutationObserver only catches DOM additions/removals;
-    // React may reconcile by key without adding/removing nodes (same keys
-    // → in-place prop update → no childList mutation). To catch this, we
-    // poll the viewport's innerHTML length every 2ms and count transitions
-    // where the content changes while messages are already present.
-    let lastHtmlLen = -1
+    // We also poll the first message's text content every 2ms. The
+    // MutationObserver above only catches childList additions; React may
+    // reconcile by key without adding/removing nodes (same keys → in-place
+    // prop update → no childList mutation). The poll catches a full
+    // transcript repaint (where all message components re-render with new
+    // props) by detecting text content changes in the first message after
+    // the initial paint. Metadata-only changes (model name, busy indicator)
+    // don't affect message text, so they don't produce false positives.
+    const contentEl = viewport.querySelector('[data-slot="aui_thread-content"]') ?? viewport
+    let lastFirstMsgText = ''
     let hasMessages = false
     const pollInterval = setInterval(() => {
       if (state.stopped) {
         clearInterval(pollInterval)
         return
       }
-      const htmlLen = viewport.innerHTML.length
-      if (htmlLen !== lastHtmlLen) {
-        if (hasMessages && lastHtmlLen > 0) {
-          // Content changed while messages were already present:
-          // this is a reconcile, not a clear or first paint.
+      // Get the first message element's text content.
+      const firstMsg = contentEl.querySelector('[data-role="message"], [data-message-id]')
+      const firstMsgText = firstMsg?.textContent ?? ''
+      if (firstMsgText && firstMsgText !== lastFirstMsgText) {
+        if (hasMessages) {
           state.reconciles = (state.reconciles ?? 0) + 1
         }
-        lastHtmlLen = htmlLen
-        // Once we have messages, mark it so subsequent changes count.
-        if (htmlLen > 100) {
-          hasMessages = true
-        }
+        lastFirstMsgText = firstMsgText
+        hasMessages = true
       }
     }, 2)
   })

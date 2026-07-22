@@ -235,12 +235,15 @@ def test_systemd_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
         "hermes_cli.gateway._probe_systemd_service_running",
         lambda *a, **kw: (False, True),
     )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway",
+    )
     mgr = SystemdServiceManager()
-    mgr.start("ignored")
-    mgr.stop("ignored")
-    mgr.restart("ignored")
+    mgr.start("hermes-gateway")
+    mgr.stop("hermes-gateway")
+    mgr.restart("hermes-gateway")
     assert called == ["start", "stop", "restart"]
-    assert mgr.is_running("ignored") is True
+    assert mgr.is_running("hermes-gateway") is True
 
 
 def test_launchd_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,12 +260,15 @@ def test_launchd_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         "hermes_cli.gateway._probe_launchd_service_running", lambda: False,
     )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway",
+    )
     mgr = LaunchdServiceManager()
-    mgr.start("ignored")
-    mgr.stop("ignored")
-    mgr.restart("ignored")
+    mgr.start("hermes-gateway")
+    mgr.stop("hermes-gateway")
+    mgr.restart("hermes-gateway")
     assert called == ["start", "stop", "restart"]
-    assert mgr.is_running("ignored") is False
+    assert mgr.is_running("hermes-gateway") is False
 
 
 def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -287,12 +293,15 @@ def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
         "hermes_cli.gateway.find_gateway_pids",
         lambda **kw: [12345],
     )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway",
+    )
     mgr = WindowsServiceManager()
-    mgr.start("ignored")
-    mgr.stop("ignored")
-    mgr.restart("ignored")
+    mgr.start("hermes-gateway")
+    mgr.stop("hermes-gateway")
+    mgr.restart("hermes-gateway")
     assert called == ["start", "stop", "restart"]
-    assert mgr.is_running("ignored") is True
+    assert mgr.is_running("hermes-gateway") is True
 
 
 def test_windows_manager_is_running_false_when_not_installed(
@@ -309,7 +318,135 @@ def test_windows_manager_is_running_false_when_not_installed(
         "hermes_cli.gateway.find_gateway_pids",
         lambda **kw: [12345],  # PIDs would otherwise vote "running"
     )
-    assert WindowsServiceManager().is_running("ignored") is False
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway",
+    )
+    assert WindowsServiceManager().is_running("hermes-gateway") is False
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle name validation — host backends only manage the active profile's
+# gateway service, so a wrong ``name`` must fail loudly instead of silently
+# starting the wrong service.
+# ---------------------------------------------------------------------------
+
+
+def test_systemd_manager_lifecycle_rejects_wrong_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: previously the ``name`` argument was silently dropped,
+    so a future caller that forgot to gate on backend kind would start
+    the gateway service regardless of the value passed in."""
+    called: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.gateway.systemd_start", lambda: called.append("start"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.systemd_stop", lambda: called.append("stop"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.systemd_restart", lambda: called.append("restart"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway._probe_systemd_service_running",
+        lambda *a, **kw: (False, False),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway",
+    )
+    mgr = SystemdServiceManager()
+    # s6-style name on a host backend — must be rejected.
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.start("gateway-coder")
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.stop("gateway-coder")
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.restart("gateway-coder")
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.is_running("gateway-coder")
+    assert called == [], "no underlying call should have run"
+
+
+def test_launchd_manager_lifecycle_rejects_wrong_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launchd_start", lambda: called.append("start"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launchd_stop", lambda: called.append("stop"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launchd_restart", lambda: called.append("restart"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway._probe_launchd_service_running", lambda: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway-coder",
+    )
+    mgr = LaunchdServiceManager()
+    # Default-profile name on a coder profile — must be rejected.
+    with pytest.raises(ValueError, match="hermes-gateway-coder"):
+        mgr.start("hermes-gateway")
+    with pytest.raises(ValueError, match="hermes-gateway-coder"):
+        mgr.stop("hermes-gateway")
+    with pytest.raises(ValueError, match="hermes-gateway-coder"):
+        mgr.restart("hermes-gateway")
+    with pytest.raises(ValueError, match="hermes-gateway-coder"):
+        mgr.is_running("hermes-gateway")
+    assert called == []
+
+
+def test_windows_manager_lifecycle_rejects_wrong_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[str] = []
+    import hermes_cli.gateway_windows  # noqa: F401
+
+    class _FakeWindowsModule:
+        @staticmethod
+        def start() -> None: called.append("start")
+        @staticmethod
+        def stop() -> None: called.append("stop")
+        @staticmethod
+        def restart() -> None: called.append("restart")
+        @staticmethod
+        def is_installed() -> bool: return True
+
+    monkeypatch.setattr("hermes_cli.gateway_windows", _FakeWindowsModule)
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda **kw: [12345],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway",
+    )
+    mgr = WindowsServiceManager()
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.start("hermes-gateway-dashboard")
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.stop("hermes-gateway-dashboard")
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.restart("hermes-gateway-dashboard")
+    with pytest.raises(ValueError, match="hermes-gateway"):
+        mgr.is_running("hermes-gateway-dashboard")
+    assert called == []
+
+
+def test_host_backends_accept_active_profile_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The active profile's service name should always be accepted."""
+    called: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.gateway.systemd_start", lambda: called.append("start"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.get_service_name", lambda: "hermes-gateway-coder",
+    )
+    SystemdServiceManager().start("hermes-gateway-coder")
+    assert called == ["start"]
 
 
 def test_windows_manager_install_forwards_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:

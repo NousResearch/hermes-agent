@@ -357,6 +357,14 @@ terminal:
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
+#
+#   # Release-age gate on `hermes update`. When > 0 and `uv` is installed,
+#   # passes --exclude-newer <today-N> so PyPI artifacts uploaded within
+#   # the last N days are refused. Defends against short-window supply-chain
+#   # compromises (mistralai 2.4.6 was live ~15 min; node-ipc 9.1.6 / 9.2.3 /
+#   # 12.0.1 lived hours-to-days). 3 days matches pnpm's minimumReleaseAge:
+#   # 4320 heuristic. Default 0 (off, opt-in).
+#   minimum_release_age_days: 3
 
 # =============================================================================
 # Browser Tool Configuration

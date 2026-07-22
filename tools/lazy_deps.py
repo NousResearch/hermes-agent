@@ -677,6 +677,18 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             except (subprocess.TimeoutExpired, FileNotFoundError) as e:
                 logger.debug("uv invocation failed: %s", e)
 
+        # Release-age gate: when UV_EXCLUDE_NEWER is set (hermes update scopes
+        # it around the lazy refresh), pip cannot honor the cutoff, so falling
+        # back would silently bypass the gate the operator configured. Fail
+        # closed instead — the caller keeps the previously-installed version.
+        if os.environ.get("UV_EXCLUDE_NEWER"):
+            return _InstallResult(
+                False,
+                "",
+                "uv unavailable or refused the install and the release-age gate "
+                "(UV_EXCLUDE_NEWER) forbids the ungated pip fallback",
+            )
+
         # Tier 2: python -m pip (with ensurepip bootstrap if needed)
         pip_cmd = [sys.executable, "-m", "pip"]
         try:

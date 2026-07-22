@@ -2782,6 +2782,19 @@ DEFAULT_CONFIG = {
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
         "allow_lazy_installs": True,
+        # Refuse to resolve package versions published less than this many
+        # days ago. Defends against supply-chain compromise windows where a
+        # malicious release is detected and pulled within days — examples:
+        # mistralai 2.4.6 (PyPI, 2026-05-12, Mini Shai-Hulud — ~15-minute
+        # exposure window before quarantine); node-ipc 9.1.6/9.2.3/12.0.1
+        # (npm, 2026-05-14, load-time IIFE credential theft — hours-to-days
+        # before detection). A 3-day gate matches pnpm's minimumReleaseAge:
+        # 4320 default and would have refused both incidents on resolution.
+        # Requires ``uv`` (uses its --exclude-newer flag); falls through with
+        # a warning when only ``pip`` is available. Set to 0 to disable.
+        # Default 0 (opt-in) so existing installs see no behavior change;
+        # set to 3 (or higher) to enable.
+        "minimum_release_age_days": 0,
     },
 
     "cron": {

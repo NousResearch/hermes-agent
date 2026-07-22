@@ -19149,10 +19149,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
-        # True when the previously enqueued progress line was a terminal
-        # fenced code block — consecutive terminal calls then drop the
-        # repeated "💻 terminal" header and render back-to-back blocks.
-        last_was_terminal_block = [False]
+        # Name of the previous fenced progress block's tool. Consecutive
+        # same-tool blocks drop the repeated header and render back-to-back.
+        last_code_block_tool = [None]
 
         # ── Discord voice "verbal ack before tool calls" ────────────────
         # When the bot is in a voice channel with the continuous mixer
@@ -19354,20 +19353,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _progress_adapter = self._adapter_for_source(source)
             except Exception:
                 _progress_adapter = None
+            _tool_code_arg = (
+                args.get("command" if tool_name == "terminal" else "code")
+                if isinstance(args, dict) and tool_name in ("terminal", "execute_code")
+                else None
+            )
             if (
                 getattr(_progress_adapter, "supports_code_blocks", False)
-                and tool_name == "terminal"
-                and isinstance(args, dict)
-                and isinstance(args.get("command"), str)
-                and args["command"].strip()
+                and tool_name in ("terminal", "execute_code")
+                and isinstance(_tool_code_arg, str)
+                and _tool_code_arg.strip()
             ):
                 from agent.display import get_tool_preview_max_len
-                _cmd_full = args["command"].rstrip()
-                # Consecutive terminal calls: drop the repeated
-                # "💻 terminal" header so back-to-back commands render as
-                # adjacent code blocks under a single header.
+                _cmd_full = _tool_code_arg.rstrip()
                 _block_header = (
-                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                    "" if last_code_block_tool[0] == tool_name else f"{emoji} {tool_name}\n"
                 )
                 _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
                 # Single-line, capped preview for non-verbose modes.
@@ -19385,10 +19385,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if _code_block_full is not None:
-                    last_was_terminal_block[0] = True
+                    last_code_block_tool[0] = tool_name
                     progress_queue.put(_code_block_full)
                     return
-                last_was_terminal_block[0] = False
+                last_code_block_tool[0] = None
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
@@ -19413,7 +19413,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # fenced block (built above) instead of the truncated preview.
             if _code_block_short is not None:
                 msg = _code_block_short
-                last_was_terminal_block[0] = True
+                last_code_block_tool[0] = tool_name
             elif preview:
                 from agent.display import (
                     get_tool_preview_max_len,
@@ -19438,10 +19438,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
                 else:
                     msg = f"{emoji} {tool_name}: \"{preview}\""
-                last_was_terminal_block[0] = False
+                last_code_block_tool[0] = None
             else:
                 msg = f"{emoji} {tool_name}..."
-                last_was_terminal_block[0] = False
+                last_code_block_tool[0] = None
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same

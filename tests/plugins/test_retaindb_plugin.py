@@ -248,6 +248,127 @@ class TestWriteQueue:
         call_args = client2.ingest_session.call_args
         assert call_args[0][0] == "user1"  # user_id
 
+    def test_retries_transient_failure_without_restart(self, tmp_path):
+        client = MagicMock()
+        client.ingest_session = MagicMock(side_effect=[
+            RuntimeError("temporary outage"),
+            {"status": "ok"},
+        ])
+        db_path = tmp_path / "retry_test.db"
+        q = _WriteQueue(client, db_path)
+        q.enqueue("user1", "sess1", [{"role": "user", "content": "retry me"}])
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            conn = sqlite3.connect(str(db_path))
+            pending_count = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+            conn.close()
+            if client.ingest_session.call_count >= 2 and pending_count == 0:
+                break
+            time.sleep(0.05)
+        q.shutdown()
+
+        assert client.ingest_session.call_count == 2
+        conn = sqlite3.connect(str(db_path))
+        pending_count = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+        conn.close()
+        assert pending_count == 0
+
+    def test_crash_recovery_replays_more_than_initial_batch(self, tmp_path):
+        db_path = tmp_path / "large_recovery_test.db"
+        q1 = _WriteQueue(MagicMock(), db_path)
+        q1.shutdown()
+        conn = sqlite3.connect(str(db_path))
+        rows = [
+            (
+                "user1",
+                f"sess-{idx}",
+                json.dumps([{"role": "user", "content": f"turn {idx}"}]),
+                "2026-05-12T00:00:00+00:00",
+            )
+            for idx in range(205)
+        ]
+        conn.executemany(
+            "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        client = MagicMock()
+        client.ingest_session = MagicMock(return_value={"status": "ok"})
+        q2 = _WriteQueue(client, db_path)
+        q2.shutdown()
+
+        assert client.ingest_session.call_count == 205
+        conn = sqlite3.connect(str(db_path))
+        pending_count = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+        conn.close()
+        assert pending_count == 0
+
+    def test_persistent_failure_stops_after_retry_budget(self, tmp_path):
+        client = MagicMock()
+        client.ingest_session = MagicMock(side_effect=RuntimeError("API down"))
+        db_path = tmp_path / "retry_budget_test.db"
+        q = _WriteQueue(client, db_path)
+        q.enqueue("user1", "sess1", [{"role": "user", "content": "park me"}])
+
+        max_attempts = 6
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if client.ingest_session.call_count > max_attempts:
+                break
+            time.sleep(0.05)
+        q.shutdown()
+
+        assert client.ingest_session.call_count == max_attempts
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT last_error, attempt_count FROM pending").fetchone()
+        conn.close()
+        assert row is not None
+        assert "API down" in row[0]
+        assert row[1] == max_attempts
+
+    def test_crash_recovery_starts_with_bounded_replay_batch(self, tmp_path):
+        db_path = tmp_path / "bounded_replay_test.db"
+        q1 = _WriteQueue(MagicMock(), db_path)
+        q1.shutdown()
+        conn = sqlite3.connect(str(db_path))
+        rows = [
+            (
+                "user1",
+                f"sess-{idx}",
+                json.dumps([{"role": "user", "content": f"turn {idx}"}]),
+                "2026-05-12T00:00:00+00:00",
+            )
+            for idx in range(205)
+        ]
+        conn.executemany(
+            "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_ingest(*_args):
+            started.set()
+            release.wait(timeout=2.0)
+            return {"status": "ok"}
+
+        client = MagicMock()
+        client.ingest_session = MagicMock(side_effect=slow_ingest)
+        q2 = _WriteQueue(client, db_path)
+
+        assert started.wait(timeout=2.0)
+        queued_during_first_flush = q2._q.qsize()
+        release.set()
+        q2.shutdown()
+
+        assert queued_during_first_flush <= 199
+
 
 # ===========================================================================
 # _build_overlay tests

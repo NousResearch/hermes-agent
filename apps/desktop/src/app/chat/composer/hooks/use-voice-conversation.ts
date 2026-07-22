@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
+  markVoicePlaybackInterrupted,
   playSpeechText,
   type SpeechStreamSession,
   startSpeechStream,
@@ -267,6 +268,7 @@ export function useVoiceConversation({
         onSpeech: () => {
           bargeCapturePendingRef.current = true
           onBarge()
+          markVoicePlaybackInterrupted()
           stopVoicePlayback()
         },
         onUtterance: audio => {

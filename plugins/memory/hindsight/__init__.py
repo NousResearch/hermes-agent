@@ -713,6 +713,55 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
 
+    def _failed_retain_queue_path(self):
+        return get_hermes_home() / "hindsight" / "failed-retains.jsonl"
+
+    def _persist_failed_retain(self, payload: Dict[str, Any]) -> None:
+        record = dict(payload)
+        record["failed_at"] = _utc_timestamp()
+        path = self._failed_retain_queue_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def _replay_failed_retains(self) -> None:
+        path = self._failed_retain_queue_path()
+        if not path.exists():
+            return
+        remaining: list[Dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            record.pop("failed_at", None)
+            try:
+                self._run_hindsight_operation(
+                    lambda client, payload=record: client.aretain_batch(**payload)
+                )
+            except Exception as exc:
+                logger.warning("Hindsight failed-retain replay failed: %s", exc, exc_info=True)
+                remaining.append(record)
+        if remaining:
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(
+                "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in remaining),
+                encoding="utf-8",
+            )
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, path)
+        else:
+            path.unlink(missing_ok=True)
+
     @property
     def name(self) -> str:
         return "hindsight"
@@ -1318,7 +1367,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._config.get("observation_scopes")
             or os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", "")
         )
-        self._recall_tags = self._config.get("recall_tags") or None
+        self._recall_tags = _normalize_retain_tags(self._config.get("recall_tags")) or None
         self._recall_tags_match = self._config.get("recall_tags_match", "any")
         self._retain_source = str(
             self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
@@ -1675,16 +1724,22 @@ class HindsightMemoryProvider(MemoryProvider):
             item.pop("retain_async", None)
             if update_mode is not None:
                 item["update_mode"] = update_mode
+            payload = {
+                "bank_id": bank_id,
+                "items": [item],
+                "document_id": document_id,
+                "retain_async": retain_async_flag,
+            }
             logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
                          bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
-            self._run_hindsight_operation(
-                lambda client: client.aretain_batch(
-                    bank_id=bank_id,
-                    items=[item],
-                    document_id=document_id,
-                    retain_async=retain_async_flag,
+            try:
+                self._replay_failed_retains()
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(**payload)
                 )
-            )
+            except Exception:
+                self._persist_failed_retain(payload)
+                raise
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()
@@ -1706,6 +1761,7 @@ class HindsightMemoryProvider(MemoryProvider):
             if not content:
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
+            payload: Dict[str, Any] | None = None
             try:
                 item = self._build_retain_kwargs(
                     content,
@@ -1715,16 +1771,25 @@ class HindsightMemoryProvider(MemoryProvider):
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
                 item.pop("bank_id", None)
                 item.pop("retain_async", None)
+                payload = {"bank_id": self._bank_id, "items": [item]}
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
+                self._replay_failed_retains()
                 self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                    lambda client: client.aretain_batch(**payload)
                 )
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to store memory: {e}")
+                try:
+                    if payload is None:
+                        raise RuntimeError("retain payload was not built")
+                    self._persist_failed_retain(payload)
+                    return json.dumps({"result": "Memory queued for retry."})
+                except Exception as queue_exc:
+                    logger.warning("hindsight_retain queue failed: %s", queue_exc, exc_info=True)
+                    return tool_error(f"Failed to store memory: {e}")
 
         elif tool_name == "hindsight_recall":
             query = args.get("query", "")

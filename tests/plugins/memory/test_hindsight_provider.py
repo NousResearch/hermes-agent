@@ -722,6 +722,14 @@ class TestToolHandlers:
         ))
         assert result["result"] == "No relevant memories found."
 
+    def test_recall_passes_string_recall_tags_as_list(self, provider_with_config):
+        p = provider_with_config(recall_tags="profile:allie,bank:allie", recall_tags_match="all")
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["profile:allie", "bank:allie"]
+        assert call_kwargs["tags_match"] == "all"
+
     def test_recall_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_recall", {}
@@ -751,8 +759,39 @@ class TestToolHandlers:
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "test"}
         ))
-        assert "error" in result
-        assert "connection failed" in result["error"]
+        assert result["result"] == "Memory queued for retry."
+
+    def test_retain_failure_persists_failed_retain_for_retry(self, provider, tmp_path):
+        provider._client.aretain_batch.side_effect = RuntimeError("connection failed")
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+
+        assert result["result"] == "Memory queued for retry."
+        retry_path = tmp_path / "hindsight" / "failed-retains.jsonl"
+        record = json.loads(retry_path.read_text().strip())
+        assert record["bank_id"] == "test-bank"
+        assert record["items"][0]["content"] == "user likes dark mode"
+
+    def test_successful_retain_replays_failed_queue(self, provider, tmp_path):
+        retry_path = tmp_path / "hindsight" / "failed-retains.jsonl"
+        retry_path.write_text(json.dumps({
+            "bank_id": "test-bank",
+            "items": [{"content": "queued memory"}],
+        }) + "\n")
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "new memory"}
+        ))
+
+        assert result["result"] == "Memory stored successfully."
+        assert provider._client.aretain_batch.call_count == 2
+        first = provider._client.aretain_batch.call_args_list[0].kwargs
+        second = provider._client.aretain_batch.call_args_list[1].kwargs
+        assert first["items"][0]["content"] == "queued memory"
+        assert second["items"][0]["content"] == "new memory"
+        assert not retry_path.exists()
 
     def test_recall_error_handling(self, provider):
         provider._client.arecall.side_effect = RuntimeError("timeout")
@@ -1101,10 +1140,15 @@ class TestSyncTurn:
         assert "session:child-session" in item["tags"]
         assert "parent:parent-session" in item["tags"]
 
-    def test_sync_turn_error_does_not_raise(self, provider):
+    def test_sync_turn_error_does_not_raise(self, provider, tmp_path):
         provider._client.aretain_batch.side_effect = RuntimeError("network error")
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
+
+        retry_path = tmp_path / "hindsight" / "failed-retains.jsonl"
+        record = json.loads(retry_path.read_text().strip())
+        assert record["bank_id"] == "test-bank"
+        assert "hello" in record["items"][0]["content"]
 
     def test_sync_turn_preserves_unicode(self, provider_with_config):
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""

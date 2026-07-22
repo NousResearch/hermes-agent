@@ -734,15 +734,15 @@ class CDPSupervisor:
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
-        resp = await self._cdp("Target.getTargets")
-        targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
-            created = await self._cdp("Target.createTarget", {"url": "about:blank"})
-            target_id = created["result"]["targetId"]
-        else:
-            target_id = page_target["targetId"]
+        """Create a fresh about:blank page, attach flattened session, enable domains, install dialog bridge.
+
+        Always creates a new page rather than reusing an existing one because
+        ``Page.enable`` on a flattened session can hang indefinitely when
+        attached to certain existing pages (e.g., SPAs, complex docs), leaving
+        the CDP supervisor stuck.
+        """
+        created = await self._cdp("Target.createTarget", {"url": "about:blank"})
+        target_id = created["result"]["targetId"]
 
         attach = await self._cdp(
             "Target.attachToTarget",

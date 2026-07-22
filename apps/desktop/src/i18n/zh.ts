@@ -172,6 +172,15 @@ export const zh: Translations = {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
 
+  billingBlock: {
+    titleNous: 'Nous 额度已用尽',
+    titleProvider: provider => `额度已用尽 — ${provider}`,
+    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
+    openBilling: '打开账单',
+    addCredits: '添加额度',
+    dismiss: '忽略'
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',

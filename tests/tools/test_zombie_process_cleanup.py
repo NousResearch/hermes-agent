@@ -96,7 +96,7 @@ class TestAgentCloseMethod:
     """Verify AIAgent.close() exists, is idempotent, and calls cleanup."""
 
     def test_close_calls_cleanup_functions(self):
-        """close() should call kill_all, cleanup_vm, cleanup_browser."""
+        """close() should release every session-owned execution backend."""
         from unittest.mock import patch
 
         with patch("run_agent.AIAgent.__init__", return_value=None):
@@ -109,7 +109,8 @@ class TestAgentCloseMethod:
 
             with patch("tools.process_registry.process_registry") as mock_registry, \
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
-                 patch("run_agent.cleanup_browser") as mock_cleanup_browser:
+                 patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
+                 patch("tools.computer_use.release_computer_use_session") as mock_cleanup_cua:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
@@ -117,6 +118,7 @@ class TestAgentCloseMethod:
                 )
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
+                mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
 
     def test_close_is_idempotent(self):
         """close() can be called multiple times without error."""

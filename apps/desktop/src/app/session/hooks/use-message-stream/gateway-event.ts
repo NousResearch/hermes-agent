@@ -40,10 +40,8 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'

@@ -17,10 +17,13 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
+  clearScrollPosition,
+  getScrollPosition,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
   resetThreadScroll,
+  saveScrollPosition,
   setThreadAtBottom
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
@@ -156,7 +159,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // spring can't tell live-token growth from a session-switch bulk relayout, and
   // chasing the latter reads as the view scrolling to random spots before
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll, state } = useStickToBottom({
     initial: 'instant',
     resize: 'instant'
   })
@@ -238,6 +241,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
 
+  // Clear saved scroll position when the user returns to the bottom (and the
+  // position is no longer a reading location worth preserving). Guarded against
+  // the session-switch race: after restoring a saved position, isAtBottom
+  // hasn't updated yet (scroll handler is async), so a naive clear would delete
+  // the position we just tried to restore. Only clear on a genuine false→true
+  // transition, not when isAtBottom is already true from the previous session.
+  const prevIsAtBottomRef = useRef(isAtBottom)
+
+  useEffect(() => {
+    const prevAtBottom = prevIsAtBottomRef.current
+
+    prevIsAtBottomRef.current = isAtBottom
+
+    if (isAtBottom && !prevAtBottom && sessionKey) {
+      clearScrollPosition(sessionKey)
+    }
+  }, [isAtBottom, sessionKey])
+
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')
   }, [scrollRef])
@@ -262,17 +283,67 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // New run → snap to the latest turn.
   useAuiEvent('thread.runStart', () => void scrollToBottom())
 
+  // Save previous session's scroll position on switch. This runs during render
+  // before the useLayoutEffect below resets scrollTop, so the old position is
+  // still live on the scroll container.
+  const prevSessionRef = useRef(sessionKey)
+
+  if (prevSessionRef.current !== sessionKey) {
+    const prevKey = prevSessionRef.current
+
+    if (prevKey && !isAtBottom && scrollRef.current) {
+      saveScrollPosition(prevKey, state.scrollTop)
+    }
+
+    prevSessionRef.current = sessionKey
+  }
+
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).
   // The swap is multi-step and lays out over many frames; letting the library
   // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
   // Instead: quiet it, glue to the true bottom until the height holds steady,
   // then hand back locked. Live streaming afterward uses the normal resize follow.
+  //
+  // When the incoming session has a saved scroll position (user scrolled up to
+  // read history), restore that position instead of resetting to bottom.
   useLayoutEffect(() => {
     const el = scrollRef.current
 
     if (!el) {
       return
+    }
+
+    const savedPos = sessionKey ? getScrollPosition(sessionKey) : undefined
+
+    if (savedPos !== undefined) {
+      stopScroll()
+
+      // Restore after content has laid out (two frames is enough for
+      // synchronous content; async images may shift the position later).
+      let frame = 0
+
+      const restore = () => {
+        const node = scrollRef.current
+
+        if (!node) {
+          return
+        }
+
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight)
+        // Clamp: scrollTop can't exceed the new content height and can't be negative.
+        state.scrollTop = Math.min(Math.max(0, savedPos), maxScroll)
+
+        if (++frame > 1) {
+          return
+        }
+
+        requestAnimationFrame(restore)
+      }
+
+      const rafId = requestAnimationFrame(restore)
+
+      return () => cancelAnimationFrame(rafId)
     }
 
     stopScroll()

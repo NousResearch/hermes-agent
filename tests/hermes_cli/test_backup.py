@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import time
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -258,7 +259,7 @@ class TestBackup:
             def __init__(self, connection):
                 self._connection = connection
 
-            def backup(self, _destination):
+            def backup(self, _destination, **_kwargs):
                 raise sqlite3.OperationalError("forced backup failure")
 
             def close(self):
@@ -1391,6 +1392,130 @@ class TestProfileRestoration:
 # ---------------------------------------------------------------------------
 
 class TestSafeCopyDb:
+    @pytest.mark.timeout(10)
+    def test_real_exclusive_lock_is_bounded(self, tmp_path, monkeypatch, caplog):
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "locked.db"
+        dst = tmp_path / "copy.db"
+        lock_holder = sqlite3.connect(src)
+        try:
+            lock_holder.execute("CREATE TABLE sample (value TEXT)")
+            lock_holder.commit()
+            lock_holder.execute("BEGIN EXCLUSIVE")
+
+            monkeypatch.setattr(
+                backup_mod, "_SQLITE_BACKUP_STALL_TIMEOUT_SECONDS", 0.2
+            )
+            monkeypatch.setattr(
+                backup_mod, "_SQLITE_BACKUP_RETRY_SLEEP_SECONDS", 0.01
+            )
+
+            started = time.monotonic()
+            result = backup_mod._safe_copy_db(src, dst)
+            elapsed = time.monotonic() - started
+        finally:
+            lock_holder.close()
+
+        assert result is False
+        assert elapsed < 5.0
+        assert not dst.exists()
+        assert str(src) in caplog.text
+        assert "timed out" in caplog.text.lower()
+
+    def test_persistent_busy_backup_times_out_and_cleans_up(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "locked.db"
+        dst = tmp_path / "copy.db"
+        src.touch()
+        dst.write_bytes(b"partial")
+
+        class FakeConnection:
+            def __init__(self, *, source=False):
+                self.source = source
+                self.closed = False
+                self.backup_kwargs = None
+
+            def backup(self, _destination, **kwargs):
+                self.backup_kwargs = kwargs
+                progress = kwargs.get("progress")
+                if progress is None:
+                    return
+                progress(sqlite3.SQLITE_BUSY, 10, 10)
+                progress(sqlite3.SQLITE_BUSY, 10, 10)
+
+            def close(self):
+                self.closed = True
+
+        source = FakeConnection(source=True)
+        destination = FakeConnection()
+        connections = iter((source, destination))
+        monkeypatch.setattr(
+            backup_mod.sqlite3, "connect", lambda *_args, **_kwargs: next(connections)
+        )
+        clock = iter((0.0, 0.0, 31.0))
+        monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
+        real_unlink = Path.unlink
+
+        def unlink_after_close(path, *args, **kwargs):
+            if path == dst and not destination.closed:
+                raise PermissionError("destination is still open")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink_after_close)
+
+        assert backup_mod._safe_copy_db(src, dst) is False
+        assert not dst.exists()
+        assert source.closed is True
+        assert destination.closed is True
+        assert source.backup_kwargs is not None
+        assert source.backup_kwargs["pages"] > 0
+        assert callable(source.backup_kwargs["progress"])
+        assert str(src) in caplog.text
+        assert "timed out" in caplog.text.lower()
+
+    def test_page_progress_refreshes_stall_deadline(self, tmp_path, monkeypatch):
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "busy-but-progressing.db"
+        dst = tmp_path / "copy.db"
+        src.touch()
+
+        class FakeConnection:
+            def __init__(self, *, source=False):
+                self.source = source
+                self.closed = False
+
+            def backup(self, destination, **kwargs):
+                progress = kwargs["progress"]
+                progress(sqlite3.SQLITE_OK, 20, 30)
+                progress(sqlite3.SQLITE_BUSY, 20, 30)
+                # A concurrent source write can restart SQLite's online backup,
+                # temporarily increasing the remaining-page count.
+                progress(sqlite3.SQLITE_OK, 25, 30)
+                progress(sqlite3.SQLITE_OK, 20, 30)
+                progress(sqlite3.SQLITE_BUSY, 20, 30)
+                progress(sqlite3.SQLITE_DONE, 0, 30)
+
+            def close(self):
+                self.closed = True
+
+        source = FakeConnection(source=True)
+        destination = FakeConnection()
+        connections = iter((source, destination))
+        monkeypatch.setattr(
+            backup_mod.sqlite3, "connect", lambda *_args, **_kwargs: next(connections)
+        )
+        clock = iter((0.0, 20.0, 40.0, 55.0, 70.0, 95.0))
+        monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
+
+        assert backup_mod._safe_copy_db(src, dst) is True
+        assert source.closed is True
+        assert destination.closed is True
+
     def test_copies_valid_database(self, tmp_path):
         from hermes_cli.backup import _safe_copy_db
         src = tmp_path / "test.db"
@@ -2008,7 +2133,7 @@ class TestPreUpdateBackup:
             def __init__(self, connection):
                 self._connection = connection
 
-            def backup(self, _destination):
+            def backup(self, _destination, **_kwargs):
                 raise sqlite3.OperationalError("forced backup failure")
 
             def close(self):

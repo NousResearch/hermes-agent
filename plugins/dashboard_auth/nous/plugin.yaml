@@ -1,7 +1,0 @@
-name: nous
-version: 1.0.0
-description: "Dashboard auth provider — OAuth 2.0 (authorization-code + PKCE) against Nous Portal. Auto-activates when a client_id is configured via either dashboard.oauth.client_id in config.yaml (canonical surface) or HERMES_DASHBOARD_OAUTH_CLIENT_ID env var (operator override; Portal injects this at Fly.io provisioning). dashboard.oauth.portal_url / HERMES_DASHBOARD_PORTAL_URL are optional and default to https://portal.nousresearch.com."
-author: NousResearch
-kind: backend
-requires_env:
-  - HERMES_DASHBOARD_OAUTH_CLIENT_ID

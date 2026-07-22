@@ -5,6 +5,7 @@ agent dispatch. It runs in _handle_message and acts on returned action
 dicts: {"action": "skip"|"rewrite"|"allow"}.
 """
 
+import dataclasses
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -130,6 +131,170 @@ async def test_hook_allow_falls_through_to_auth(monkeypatch):
     # auth chain ran → pairing code was generated
     assert result is None
     runner.pairing_store.generate_code.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_required_gate_rejects_an_unrelated_allow_before_agent_dispatch(monkeypatch):
+    """Only the declared gate owner can approve a required ingress gate."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="unrelated", source="user"),
+    ).register_hook("pre_gateway_dispatch", lambda **_kwargs: {"action": "allow"})
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    reached_agent = False
+
+    async def capture(*_args):
+        nonlocal reached_agent
+        reached_agent = True
+        return "unexpected"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    event = _make_event("guarded")
+    event.required_dispatch_gate = "line-group-context"
+
+    assert await runner._handle_message(event) is None
+    assert reached_agent is False
+
+
+@pytest.mark.asyncio
+async def test_required_gate_accepts_only_matching_owner_and_keeps_enrichment(monkeypatch):
+    """The declared owner may enrich only after an explicit gate approval."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+
+    def approve(event, **_kwargs):
+        event.channel_prompt = "approved context"
+        event.auto_skill = ["research", "calendar"]
+        return {"action": "approve", "gate": "line-group-context"}
+
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook(
+        "pre_gateway_dispatch",
+        approve,
+        gate_owner="line-group-context",
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    observed = {}
+
+    async def capture(event, *_args):
+        observed["prompt"] = event.channel_prompt
+        observed["skills"] = event.auto_skill
+        return "ok"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    event = _make_event("guarded")
+    event.required_dispatch_gate = "line-group-context"
+    event.platform_event_id = "signed-event-id"
+    event.platform_event_timestamp_ms = 1_784_678_400_000
+
+    assert await runner._handle_message(event) == "ok"
+    assert observed == {
+        "prompt": "approved context",
+        "skills": ["research", "calendar"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_required_gate_rejects_owner_source_mutation(monkeypatch):
+    """A hook cannot replace the adapter-authenticated sender or routing lane."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+
+    def mutate_source(event, **_kwargs):
+        event.source.user_id = "forged-user"
+        return {"action": "approve", "gate": "line-group-context"}
+
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook(
+        "pre_gateway_dispatch",
+        mutate_source,
+        gate_owner="line-group-context",
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    reached_agent = False
+
+    async def capture(*_args):
+        nonlocal reached_agent
+        reached_agent = True
+        return "unexpected"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    event = _make_event("guarded")
+    event.required_dispatch_gate = "line-group-context"
+    event.platform_event_id = "signed-event-id"
+    event.platform_event_timestamp_ms = 1_784_678_400_000
+
+    assert await runner._handle_message(event) is None
+    assert reached_agent is False
+
+
+@pytest.mark.asyncio
+async def test_guarded_reconstruction_keeps_the_one_core_issued_resolution(monkeypatch):
+    """A trusted queue-style reconstruction does not invoke onboarding twice."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    approvals = 0
+
+    def approve(**_kwargs):
+        nonlocal approvals
+        approvals += 1
+        return {"action": "approve", "gate": "line-group-context"}
+
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook(
+        "pre_gateway_dispatch",
+        approve,
+        gate_owner="line-group-context",
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    event = _make_event("/queue original")
+    event.required_dispatch_gate = "line-group-context"
+    event.platform_event_id = "signed-event-id"
+    event.platform_event_timestamp_ms = 1_784_678_400_000
+    session_key = runner._session_key_for_source(event.source)
+    resolved = await runner._resolve_gateway_ingress(event, session_key)
+    assert resolved is not None
+    reconstructed = runner._rebind_ingress_event(
+        [resolved],
+        dataclasses.replace(resolved, text="queued follow-up"),
+        session_key,
+    )
+    assert reconstructed is not None
+
+    async def capture(*_args):
+        return "ok"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    assert await runner._handle_message(reconstructed) == "ok"
+    assert approvals == 1
 
 
 @pytest.mark.asyncio

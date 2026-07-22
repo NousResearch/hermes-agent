@@ -659,6 +659,64 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
 
+    def test_isolated_gateway_dispatch_gives_each_callback_a_fresh_event_copy(self):
+        """A guarded dispatch hook cannot mutate another hook's event view."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+
+        manager = PluginManager()
+        owner = PluginContext(
+            manager=manager,
+            manifest=PluginManifest(name="gate-owner", source="user"),
+        )
+        observer = PluginContext(
+            manager=manager,
+            manifest=PluginManifest(name="observer", source="user"),
+        )
+        observed = []
+
+        def mutate(event, **_kwargs):
+            event.source.user_id = "Umutated"
+            event.metadata["nested"]["value"] = "mutated"
+            return {"action": "approve", "gate": "line-group-context"}
+
+        def inspect(event, **_kwargs):
+            observed.append((event.source.user_id, event.metadata["nested"]["value"]))
+            return {"action": "allow"}
+
+        owner.register_hook(
+            "pre_gateway_dispatch",
+            mutate,
+            gate_owner="line-group-context",
+        )
+        observer.register_hook("pre_gateway_dispatch", inspect)
+        original = MessageEvent(
+            text="hello",
+            source=SessionSource(
+                platform=Platform("line"),
+                chat_id="Cgroup",
+                chat_type="group",
+                user_id="Uowner",
+            ),
+            metadata={"nested": {"value": "original"}},
+        )
+
+        invocations = manager.invoke_hook_isolated(
+            "pre_gateway_dispatch",
+            event=original,
+            gateway=object(),
+            session_store=object(),
+        )
+
+        assert observed == [("Uowner", "original")]
+        assert original.source.user_id == "Uowner"
+        assert original.metadata == {"nested": {"value": "original"}}
+        assert invocations[0].plugin_name == "gate-owner"
+        assert invocations[0].gate_owner == "line-group-context"
+        assert invocations[0].result == {"action": "approve", "gate": "line-group-context"}
+        assert invocations[1].plugin_name == "observer"
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

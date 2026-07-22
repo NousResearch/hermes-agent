@@ -1783,6 +1783,22 @@ class MessageEvent:
     # ("Error while calling `get_updates` one more time to mark all fetched
     # updates" in gateway.log).
     platform_update_id: Optional[int] = None
+
+    # HMAC-authenticated platform event identity for ingress policies that
+    # need stable replay protection.  These fields remain optional because
+    # most platform adapters do not expose an equivalent event envelope.
+    platform_event_id: Optional[str] = None
+    platform_event_timestamp_ms: Optional[int] = None
+
+    # Adapter-scoped reply token for the exact inbound event. This is
+    # intentionally separate from chat-level reply-token caches so an
+    # immediate control flow can reply without consuming a different event.
+    platform_reply_token: Optional[str] = None
+
+    # A platform adapter may require an explicit gateway-dispatch approval
+    # before this user-originated event can enter either cold or busy routing.
+    # The gateway owns enforcement; adapters only mark events at intake.
+    required_dispatch_gate: Optional[str] = None
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
@@ -2131,7 +2147,10 @@ def merge_pending_message_event(
     event: MessageEvent,
     *,
     merge_text: bool = False,
-) -> None:
+    rebind: Optional[
+        Callable[[list[MessageEvent], MessageEvent, str], Optional[MessageEvent]]
+    ] = None,
+) -> Optional[MessageEvent]:
     """Store or merge a pending event for a session.
 
     Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
@@ -2144,6 +2163,22 @@ def merge_pending_message_event(
     the last queued fragment.
     """
     existing = pending_messages.get(session_key)
+
+    def _commit(child: MessageEvent, parents: list[MessageEvent]) -> Optional[MessageEvent]:
+        if rebind is not None:
+            try:
+                rebound = rebind(parents, child, session_key)
+            except Exception:
+                logger.exception("Ingress rebinding failed while merging pending event")
+                rebound = None
+            if rebound is None:
+                # Keep an already-valid pending event; only the unprovable
+                # incoming transformation is rejected.
+                return existing
+            child = rebound
+        pending_messages[session_key] = child
+        return child
+
     if existing:
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -2151,42 +2186,68 @@ def merge_pending_message_event(
         incoming_has_media = bool(event.media_urls)
 
         if existing_is_photo and incoming_is_photo:
-            existing.media_urls.extend(event.media_urls)
-            existing.media_types.extend(event.media_types)
-            if event.text:
-                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            _invalidate_pending_stt_cache(existing)
-            return
+            child = dataclasses.replace(
+                existing,
+                media_urls=[*existing.media_urls, *event.media_urls],
+                media_types=[*existing.media_types, *event.media_types],
+                text=(
+                    BasePlatformAdapter._merge_caption(existing.text, event.text)
+                    if event.text
+                    else existing.text
+                ),
+            )
+            result = _commit(child, [existing, event])
+            if result is not None:
+                _invalidate_pending_stt_cache(result)
+            return result
 
         if existing_has_media or incoming_has_media:
-            if incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+            text = existing.text
             if event.text:
-                if existing.text:
-                    existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-                else:
-                    existing.text = event.text
+                text = (
+                    BasePlatformAdapter._merge_caption(existing.text, event.text)
+                    if existing.text
+                    else event.text
+                )
+            message_type = existing.message_type
             if existing_is_photo or incoming_is_photo:
-                existing.message_type = MessageType.PHOTO
+                message_type = MessageType.PHOTO
             elif (
                 getattr(existing, "message_type", None) == MessageType.TEXT
                 and event.message_type != MessageType.TEXT
             ):
-                existing.message_type = event.message_type
-            _invalidate_pending_stt_cache(existing)
-            return
+                message_type = event.message_type
+            child = dataclasses.replace(
+                existing,
+                text=text,
+                message_type=message_type,
+                media_urls=[*existing.media_urls, *event.media_urls]
+                if incoming_has_media
+                else list(existing.media_urls),
+                media_types=[*existing.media_types, *event.media_types]
+                if incoming_has_media
+                else list(existing.media_types),
+            )
+            result = _commit(child, [existing, event])
+            if result is not None:
+                _invalidate_pending_stt_cache(result)
+            return result
 
         if (
             merge_text
             and getattr(existing, "message_type", None) == MessageType.TEXT
             and event.message_type == MessageType.TEXT
         ):
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            return
+            child = dataclasses.replace(
+                existing,
+                text=(
+                    f"{existing.text}\n{event.text}" if existing.text else event.text
+                ) if event.text else existing.text,
+            )
+            return _commit(child, [existing, event])
 
     pending_messages[session_key] = event
+    return event
 
 
 # Error substrings that indicate a transient *connection* failure worth retrying.
@@ -2441,6 +2502,12 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._ingress_resolver: Optional[
+            Callable[[MessageEvent, str], Awaitable[Optional[MessageEvent]]]
+        ] = None
+        self._ingress_rebinder: Optional[
+            Callable[[list[MessageEvent], MessageEvent, str], Optional[MessageEvent]]
+        ] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2947,6 +3014,39 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_ingress_resolver(
+        self,
+        resolver: Optional[Callable[[MessageEvent, str], Awaitable[Optional[MessageEvent]]]],
+    ) -> None:
+        """Install the GatewayRunner-owned resolver before busy/cold routing."""
+        self._ingress_resolver = resolver
+
+    def set_ingress_rebinder(
+        self,
+        rebinder: Optional[Callable[[list[MessageEvent], MessageEvent, str], Optional[MessageEvent]]],
+    ) -> None:
+        """Install the core-only resolution rebinder for trusted transforms."""
+        self._ingress_rebinder = rebinder
+
+    def _rebind_pending_event(
+        self,
+        parents: list[MessageEvent],
+        child: MessageEvent,
+        session_key: str,
+    ) -> Optional[MessageEvent]:
+        """Rebind a queue/debounce reconstruction or drop a guarded one."""
+        rebinder = getattr(self, "_ingress_rebinder", None)
+        if rebinder is None:
+            if any(getattr(parent, "required_dispatch_gate", None) for parent in parents):
+                logger.warning("[%s] Dropping guarded event transform without a rebinder", self.name)
+                return None
+            return child
+        try:
+            return rebinder(parents, child, session_key)
+        except Exception:
+            logger.exception("[%s] Ingress rebinder failed", self.name)
+            return None
 
     def set_topic_recovery_fn(
         self,
@@ -4481,6 +4581,7 @@ class BasePlatformAdapter(ABC):
                         session_key,
                         event,
                         merge_text=True,
+                        rebind=self._rebind_pending_event,
                     )
                 return
 
@@ -4494,18 +4595,26 @@ class BasePlatformAdapter(ABC):
             )
             store[session_key] = state
         else:
-            if event.text:
-                state.event.text = (
+            latest_message_id = getattr(event, "message_id", None)
+            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
+            child = dataclasses.replace(
+                state.event,
+                text=(
                     f"{state.event.text}\n{event.text}"
                     if state.event.text
                     else event.text
-                )
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
+                ) if event.text else state.event.text,
+                message_id=(str(latest_message_id) if latest_message_id is not None else state.event.message_id),
+                reply_to_message_id=(
+                    str(latest_anchor)
+                    if latest_anchor is not None and hasattr(state.event, "reply_to_message_id")
+                    else state.event.reply_to_message_id
+                ),
+            )
+            rebound = self._rebind_pending_event([state.event, event], child, session_key)
+            if rebound is None:
+                return
+            state.event = rebound
             state.last_ts = now
 
         if state.task is not None and not state.task.done():
@@ -4554,6 +4663,7 @@ class BasePlatformAdapter(ABC):
             session_key,
             state.event,
             merge_text=True,
+            rebind=self._rebind_pending_event,
         )
         return True
 
@@ -4838,6 +4948,32 @@ class BasePlatformAdapter(ABC):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
+        resolver = getattr(self, "_ingress_resolver", None)
+        if resolver is None:
+            if event.required_dispatch_gate:
+                logger.warning(
+                    "[%s] Required ingress gate %s has no resolver; dropping event",
+                    self.name,
+                    event.required_dispatch_gate,
+                )
+                return
+        else:
+            try:
+                resolved_event = await resolver(event, session_key)
+            except Exception:
+                logger.exception("[%s] Ingress resolver failed", self.name)
+                if event.required_dispatch_gate:
+                    return
+                resolved_event = event
+            if resolved_event is None:
+                return
+            if not isinstance(resolved_event, MessageEvent):
+                logger.warning("[%s] Ingress resolver returned an invalid event", self.name)
+                if event.required_dispatch_gate:
+                    return
+            else:
+                event = resolved_event
+
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
         # cancelled), the lock is stale.  Clear it and fall through to
@@ -4973,7 +5109,12 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
+                merge_pending_message_event(
+                    self._pending_messages,
+                    session_key,
+                    event,
+                    rebind=self._rebind_pending_event,
+                )
                 return  # Don't interrupt now - will run after current task completes
 
             if self._is_queue_text_debounce_candidate(event):
@@ -4997,6 +5138,7 @@ class BasePlatformAdapter(ABC):
                     session_key,
                     event,
                     merge_text=event.message_type == MessageType.TEXT,
+                    rebind=self._rebind_pending_event,
                 )
             return  # Don't process now - will be handled after current task finishes
         

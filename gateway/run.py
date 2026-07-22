@@ -25,8 +25,10 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import copy
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -40,6 +42,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import weakref
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -3931,6 +3934,317 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=_profile,
         )
 
+    def _remember_ingress_resolution(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> bool:
+        """Remember a core-issued ingress decision for one event object.
+
+        This deliberately does not use a public flag on ``MessageEvent``:
+        callers which construct an event directly must not be able to forge a
+        successful guarded resolution.  The mapping also makes the normal
+        adapter → runner handoff invoke hooks exactly once.
+        """
+        resolved = getattr(self, "_ingress_resolved_events", None)
+        if resolved is None:
+            resolved = {}
+            self._ingress_resolved_events = resolved
+        try:
+            payload_fingerprint = self._ingress_payload_fingerprint(event)
+        except Exception as exc:
+            logger.warning("Could not retain ingress resolution: %s", type(exc).__name__)
+            return False
+        # Keep only a weak reference plus a non-reversible fingerprint. A
+        # gateway can receive millions of events over its lifetime; retaining
+        # raw webhook payloads or media here would be a memory/privacy leak.
+        if len(resolved) >= 1024:
+            for event_id, entry in list(resolved.items()):
+                if entry[0]() is None:
+                    resolved.pop(event_id, None)
+        resolved[id(event)] = (weakref.ref(event), session_key, payload_fingerprint)
+        return True
+
+    @staticmethod
+    def _ingress_payload_fingerprint(event: MessageEvent) -> bytes:
+        """Return a non-reversible fingerprint of all dataclass event fields."""
+        values = {field.name: getattr(event, field.name) for field in dataclasses.fields(event)}
+        return hashlib.sha256(repr(values).encode("utf-8", errors="backslashreplace")).digest()
+
+    def _has_ingress_resolution(self, event: MessageEvent, session_key: str) -> bool:
+        """Return whether *event* has a valid core-issued decision for its lane."""
+        resolved = getattr(self, "_ingress_resolved_events", {})
+        entry = resolved.get(id(event))
+        if not (entry and entry[0]() is event and entry[1] == session_key):
+            return False
+        try:
+            return self._ingress_payload_fingerprint(event) == entry[2]
+        except Exception:
+            return False
+
+    @staticmethod
+    def _ingress_resolution_lane(event: MessageEvent, session_key: str) -> tuple[Any, ...]:
+        """Return the immutable routing/principal lane shared by safe merges."""
+        source = event.source
+        return (
+            session_key,
+            getattr(source, "platform", None),
+            getattr(source, "chat_type", None),
+            getattr(source, "chat_id", None),
+            getattr(source, "chat_id_alt", None),
+            getattr(source, "parent_chat_id", None),
+            getattr(source, "thread_id", None),
+            getattr(source, "scope_id", None),
+            getattr(source, "user_id", None),
+            getattr(source, "user_id_alt", None),
+            getattr(source, "profile", None),
+            getattr(source, "is_bot", None),
+            getattr(source, "role_authorized", None),
+            getattr(source, "delivered_via_upstream_relay", None),
+            bool(getattr(event, "internal", False)),
+            getattr(event, "required_dispatch_gate", None),
+        )
+
+    def _rebind_ingress_event(
+        self,
+        parents: list[MessageEvent],
+        child: MessageEvent,
+        session_key: str,
+    ) -> Optional[MessageEvent]:
+        """Mint one resolution for a trusted queue/command reconstruction.
+
+        The adapter owns routing transformations but not gate approvals.  This
+        core-only callback verifies every parent still has the exact resolution
+        issued by the resolver, checks that all guarded constituents share the
+        same authenticated lane and gate, invalidates the old entries, then
+        records the reconstructed event.  A guarded event is never allowed to
+        silently inherit a resolution after arbitrary mutation.
+        """
+        if not parents:
+            return None
+        parent_entries = []
+        guarded_lanes = []
+        for parent in parents:
+            entry = getattr(self, "_ingress_resolved_events", {}).get(id(parent))
+            if not (
+                entry
+                and entry[0]() is parent
+                and entry[1] == session_key
+                and self._has_ingress_resolution(parent, session_key)
+            ):
+                if getattr(parent, "required_dispatch_gate", None):
+                    logger.warning("Dropping guarded event reconstruction without a live resolution")
+                    return None
+                # Legacy/unresolved unguarded events retain their historic
+                # behavior; do not invent a resolution for them here.
+                continue
+            parent_entries.append((id(parent), entry))
+            if getattr(parent, "required_dispatch_gate", None):
+                guarded_lanes.append(self._ingress_resolution_lane(parent, session_key))
+
+        if guarded_lanes:
+            if any(lane != guarded_lanes[0] for lane in guarded_lanes[1:]) or (
+                self._ingress_resolution_lane(child, session_key) != guarded_lanes[0]
+            ):
+                logger.warning("Dropping guarded event reconstruction across incompatible lanes")
+                return None
+        elif getattr(child, "required_dispatch_gate", None):
+            # A reconstruction cannot create a required gate from an
+            # unguarded parent; only adapter intake + resolver may issue one.
+            return None
+
+        for parent_id, _entry in parent_entries:
+            getattr(self, "_ingress_resolved_events", {}).pop(parent_id, None)
+        if not self._remember_ingress_resolution(child, session_key):
+            return None
+        return child
+
+    @staticmethod
+    def _guarded_ingress_snapshot(event: MessageEvent, session_key: str) -> dict[str, Any]:
+        """Copy immutable fields before a guarded plugin callback runs.
+
+        Guarded plugins may only contribute a text rewrite, channel prompt, or
+        auto-skill selection.  Every other event field, including the complete
+        adapter-authenticated source/raw/metadata boundary, is compared after
+        each isolated callback.  A non-copyable authenticated boundary is a
+        fail-closed condition for guarded traffic.
+        """
+        mutable_enrichments = {"text", "channel_prompt", "auto_skill"}
+        immutable = {
+            field.name: getattr(event, field.name)
+            for field in dataclasses.fields(event)
+            if field.name not in mutable_enrichments
+        }
+        immutable["session_key"] = session_key
+        return copy.deepcopy(immutable)
+
+    @staticmethod
+    def _guarded_ingress_snapshot_matches(
+        event: MessageEvent,
+        snapshot: dict[str, Any],
+    ) -> bool:
+        """Return whether a callback left the authenticated boundary intact."""
+        try:
+            current = {
+                field.name: getattr(event, field.name)
+                for field in dataclasses.fields(event)
+                if field.name not in {"text", "channel_prompt", "auto_skill"}
+            }
+            return current == {
+                key: value for key, value in snapshot.items() if key != "session_key"
+            }
+        except Exception:
+            return False
+
+    @staticmethod
+    def _valid_ingress_enrichments(event: MessageEvent) -> bool:
+        """Validate the only callback-controlled fields accepted by core."""
+        if not isinstance(event.text, str):
+            return False
+        if event.channel_prompt is not None and not isinstance(event.channel_prompt, str):
+            return False
+        skills = event.auto_skill
+        return skills is None or isinstance(skills, str) or (
+            isinstance(skills, list) and all(isinstance(skill, str) for skill in skills)
+        )
+
+    async def _resolve_gateway_ingress(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> Optional[MessageEvent]:
+        """Resolve plugin ingress before authorization or busy-session routing.
+
+        Unguarded events retain the historical hook contract.  A required gate
+        switches to a strict, isolated fail-closed contract: exactly one
+        declared gate owner must return ``{"action": "approve", "gate": ...}``.
+        """
+        gate = getattr(event, "required_dispatch_gate", None)
+        if not gate:
+            # Preserve the established internal-event bypass.  A required
+            # gate is handled below and is always rejected when internal.
+            if bool(getattr(event, "internal", False)):
+                return event if self._remember_ingress_resolution(event, session_key) else None
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=self.session_store,
+                )
+            except Exception as exc:
+                logger.warning("pre_gateway_dispatch invocation failed: %s", type(exc).__name__)
+                results = []
+
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                action = result.get("action")
+                if action == "skip":
+                    logger.info("pre_gateway_dispatch skipped an unguarded event")
+                    return None
+                if action == "rewrite" and isinstance(result.get("text"), str):
+                    event = dataclasses.replace(event, text=result["text"])
+                    break
+                if action == "allow":
+                    break
+            return event if self._remember_ingress_resolution(event, session_key) else None
+
+        # An internal event cannot carry an approval gate.  In particular this
+        # prevents a synthetic startup/restore event from bypassing the LINE
+        # principal that the adapter authenticated at the webhook boundary.
+        if (
+            bool(getattr(event, "internal", False))
+            or not isinstance(gate, str)
+            or not gate.strip()
+            or not isinstance(getattr(event, "platform_event_id", None), str)
+            or not event.platform_event_id.strip()
+            or isinstance(getattr(event, "platform_event_timestamp_ms", None), bool)
+            or not isinstance(getattr(event, "platform_event_timestamp_ms", None), int)
+            or event.platform_event_timestamp_ms < 0
+            or getattr(event, "source", None) is None
+        ):
+            logger.warning("Dropping guarded ingress with invalid authenticated identity")
+            return None
+
+        try:
+            snapshot = self._guarded_ingress_snapshot(event, session_key)
+        except Exception as exc:
+            logger.warning("Dropping guarded ingress with unsnappable boundary: %s", type(exc).__name__)
+            return None
+
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            manager = get_plugin_manager()
+            callbacks = manager.list_hook_callbacks("pre_gateway_dispatch")
+            owners = [callback for callback in callbacks if callback.get("gate_owner") == gate]
+            if len(owners) != 1:
+                logger.warning("Dropping guarded ingress: expected one declared gate owner")
+                return None
+            invocations = manager.invoke_hook_isolated(
+                "pre_gateway_dispatch",
+                required_gate=gate,
+                event=event,
+                gateway=self,
+                session_store=self.session_store,
+            )
+        except Exception as exc:
+            logger.warning("Dropping guarded ingress after hook setup failure: %s", type(exc).__name__)
+            return None
+
+        approved = 0
+        enriched_event = event
+        for invocation in invocations:
+            callback_event = invocation.event
+            if invocation.error_type or not isinstance(callback_event, MessageEvent):
+                logger.warning("Dropping guarded ingress after isolated callback failure")
+                return None
+            if not self._guarded_ingress_snapshot_matches(callback_event, snapshot):
+                logger.warning("Dropping guarded ingress after immutable-boundary mutation")
+                return None
+            if not self._valid_ingress_enrichments(callback_event):
+                logger.warning("Dropping guarded ingress after invalid controlled enrichment")
+                return None
+
+            result = invocation.result
+            if result is None:
+                continue
+            if not isinstance(result, dict):
+                logger.warning("Dropping guarded ingress after malformed hook result")
+                return None
+            action = result.get("action")
+            if action == "skip":
+                return None
+            if action not in {"allow", "rewrite", "approve"}:
+                logger.warning("Dropping guarded ingress after unsupported hook action")
+                return None
+            if action == "rewrite" and not isinstance(result.get("text"), str):
+                logger.warning("Dropping guarded ingress after malformed rewrite")
+                return None
+            if action == "approve":
+                if invocation.gate_owner != gate or result.get("gate") != gate:
+                    logger.warning("Dropping guarded ingress after mismatched approval")
+                    return None
+                approved += 1
+            enriched_event = dataclasses.replace(
+                enriched_event,
+                text=callback_event.text,
+                channel_prompt=callback_event.channel_prompt,
+                auto_skill=copy.deepcopy(callback_event.auto_skill),
+            )
+
+        if approved != 1:
+            logger.warning("Dropping guarded ingress without one matching approval")
+            return None
+        return (
+            enriched_event
+            if self._remember_ingress_resolution(enriched_event, session_key)
+            else None
+        )
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -7785,6 +8099,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
+            adapter.set_ingress_resolver(self._resolve_gateway_ingress)
+            adapter.set_ingress_rebinder(self._rebind_ingress_event)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -8764,6 +9080,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
+                    adapter.set_ingress_resolver(self._resolve_gateway_ingress)
+                    adapter.set_ingress_rebinder(self._rebind_ingress_event)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -9638,6 +9956,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._make_profile_fatal_error_handler(profile_name, platform)
         )
         adapter.set_session_store(self.session_store)
+        adapter.set_ingress_resolver(self._resolve_gateway_ingress)
+        adapter.set_ingress_rebinder(self._rebind_ingress_event)
         adapter.set_busy_session_handler(self._handle_active_session_busy_message)
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
         adapter.set_authorization_check(
@@ -10247,8 +10567,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         6. Run agent conversation
         7. Return response
         """
-        source = event.source
-
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
         # context with copy_context(). If a *concurrent* message had already
@@ -10265,6 +10583,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_session_vars()
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
+
+        # Normally BasePlatformAdapter has already resolved ingress after
+        # command/topic normalization and before its cold/busy split.  Direct
+        # callers (notably internal tests and a few legacy adapters) enter
+        # here without that handoff, so defensively perform the same decision
+        # before startup restore, authorization, commands, or agent routing.
+        source = event.source
+        ingress_session_key = self._session_key_for_source(source)
+        if not self._has_ingress_resolution(event, ingress_session_key):
+            event = await self._resolve_gateway_ingress(event, ingress_session_key)
+            if event is None:
+                return None
+            source = event.source
 
         if (
             getattr(self, "_startup_restore_in_progress", False)
@@ -10285,47 +10616,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
-
-        # Fire pre_gateway_dispatch plugin hook for user-originated messages.
-        # Plugins receive the MessageEvent and may return a dict influencing flow:
-        #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
-        #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
-        #   {"action": "allow"}   /   None          -> normal dispatch
-        # Hook runs BEFORE auth so plugins can handle unauthorized senders
-        # (e.g. customer handover ingest) without triggering the pairing flow.
-        if not is_internal:
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
-                    "pre_gateway_dispatch",
-                    event=event,
-                    gateway=self,
-                    session_store=self.session_store,
-                )
-            except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-                _hook_results = []
-
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
-                    )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
 
         if is_internal:
             pass
@@ -10697,24 +10987,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return "Usage: /queue <prompt>"
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    queued_event = MessageEvent(
+                    queued_event = dataclasses.replace(
+                        event,
                         text=queued_text,
                         message_type=event.message_type if has_media else MessageType.TEXT,
-                        source=event.source,
-                        raw_message=event.raw_message,
-                        message_id=event.message_id,
                         media_urls=list(getattr(event, "media_urls", []) or []),
                         media_types=list(getattr(event, "media_types", []) or []),
-                        reply_to_message_id=event.reply_to_message_id,
-                        reply_to_text=event.reply_to_text,
-                        reply_to_author_id=event.reply_to_author_id,
-                        reply_to_author_name=event.reply_to_author_name,
-                        reply_to_is_own_message=event.reply_to_is_own_message,
-                        auto_skill=event.auto_skill,
-                        channel_prompt=event.channel_prompt,
-                        internal=event.internal,
-                        timestamp=event.timestamp,
                     )
+                    queued_event = self._rebind_ingress_event(
+                        [event], queued_event, _quick_key
+                    )
+                    if queued_event is None:
+                        return None
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self._adapter_for_source(source))
                 if depth <= 1:
@@ -10735,13 +11019,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Agent hasn't started yet — queue as turn-boundary fallback.
                     adapter = self._adapter_for_source(source)
                     if adapter:
-                        queued_event = MessageEvent(
+                        queued_event = dataclasses.replace(
+                            event,
                             text=steer_text,
                             message_type=MessageType.TEXT,
-                            source=event.source,
-                            message_id=event.message_id,
-                            channel_prompt=event.channel_prompt,
                         )
+                        queued_event = self._rebind_ingress_event(
+                            [event], queued_event, _quick_key
+                        )
+                        if queued_event is None:
+                            return None
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
@@ -10757,13 +11044,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    queued_event = MessageEvent(
+                    queued_event = dataclasses.replace(
+                        event,
                         text=steer_text,
                         message_type=MessageType.TEXT,
-                        source=event.source,
-                        message_id=event.message_id,
-                        channel_prompt=event.channel_prompt,
                     )
+                    queued_event = self._rebind_ingress_event(
+                        [event], queued_event, _quick_key
+                    )
+                    if queued_event is None:
+                        return None
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 

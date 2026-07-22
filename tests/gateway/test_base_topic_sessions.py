@@ -69,6 +69,29 @@ def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageE
 
 class TestBasePlatformTopicSessions:
     @pytest.mark.asyncio
+    async def test_ingress_resolver_runs_before_an_active_session_can_queue(self):
+        """A required gate can drop an event before the busy-path branch."""
+        adapter = DummyTelegramAdapter()
+        adapter.set_message_handler(AsyncMock())
+        event = _make_event("-1001", "10", message_id="guarded")
+        event.required_dispatch_gate = "line-group-context"
+        session_key = build_session_key(event.source)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        resolved = []
+
+        async def reject(inbound, inbound_session_key):
+            resolved.append((inbound, inbound_session_key))
+            return None
+
+        adapter.set_ingress_resolver(reject)
+
+        await adapter.handle_message(event)
+
+        assert resolved == [(event, session_key)]
+        assert adapter._pending_messages == {}
+        adapter._message_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_handle_message_does_not_interrupt_different_topic(self, monkeypatch):
         adapter = DummyTelegramAdapter()
         adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))

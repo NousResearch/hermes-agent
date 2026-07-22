@@ -8849,6 +8849,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "whoami":
+            self._handle_whoami_command()
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":

@@ -251,6 +251,7 @@ class PairingStore:
     def __init__(self, profile: Optional[str] = None):
         # Resolve storage directory lazily — tests use a temp HERMES_HOME
         # and PairingStore may be constructed before the env is set.
+        self._profile = profile  # set early so helper methods can use it
         if profile:
             from hermes_constants import get_hermes_home
             self._dir = get_hermes_home() / "profiles" / profile / "pairing"
@@ -262,10 +263,15 @@ class PairingStore:
             # the legacy and new directories (per-profile stores never had
             # the legacy/new split).
             _migrate_split_pairing_dirs()
+        else:
+            # Per-profile stores: 0.18.x used profiles/<name>/platforms/pairing/
+            # while 0.19.0+ uses profiles/<name>/pairing/.  Migrate on first
+            # read so existing pairing approvals are not silently orphaned
+            # after an upgrade (GitHub #69398).
+            self._migrate_profile_legacy_path()
         # Protects all read-modify-write cycles. The gateway runs multiple
         # platform adapters concurrently in threads sharing one PairingStore.
         self._lock = threading.RLock()
-        self._profile = profile  # for diagnostics / log lines
 
     @property
     def profile(self) -> Optional[str]:
@@ -280,6 +286,22 @@ class PairingStore:
 
     def _rate_limit_path(self) -> Path:
         return self._dir / "_rate_limits.json"
+
+    def _migrate_profile_legacy_path(self) -> None:
+        """Migrate 0.18.x per-profile pairing data to the 0.19.0+ path.
+
+        Prior to 0.19.0, per-profile pairing data lived under
+        ``profiles/<name>/platforms/pairing/``.  The path was changed to
+        ``profiles/<name>/pairing/`` to align with the global directory
+        structure.  On first construction of a profile-scoped store we merge
+        any legacy files into the new location so existing approvals are not
+        silently orphaned (#69398).
+        """
+        if not self._profile:
+            return
+        from hermes_constants import get_hermes_home
+        legacy_dir = get_hermes_home() / "profiles" / self._profile / "platforms" / "pairing"
+        _merge_pairing_dir(self._dir, legacy_dir)
 
     def _load_json(self, path: Path) -> dict:
         if path.exists():

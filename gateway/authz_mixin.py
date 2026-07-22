@@ -331,6 +331,17 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
+    def _pairing_store_dir_for(self, source: "SessionSource") -> str:
+        """Return the pairing store directory path that authz consults for *source*.
+
+        Useful for diagnostics so operators can see *where* approvals are read
+        from when an "Unauthorized user" warning is logged (#69398).
+        """
+        store = self._pairing_store_for(source)
+        if store is None:
+            return "<no pairing store>"
+        return str(getattr(store, "_dir", "<unknown>"))
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.

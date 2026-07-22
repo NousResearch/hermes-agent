@@ -869,3 +869,96 @@ class TestProfileScopedStorage:
         s_unknown = SessionSource(platform=Platform.WEIXIN, chat_id="c", profile="ghost")
         assert g._pairing_store_for(s_unknown) is g.pairing_store
 
+
+class TestPairingStoreProfileLegacyMigration:
+    """0.18.x stored per-profile pairing data under
+    ``profiles/<name>/platforms/pairing/``.  0.19.0+ uses
+    ``profiles/<name>/pairing/``.  On first construction we must merge any
+    legacy data into the new location so existing approvals are not silently
+    orphaned (#69398).
+    """
+
+    def test_migrates_legacy_profile_pairing_data(self, tmp_path, monkeypatch):
+        """When a profile-scoped store is created and the legacy
+        profiles/<name>/platforms/pairing/ directory exists, its contents
+        are merged into the new profiles/<name>/pairing/ directory."""
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        # Simulate 0.18.x legacy data
+        legacy_dir = tmp_path / "profiles" / "home-ops" / "platforms" / "pairing"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        legacy_approved = legacy_dir / "telegram-approved.json"
+        legacy_approved.write_text(
+            '{"user123": {"user_name": "Operator", "approved_at": 1721000000}}'
+        )
+
+        # Construct the profile-scoped store — this should trigger migration
+        store = PairingStore(profile="home-ops")
+
+        # New path should exist and contain the migrated data
+        new_dir = tmp_path / "profiles" / "home-ops" / "pairing"
+        assert new_dir.is_dir()
+        assert store._dir == new_dir
+
+        # The approved user should be recognized from the migrated data
+        assert store.is_approved("telegram", "user123") is True
+
+    def test_legacy_data_merged_into_existing_new_data(self, tmp_path, monkeypatch):
+        """If both legacy and new paths have data, both sets of users are
+        available (union, with new data winning on conflicts)."""
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        # Legacy data
+        legacy_dir = tmp_path / "profiles" / "test" / "platforms" / "pairing"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "telegram-approved.json").write_text(
+            '{"legacy_user": {"user_name": "Legacy", "approved_at": 1721000000}}'
+        )
+
+        # New data (already migrated by a previous run)
+        new_dir = tmp_path / "profiles" / "test" / "pairing"
+        new_dir.mkdir(parents=True, exist_ok=True)
+        (new_dir / "telegram-approved.json").write_text(
+            '{"new_user": {"user_name": "New", "approved_at": 1722000000}}'
+        )
+
+        store = PairingStore(profile="test")
+
+        # Both users should be recognized (merge union)
+        assert store.is_approved("telegram", "legacy_user") is True
+        assert store.is_approved("telegram", "new_user") is True
+
+    def test_no_migration_when_legacy_path_absent(self, tmp_path, monkeypatch):
+        """If no legacy directory exists, the store works normally with
+        no errors."""
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        store = PairingStore(profile="fresh")
+        new_dir = tmp_path / "profiles" / "fresh" / "pairing"
+        assert new_dir.is_dir()
+        assert store._dir == new_dir
+        # No legacy path, empty store
+        assert store.is_approved("telegram", "anyone") is False
+
+    def test_non_profile_store_does_not_migrate_profile_legacy(self, tmp_path, monkeypatch):
+        """The global (non-profile) store does NOT attempt to migrate the
+        per-profile legacy path — it only handles its own legacy/new split."""
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        # Put data in a profile legacy path
+        legacy_dir = tmp_path / "profiles" / "other" / "platforms" / "pairing"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "telegram-approved.json").write_text(
+            '{"other_user": {"user_name": "Other", "approved_at": 1721000000}}'
+        )
+
+        # Global store should not see profile data
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+
+        assert store.is_approved("telegram", "other_user") is False
+

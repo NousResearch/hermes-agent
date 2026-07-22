@@ -12,7 +12,10 @@ def pairing_command(args):
     """Handle hermes pairing subcommands."""
     from gateway.pairing import PairingStore
 
-    store = PairingStore()
+    # In multiplex deployments, --profile targets the profile-scoped store
+    # so approvals land where the authz check actually reads them (#69398).
+    profile = getattr(args, "profile", None) or None
+    store = PairingStore(profile=profile)
     action = getattr(args, "pairing_action", None)
 
     if action == "list":

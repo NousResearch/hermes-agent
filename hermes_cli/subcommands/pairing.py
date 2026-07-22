@@ -27,10 +27,20 @@ def build_pairing_parser(subparsers, *, cmd_pairing: Callable) -> None:
         "platform", help="Platform name (telegram, discord, slack, whatsapp)"
     )
     pairing_approve_parser.add_argument("code", help="Pairing code to approve")
+    pairing_approve_parser.add_argument(
+        "--profile",
+        default=None,
+        help="Profile to approve in (for multiplex deployments)",
+    )
 
     pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
     pairing_revoke_parser.add_argument("platform", help="Platform name")
     pairing_revoke_parser.add_argument("user_id", help="User ID to revoke")
+    pairing_revoke_parser.add_argument(
+        "--profile",
+        default=None,
+        help="Profile to revoke in (for multiplex deployments)",
+    )
 
     pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
     pairing_parser.set_defaults(func=cmd_pairing)

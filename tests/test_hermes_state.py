@@ -4976,7 +4976,8 @@ class TestAutoMaintenance:
         db.create_session(session_id="new", source="cli")  # active
 
         # Transcript files mimicking real gateway/CLI layout
-        (sessions_dir / "old1.json").write_text("{}")
+        (sessions_dir / "session_old1.json").write_text("{}")  # new naming
+        (sessions_dir / "old2.json").write_text("{}")  # legacy naming
         (sessions_dir / "old1.jsonl").write_text("{}\n")
         (sessions_dir / "old2.jsonl").write_text("{}\n")
         (sessions_dir / "request_dump_old1_001.json").write_text("{}")
@@ -4987,8 +4988,9 @@ class TestAutoMaintenance:
         )
         assert result["pruned"] == 2
 
-        # Pruned transcript files are gone
-        assert not (sessions_dir / "old1.json").exists()
+        # Pruned transcript files are gone (both new and legacy JSON naming)
+        assert not (sessions_dir / "session_old1.json").exists()
+        assert not (sessions_dir / "old2.json").exists()
         assert not (sessions_dir / "old1.jsonl").exists()
         assert not (sessions_dir / "old2.jsonl").exists()
         assert not (sessions_dir / "request_dump_old1_001.json").exists()
@@ -5020,6 +5022,40 @@ class TestAutoMaintenance:
         assert count == 1
         assert not (sessions_dir / "old.jsonl").exists()
         assert (sessions_dir / "active.jsonl").exists()
+
+    def test_delete_session_removes_session_prefixed_json(self, db, tmp_path):
+        """Regression: session_<id>.json must be cleaned up on delete.
+
+        The writer (run_agent.py) creates ``session_{id}.json`` but the
+        remover previously looked for ``{id}.json`` (missing the ``session_``
+        prefix), silently leaving the JSON dump orphaned on disk.
+        """
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        db.create_session(session_id="test123", source="cli")
+        # Writer creates session_<id>.json (not <id>.json)
+        json_file = sessions_dir / "session_test123.json"
+        json_file.write_text("{}")
+        jsonl_file = sessions_dir / "test123.jsonl"
+        jsonl_file.write_text("{}\n")
+
+        db.delete_session("test123", sessions_dir=sessions_dir)
+
+        assert not json_file.exists(), "session_<id>.json should be removed"
+        assert not jsonl_file.exists(), "<id>.jsonl should be removed"
+
+    def test_prune_removes_session_prefixed_json(self, db, tmp_path):
+        """Regression: prune must also clean up session_<id>.json files."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        (sessions_dir / "session_old.json").write_text("{}")
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+
+        db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+
+        assert not (sessions_dir / "session_old.json").exists()
+        assert not (sessions_dir / "old.jsonl").exists()
 
 
 # =========================================================================

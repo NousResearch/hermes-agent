@@ -5192,3 +5192,64 @@ class TestThreadContextAppMessages:
             )
 
         assert "hello" in content  # the real message survives; empty bot msg dropped
+
+
+# ---------------------------------------------------------------------------
+# Missing-credential handling — fatal-error contract
+# ---------------------------------------------------------------------------
+
+
+class TestMissingCredentials:
+    """Missing SLACK_BOT_TOKEN or SLACK_APP_TOKEN must set a non-retryable fatal error."""
+
+    @pytest.mark.asyncio
+    async def test_missing_bot_token_sets_fatal_error(self):
+        """When SLACK_BOT_TOKEN is absent from both config and env, connect()
+        must set fatal_error with code 'missing_slack_bot_token' and retryable=False."""
+        config = PlatformConfig(enabled=True, token=None)  # no bot token
+        adapter = SlackAdapter(config)
+
+        fatal_errors = []
+
+        def capture_fatal(code, message, *, retryable):
+            fatal_errors.append({"code": code, "message": message, "retryable": retryable})
+
+        with (
+            patch.object(adapter, "_set_fatal_error", side_effect=capture_fatal),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert len(fatal_errors) == 1
+        assert fatal_errors[0]["code"] == "missing_slack_bot_token"
+        assert fatal_errors[0]["retryable"] is False
+        assert "SLACK_BOT_TOKEN" in fatal_errors[0]["message"]
+        assert "hermes gateway setup" in fatal_errors[0]["message"].lower() or ".env" in fatal_errors[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_app_token_sets_fatal_error(self):
+        """When SLACK_APP_TOKEN is absent but SLACK_BOT_TOKEN is present,
+        connect() must set fatal_error with code 'missing_slack_app_token'
+        and retryable=False."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        fatal_errors = []
+
+        def capture_fatal(code, message, *, retryable):
+            fatal_errors.append({"code": code, "message": message, "retryable": retryable})
+
+        with (
+            patch.object(adapter, "_set_fatal_error", side_effect=capture_fatal),
+            patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-fake"}, clear=True),
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert len(fatal_errors) == 1
+        assert fatal_errors[0]["code"] == "missing_slack_app_token"
+        assert fatal_errors[0]["retryable"] is False
+        assert "SLACK_APP_TOKEN" in fatal_errors[0]["message"]
+        assert "hermes gateway setup" in fatal_errors[0]["message"].lower() or ".env" in fatal_errors[0]["message"]
+

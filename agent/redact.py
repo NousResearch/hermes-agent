@@ -117,8 +117,12 @@ _PREFIX_PATTERNS = [
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
 # an all-caps key is almost never prose/code.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+# Optional HTTP-auth scheme word (Bearer/Basic/Token/…) before the credential,
+# mirroring _AUTH_HEADER_RE, so ``AUTHORIZATION=Bearer <token>`` captures both
+# tokens — a bare \S+ would mask only "Bearer" and leak the credential.
+_ENV_ASSIGN_VALUE = r"((?:[A-Za-z][\w.+-]*[ \t]+)?\S+)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+    rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?){_ENV_ASSIGN_VALUE}\2",
 )
 
 # Lowercase / dotted / hyphenated config keys from config files
@@ -129,9 +133,11 @@ _ENV_ASSIGN_RE = re.compile(
 # These run only in a config-file context, NOT in prose, code, or URLs — three
 # carve-outs preserved from the original design (#4367 + the documented
 # web-URL passthrough below):
-#   1. The value is bounded by ``[^\s&]`` (stops at whitespace AND ``&``) so
-#      form-urlencoded bodies are handled pair-by-pair (by _redact_form_body),
-#      not greedily swallowed.
+#   1. The value is bounded by ``&`` / EOL. A single optional auth-scheme word
+#      (``Bearer `` / ``Basic `` / …) may precede the credential so
+#      ``authorization=Bearer <token>`` does not mask only the scheme word;
+#      further whitespace still terminates the match so form bodies stay
+#      pair-by-pair (_redact_form_body).
 #   2. _CFG_DOTTED_RE only matches when the key is NAMESPACED (contains a dot),
 #      which is unambiguously a config key — never a prose word.
 #   3. _CFG_ANCHORED_RE matches a bare secret-word key only at line start
@@ -139,7 +145,13 @@ _ENV_ASSIGN_RE = re.compile(
 #      mid-sentence is left alone.
 # The colon-form URL guard (skip when ``://`` present) lives at the call site.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
-_CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
+_CFG_VALUE = r"(['\"]?)((?:[A-Za-z][\w.+-]*[ \t]+)?[^\s&]+?)\2(?=[\s&]|$)"
+# Split ``Scheme <credential>`` assignment values so masking preserves the
+# scheme word (same shape as _AUTH_HEADER_RE) instead of head/tail-masking
+# across ``Bearer <token>`` as one blob.
+_AUTH_SCHEME_VALUE_RE = re.compile(
+    r"^([A-Za-z][\w.+-]*)[ \t]+([^\s\"']+)$",
+)
 
 # Programmatic env lookups (``os.getenv(...)``, ``os.environ[...]``,
 # ``os.environ.get(...)``, ``process.env.X``, ``$ENV{X}``) reference variable
@@ -378,6 +390,21 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
+def _mask_assignment_value(value: str) -> str:
+    """Mask a KEY=value credential, preserving an HTTP auth scheme word if present.
+
+    ``authorization=Bearer <token>`` must not treat ``Bearer`` as the whole
+    secret (CFG/ENV value classes historically stopped at the first
+    whitespace-free token). When the value is ``Scheme <credential>``, keep
+    the scheme for debuggability and mask only the credential — matching
+    ``_AUTH_HEADER_RE`` behavior for colon headers.
+    """
+    m = _AUTH_SCHEME_VALUE_RE.match(value)
+    if m:
+        return f"{m.group(1)} {_mask_token(m.group(2))}"
+    return _mask_token(value)
+
+
 def _redact_query_string(query: str) -> str:
     """Redact sensitive parameter values in a URL query string.
 
@@ -614,7 +641,7 @@ def redact_sensitive_text(
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
                     return m.group(0)
-                return f"{name}={quote}{_mask_token(value)}{quote}"
+                return f"{name}={quote}{_mask_assignment_value(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
             # web-URL query params are intentionally passed through (see note

@@ -220,6 +220,15 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import InlineQueryHandler
+    except ImportError:
+        # Older PTB (pre-inline-mode support) or a minimal test double that
+        # doesn't stub this symbol -- inline-query dispatch is a bonus
+        # feature, not core Telegram functionality, so its absence must not
+        # fail the whole availability check (mirrors LinkPreviewOptions's
+        # own optional-import handling just above).
+        InlineQueryHandler = Any
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -234,6 +243,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    InlineQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -374,7 +384,8 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler
+    global TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -396,6 +407,15 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import InlineQueryHandler as _IQH
+        except ImportError:
+            # Older PTB (pre-inline-mode support) or a minimal test double
+            # that doesn't stub this symbol -- inline-query dispatch is a
+            # bonus feature, not core Telegram functionality, so its absence
+            # must not fail the whole availability check (mirrors
+            # LinkPreviewOptions's own optional-import handling just above).
+            _IQH = None
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -409,6 +429,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -664,6 +685,8 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Tool-side inline-query dispatch router (initialised in connect()).
+        self._inline_router: Optional[Any] = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -3609,7 +3632,19 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+
+            # Inline-query dispatch (the bot must have inline mode enabled in BotFather).
+            # The framework ships only the dispatch surface; concrete behaviour lives in
+            # user-space executors loaded from inline_executors/ by the router.
+            try:
+                from gateway.platforms.telegram_inline_router import TelegramInlineRouter
+                self._inline_router = TelegramInlineRouter(self._bot)
+                self._inline_router.discover_executors()
+                self._inline_router.bot_username = getattr(self._bot, "username", None)
+                self._app.add_handler(InlineQueryHandler(self._handle_inline_query))
+            except Exception as _inline_err:
+                logger.warning("[%s] inline-query dispatch not enabled: %s", self.name, _inline_err)
+
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
             # fallback-IP chain can't block startup indefinitely.
@@ -5894,6 +5929,56 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass
+
+    async def _handle_inline_query(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Dispatch an inline query to the tool-side router.
+
+        Thin wrapper: the router owns matching, executor lookup, result building
+        and the response deadline.  ``inline.enabled: false`` in the platform's
+        config.extra silences inline handling without unregistering the handler.
+
+        ``PlatformConfig.from_dict()`` only ever populates ``.extra`` from the
+        YAML ``extra:`` block (``inline`` is not one of the shared/bridged
+        top-level keys — see the shared-key loop in
+        ``gateway/config.py::load_gateway_config()``), so this must be
+        configured as::
+
+            telegram:
+              extra:
+                inline:
+                  enabled: false
+
+        A top-level ``telegram: inline: {enabled: false}`` (no ``extra:``)
+        is silently ignored.
+        """
+        iq = getattr(update, "inline_query", None)
+        if not iq:
+            return
+        _inline_cfg = self.config.extra.get("inline", {}) if getattr(self.config, "extra", None) else {}
+        if isinstance(_inline_cfg, dict) and not _inline_cfg.get("enabled", True):
+            return
+        query = (iq.query or "").strip()
+        if not query or not self._inline_router:
+            await iq.answer([], cache_time=0)
+            return
+        import asyncio as _asyncio
+        from gateway.platforms.telegram_inline_router import RESPONSE_DEADLINE
+        try:
+            # Deadline is enforced here, around dispatch(), so it holds even when an
+            # executor layer replaces the router's dispatch (e.g. a classifier).
+            results = await _asyncio.wait_for(
+                self._inline_router.dispatch(iq.from_user.id, query),
+                timeout=RESPONSE_DEADLINE,
+            )
+            await iq.answer(results or [], cache_time=0)
+        except _asyncio.TimeoutError:
+            logger.debug("[%s] inline dispatch exceeded deadline", self.name)
+            await iq.answer([], cache_time=0)
+        except Exception as exc:
+            logger.warning("[%s] inline dispatch error: %s", self.name, exc)
+            await iq.answer([], cache_time=0)
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"

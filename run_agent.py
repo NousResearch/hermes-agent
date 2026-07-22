@@ -1422,9 +1422,18 @@ class AIAgent:
         which provider is serving the model.
         """
         m = model.lower()
-        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
+        # Strip vendor prefix. Two namespacing conventions are in the wild:
+        #   "openai/gpt-5.4"  (OpenRouter-style slash)
+        #   "openai.gpt-5.5"  (AWS Bedrock / Mantle dot-namespace)
+        # The version itself uses a dot ("gpt-5.5"), so only strip a leading
+        # vendor token followed by a dot — never the version dot. Without the
+        # dot case, Bedrock GPT-5 ids fell through as chat_completions and got
+        # rejected with HTTP 400 "does not support /v1/chat/completions"
+        # (notably on the fallback path, which re-derives api_mode).
         if "/" in m:
             m = m.rsplit("/", 1)[-1]
+        elif re.match(r"^[a-z0-9_-]+\.gpt-5", m):
+            m = m.split(".", 1)[-1]
         return m.startswith("gpt-5")
 
     @staticmethod

@@ -26,6 +26,29 @@ from hermes_constants import OPENROUTER_MODELS_URL
 logger = logging.getLogger(__name__)
 
 
+
+# Maximum size for Ollama metadata responses.  A misbehaving or
+# compromised endpoint could send an unbounded chunked response that
+# httpx would buffer entirely before parsing.  See #68739.
+_OLLAMA_MAX_METADATA_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
+def _bounded_json(response, max_bytes: int = _OLLAMA_MAX_METADATA_BYTES):
+    """Parse *response* as JSON, but reject bodies larger than *max_bytes*.
+
+    ``httpx.Response.json()`` buffers the entire body before parsing,
+    which is fine for trusted endpoints but risky for untrusted or
+    misconfigured Ollama instances that may stream unbounded data.
+    """
+    content = response.content
+    if len(content) > max_bytes:
+        raise ValueError(
+            f"Ollama metadata response ({len(content)} bytes) exceeds "
+            f"{max_bytes} byte limit"
+        )
+    return response.json()
+
+
 def _resolve_requests_verify() -> bool | str:
     """Resolve SSL verify setting for `requests` calls from env vars.
 
@@ -771,7 +794,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                     r = client.get(f"{server_url}/api/tags")
                     if r.status_code == 200:
                         try:
-                            data = r.json()
+                            data = _bounded_json(r)
                             if "models" in data:
                                 result = "ollama"
                         except Exception:
@@ -793,7 +816,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 try:
                     r = client.get(f"{server_url}/version")
                     if r.status_code == 200:
-                        data = r.json()
+                        data = _bounded_json(r)
                         if "version" in data:
                             result = "vllm"
                 except Exception:
@@ -930,7 +953,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
         response = requests.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=_resolve_requests_verify())
         response.raise_for_status()
-        data = response.json()
+        data = _bounded_json(response)
 
         cache = {}
         for model in data.get("data", []):
@@ -1010,7 +1033,7 @@ def fetch_endpoint_model_metadata(
                     verify=_resolve_requests_verify(),
                 )
                 response.raise_for_status()
-                payload = response.json()
+                payload = _bounded_json(response)
                 cache: Dict[str, Dict[str, Any]] = {}
                 for model in payload.get("models", []):
                     if not isinstance(model, dict):
@@ -1056,7 +1079,7 @@ def fetch_endpoint_model_metadata(
         try:
             response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
             response.raise_for_status()
-            payload = response.json()
+            payload = _bounded_json(response)
             cache: Dict[str, Dict[str, Any]] = {}
             for model in payload.get("data", []):
                 if not isinstance(model, dict):
@@ -1090,7 +1113,7 @@ def fetch_endpoint_model_metadata(
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
                     if props_resp.ok:
-                        props = props_resp.json()
+                        props = _bounded_json(props_resp)
                         gen_settings = props.get("default_generation_settings", {})
                         n_ctx = gen_settings.get("n_ctx")
                         model_alias = props.get("model_alias", "")
@@ -1529,7 +1552,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             if resp.status_code != 200:
                 return None
-            data = resp.json()
+            data = _bounded_json(resp)
 
             # Prefer explicit num_ctx from Modelfile parameters (user override)
             params = data.get("parameters", "")
@@ -1583,7 +1606,7 @@ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             if resp.status_code != 200:
                 return None
-            data = resp.json()
+            data = _bounded_json(resp)
     except Exception:
         return None
 
@@ -1660,7 +1683,7 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
             resp = client.post(f"{server_url}/api/show", json={"name": model})
             if resp.status_code != 200:
                 return None
-            data = resp.json()
+            data = _bounded_json(resp)
 
             # Hosted Ollama: GGUF model_info is the real max — prefer it over
             # num_ctx which the Cloud operator may have capped arbitrarily.
@@ -1786,7 +1809,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             if server_type == "ollama":
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
                 if resp.status_code == 200:
-                    data = resp.json()
+                    data = _bounded_json(resp)
                     # Prefer explicit num_ctx from Modelfile parameters: this is
                     # the *runtime* context Ollama will actually allocate KV cache
                     # for. The GGUF model_info.context_length is the training max,
@@ -1817,7 +1840,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             if server_type == "lm-studio":
                 resp = client.get(f"{lmstudio_url}/api/v1/models")
                 if resp.status_code == 200:
-                    data = resp.json()
+                    data = _bounded_json(resp)
                     for m in data.get("models", []):
                         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
                             # Prefer loaded instance context (actual runtime value)
@@ -1831,7 +1854,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
-                data = resp.json()
+                data = _bounded_json(resp)
                 # vLLM returns max_model_len
                 ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
                 if ctx and isinstance(ctx, (int, float)):
@@ -1841,7 +1864,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
-                data = resp.json()
+                data = _bounded_json(resp)
                 models_list = data.get("data", [])
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
@@ -1884,7 +1907,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
         resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             return None
-        data = resp.json()
+        data = _bounded_json(resp)
         for m in data.get("data", []):
             if m.get("id") == model:
                 ctx = m.get("max_input_tokens")
@@ -2000,7 +2023,7 @@ def _fetch_codex_oauth_context_lengths_with_source(
                 resp.status_code,
             )
             return {}, False
-        data = resp.json()
+        data = _bounded_json(resp)
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False

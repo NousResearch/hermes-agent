@@ -6,6 +6,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import concurrent.futures
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -1275,6 +1276,41 @@ class TestMCPServerTask:
                 assert isinstance(env_arg, dict)
                 assert "PATH" in env_arg
                 assert "HOME" in env_arg
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    @pytest.mark.parametrize(
+        ("workdir_config", "expected_cwd"),
+        [
+            ({"workdir": "~/repo"}, os.path.expanduser("~/repo")),
+            ({"cwd": "/tmp/mcp-server"}, "/tmp/mcp-server"),
+            (
+                {"cwd": "/tmp/canonical", "workdir": "/tmp/compat-alias"},
+                "/tmp/canonical",
+            ),
+        ],
+    )
+    def test_stdio_honors_configured_workdir(self, workdir_config, expected_cwd):
+        """Stdio MCP servers pass configured workdir/cwd through to the SDK."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, p_stdio, p_cs:
+                server = MCPServerTask("srv")
+                await server.start({"command": "node", **workdir_config})
+
+                call_kwargs = mock_params.call_args
+                assert call_kwargs.kwargs.get("cwd") == expected_cwd
 
                 await server.shutdown()
 

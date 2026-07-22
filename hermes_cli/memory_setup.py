@@ -73,6 +73,32 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     return val or (default or "")
 
 
+# Hard cap on re-prompt attempts; protects non-tty / piped-stdin runs from
+# spinning forever when stdin is exhausted.
+_REQUIRED_RETRIES = 2
+
+
+def _prompt_field(
+    field: dict, label: str, default: str | None = None, secret: bool = False
+) -> tuple[str, bool]:
+    """Prompt for a schema field; re-prompt blank input when ``required: True``.
+
+    Returns ``(value, aborted)``. ``aborted`` is True when the field is
+    required and stayed blank after all attempts — the caller should stop
+    the wizard without persisting partial state.
+    """
+    val = _prompt(label, default=default, secret=secret)
+    if val or not field.get("required"):
+        return val, False
+    for _ in range(_REQUIRED_RETRIES):
+        print(f"  ⚠ '{field.get('key', '')}' is required.")
+        val = _prompt(label, default=default, secret=secret)
+        if val:
+            return val, False
+    print(f"\n  Missing required field '{field.get('key', '')}'; setup aborted.\n")
+    return "", True
+
+
 # ---------------------------------------------------------------------------
 # Provider discovery
 # ---------------------------------------------------------------------------
@@ -334,20 +360,30 @@ def cmd_setup(args) -> None:
                 # Prompt for secret
                 existing = os.environ.get(env_var, "") if env_var else ""
                 if existing:
+                    # An existing value already satisfies "required"; blank
+                    # input intentionally keeps it.
                     masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
                     val = _prompt(f"{desc} (current: {masked}, blank to keep)", secret=True)
                 else:
                     hint = f"  Get yours at {url}" if url else ""
                     if hint:
                         print(hint)
-                    val = _prompt(desc, secret=True)
+                    val, aborted = _prompt_field(field, desc, secret=True)
+                    if aborted:
+                        return
                 if val and env_var:
                     env_writes[env_var] = val
             else:
                 # Regular text prompt
                 current = provider_config.get(key)
                 effective_default = current or default
-                val = _prompt(desc, default=str(effective_default) if effective_default else None)
+                val, aborted = _prompt_field(
+                    field,
+                    desc,
+                    default=str(effective_default) if effective_default else None,
+                )
+                if aborted:
+                    return
                 if val:
                     provider_config[key] = val
                     # Also write to .env if this field has an env_var

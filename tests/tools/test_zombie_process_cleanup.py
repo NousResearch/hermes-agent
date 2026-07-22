@@ -112,11 +112,36 @@ class TestAgentCloseMethod:
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
 
+                # With no gateway session key (CLI/cron single-agent run),
+                # close() reaps everything — there are no other sessions to
+                # protect. Vm/browser cleanup uses task_id="default" (all
+                # non-RL processes normalize to "default").
+                mock_registry.kill_all.assert_called_once_with()
+                mock_cleanup_vm.assert_called_once_with("default")
+                mock_cleanup_browser.assert_called_once_with("default")
+
+    def test_close_scopes_kill_to_gateway_session_key(self):
+        """In the multi-session gateway, close() must reap only this session's
+        processes (by session_key), not every session's — a bare kill_all()
+        would destroy unrelated chats' running background work."""
+        from unittest.mock import patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-scoped"
+            agent._gateway_session_key = "agent:main:telegram:dm:123"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+
+            with patch("tools.process_registry.process_registry") as mock_registry, \
+                 patch("run_agent.cleanup_vm"), \
+                 patch("run_agent.cleanup_browser"):
+                agent.close()
                 mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
+                    session_key="agent:main:telegram:dm:123"
                 )
-                mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
-                mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
 
     def test_close_is_idempotent(self):
         """close() can be called multiple times without error."""

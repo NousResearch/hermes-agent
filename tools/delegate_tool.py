@@ -2645,11 +2645,17 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            # Daemon workers (tools.daemon_pool): the `with` block still joins
-            # normally, but if the parent is interrupted while a child is
-            # wedged, the abandoned worker must not block interpreter exit.
+            # Daemon workers (tools.daemon_pool): if the parent is interrupted
+            # while a child is wedged, the abandoned worker must not block
+            # interpreter exit. Not a `with` block: the context-manager
+            # __exit__ calls shutdown(wait=True), which would re-join running
+            # children on the interrupt path and block the parent on a stuck
+            # child. Manage the lifecycle explicitly so teardown honors the
+            # interrupt (see the finally below).
             from tools.daemon_pool import DaemonThreadPoolExecutor
-            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
+            executor = DaemonThreadPoolExecutor(max_workers=max_children)
+            _batch_interrupted = False
+            try:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
@@ -2676,6 +2682,10 @@ def delegate_task(
                         # Parent interrupted — collect whatever finished and
                         # abandon the rest.  Children already received the
                         # interrupt signal; we just can't wait forever.
+                        # Mark interrupted so the finally tears down with
+                        # cancel_futures=True (queued work never starts) and
+                        # wait=False (no join on already-running children).
+                        _batch_interrupted = True
                         for f in pending:
                             idx = futures[f]
                             if f.done():
@@ -2759,6 +2769,13 @@ def delegate_task(
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)
+            finally:
+                # Interrupt path: wait=False so a stuck child can't block the
+                # parent. Normal path: wait=True to join finished workers
+                # cleanly.
+                executor.shutdown(
+                    wait=not _batch_interrupted, cancel_futures=_batch_interrupted
+                )
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])

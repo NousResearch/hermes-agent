@@ -1506,9 +1506,11 @@ class TestAgentCacheIdleResume:
             except Exception:
                 pass
 
-        # Only agent_b's task_id should appear in cleanup calls.
-        assert "hard-session" in vm_calls
-        assert "soft-session" not in vm_calls
+        # close() now uses task_id="default" (all non-RL processes
+        # normalize to "default" via _resolve_container_task_id).
+        # release_clients() does NOT call cleanup_vm (soft eviction).
+        assert "default" in vm_calls       # from agent_b.close()
+        assert "soft-session" not in vm_calls  # release_clients skips cleanup_vm
 
     def test_idle_evicted_session_rebuild_inherits_task_id(self, monkeypatch):
         """After idle-TTL eviction, a fresh agent with the same session_id

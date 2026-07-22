@@ -1821,12 +1821,22 @@ class ProcessRegistry:
         with self._lock:
             return any(not s.exited for s in self._running.values())
 
-    def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+    def kill_all(self, task_id: str = None, session_key: str = None) -> int:
+        """Kill running processes, optionally filtered. Returns count killed.
+
+        With no filter, kills every running process. ``task_id`` and/or
+        ``session_key`` narrow the target set (AND semantics). ``session_key``
+        scopes to a single gateway session's own processes so a per-session
+        teardown cannot reap another live session's background work (all
+        non-RL terminal spawns share ``task_id='default'``, so ownership is
+        the session_key, not the task_id).
+        """
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
+                if (task_id is None or s.task_id == task_id)
+                and (session_key is None or s.session_key == session_key)
+                and not s.exited
             ]
 
         killed = 0

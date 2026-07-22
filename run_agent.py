@@ -3609,6 +3609,15 @@ class AIAgent:
         except Exception:
             pass
 
+        # Close the Anthropic SDK client if one was created.
+        try:
+            anthropic_client = getattr(self, "_anthropic_client", None)
+            if anthropic_client is not None:
+                anthropic_client.close()
+                self._anthropic_client = None
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -3622,12 +3631,25 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
-        task_id = getattr(self, "session_id", None) or ""
+        # All non-RL processes normalize to "default" via
+        # _resolve_container_task_id(), so task_id can't distinguish this
+        # session's processes from another's. Vm/browser cleanup below still
+        # keys on "default" (single shared container per task).
+        task_id = "default"
 
-        # 1. Kill background processes for this task
+        # 1. Kill this session's background processes. In the multi-session
+        # gateway the registry is a process-wide singleton, so a bare
+        # kill_all() would reap every session's work; scope to this session's
+        # gateway key (which the terminal spawns record) so other live
+        # sessions are untouched. With no gateway key (CLI/cron single-agent
+        # run) fall back to a full teardown — there is nothing else to protect.
         try:
             from tools.process_registry import process_registry
-            process_registry.kill_all(task_id=task_id)
+            _session_key = getattr(self, "_gateway_session_key", "") or ""
+            if _session_key:
+                process_registry.kill_all(session_key=_session_key)
+            else:
+                process_registry.kill_all()
         except Exception:
             pass
 
@@ -3689,6 +3711,24 @@ class AIAgent:
                 session_id = getattr(self, "session_id", None)
                 if session_db and session_id:
                     session_db.end_session(session_id, "agent_close")
+        except Exception:
+            pass
+
+        # 8. Close the Anthropic SDK client if one was created.
+        try:
+            anthropic_client = getattr(self, "_anthropic_client", None)
+            if anthropic_client is not None:
+                anthropic_client.close()
+                self._anthropic_client = None
+        except Exception:
+            pass
+
+        # 9. Close the Codex session if one was created.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
         except Exception:
             pass
 

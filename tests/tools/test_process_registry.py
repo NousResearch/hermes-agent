@@ -2229,3 +2229,40 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+class TestKillAllSessionScoping:
+    """kill_all(session_key=...) must reap only that session's processes, so a
+    hard teardown of one gateway session cannot kill another session's work
+    (all non-RL terminal spawns share task_id='default'; ownership is the
+    session_key)."""
+
+    def test_kill_all_session_key_reaps_only_that_session(self, registry, monkeypatch):
+        a1 = _make_session(sid="a1", task_id="default"); a1.session_key = "sessA"
+        a2 = _make_session(sid="a2", task_id="default"); a2.session_key = "sessA"
+        b1 = _make_session(sid="b1", task_id="default"); b1.session_key = "sessB"
+        for s in (a1, a2, b1):
+            registry._running[s.id] = s
+        killed = []
+        monkeypatch.setattr(
+            registry, "kill_process",
+            lambda sid, **kw: (killed.append(sid), {"status": "killed"})[1],
+        )
+        n = registry.kill_all(session_key="sessA")
+        assert set(killed) == {"a1", "a2"}, "reaped outside the target session"
+        assert "b1" not in killed, "another session's process was killed"
+        assert n == 2
+
+    def test_kill_all_no_filter_still_reaps_everything(self, registry, monkeypatch):
+        # Backward compatibility: a bare kill_all() is unchanged.
+        a = _make_session(sid="a", task_id="default"); a.session_key = "sessA"
+        b = _make_session(sid="b", task_id="default"); b.session_key = "sessB"
+        for s in (a, b):
+            registry._running[s.id] = s
+        killed = []
+        monkeypatch.setattr(
+            registry, "kill_process",
+            lambda sid, **kw: (killed.append(sid), {"status": "killed"})[1],
+        )
+        registry.kill_all()
+        assert set(killed) == {"a", "b"}

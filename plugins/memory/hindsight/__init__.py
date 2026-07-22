@@ -1442,11 +1442,17 @@ class HindsightMemoryProvider(MemoryProvider):
             t.start()
 
     def system_prompt_block(self) -> str:
+        auto_inject = self._auto_recall and self._memory_mode != "tools"
         if self._memory_mode == "context":
+            inject_msg = (
+                "Relevant memories are automatically injected into context."
+                if auto_inject
+                else "Auto-injection is disabled. Use hindsight_recall to search."
+            )
             return (
                 f"# Hindsight Memory\n"
                 f"Active (context mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
-                f"Relevant memories are automatically injected into context."
+                f"{inject_msg}"
             )
         if self._memory_mode == "tools":
             return (
@@ -1455,10 +1461,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
                 f"hindsight_retain to store facts."
             )
+        inject_msg = (
+            "Relevant memories are automatically injected into context. "
+            if auto_inject
+            else "Auto-injection is disabled. "
+        )
         return (
             f"# Hindsight Memory\n"
             f"Active. Bank: {self._bank_id}, budget: {self._budget}.\n"
-            f"Relevant memories are automatically injected into context. "
+            f"{inject_msg}"
             f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
             f"hindsight_retain to store facts."
         )

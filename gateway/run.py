@@ -4260,12 +4260,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning("Dropping guarded ingress after mismatched approval")
                     return None
                 approved += 1
-            enriched_event = dataclasses.replace(
-                enriched_event,
-                text=callback_event.text,
-                channel_prompt=callback_event.channel_prompt,
-                auto_skill=copy.deepcopy(callback_event.auto_skill),
-            )
+            # Every callback receives its own copy of the original event so
+            # one plugin cannot observe or contaminate another.  Apply only
+            # fields a callback deliberately changed from that original
+            # baseline; otherwise a later ``allow`` would accidentally erase
+            # the gate owner's approved prompt/skill enrichment with its
+            # untouched copy.
+            enrichments: dict[str, Any] = {}
+            if callback_event.text != event.text:
+                enrichments["text"] = callback_event.text
+            if callback_event.channel_prompt != event.channel_prompt:
+                enrichments["channel_prompt"] = callback_event.channel_prompt
+            if callback_event.auto_skill != event.auto_skill:
+                enrichments["auto_skill"] = copy.deepcopy(callback_event.auto_skill)
+            if enrichments:
+                enriched_event = dataclasses.replace(enriched_event, **enrichments)
 
         if approved != 1:
             logger.warning("Dropping guarded ingress without one matching approval")

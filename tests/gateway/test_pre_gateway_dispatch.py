@@ -209,6 +209,51 @@ async def test_required_gate_accepts_only_matching_owner_and_keeps_enrichment(mo
 
 
 @pytest.mark.asyncio
+async def test_later_allow_callback_cannot_erase_gate_owner_enrichment(monkeypatch):
+    """Isolated later hooks preserve owner context when they make no edits."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+
+    def approve(event, **_kwargs):
+        event.channel_prompt = "approved context"
+        event.auto_skill = ["mochiwiz-bookkeeper"]
+        return {"action": "approve", "gate": "line-group-context"}
+
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="context", source="user"),
+    ).register_hook("pre_gateway_dispatch", approve, gate_owner="line-group-context")
+    PluginContext(
+        manager=manager,
+        manifest=PluginManifest(name="unrelated", source="user"),
+    ).register_hook("pre_gateway_dispatch", lambda **_kwargs: {"action": "allow"})
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    observed = {}
+
+    async def capture(event, *_args):
+        observed["prompt"] = event.channel_prompt
+        observed["skills"] = event.auto_skill
+        return "ok"
+
+    runner._handle_message_with_agent = capture  # noqa: SLF001
+    event = _make_event("guarded")
+    event.required_dispatch_gate = "line-group-context"
+    event.platform_event_id = "signed-event-id"
+    event.platform_event_timestamp_ms = 1_784_678_400_000
+
+    assert await runner._handle_message(event) == "ok"
+    assert observed == {
+        "prompt": "approved context",
+        "skills": ["mochiwiz-bookkeeper"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_required_gate_rejects_owner_source_mutation(monkeypatch):
     """A hook cannot replace the adapter-authenticated sender or routing lane."""
     _clear_auth_env(monkeypatch)

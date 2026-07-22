@@ -1252,6 +1252,140 @@ class TestStandaloneSendMedia:
 
 
 # ---------------------------------------------------------------------------
+# TestStandaloneSendUserDmResolution
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneSendUserDmResolution:
+    """_standalone_send resolves user IDs (U.../W...) to DM channels via
+    conversations.open before posting (#17444). Cron `deliver=slack:U…`
+    bypasses send_message()'s tool-level resolution, so the standalone
+    sender must resolve on its own."""
+
+    @staticmethod
+    def _mock_resp(payload):
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value=payload)
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=None)
+        return resp
+
+    def _mock_session(self, *responses):
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(side_effect=list(responses))
+        return session
+
+    @pytest.mark.asyncio
+    async def test_user_id_target_resolves_dm_then_posts(self):
+        _slack_mod._slack_dm_cache.clear()
+        open_resp = self._mock_resp({"ok": True, "channel": {"id": "D999888777"}})
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(open_resp, post_resp)
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                config, "U1234567890", "hello via DM"
+            )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "D999888777"
+        open_url = session.post.call_args_list[0].args[0]
+        assert "conversations.open" in open_url
+        assert session.post.call_args_list[0].kwargs["json"] == {"users": "U1234567890"}
+        post_url = session.post.call_args_list[1].args[0]
+        assert "chat.postMessage" in post_url
+        assert session.post.call_args_list[1].kwargs["json"]["channel"] == "D999888777"
+        _slack_mod._slack_dm_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_channel_id_skips_resolution(self):
+        _slack_mod._slack_dm_cache.clear()
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(post_resp)
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(config, "C123", "hello channel")
+
+        assert result["success"] is True
+        assert session.post.call_count == 1
+        assert "chat.postMessage" in session.post.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_user_id_resolution_failure_returns_error(self):
+        _slack_mod._slack_dm_cache.clear()
+        open_resp = self._mock_resp({"ok": False, "error": "user_not_found"})
+        session = self._mock_session(open_resp)
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(config, "U9999999999", "hello")
+
+        assert "error" in result
+        assert "user ID resolution failed" in result["error"]
+        assert session.post.call_count == 1
+        assert "conversations.open" in session.post.call_args.args[0]
+        _slack_mod._slack_dm_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_user_id_resolution_cached_across_sends(self):
+        _slack_mod._slack_dm_cache.clear()
+        open_resp = self._mock_resp({"ok": True, "channel": {"id": "D555444333"}})
+        post_resp1 = self._mock_resp({"ok": True, "ts": "1.1"})
+        session1 = self._mock_session(open_resp, post_resp1)
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session1):
+            r1 = await _slack_mod._standalone_send(config, "U1112223334", "first")
+        assert r1["success"] is True
+        assert session1.post.call_count == 2
+
+        post_resp2 = self._mock_resp({"ok": True, "ts": "2.2"})
+        session2 = self._mock_session(post_resp2)
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session2):
+            r2 = await _slack_mod._standalone_send(config, "U1112223334", "second")
+        assert r2["success"] is True
+        assert r2["chat_id"] == "D555444333"
+        assert session2.post.call_count == 1  # cache hit — no conversations.open
+        _slack_mod._slack_dm_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_user_id_media_delivery_resolves_dm_before_upload(self, tmp_path):
+        """Media path composes with DM resolution: files_upload_v2 gets D…"""
+        _slack_mod._slack_dm_cache.clear()
+        image = tmp_path / "report.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        open_resp = self._mock_resp({"ok": True, "channel": {"id": "D777666555"}})
+        session = self._mock_session(open_resp)
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock(return_value={"ok": True, "ts": "9.9"})
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with (
+            patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session),
+            patch.object(_slack_mod, "AsyncWebClient", return_value=client),
+            patch.object(_slack_mod, "resolve_proxy_url", return_value=None),
+        ):
+            result = await _slack_mod._standalone_send(
+                config,
+                "U1234509876",
+                "daily report",
+                thread_id=None,
+                media_files=[(str(image), False)],
+            )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "D777666555"
+        client.files_upload_v2.assert_awaited_once()
+        assert client.files_upload_v2.await_args.kwargs["channel"] == "D777666555"
+        _slack_mod._slack_dm_cache.clear()
+
+
+# ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
 

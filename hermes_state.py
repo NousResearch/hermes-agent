@@ -4674,6 +4674,39 @@ class SessionDB:
         ).fetchone()
         return row is not None
 
+    def _ensure_session_title_available(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        title: Optional[str],
+    ) -> None:
+        """Validate title uniqueness inside an active write transaction."""
+        if not title:
+            return
+        conflict = conn.execute(
+            "SELECT id FROM sessions WHERE title = ? AND id != ?",
+            (title, session_id),
+        ).fetchone()
+        if not conflict:
+            return
+
+        conflict_id = conflict["id"]
+        # A compression continuation is the visible head of its hidden
+        # ancestors, so the title may move forward within that lineage.
+        if self._is_compression_ancestor(
+            conn,
+            ancestor_id=conflict_id,
+            descendant_id=session_id,
+        ):
+            conn.execute(
+                "UPDATE sessions SET title = NULL WHERE id = ?",
+                (conflict_id,),
+            )
+            return
+        raise ValueError(
+            f"Title '{title}' is already in use by session {conflict_id}"
+        )
+
     def _set_session_title(
         self,
         session_id: str,
@@ -4692,37 +4725,7 @@ class SessionDB:
                 if current is None or current["title"] is not None:
                     return 0
 
-            if title:
-                # Check uniqueness (allow the same session to keep its own title)
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                    (title, session_id),
-                )
-                conflict = cursor.fetchone()
-                if conflict:
-                    conflict_id = conflict["id"]
-                    # A compression continuation is the live, projected-forward
-                    # head of its conversation; its compressed predecessors are
-                    # ended and hidden from the session list (list_sessions_rich
-                    # projects roots → tip). When the title that "conflicts" is
-                    # held by such a hidden ancestor, the user has no way to free
-                    # it — renaming the visible tip back to the base name would
-                    # dead-end with "already in use by <session they can't see>".
-                    # Treat this as a transfer: move the title off the ancestor
-                    # onto the continuation. Uniqueness is preserved (still only
-                    # one session carries the exact title) and the parent-link
-                    # lineage is untouched.
-                    if self._is_compression_ancestor(
-                        conn, ancestor_id=conflict_id, descendant_id=session_id
-                    ):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
-                    else:
-                        raise ValueError(
-                            f"Title '{title}' is already in use by session {conflict_id}"
-                        )
+            self._ensure_session_title_available(conn, session_id, title)
             predicate = " AND title IS NULL" if only_if_empty else ""
             cursor = conn.execute(
                 f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
@@ -4751,6 +4754,32 @@ class SessionDB:
         :meth:`set_session_title`.
         """
         return self._set_session_title(session_id, title, only_if_empty=True)
+
+    def compare_and_set_session_title(
+        self,
+        session_id: str,
+        expected_title: Optional[str],
+        title: Optional[str],
+    ) -> bool:
+        """Set a title only while the stored value matches ``expected_title``."""
+        expected_title = self.sanitize_title(expected_title)
+        title = self.sanitize_title(title)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT title FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None or row["title"] != expected_title:
+                return 0
+            self._ensure_session_title_available(conn, session_id, title)
+            cursor = conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ? AND title IS ?",
+                (title, session_id, expected_title),
+            )
+            return cursor.rowcount
+
+        return self._execute_write(_do) > 0
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""

@@ -4391,6 +4391,24 @@ class TestTitleUniqueness:
     def test_get_session_title_nonexistent(self, db):
         assert db.get_session_title("nonexistent") is None
 
+    def test_compare_and_set_title_preserves_concurrent_manual_rename(self, db):
+        """A stale background title write must not overwrite a manual rename."""
+        db.create_session("s1", "cli")
+        assert db.compare_and_set_session_title("s1", None, "provisional") is True
+
+        other = SessionDB(db_path=db.db_path)
+        try:
+            other.set_session_title("s1", "Manual Rename")
+            assert (
+                db.compare_and_set_session_title(
+                    "s1", "provisional", "Generated Title"
+                )
+                is False
+            )
+            assert db.get_session_title("s1") == "Manual Rename"
+        finally:
+            other.close()
+
 
 class TestTitleLineage:
     """Tests for title lineage resolution and auto-numbering."""

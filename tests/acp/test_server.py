@@ -1356,6 +1356,10 @@ class TestPrompt:
             "api_mode": "codex_responses",
         }
         assert callable(mock_title.call_args.kwargs["title_callback"])
+        assert (
+            mock_title.call_args.kwargs["provisional_title_callback"]
+            is mock_title.call_args.kwargs["title_callback"]
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_sends_session_info_update_after_auto_title(self, agent):

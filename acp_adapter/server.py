@@ -1698,6 +1698,7 @@ class HermesACPAgent(acp.Agent):
                         and getattr(state.agent, "provider", None) == _title_provider
                     ),
                     title_callback=_notify_title_update,
+                    provisional_title_callback=_notify_title_update,
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)

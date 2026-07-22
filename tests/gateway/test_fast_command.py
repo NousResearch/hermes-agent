@@ -292,7 +292,9 @@ async def test_run_agent_passes_discord_auto_thread_title_callback(monkeypatch, 
         )
 
     mock_title.assert_called_once()
-    callback = mock_title.call_args.kwargs["title_callback"]
+    kwargs = mock_title.call_args.kwargs
+    assert "provisional_title_callback" not in kwargs
+    callback = kwargs["title_callback"]
     with patch.object(runner, "_schedule_discord_semantic_thread_rename") as mock_schedule:
         callback("Semantic Session Title")
     mock_schedule.assert_called_once()

@@ -107,6 +107,7 @@ export function SidebarSessionRow({
 
   return (
     <SessionContextMenu
+      archived={session.archived}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -125,6 +126,7 @@ export function SidebarSessionRow({
               </span>
             )}
             <SessionActionsMenu
+              archived={session.archived}
               onArchive={onArchive}
               onBranch={onBranch}
               onDelete={onDelete}

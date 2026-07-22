@@ -112,6 +112,7 @@ interface SessionActions {
   sessionId: string
   title: string
   pinned?: boolean
+  archived?: boolean
   profile?: string
   onPin?: () => void
   onBranch?: () => void
@@ -192,6 +193,7 @@ function useSessionActions({
   sessionId,
   title,
   pinned = false,
+  archived = false,
   profile,
   onPin,
   onBranch,
@@ -345,11 +347,12 @@ function useSessionActions({
       : []
 
   // DANGER — put it away / destroy it (delete stays last, destructive-red).
+  // When the session is already archived, the archive action becomes "Unarchive".
   const dangerItems: ItemSpec[] = [
     spec({
       disabled: !onArchive,
       icon: 'archive',
-      label: r.archive,
+      label: archived ? r.unarchive : r.archive,
       onSelect: () => {
         triggerHaptic('selection')
         onArchive?.()

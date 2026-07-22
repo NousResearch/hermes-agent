@@ -1871,6 +1871,48 @@ class TestWebServerEndpoints:
         assert isinstance(data.get("errors"), list)
         assert data["recents"]["total"] >= 1
 
+    def test_profiles_sessions_sidebar_recents_archived_filters(self):
+        """recents_archived=only surfaces archived recents; =exclude (default)
+        hides them. Mirrors the desktop 'Show archived' toggle, which our fix
+        wires through SidebarSessionsRequest.archived -> recents_archived."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="sb-live", source="desktop")
+            db.append_message(session_id="sb-live", role="user", content="hi")
+            db.create_session(session_id="sb-archived", source="desktop")
+            db.append_message(session_id="sb-archived", role="user", content="hi")
+            db.set_session_archived("sb-archived", True)
+        finally:
+            db.close()
+
+        base = (
+            "/api/profiles/sessions/sidebar"
+            "?recents_profile=all&recents_limit=20&recents_exclude=cron,telegram"
+            "&cron_limit=50&messaging_limit=100"
+            "&messaging_exclude=cron,cli,codex,desktop,gateway,local,tui"
+        )
+
+        # Default (exclude) hides the archived session.
+        resp_default = self.client.get(base)
+        assert resp_default.status_code == 200
+        default_ids = {s["id"] for s in resp_default.json()["recents"]["sessions"]}
+        assert "sb-live" in default_ids
+        assert "sb-archived" not in default_ids
+
+        # recents_archived=only surfaces only the archived one.
+        resp_only = self.client.get(base + "&recents_archived=only")
+        assert resp_only.status_code == 200
+        only_ids = {s["id"] for s in resp_only.json()["recents"]["sessions"]}
+        assert "sb-archived" in only_ids
+        assert "sb-live" not in only_ids
+
+        # Unknown value still 400s (rejected before slicing).
+        resp_bad = self.client.get(base + "&recents_archived=bogus")
+        assert resp_bad.status_code == 400
+
+
     def test_sessions_endpoint_reads_requested_profile(self):
         """The machine dashboard's global profile switcher must retarget
         the Sessions page, not just config/skills/model pages."""

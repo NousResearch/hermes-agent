@@ -28,7 +28,7 @@ import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
-import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, $showArchivedSessions, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
@@ -141,6 +141,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const messagingSessions = useStore($messagingSessions)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const showArchived = useStore($showArchivedSessions)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routedSessionIdRef = useRef(routedSessionId)
@@ -210,7 +211,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshCronJobs,
     refreshMessagingSessions,
     refreshSessions
-  } = useSessionListActions({ profileScope })
+  } = useSessionListActions({ profileScope, showArchived })
+
+  // When the user flips the "Show archived" toggle, the session-list fetcher's
+  // archivedFilter changes — re-pull so the sidebar reflects the new filter
+  // immediately (otherwise the atom flips but the list stays stale).
+  useEffect(() => {
+    void refreshSessions().catch(() => undefined)
+  }, [showArchived, refreshSessions])
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {

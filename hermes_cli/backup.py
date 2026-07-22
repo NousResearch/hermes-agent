@@ -343,22 +343,27 @@ def _safe_copy_db(
     *,
     expected_dst_identity: Optional[os.stat_result] = None,
     expected_src_identity: Optional[os.stat_result] = None,
+    result_dst_identity: Optional[list[os.stat_result]] = None,
 ) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to. Fail closed if a consistent snapshot cannot
     be created: copying only the live main file can omit committed WAL data.
+    When provided, ``result_dst_identity`` receives the final owned pathname
+    identity so callers that pre-created ``dst`` can clean it up safely.
     """
     conn = None
     backup_conn = None
     owner_fd: Optional[int] = None
     source_fd: Optional[int] = None
-    stage_fd: Optional[int] = None
-    stage_path: Optional[Path] = None
-    stage_identity: Optional[os.stat_result] = None
+    source_parent_fd: Optional[int] = None
+    cleanup_identity = expected_dst_identity
+    published_destination: Optional[os.stat_result] = None
     created_here = False
     success = False
+    if result_dst_identity is not None:
+        result_dst_identity.clear()
     try:
         if expected_dst_identity is None:
             flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
@@ -368,12 +373,13 @@ def _safe_copy_db(
                 flags |= os.O_NOFOLLOW
             owner_fd = os.open(dst, flags, 0o600)
             expected_dst_identity = os.fstat(owner_fd)
+            cleanup_identity = expected_dst_identity
             created_here = True
         else:
             selected = dst.lstat()
             if (
                 not stat.S_ISREG(selected.st_mode)
-                or not os.path.samestat(selected, expected_dst_identity)
+                or not _same_snapshot_object(selected, expected_dst_identity)
             ):
                 logger.warning(
                     "SQLite safe copy refused changed destination %s", dst
@@ -385,11 +391,25 @@ def _safe_copy_db(
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             owner_fd = os.open(dst, flags)
-            if not os.path.samestat(os.fstat(owner_fd), expected_dst_identity):
+            if not _same_snapshot_object(os.fstat(owner_fd), expected_dst_identity):
                 logger.warning(
                     "SQLite safe copy refused replaced destination %s", dst
                 )
                 return False
+
+        source_parent = src.parent
+        parent_selected = source_parent.lstat()
+        if not stat.S_ISDIR(parent_selected.st_mode):
+            raise OSError(f"SQLite source parent is not a directory: {source_parent}")
+        if os.name != "nt":
+            parent_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                parent_flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                parent_flags |= os.O_NOFOLLOW
+            source_parent_fd = os.open(source_parent, parent_flags)
+            if not os.path.samestat(parent_selected, os.fstat(source_parent_fd)):
+                raise OSError(f"SQLite source parent changed: {source_parent}")
 
         source_selected = src.lstat()
         if (
@@ -410,36 +430,65 @@ def _safe_copy_db(
         ):
             raise OSError(f"SQLite source changed before backup: {src}")
 
-        # SQLite must not open the caller's replaceable destination pathname.
-        # Back up into a random, already-open sibling and then stream that
-        # snapshot into the verified destination descriptor.
-        with tempfile.NamedTemporaryFile(
-            suffix=".db", delete=False, dir=str(dst.parent)
-        ) as stage_file:
-            stage_path = Path(stage_file.name)
-            stage_fd = os.dup(stage_file.fileno())
-            stage_identity = os.fstat(stage_file.fileno())
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(stage_path))
+        # Opening a WAL database can legitimately create its -shm/-wal
+        # sidecars lazily on its first read and therefore update the parent
+        # directory. Force that initialization before establishing the
+        # parent-change guard, then re-bind the SQLite pathname to the
+        # descriptor selected above before taking the snapshot.
+        conn.execute("PRAGMA schema_version").fetchone()
+        if source_parent_fd is not None:
+            parent_monitor = os.fstat(source_parent_fd)
+            if not os.path.samestat(parent_monitor, source_parent.lstat()):
+                raise OSError(f"SQLite source parent changed: {source_parent}")
+        else:
+            parent_monitor = source_parent.lstat()
+        if not os.path.samestat(source_selected, src.lstat()):
+            raise OSError(f"SQLite source changed while opening backup: {src}")
+
+        # Destination provenance is exact because SQLite never receives the
+        # caller's pathname: its consistent WAL snapshot is serialized from
+        # memory and copied only through the retained destination descriptor.
+        backup_conn = sqlite3.connect(":memory:")
         conn.backup(backup_conn)
-        backup_conn.close()
-        backup_conn = None
+        serialized = backup_conn.serialize()
 
         if not os.path.samestat(source_selected, src.lstat()):
             raise OSError(f"SQLite source changed during backup: {src}")
-        if not os.path.samestat(stage_identity, os.fstat(stage_fd)):
-            raise OSError(f"SQLite staging file changed during backup: {stage_path}")
+        if source_parent_fd is not None:
+            parent_after = os.fstat(source_parent_fd)
+            path_parent_after = source_parent.lstat()
+            if (
+                not os.path.samestat(parent_monitor, parent_after)
+                or not os.path.samestat(parent_after, path_parent_after)
+                or parent_after.st_mtime_ns != parent_monitor.st_mtime_ns
+                or parent_after.st_ctime_ns != parent_monitor.st_ctime_ns
+            ):
+                raise OSError(
+                    f"SQLite source pathname changed during backup: {src}"
+                )
+        else:
+            path_parent_after = source_parent.lstat()
+            if (
+                not os.path.samestat(parent_monitor, path_parent_after)
+                or path_parent_after.st_mtime_ns != parent_monitor.st_mtime_ns
+                or path_parent_after.st_ctime_ns != parent_monitor.st_ctime_ns
+            ):
+                raise OSError(
+                    f"SQLite source pathname changed during backup: {src}"
+                )
 
-        os.lseek(stage_fd, 0, os.SEEK_SET)
         os.lseek(owner_fd, 0, os.SEEK_SET)
         os.ftruncate(owner_fd, 0)
-        while chunk := os.read(stage_fd, 1024 * 1024):
-            view = memoryview(chunk)
-            while view:
-                written = os.write(owner_fd, view)
-                if written <= 0:
-                    raise OSError("short write while copying SQLite snapshot")
-                view = view[written:]
+        serialized_view = memoryview(serialized)
+        offset = 0
+        while offset < len(serialized_view):
+            written = os.write(
+                owner_fd, serialized_view[offset : offset + 1024 * 1024]
+            )
+            if written <= 0:
+                raise OSError("short write while copying SQLite snapshot")
+            offset += written
         os.fsync(owner_fd)
         success = True
     except Exception as exc:
@@ -455,16 +504,19 @@ def _safe_copy_db(
             try:
                 opened_destination = os.fstat(owner_fd)
                 path_destination = dst.lstat()
-                success = bool(
-                    success
-                    and expected_dst_identity is not None
-                    and _same_snapshot_object(
-                        expected_dst_identity, opened_destination
+                still_bound = bool(
+                    expected_dst_identity is not None
+                    and stat.S_ISREG(opened_destination.st_mode)
+                    and not (
+                        int(getattr(opened_destination, "st_file_attributes", 0))
+                        & 0x400
                     )
-                    and _same_snapshot_object(
-                        opened_destination, path_destination
-                    )
+                    and os.path.samestat(expected_dst_identity, opened_destination)
+                    and os.path.samestat(opened_destination, path_destination)
                 )
+                success = bool(success and still_bound)
+                if still_bound:
+                    published_destination = opened_destination
             except OSError:
                 success = False
             try:
@@ -476,31 +528,34 @@ def _safe_copy_db(
                 os.close(source_fd)
             except OSError:
                 pass
-        if stage_fd is not None:
+        if source_parent_fd is not None:
             try:
-                os.close(stage_fd)
-            except OSError:
-                pass
-        if stage_path is not None and stage_identity is not None:
-            try:
-                _remove_owned_snapshot_file(stage_path, stage_identity)
+                os.close(source_parent_fd)
             except OSError:
                 pass
 
     try:
         current = dst.lstat()
-        success = bool(
-            success
-            and expected_dst_identity is not None
+        still_owned_after_close = bool(
+            published_destination is not None
             and stat.S_ISREG(current.st_mode)
-            and _same_snapshot_object(expected_dst_identity, current)
+            and not (int(getattr(current, "st_file_attributes", 0)) & 0x400)
+            and os.path.samestat(published_destination, current)
         )
+        success = bool(success and still_owned_after_close)
+        if still_owned_after_close:
+            # CloseHandle can legitimately publish a final Windows ctime.
+            # Bind by the retained fd evidence, then take the exact deletion
+            # token from the pathname only after the handle has closed.
+            cleanup_identity = current
+            if result_dst_identity is not None:
+                result_dst_identity.append(current)
     except OSError:
         success = False
 
-    if not success and created_here and expected_dst_identity is not None:
+    if not success and created_here and cleanup_identity is not None:
         try:
-            _remove_owned_snapshot_file(dst, expected_dst_identity)
+            _remove_owned_snapshot_file(dst, cleanup_identity)
         except OSError:
             pass
     return success
@@ -624,13 +679,18 @@ def run_backup(args) -> None:
                         suffix=".db", delete=False, dir=str(out_path.parent)
                     ) as tmp:
                         tmp_db = Path(tmp.name)
-                        tmp_db_identity = os.fstat(tmp.fileno())
+                    tmp_db_identity = tmp_db.lstat()
+                    final_tmp_db_identity: list[os.stat_result] = []
                     try:
-                        if _safe_copy_db(
+                        copied = _safe_copy_db(
                             abs_path,
                             tmp_db,
                             expected_dst_identity=tmp_db_identity,
-                        ):
+                            result_dst_identity=final_tmp_db_identity,
+                        )
+                        if final_tmp_db_identity:
+                            tmp_db_identity = final_tmp_db_identity[0]
+                        if copied:
                             zf.write(tmp_db, arcname=str(rel_path))
                             total_bytes += tmp_db.stat().st_size
                         else:
@@ -1919,10 +1979,44 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     """
     files_to_add: list[tuple[Path, Path, os.stat_result]] = []
     try:
+        root_identity = hermes_root.lstat()
+        if (
+            not stat.S_ISDIR(root_identity.st_mode)
+            or int(getattr(root_identity, "st_file_attributes", 0)) & 0x400
+        ):
+            return None
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            directory_identity = dp.lstat()
+            directory_reparse = int(
+                getattr(directory_identity, "st_file_attributes", 0)
+            ) & 0x400
+            if not stat.S_ISDIR(directory_identity.st_mode) or directory_reparse:
+                dirnames[:] = []
+                continue
+            if dp == hermes_root and not _same_snapshot_object(
+                root_identity, directory_identity
+            ):
+                return None
+
+            # followlinks=False does not stop Windows directory junctions on
+            # supported Python versions. Inspect every child with lstat and
+            # prune symlinks/reparse points before os.walk can descend.
+            safe_directories = []
+            for dirname in dirnames:
+                if dirname in _EXCLUDED_DIRS:
+                    continue
+                child = dp / dirname
+                try:
+                    child_identity = child.lstat()
+                except OSError:
+                    continue
+                child_reparse = int(
+                    getattr(child_identity, "st_file_attributes", 0)
+                ) & 0x400
+                if stat.S_ISDIR(child_identity.st_mode) and not child_reparse:
+                    safe_directories.append(dirname)
+            dirnames[:] = safe_directories
 
             for fname in filenames:
                 fpath = dp / fname
@@ -1974,14 +2068,19 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         suffix=".db", delete=False, dir=str(out_path.parent)
                     ) as tmp_db_file:
                         tmp_db = Path(tmp_db_file.name)
-                        tmp_db_identity = os.fstat(tmp_db_file.fileno())
+                    tmp_db_identity = tmp_db.lstat()
+                    final_tmp_db_identity: list[os.stat_result] = []
                     try:
-                        if not _safe_copy_db(
+                        copied = _safe_copy_db(
                             abs_path,
                             tmp_db,
                             expected_dst_identity=tmp_db_identity,
                             expected_src_identity=source_identity,
-                        ):
+                            result_dst_identity=final_tmp_db_identity,
+                        )
+                        if final_tmp_db_identity:
+                            tmp_db_identity = final_tmp_db_identity[0]
+                        if not copied:
                             logger.warning(
                                 "Full-zip backup aborted: SQLite snapshot failed for %s",
                                 rel_path,

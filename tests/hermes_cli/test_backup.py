@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import time
 import zipfile
 from argparse import Namespace
@@ -1499,6 +1500,75 @@ class TestSafeCopyDb:
         with real_connect(dst) as copied:
             assert copied.execute("SELECT value FROM state").fetchall() == [("safe",)]
 
+    def test_precreated_destination_reports_post_write_identity(self, tmp_path):
+        """Callers clean up using ownership sampled after SQLite publication."""
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "source.db"
+        dst = tmp_path / "copy.db"
+        with sqlite3.connect(src) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+            conn.execute("INSERT INTO state VALUES ('safe')")
+        with dst.open("xb"):
+            pass
+        pre_write_identity = dst.lstat()
+
+        result_identity = []
+        assert backup_mod._safe_copy_db(
+            src,
+            dst,
+            expected_dst_identity=pre_write_identity,
+            result_dst_identity=result_identity,
+        )
+
+        assert len(result_identity) == 1
+        assert backup_mod._same_snapshot_object(result_identity[0], dst.lstat())
+        with sqlite3.connect(dst) as copied:
+            assert copied.execute("SELECT value FROM state").fetchall() == [("safe",)]
+
+    def test_source_parent_mutation_during_backup_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        """A source pathname rename signal aborts publication."""
+        import hermes_cli.backup as backup_mod
+
+        source_dir = tmp_path / "source"
+        destination_dir = tmp_path / "destination"
+        source_dir.mkdir()
+        destination_dir.mkdir()
+        src = source_dir / "source.db"
+        dst = destination_dir / "copy.db"
+        with sqlite3.connect(src) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+
+        real_connect = backup_mod.sqlite3.connect
+
+        class MutatingSourceConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def backup(self, destination):
+                self.connection.backup(destination)
+                selected = source_dir.stat()
+                os.utime(
+                    source_dir,
+                    ns=(selected.st_atime_ns, selected.st_mtime_ns + 1_000_000_000),
+                )
+
+        def mutating_connect(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if str(database).startswith(f"file:{src}"):
+                return MutatingSourceConnection(connection)
+            return connection
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", mutating_connect)
+
+        assert backup_mod._safe_copy_db(src, dst) is False
+        assert not dst.exists()
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
@@ -2373,6 +2443,36 @@ class TestPreUpdateBackup:
 
         assert result is None
         assert not out.exists()
+
+    def test_directory_reparse_point_is_not_archived(self, tmp_path):
+        """A junction/symlink must not let a full backup traverse outside HOME."""
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("must not be archived")
+        link = hermes_home / "external-link"
+
+        if os.name == "nt":
+            created = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if created.returncode:
+                pytest.skip(f"junction creation unavailable: {created.stderr.strip()}")
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+
+        out = tmp_path / "backup.zip"
+        assert backup_mod._write_full_zip_backup(out, hermes_home) == out
+        with zipfile.ZipFile(out) as archive:
+            assert "config.yaml" in archive.namelist()
+            assert not any(name.startswith("external-link/") for name in archive.namelist())
 
     def test_publication_collision_preserves_winner_and_retries(
         self, hermes_home, monkeypatch

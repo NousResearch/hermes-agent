@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -140,6 +141,41 @@ def test_delete_attachment_missing_returns_none(kanban_home):
         assert kb.delete_attachment(conn, 999999) is None
     finally:
         conn.close()
+
+
+def _insert_legacy_attachment(conn, task_id: str, blob: Path) -> int:
+    cursor = conn.execute(
+        "INSERT INTO task_attachments "
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, "
+        "created_at, filesystem_identity) "
+        "VALUES (?, ?, ?, 'text/plain', ?, 'legacy', 1, NULL)",
+        (task_id, blob.name, str(blob.resolve()), blob.stat().st_size),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def test_api_delete_legacy_attachment_returns_conflict_and_preserves_data(
+    client, kanban_home
+):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="legacy API attachment")
+        attachment_dir = kb.task_attachments_dir(task_id)
+        attachment_dir.mkdir(parents=True)
+        blob = attachment_dir / "legacy-api.txt"
+        blob.write_text("keep", encoding="utf-8")
+        attachment_id = _insert_legacy_attachment(conn, task_id, blob)
+    finally:
+        conn.close()
+
+    response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
+
+    assert response.status_code == 409
+    assert "no filesystem ownership provenance" in response.json()["detail"]
+    with kb.connect() as conn:
+        assert kb.get_attachment(conn, attachment_id) is not None
+    assert blob.read_text(encoding="utf-8") == "keep"
 
 
 def test_attachments_root_is_per_board(kanban_home, monkeypatch):
@@ -317,6 +353,61 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
         conn.close()
 
 
+def test_store_attachment_accepts_close_time_ctime_settling(
+    kanban_home, monkeypatch
+):
+    """Path-vs-handle ctime drift must not reject a file bound by samestat."""
+    real_fstat = kb.os.fstat
+
+    def shifted_fstat(fd):
+        current = real_fstat(fd)
+        if not kb.stat.S_ISREG(current.st_mode):
+            return current
+        return types.SimpleNamespace(
+            st_dev=current.st_dev,
+            st_ino=current.st_ino,
+            st_mode=current.st_mode,
+            st_size=current.st_size,
+            st_mtime_ns=current.st_mtime_ns,
+            st_ctime_ns=current.st_ctime_ns + 1,
+            st_file_attributes=getattr(current, "st_file_attributes", 0),
+        )
+
+    monkeypatch.setattr(kb.os, "fstat", shifted_fstat)
+    with kb.connect() as conn:
+        task_id = _make_task(conn)
+        attachment_id = kb.store_attachment_bytes(
+            conn, task_id, "settled.txt", b"stable"
+        )
+        attachment = kb.get_attachment(conn, attachment_id)
+
+    assert attachment is not None
+    assert Path(attachment.stored_path).read_bytes() == b"stable"
+
+
+def test_attachment_post_close_replacement_is_preserved(kanban_home, monkeypatch):
+    destination = kanban_home / "destination"
+    destination.mkdir()
+    target = destination / "report.txt"
+    real_lstat = Path.lstat
+    target_lstats = 0
+
+    def replace_after_close(path):
+        nonlocal target_lstats
+        if path == target:
+            target_lstats += 1
+            if target_lstats == 2:
+                target.unlink()
+                target.write_bytes(b"human replacement")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", replace_after_close)
+    with pytest.raises(ValueError, match="changed during creation"):
+        kb._exclusive_attachment_path(destination, target.name, b"agent bytes")
+
+    assert target.read_bytes() == b"human replacement"
+
+
 def test_store_attachment_bytes_rejects_oversize_and_leaves_no_blob(kanban_home):
     conn = kb.connect()
     try:
@@ -431,6 +522,26 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
         assert kb.list_attachments(conn, task_id) == []
     finally:
         conn.close()
+
+
+def test_cli_attach_rm_refuses_legacy_attachment_and_preserves_data(kanban_home):
+    from hermes_cli.kanban import run_slash
+
+    with kb.connect() as conn:
+        task_id = _make_task(conn, title="legacy CLI attachment")
+        attachment_dir = kb.task_attachments_dir(task_id)
+        attachment_dir.mkdir(parents=True)
+        blob = attachment_dir / "legacy-cli.txt"
+        blob.write_text("keep", encoding="utf-8")
+        attachment_id = _insert_legacy_attachment(conn, task_id, blob)
+
+    output = run_slash(f"attach-rm {attachment_id}")
+
+    assert "no filesystem ownership provenance" in output
+    assert "refusing deletion" in output
+    with kb.connect() as conn:
+        assert kb.get_attachment(conn, attachment_id) is not None
+    assert blob.read_text(encoding="utf-8") == "keep"
 
 
 def test_cli_attach_honors_name_override(kanban_home, tmp_path):

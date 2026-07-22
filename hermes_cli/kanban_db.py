@@ -2403,41 +2403,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 "filesystem_identity",
                 "filesystem_identity TEXT",
             )
-        # Legacy rows predate exact deletion provenance. Backfill only files
-        # whose row name and absolute parent independently bind them to this
-        # task's managed attachment directory; anything ambiguous stays NULL
-        # and is preserved rather than adopted.
-        board_for_attachments = _connection_board(conn)
-        legacy_attachments = conn.execute(
-            "SELECT id, task_id, filename, stored_path FROM task_attachments "
-            "WHERE filesystem_identity IS NULL"
-        ).fetchall()
-        for attachment in legacy_attachments:
-            try:
-                stored = Path(attachment["stored_path"])
-                owned_root = task_attachments_dir(
-                    attachment["task_id"], board=board_for_attachments
-                ).resolve(strict=True)
-                selected = stored.lstat()
-                if (
-                    not stored.is_absolute()
-                    or stored.name != attachment["filename"]
-                    or stored.parent.resolve(strict=True) != owned_root
-                    or not stat.S_ISREG(selected.st_mode)
-                    or _stat_is_reparse(selected)
-                ):
-                    continue
-                conn.execute(
-                    "UPDATE task_attachments SET filesystem_identity = ? "
-                    "WHERE id = ? AND filesystem_identity IS NULL",
-                    (
-                        _encode_filesystem_identity(_filesystem_identity(selected)),
-                        attachment["id"],
-                    ),
-                )
-            except (OSError, RuntimeError, TypeError, ValueError):
-                continue
-
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -3393,6 +3358,16 @@ class AttachmentTooLarge(ValueError):
     """
 
 
+class AttachmentOwnershipUnknown(RuntimeError):
+    """Raised when an attachment has no trustworthy deletion provenance.
+
+    Rows created before ``filesystem_identity`` was recorded cannot authorize
+    deleting whatever currently occupies their stored pathname.  Refusing the
+    whole operation keeps both the metadata row and the file available for
+    explicit operator recovery.
+    """
+
+
 def _safe_attachment_name(raw: str) -> str:
     """Reduce a client-supplied filename to a safe basename.
 
@@ -3476,19 +3451,32 @@ def _exclusive_attachment_path(
             # name. Recompute the next candidate and try exclusively again.
             continue
 
-        created_identity: Optional[_FilesystemIdentity] = None
+        created_stat: Optional[os.stat_result] = None
+        cleanup_created = False
         try:
             with os.fdopen(fd, "wb", closefd=False) as stream:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-            created = os.fstat(fd)
-            if not stat.S_ISREG(created.st_mode):
+            created_stat = os.fstat(fd)
+            if not stat.S_ISREG(created_stat.st_mode):
                 raise ValueError("attachment destination is not a regular file")
-            created_identity = _filesystem_identity(created)
+            current = dest_path.lstat()
+            current_dir = dest_dir.lstat()
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or _stat_is_reparse(current)
+                or not os.path.samestat(created_stat, current)
+                or not os.path.samestat(directory_identity, current_dir)
+            ):
+                raise ValueError("attachment path changed during creation")
         except BaseException:
             try:
-                created_identity = _filesystem_identity(os.fstat(fd))
+                opened = os.fstat(fd)
+                current = dest_path.lstat()
+                if stat.S_ISREG(current.st_mode) and os.path.samestat(opened, current):
+                    created_stat = opened
+                    cleanup_created = True
             except OSError:
                 pass
             raise
@@ -3497,23 +3485,40 @@ def _exclusive_attachment_path(
                 os.close(fd)
             except OSError:
                 pass
-            if created_identity is not None and sys.exc_info()[0] is not None:
-                _atomic_remove_expected_file(dest_path, created_identity)
+            if cleanup_created and created_stat is not None:
+                try:
+                    final_created = dest_path.lstat()
+                    final_dir = dest_dir.lstat()
+                    if (
+                        stat.S_ISREG(final_created.st_mode)
+                        and not _stat_is_reparse(final_created)
+                        and os.path.samestat(created_stat, final_created)
+                        and os.path.samestat(directory_identity, final_dir)
+                    ):
+                        _atomic_remove_expected_file(
+                            dest_path, _filesystem_identity(final_created)
+                        )
+                except OSError:
+                    pass
 
         try:
-            current = dest_path.lstat()
+            # Capture deletion provenance only after CloseHandle/close has
+            # published its final metadata.  Windows can legitimately update
+            # ctime at close, so an fstat captured before close is not a stable
+            # deletion token.
+            final = dest_path.lstat()
             current_dir = dest_dir.lstat()
         except OSError as exc:
-            _atomic_remove_expected_file(dest_path, created_identity)
             raise ValueError("attachment path changed during creation") from exc
         if (
-            _filesystem_identity(current) != created_identity
-            or not stat.S_ISREG(current.st_mode)
+            created_stat is None
+            or not stat.S_ISREG(final.st_mode)
+            or _stat_is_reparse(final)
+            or not os.path.samestat(created_stat, final)
             or not os.path.samestat(directory_identity, current_dir)
         ):
-            _atomic_remove_expected_file(dest_path, created_identity)
             raise ValueError("attachment path changed during creation")
-        return dest_path, created_identity
+        return dest_path, _filesystem_identity(final)
 
 
 def _encode_filesystem_identity(identity: Optional[_FilesystemIdentity]) -> Optional[str]:
@@ -3646,8 +3651,9 @@ def add_attachment(
         raise ValueError("attachment stored_path is required")
     stored = Path(stored_path)
     try:
-        current_identity = _filesystem_identity(stored.lstat())
-        if stored.is_symlink() or not stat.S_ISREG(current_identity[2]):
+        current = stored.lstat()
+        current_identity = _filesystem_identity(current)
+        if _stat_is_reparse(current) or not stat.S_ISREG(current.st_mode):
             current_identity = None
     except OSError:
         current_identity = None
@@ -3733,14 +3739,22 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
 def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
     """Delete an attachment row and its on-disk blob. Returns the removed row.
 
-    Returns ``None`` when no row matched. The blob is removed best-effort
-    (a missing file is not an error); the metadata row is the source of
-    truth for whether an attachment "exists".
+    Returns ``None`` when no row matched. Raises
+    :class:`AttachmentOwnershipUnknown` for legacy rows that have no bound
+    filesystem identity; those rows and files are preserved for explicit
+    operator recovery. For provenance-bound rows, the blob is removed
+    best-effort (a missing or replaced file is not an error).
     """
     with write_txn(conn):
         att = get_attachment(conn, attachment_id)
         if att is None:
             return None
+        if att.filesystem_identity is None:
+            raise AttachmentOwnershipUnknown(
+                f"attachment {attachment_id} has no filesystem ownership provenance; "
+                "refusing deletion so its metadata row and file remain available "
+                "for operator recovery"
+            )
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
         _append_event(
             conn, att.task_id, "attachment_removed", {"filename": att.filename}
@@ -4975,22 +4989,12 @@ def _persist_scratch_completion_artifacts(
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
     used_destinations: set[Path] = set()
-    copied_identities: dict[Path, tuple[int, int, int, int, int, int]] = {}
+    copied_identities: dict[Path, _FilesystemIdentity] = {}
     changed = False
 
-    def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int, int]:
-        return (
-            st.st_dev,
-            st.st_ino,
-            st.st_mode,
-            st.st_size,
-            st.st_mtime_ns,
-            st.st_ctime_ns,
-        )
-
-    def _current_identity(path: Path) -> Optional[tuple[int, int, int, int, int, int]]:
+    def _current_identity(path: Path) -> Optional[_FilesystemIdentity]:
         try:
-            return _stat_identity(path.lstat())
+            return _filesystem_identity(path.lstat())
         except OSError:
             return None
 
@@ -5026,7 +5030,7 @@ def _persist_scratch_completion_artifacts(
 
         try:
             source_path_stat = resolved_src.lstat()
-            source_path_identity = _stat_identity(source_path_stat)
+            source_path_identity = _filesystem_identity(source_path_stat)
             source_reparse = int(
                 getattr(source_path_stat, "st_file_attributes", 0)
             ) & 0x400
@@ -5053,9 +5057,19 @@ def _persist_scratch_completion_artifacts(
             )
 
         dest: Optional[Path] = None
-        dest_identity: Optional[tuple[int, int, int, int, int, int]] = None
+        dest_identity: Optional[_FilesystemIdentity] = None
+        dest_opened: Optional[os.stat_result] = None
+        attachment_dir_identity: Optional[os.stat_result] = None
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
+            attachment_dir_identity = attachment_dir.lstat()
+            if (
+                not stat.S_ISDIR(attachment_dir_identity.st_mode)
+                or _stat_is_reparse(attachment_dir_identity)
+            ):
+                raise ArtifactPreservationError(
+                    f"attachment destination is not a regular directory: {attachment_dir}"
+                )
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             source_flags = os.O_RDONLY
             if hasattr(os, "O_BINARY"):
@@ -5067,10 +5081,13 @@ def _persist_scratch_completion_artifacts(
                 "xb"
             ) as destination_file:
                 try:
-                    source_before = _stat_identity(os.fstat(source_file.fileno()))
+                    source_before = os.fstat(source_file.fileno())
+                    source_path_open = resolved_src.lstat()
                     if (
-                        source_before != source_path_identity
-                        or not stat.S_ISREG(source_before[2])
+                        not os.path.samestat(source_path_stat, source_before)
+                        or not os.path.samestat(source_before, source_path_open)
+                        or not stat.S_ISREG(source_before.st_mode)
+                        or _stat_is_reparse(source_path_open)
                     ):
                         raise ArtifactPreservationError(
                             f"declared scratch artifact identity changed before copy: {artifact}"
@@ -5083,8 +5100,14 @@ def _persist_scratch_completion_artifacts(
                                 f"declared scratch artifact grew beyond the size limit: {artifact}"
                             )
                         destination_file.write(chunk)
-                    source_after = _stat_identity(os.fstat(source_file.fileno()))
-                    if source_after != source_before or copied != source_before[3]:
+                    source_after = os.fstat(source_file.fileno())
+                    source_path_after = resolved_src.lstat()
+                    if (
+                        _filesystem_identity(source_after)
+                        != _filesystem_identity(source_before)
+                        or not os.path.samestat(source_after, source_path_after)
+                        or copied != source_before.st_size
+                    ):
                         raise ArtifactPreservationError(
                             f"declared scratch artifact changed while being copied: {artifact}"
                         )
@@ -5094,16 +5117,64 @@ def _persist_scratch_completion_artifacts(
                         os.fsync(destination_file.fileno())
                     finally:
                         try:
-                            dest_identity = _stat_identity(
-                                os.fstat(destination_file.fileno())
-                            )
+                            dest_opened = os.fstat(destination_file.fileno())
+                            dest_path_open = dest.lstat()
+                            destination_dir_open = attachment_dir.lstat()
+                            if (
+                                not stat.S_ISREG(dest_opened.st_mode)
+                                or not stat.S_ISREG(dest_path_open.st_mode)
+                                or _stat_is_reparse(dest_path_open)
+                                or not os.path.samestat(dest_opened, dest_path_open)
+                                or attachment_dir_identity is None
+                                or not os.path.samestat(
+                                    attachment_dir_identity, destination_dir_open
+                                )
+                            ):
+                                raise ArtifactPreservationError(
+                                    "preserved artifact path changed during copy: "
+                                    f"{artifact}"
+                                )
                         except OSError:
-                            dest_identity = None
+                            dest_opened = None
+            if dest_opened is None:
+                raise ArtifactPreservationError(
+                    f"could not bind preserved artifact identity: {artifact}"
+                )
+            # Sample the durable deletion token after the destination handle
+            # closes. Windows may publish a legitimate final ctime at close.
+            dest_final = dest.lstat()
+            destination_dir_final = attachment_dir.lstat()
+            if (
+                not stat.S_ISREG(dest_final.st_mode)
+                or _stat_is_reparse(dest_final)
+                or not os.path.samestat(dest_opened, dest_final)
+                or dest_final.st_size != dest_opened.st_size
+                or dest_final.st_mtime_ns != dest_opened.st_mtime_ns
+                or attachment_dir_identity is None
+                or not os.path.samestat(
+                    attachment_dir_identity, destination_dir_final
+                )
+            ):
+                raise ArtifactPreservationError(
+                    f"preserved artifact identity changed after copy: {artifact}"
+                )
+            dest_identity = _filesystem_identity(dest_final)
         except BaseException as exc:
             if dest is not None:
                 try:
-                    if dest_identity is not None:
-                        _atomic_remove_expected_file(dest, dest_identity)
+                    current_dest = dest.lstat()
+                    current_destination_dir = attachment_dir.lstat()
+                    if (
+                        dest_opened is not None
+                        and attachment_dir_identity is not None
+                        and os.path.samestat(dest_opened, current_dest)
+                        and os.path.samestat(
+                            attachment_dir_identity, current_destination_dir
+                        )
+                    ):
+                        _atomic_remove_expected_file(
+                            dest, _filesystem_identity(current_dest)
+                        )
                 except OSError:
                     pass
             _discard_copies()
@@ -5481,15 +5552,34 @@ def _materialize_owned_scratch_workspace(
                         os.close(workspace_fd)
                     except OSError:
                         pass
-        elif not _read_scratch_owner_marker(
-            canonical,
-            task_id=task.id,
-            board=board_slug,
-            tenant=task.tenant,
-        ):
-            raise ValueError(
-                f"cannot prove ownership of existing scratch workspace: {canonical}"
-            )
+        else:
+            workspace_identity = canonical.lstat()
+            if (
+                not stat.S_ISDIR(workspace_identity.st_mode)
+                or _stat_is_reparse(workspace_identity)
+            ):
+                raise ValueError(
+                    f"scratch workspace is not a regular directory: {canonical}"
+                )
+            marker = canonical / _SCRATCH_OWNER_MARKER_NAME
+            try:
+                marker.lstat()
+            except FileNotFoundError:
+                # Compatibility for pre-v2 workspaces: they remain usable as
+                # checkpoints, but deliberately receive no ownership marker.
+                # Cleanup therefore cannot adopt or delete them later.
+                pass
+            else:
+                if not _read_scratch_owner_marker(
+                    canonical,
+                    task_id=task.id,
+                    board=board_slug,
+                    tenant=task.tenant,
+                ):
+                    raise ValueError(
+                        "cannot prove ownership of existing scratch workspace: "
+                        f"{canonical}"
+                    )
     except (OSError, ValueError) as exc:
         if isinstance(exc, ValueError):
             raise

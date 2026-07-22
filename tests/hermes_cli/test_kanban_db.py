@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -63,7 +64,7 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
-def test_init_backfills_legacy_attachment_deletion_identity(kanban_home):
+def test_init_preserves_legacy_attachment_without_deletion_identity(kanban_home):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="legacy attachment")
         attachment_dir = kb.task_attachments_dir(task_id)
@@ -91,10 +92,12 @@ def test_init_backfills_legacy_attachment_deletion_identity(kanban_home):
     with kb.connect() as conn:
         attachment = kb.get_attachment(conn, attachment_id)
         assert attachment is not None
-        assert attachment.filesystem_identity is not None
-        assert kb.delete_attachment(conn, attachment_id) is not None
+        assert attachment.filesystem_identity is None
+        with pytest.raises(kb.AttachmentOwnershipUnknown, match="no filesystem ownership"):
+            kb.delete_attachment(conn, attachment_id)
+        assert kb.get_attachment(conn, attachment_id) is not None
 
-    assert not blob.exists()
+    assert blob.read_text() == "legacy"
 
 
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
@@ -2501,6 +2504,80 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_completion_artifact_accepts_path_handle_ctime_difference(
+    kanban_home, monkeypatch
+):
+    """Windows close-time ctime publication is not a replacement signal."""
+    real_fstat = kb.os.fstat
+
+    def shifted_fstat(fd):
+        current = real_fstat(fd)
+        if not stat.S_ISREG(current.st_mode):
+            return current
+        return types.SimpleNamespace(
+            st_dev=current.st_dev,
+            st_ino=current.st_ino,
+            st_mode=current.st_mode,
+            st_size=current.st_size,
+            st_mtime_ns=current.st_mtime_ns,
+            st_ctime_ns=current.st_ctime_ns + 1,
+            st_file_attributes=getattr(current, "st_file_attributes", 0),
+        )
+
+    monkeypatch.setattr(kb.os, "fstat", shifted_fstat)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="ctime settling")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "result.txt"
+        artifact.write_text("stable", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            metadata={"artifacts": [str(artifact)]},
+        )
+        stored = Path(kb.list_attachments(conn, task_id)[0].stored_path)
+
+    assert stored.read_text(encoding="utf-8") == "stable"
+
+
+def test_completion_artifact_post_close_replacement_is_preserved(
+    kanban_home, monkeypatch
+):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="post-close replacement")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "result.txt"
+        artifact.write_text("agent result", encoding="utf-8")
+        destination = kb.task_attachments_dir(task_id) / artifact.name
+        real_lstat = Path.lstat
+        destination_lstats = 0
+
+        def replace_after_close(path):
+            nonlocal destination_lstats
+            if path == destination:
+                destination_lstats += 1
+                if destination_lstats == 2:
+                    destination.unlink()
+                    destination.write_text("human replacement", encoding="utf-8")
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", replace_after_close)
+        with pytest.raises(kb.ArtifactPreservationError, match="changed after copy"):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(artifact)]},
+            )
+        assert kb.get_task(conn, task_id).status == "ready"
+
+    assert destination.read_text(encoding="utf-8") == "human replacement"
+
+
 def test_completion_artifact_prefix_collision_is_not_registered(kanban_home):
     """A sibling whose name shares the attachment-dir prefix stays external."""
     with kb.connect() as conn:
@@ -3067,6 +3144,42 @@ def test_scratch_workspace_has_exact_owner_marker(kanban_home):
             workspace_identity.st_ctime_ns if os.name == "nt" else None,
         ],
     }
+
+
+def test_pre_v2_scratch_workspace_resumes_without_adoption_or_cleanup(kanban_home):
+    """A markerless legacy checkpoint is usable but never becomes deletable."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy scratch")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.workspaces_root() / task_id
+        workspace.mkdir(parents=True)
+        checkpoint = workspace / "checkpoint.txt"
+        checkpoint.write_text("resume here", encoding="utf-8")
+
+        assert kb.resolve_workspace(task) == workspace.resolve()
+        assert not (workspace / kb._SCRATCH_OWNER_MARKER_NAME).exists()
+        kb.set_workspace_path(conn, task_id, workspace)
+        assert kb.complete_task(conn, task_id, result="done")
+
+    assert workspace.is_dir()
+    assert checkpoint.read_text(encoding="utf-8") == "resume here"
+    assert not (workspace / kb._SCRATCH_OWNER_MARKER_NAME).exists()
+
+
+def test_existing_scratch_workspace_with_invalid_marker_cannot_resume(kanban_home):
+    """Existing marker evidence must be exact; malformed evidence fails closed."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="invalid legacy scratch")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.workspaces_root() / task_id
+        workspace.mkdir(parents=True)
+        marker = workspace / kb._SCRATCH_OWNER_MARKER_NAME
+        marker.write_text('{"version":1}', encoding="utf-8")
+
+        with pytest.raises(ValueError, match="cannot prove ownership"):
+            kb.resolve_workspace(task)
+
+    assert marker.read_text(encoding="utf-8") == '{"version":1}'
 
 
 def test_interrupted_scratch_marker_creation_preserves_evidence(

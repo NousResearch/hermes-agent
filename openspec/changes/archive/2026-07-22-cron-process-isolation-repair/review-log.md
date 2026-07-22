@@ -42,7 +42,7 @@
 ## Round 5 — revised authoritative-boundary reflection
 
 **Reviewer lane:** Codex CLI read-only (`codex-cli 0.144.1`), requested model `gpt-5.6-terra`
-**Command scope:** `/home/linh/.local/bin/codex exec -m gpt-5.6-terra -s read-only --ephemeral --ignore-user-config --json -C <repository> '<reflection prompt>'`
+**Command scope:** `codex exec -m gpt-5.6-terra -s read-only --ephemeral --ignore-user-config --json -C <repository> '<reflection prompt>'`
 **Session:** `019f87ea-e694-7382-8206-cad5f3b79039`
 
 - The invocation was read-only and inspected the ADR, AGENTS.md, and all active OpenSpec artifacts.
@@ -53,7 +53,7 @@
 ## Round 6 — re-based containment design reflection
 
 **Evidence:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
-**Command:** `/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
+**Command:** `codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
 **Session:** `019f8818-0232-7c53-9ea3-8c3b1d243a8d`
 **Reviewed scope:** `AGENTS.md`; ADR 0006; every active `cron-process-isolation-repair` artifact; and the complete dirty diff including untracked `cron/process_boundary.py` and `tests/cron/test_process_isolation.py`.
 
@@ -68,7 +68,7 @@
 ## Round 7 — re-based containment design reflection
 
 **Evidence:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
-**Command:** `/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
+**Command:** `codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
 **Session:** `019f881a-daf6-7dc1-a4ea-682b0458b744`
 **Reviewed scope:** `AGENTS.md`; ADR 0006; every active `cron-process-isolation-repair` artifact; and the complete dirty diff including untracked `cron/process_boundary.py` and `tests/cron/test_process_isolation.py`.
 
@@ -82,7 +82,7 @@
 ## Round 8 — re-based containment design reflection
 
 **Evidence:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
-**Command:** `/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
+**Command:** `codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
 **Session:** `019f881d-63a7-7451-b3ad-0c47ec854f41`
 **Reviewed scope:** `AGENTS.md`; ADR 0006; every active `cron-process-isolation-repair` artifact; and the complete dirty diff including untracked `cron/process_boundary.py` and `tests/cron/test_process_isolation.py`.
 
@@ -94,7 +94,7 @@
 ## Round 9 — re-based containment design reflection
 
 **Evidence:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
-**Command:** `/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
+**Command:** `codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
 **Session:** `019f8824-06e8-7470-b8f1-cedf26ce6418`
 **Reviewed scope:** `AGENTS.md`; ADR 0006; every active `cron-process-isolation-repair` artifact; and the complete dirty diff including untracked `cron/process_boundary.py` and `tests/cron/test_process_isolation.py`.
 
@@ -108,7 +108,7 @@
 ## Round 10 — re-based containment design reflection
 
 **Evidence:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
-**Command:** `/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
+**Command:** `codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --json -C . "$(< /tmp/cron-process-isolation-terra-review-prompt.txt)"`
 **Session:** `019f8825-8e9a-7321-8b85-07d361e26c75`
 **Reviewed scope:** `AGENTS.md`; ADR 0006; every active `cron-process-isolation-repair` artifact; and the complete dirty diff including untracked `cron/process_boundary.py` and `tests/cron/test_process_isolation.py`.
 
@@ -140,10 +140,10 @@
 - `git diff --check`: PASS.
 - `scripts/run_tests.sh tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py tests/cron/test_scheduler.py -q`: PASS (4 files, 252 tests passed, 0 failed). This explicit-list hermetic run includes the tracked process-isolation regression.
 
-**Reviewer lane:** `/home/linh/.local/bin/codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Reviewer lane:** `codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
 
 **Exact command:**
-`/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
+`codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
 
 **Session:** `019f8859-602d-7c40-a9e5-54a5fffd08ed`
 
@@ -162,10 +162,10 @@
 - `git diff --check`: PASS.
 - `scripts/run_tests.sh tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py tests/cron/test_scheduler.py -q`: PASS (4 files, 252 tests passed, 0 failed). This explicit-list hermetic run includes the tracked process-isolation regression.
 
-**Reviewer lane:** `/home/linh/.local/bin/codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Reviewer lane:** `codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
 
 **Exact command:**
-`/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. In particular, assess whether the orphaned-group fallback regression correctly matches the documented best-effort fallback semantics when a descendant calls start_new_session=True. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
+`codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. In particular, assess whether the orphaned-group fallback regression correctly matches the documented best-effort fallback semantics when a descendant calls start_new_session=True. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
 
 **Session:** `019f885e-79c3-7211-bd92-33a57ffcaf98`
 
@@ -186,7 +186,7 @@
 The fallback regression now forces boundary unavailability, uses a short-lived descendant that stays in the child process group, and explicitly asserts best-effort group cleanup. The detached `start_new_session=True` descendant assertion remains only in the capability-gated hard-containment test.
 
 **Exact command:**
-`/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. In particular, assess whether the corrected fallback regression forces boundary unavailability, avoids creating a long-lived detached descendant when hard containment is unavailable, and explicitly asserts only best-effort process-group semantics, while the detached start_new_session=True assertion remains capability-gated. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS."`
+`codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. In particular, assess whether the corrected fallback regression forces boundary unavailability, avoids creating a long-lived detached descendant when hard containment is unavailable, and explicitly asserts only best-effort process-group semantics, while the detached start_new_session=True assertion remains capability-gated. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS."`
 
 **Session:** `019f8863-48fa-7aa3-b1db-b1a64e0f9754`
 
@@ -205,10 +205,10 @@ The fallback regression now forces boundary unavailability, uses a short-lived d
 - `git diff --check`: PASS.
 - `scripts/run_tests.sh tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py tests/cron/test_scheduler.py -q`: PASS (4 files, 252 tests passed, 0 failed). This explicit-list hermetic run includes the tracked process-isolation regression.
 
-**Reviewer lane:** `/home/linh/.local/bin/codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Reviewer lane:** `codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
 
 **Exact command:**
-`/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. Verify the unavailable-boundary fallback test only asserts same-process-group best-effort cleanup and the detached start_new_session=True teardown assertion remains capability-gated. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
+`codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. Verify the unavailable-boundary fallback test only asserts same-process-group best-effort cleanup and the detached start_new_session=True teardown assertion remains capability-gated. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
 
 **Session:** `019f887d-9d3c-7c70-b5fd-787d444ca67f`
 
@@ -226,10 +226,10 @@ The fallback regression now forces boundary unavailability, uses a short-lived d
 - `git diff --check`: PASS.
 - `scripts/run_tests.sh tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py tests/cron/test_scheduler.py -q`: PASS (4 files, 252 tests passed, 0 failed; 235 discovered test items).
 
-**Reviewer lane:** `/home/linh/.local/bin/codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Reviewer lane:** `codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
 
 **Exact command:**
-`/home/linh/.local/bin/codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. Verify the unavailable-boundary fallback test only asserts same-process-group best-effort cleanup and does not create a long-lived detached descendant when hard containment is unavailable, while the detached start_new_session=True teardown assertion remains capability-gated. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
+`codex exec --model gpt-5.6-terra --sandbox read-only --ephemeral --ignore-user-config --json -C . "Perform a fresh final read-only code review of the current dirty repository diff, including untracked cron/process_boundary.py, tests/cron/test_process_isolation.py, and all active OpenSpec artifacts. Review the implementation and focused regression coverage in tests/cron/test_process_isolation.py, tests/cron/test_terminal_cwd_lock.py, tests/cron/test_ticker_stall_60703.py, and tests/cron/test_scheduler.py against the active cron-process-isolation-repair contract. Verify: hard containment is claimed only after cgroup-v2 capability proof, parked child assignment and PID membership verification; failures before release fail closed; cgroup-wide teardown and reaping/emptiness failures retain ownership with cleanup_failed; process groups remain explicit best-effort fallback; the TERMINAL_CWD lock prevents reader starvation and releases on exceptional paths. Verify the unavailable-boundary fallback test only asserts same-process-group best-effort cleanup and does not create a long-lived detached descendant when hard containment is unavailable, while the detached start_new_session=True teardown assertion remains capability-gated. Do not modify files, do not commit, and do not use network. Inspect the actual diff and tests. State material findings with file:line and end with exactly VERDICT: PASS or VERDICT: FAIL."`
 
 **Session:** `019f8881-a396-7d21-b669-9b36ffa477da`
 
@@ -247,7 +247,7 @@ The fallback regression now forces boundary unavailability, uses a short-lived d
 - `git diff --check`: PASS.
 - `scripts/run_tests.sh tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py tests/cron/test_scheduler.py -q`: PASS (4 files, 254 tests passed, 0 failed).
 
-**Reviewer lane:** `/home/linh/.local/bin/codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Reviewer lane:** `codex` (`codex-cli 0.144.1`), `gpt-5.6-terra`, read-only sandbox, ephemeral session.
 
 **Session:** `019f88b6-5f01-75c1-843b-e225adb22e84`
 

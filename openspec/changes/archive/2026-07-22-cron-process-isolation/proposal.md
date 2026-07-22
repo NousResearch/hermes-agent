@@ -10,4 +10,4 @@ Move agent-backed cron execution into a killable child process group supervised 
 
 ## Architectural anchor
 
-This change serves ADR 0006 (`/home/linh/hpladrs/0006-spec-driven-development-via-openspec.md`) and does not alter the accepted ADR layer.
+This change serves ADR 0006 (`hpladrs/0006-spec-driven-development-via-openspec.md`) and does not alter the accepted ADR layer.

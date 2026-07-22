@@ -12,4 +12,4 @@ This change does not promise universal descendant cleanup. A hard detached-sessi
 The fallback remains safe and useful but intentionally weaker: it records `unavailable` or `unsupported`, may terminate the spawned process group as best effort, and never reports that a detached `setsid` descendant was authoritatively contained. A revalidation, cgroup termination, emptiness, or reaping failure records `cleanup_failed` and retains the boundary ownership record for diagnosis instead of releasing it as successful cleanup.
 
 ## Architectural anchor
-This change serves ADR 0006 (`/home/linh/hpladrs/0006-spec-driven-development-via-openspec.md`) and does not alter the accepted ADR layer.
+This change serves ADR 0006 (`hpladrs/0006-spec-driven-development-via-openspec.md`) and does not alter the accepted ADR layer.

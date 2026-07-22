@@ -399,13 +399,6 @@ _kill_on_exit_job = None  # module-global handle; its lifetime == process lifeti
 # on every call once the singleton is warm.
 _job_singleton_lock = threading.Lock()
 
-# Serializes the CreateProcess monkeypatch below across threads. Only one
-# suspend/assign/resume "critical section" may be in flight at a time because
-# the patch is a single process-wide attribute swap
-# (subprocess._winapi.CreateProcess) — concurrent spawns must not observe
-# each other's patched function.
-_create_process_patch_lock = threading.Lock()
-
 _warned_job_assignment_unavailable = False
 
 
@@ -442,6 +435,7 @@ def _get_kill_on_exit_job():
     """
     global _kill_on_exit_job
     if not _WIN32_JOB_AVAILABLE:
+        _warn_job_assignment_once("pywin32 unavailable")
         return None
     if _kill_on_exit_job is not None:
         return _kill_on_exit_job
@@ -480,83 +474,134 @@ _CREATE_SUSPENDED = 0x00000004
 # thread_attrs, inherit_handles, creation_flags, env_mapping,
 # current_directory, startup_info) — verified against CPython 3.12's
 # ``subprocess.py`` source, the version this project targets. If a future
-# CPython changes this signature, ``_patched_create_process`` defensively
-# falls back to an unmodified (un-suspended, unassigned) spawn rather than
-# indexing into the wrong argument.
+# CPython changes this signature, the gated wrapper defensively falls back
+# to an unmodified (un-suspended, unassigned) spawn rather than indexing
+# into the wrong argument.
 _CREATION_FLAGS_ARG_INDEX = 5
 _EXPECTED_CREATE_PROCESS_ARGC = 9
 
+# --- Owner-thread-gated CreateProcess patch -------------------------------
+#
+# The patch below is installed on ``subprocess._winapi.CreateProcess``
+# **exactly once, permanently**, rather than swapped in/out around each
+# spawn. Two earlier per-call-monkeypatch approaches were rejected after
+# adversarial review (issue #69033):
+#
+# 1. Capturing "the current CreateProcess" and restoring it after the call
+#    is only safe if capture and restore happen while holding the same lock
+#    the whole time. Capturing *before* acquiring the lock lets a second
+#    caller capture the first caller's already-patched function as "the
+#    original" while the first caller is still active; when the first
+#    caller finishes and restores what *it* captured (the true original),
+#    then the second caller finishes and restores what *it* captured (the
+#    first caller's patched function) — CreateProcess is now permanently
+#    stuck patched, process-wide, forever.
+#
+# 2. Even with capture/restore correctly serialized under one lock,
+#    ``subprocess._winapi.CreateProcess`` is a single process-wide function.
+#    While our lock is held, *any other thread* calling ``subprocess.Popen``
+#    for any unrelated reason (test fixtures, MCP subprocess spawns, any
+#    library) is routed through our patch too — suspended, assigned to our
+#    job, and made to inherit ``KILL_ON_JOB_CLOSE`` without ever asking for
+#    it. That manifests as random unrelated subprocesses dying whenever
+#    Hermes drops the job handle.
+#
+# The fix: install the patched function once (idempotent, guarded only for
+# the one-time install), and never touch ``subprocess._winapi.CreateProcess``
+# again afterward. The patch itself is inert for every thread by default —
+# it only suspends/assigns/resumes when the *calling thread* has opted in via
+# ``_spawn_owner.job`` (a ``threading.local``), which
+# ``spawn_bash_with_kill_on_exit`` sets for the duration of exactly the one
+# ``popen_fn()`` call it wraps, on the calling thread only. Other threads'
+# ``_spawn_owner.job`` is unset, so their ``CreateProcess`` calls pass
+# straight through to the true original with zero observable difference —
+# this is what makes the patch safe to leave permanently installed.
+_original_create_process = None  # type: ignore[assignment]
+_create_process_patch_install_lock = threading.Lock()
+_spawn_owner = threading.local()
 
-def _make_patched_create_process(job, real_create_process):
-    """Build a drop-in replacement for ``subprocess._winapi.CreateProcess``
-    that suspends the child at birth, assigns it to *job* while it cannot yet
-    run a single instruction, then resumes it.
 
-    This closes the race the handle-only approach could not: a native
-    pipeline shell (``bash -c "find ... | grep ... | head ..."``) can spawn
-    its own children within microseconds of ``CreateProcess`` returning —
-    faster than a second Win32 call (``AssignProcessToJobObject``) issued
-    from the parent after ``subprocess.Popen()`` returns can reliably land,
-    especially under parent-thread scheduler pressure, where the window is
-    unbounded rather than merely small. Suspending the child's main thread at
-    creation means literally zero child code — including spawning further
-    children — can execute until we explicitly resume it, so assignment is
-    guaranteed to happen before any descendant can exist.
+def _job_owned_create_process(*args, **kwargs):
+    """The permanently-installed replacement for
+    ``subprocess._winapi.CreateProcess``.
 
-    ``subprocess.Popen`` does not expose the child's *thread* handle (only
-    raw ``CreateProcess`` returns it, and ``Popen._execute_child`` closes it
-    immediately after spawning, before ``Popen()`` returns to the caller) —
-    so this can't be done by post-processing a ``Popen`` result. Intercepting
-    the ``_winapi.CreateProcess`` call ``Popen._execute_child`` makes
-    internally is what lets us reach the thread handle in the small window
-    while it still exists, without reimplementing everything else
-    ``Popen._execute_child`` does (pipe wiring, handle inheritance,
-    startupinfo, error handling) via a raw ``win32process.CreateProcess``
-    call at every spawn site.
-
-    Empirically verified: see
-    ``tests/test_windows_terminal_kill_on_exit_job.py`` — patching this
-    around a ``Popen()`` call whose child immediately forks a grandchild
-    (``bash -c "sleep 30 & wait"``, and a Python equivalent) shows the
-    grandchild is *always* inside the job, because the child cannot run the
-    fork/exec syscall that creates it until ``ResumeThread`` runs.
+    Passes straight through to the true original for every thread except
+    the one currently inside ``spawn_bash_with_kill_on_exit`` (identified by
+    ``_spawn_owner.job`` being set on this thread's local storage) — see the
+    module-level comment above for why this thread-local gate, rather than a
+    capture/restore swap, is what keeps the patch from bleeding into
+    unrelated spawns on other threads.
     """
+    job = getattr(_spawn_owner, "job", None)
+    if job is None:
+        return _original_create_process(*args, **kwargs)
 
-    def _patched(*args, **kwargs):
-        if len(args) != _EXPECTED_CREATE_PROCESS_ARGC or kwargs:
-            # Signature mismatch (future CPython change) — don't guess at
-            # argument positions. Fail open to an un-suspended, unassigned
-            # spawn; the process still runs, it just isn't swept.
-            _warn_job_assignment_once(
-                "unexpected CreateProcess signature; suspend/assign/resume skipped"
-            )
-            return real_create_process(*args, **kwargs)
-
-        patched_args = list(args)
-        patched_args[_CREATION_FLAGS_ARG_INDEX] = (
-            patched_args[_CREATION_FLAGS_ARG_INDEX] | _CREATE_SUSPENDED
+    if len(args) != _EXPECTED_CREATE_PROCESS_ARGC or kwargs:
+        # Signature mismatch (future CPython change) — don't guess at
+        # argument positions. Fail open to an un-suspended, unassigned
+        # spawn; the process still runs, it just isn't swept.
+        _warn_job_assignment_once(
+            "unexpected CreateProcess signature; suspend/assign/resume skipped"
         )
-        hp, ht, pid, tid = real_create_process(*patched_args)
-        try:
-            win32job.AssignProcessToJobObject(job, int(hp))
-        except Exception:
-            # Fail open: assignment can legitimately fail (already in a
-            # non-nesting job on pre-Windows-8, access denied). The process
-            # must still be resumed either way — it just won't be swept.
-            _warn_job_assignment_once("AssignProcessToJobObject failed")
-        finally:
-            try:
-                win32process.ResumeThread(int(ht))
-            except Exception:
-                # If resume itself fails, the child is permanently stuck
-                # suspended, which is worse than not cleaning it up. There is
-                # no further fallback available here — this mirrors the
-                # narrow, already-degenerate failure mode of ResumeThread
-                # raising (invalid handle from a race with process exit).
-                _warn_job_assignment_once("ResumeThread failed after suspend")
-        return hp, ht, pid, tid
+        return _original_create_process(*args, **kwargs)
 
-    return _patched
+    patched_args = list(args)
+    patched_args[_CREATION_FLAGS_ARG_INDEX] = (
+        patched_args[_CREATION_FLAGS_ARG_INDEX] | _CREATE_SUSPENDED
+    )
+    hp, ht, pid, tid = _original_create_process(*patched_args)
+    try:
+        win32job.AssignProcessToJobObject(job, int(hp))
+    except Exception:
+        # Fail open: assignment can legitimately fail (already in a
+        # non-nesting job on pre-Windows-8, access denied). The process must
+        # still be resumed either way — it just won't be swept.
+        _warn_job_assignment_once("AssignProcessToJobObject failed")
+
+    try:
+        win32process.ResumeThread(int(ht))
+    except Exception:
+        # Unlike assignment failure, a resume failure is NOT safe to fail
+        # open on: the child is a live process whose main thread will never
+        # run, so any caller that reads its stdout (every caller here does)
+        # hangs forever waiting for output that can never be produced. There
+        # is no valid "let it run" fallback for a permanently-suspended
+        # process, so terminate it and raise -- the caller's existing
+        # spawn-failure handling (subprocess.Popen already raises OSError
+        # for a variety of CreateProcess failures) is the right path for
+        # this to surface through, not a silent hang.
+        _warn_job_assignment_once("ResumeThread failed after suspend; terminating child")
+        try:
+            win32process.TerminateProcess(int(hp), 1)
+        except Exception:
+            pass
+        for handle in (hp, ht):
+            try:
+                handle.Close()
+            except Exception:
+                pass
+        raise
+    return hp, ht, pid, tid
+
+
+def _install_job_owned_create_process_once() -> None:
+    """Idempotently install :func:`_job_owned_create_process` over
+    ``subprocess._winapi.CreateProcess`` exactly once per process.
+
+    Double-checked locking mirrors :func:`_get_kill_on_exit_job` — the fast
+    path (already installed) takes no lock. Because the install is
+    idempotent and the *original* is captured only inside the lock on the
+    very first install, there is no capture/restore dance and therefore no
+    equivalent of the stale-patch race the old per-call approach had.
+    """
+    global _original_create_process
+    if _original_create_process is not None:
+        return
+    with _create_process_patch_install_lock:
+        if _original_create_process is not None:
+            return
+        _original_create_process = subprocess._winapi.CreateProcess  # type: ignore[attr-defined]
+        subprocess._winapi.CreateProcess = _job_owned_create_process  # type: ignore[attr-defined]
 
 
 def spawn_bash_with_kill_on_exit(
@@ -572,9 +617,14 @@ def spawn_bash_with_kill_on_exit(
     pgid-kill machinery.
 
     Centralizing this as a wrapper (rather than duplicating the
-    create-job/assign/patch calls at each spawn site) is what keeps the
-    local backend and the shared ``_popen_bash`` (docker/ssh/singularity)
-    from drifting the way the issue warns about.
+    create-job/assign calls at each spawn site) is what keeps the local
+    backend and the shared ``_popen_bash`` (docker/ssh/singularity) from
+    drifting the way the issue warns about.
+
+    Only the calling thread's own ``popen_fn()`` call is affected — see the
+    module comment above ``_job_owned_create_process`` for how the
+    thread-local gate keeps concurrent, unrelated ``subprocess.Popen`` calls
+    on other threads from being swept into our job.
     """
     if not IS_WINDOWS:
         return popen_fn()
@@ -582,11 +632,9 @@ def spawn_bash_with_kill_on_exit(
     if job is None:
         return popen_fn()
 
-    real_create_process = subprocess._winapi.CreateProcess  # type: ignore[attr-defined]
-    patched = _make_patched_create_process(job, real_create_process)
-    with _create_process_patch_lock:
-        subprocess._winapi.CreateProcess = patched  # type: ignore[attr-defined]
-        try:
-            return popen_fn()
-        finally:
-            subprocess._winapi.CreateProcess = real_create_process  # type: ignore[attr-defined]
+    _install_job_owned_create_process_once()
+    _spawn_owner.job = job
+    try:
+        return popen_fn()
+    finally:
+        _spawn_owner.job = None

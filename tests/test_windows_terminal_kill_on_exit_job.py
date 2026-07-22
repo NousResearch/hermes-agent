@@ -2,19 +2,26 @@
 shells (bash.exe and everything they spawn) from being orphaned when Hermes
 exits ungracefully (issue #69033).
 
-Two correctness properties are load-bearing here, both covered by a real
+Three correctness properties are load-bearing here, each covered by a real
 (non-mocked) test in addition to the mock-level contract tests:
 
 1. Race-free assignment: a child must be assigned to the kill-on-exit job
    before it can execute a single instruction, so it cannot spawn a
    grandchild (e.g. a native ``find | grep | head`` pipeline) that escapes
-   the job. This rules out a handle-only ``AssignProcessToJobObject`` call
-   issued *after* ``Popen()`` returns, which can lose the race to a fast
-   native child under parent-thread scheduling pressure — the suspend
-   assign resume sequence closes it structurally instead of statistically.
-2. Thread-safe singleton: concurrent first callers must never end up with
-   two job objects where the loser's object gets garbage collected (closing
-   its last handle) and kills whatever was meanwhile assigned to it.
+   the job.
+2. Thread isolation: the ``subprocess._winapi.CreateProcess`` patch is
+   installed once, permanently, process-wide -- but it must be a no-op for
+   every thread except the one currently inside
+   ``spawn_bash_with_kill_on_exit``. An earlier per-call capture/restore
+   design could both (a) leak a stale patch permanently under a
+   capture-before-lock race, and (b) sweep totally unrelated subprocess
+   spawns from other threads into our job even when correctly serialized.
+   The thread-local owner gate replaces that design.
+3. Thread-safe singletons: concurrent first callers of the job object and
+   of the CreateProcess-patch installer must never end up with two
+   competing objects where the loser gets garbage collected and takes
+   something down with it (job) or silently un-does the winner's install
+   (patch).
 """
 from __future__ import annotations
 
@@ -26,74 +33,9 @@ import time
 import pytest
 
 
-def test_spawn_bash_with_kill_on_exit_patches_create_process_on_windows(monkeypatch):
-    """On Windows, the wrapper must temporarily patch
-    subprocess._winapi.CreateProcess (so CREATE_SUSPENDED + job assignment +
-    resume can happen inside Popen's own CreateProcess call) and always
-    restore the original afterward."""
-    from hermes_cli import _subprocess_compat
-
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
-    fake_job = object()
-    monkeypatch.setattr(_subprocess_compat, "_get_kill_on_exit_job", lambda: fake_job)
-
-    captured_patch_arg = {}
-
-    def fake_make_patched(job, real_cp):
-        captured_patch_arg["job"] = job
-        captured_patch_arg["real_cp"] = real_cp
-        return "patched-sentinel"
-
-    monkeypatch.setattr(_subprocess_compat, "_make_patched_create_process", fake_make_patched)
-
-    real_cp = object()
-    monkeypatch.setattr(
-        _subprocess_compat.subprocess,
-        "_winapi",
-        type("W", (), {"CreateProcess": real_cp})(),
-    )
-
-    seen_during_call = {}
-
-    def popen_fn():
-        seen_during_call["CreateProcess"] = _subprocess_compat.subprocess._winapi.CreateProcess
-        return "proc-sentinel"
-
-    result = _subprocess_compat.spawn_bash_with_kill_on_exit(popen_fn)
-
-    assert result == "proc-sentinel"
-    assert captured_patch_arg["job"] is fake_job
-    assert captured_patch_arg["real_cp"] is real_cp
-    assert seen_during_call["CreateProcess"] == "patched-sentinel"
-    # Restored afterward.
-    assert _subprocess_compat.subprocess._winapi.CreateProcess is real_cp
-
-
-def test_spawn_bash_with_kill_on_exit_restores_patch_on_exception(monkeypatch):
-    """If popen_fn() raises, the CreateProcess patch must still be restored
-    (finally, not just the happy path) and the exception must propagate."""
-    from hermes_cli import _subprocess_compat
-
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(_subprocess_compat, "_get_kill_on_exit_job", lambda: object())
-    monkeypatch.setattr(
-        _subprocess_compat, "_make_patched_create_process", lambda job, real: "patched"
-    )
-
-    real_cp = object()
-    monkeypatch.setattr(
-        _subprocess_compat.subprocess,
-        "_winapi",
-        type("W", (), {"CreateProcess": real_cp})(),
-    )
-
-    def boom():
-        raise FileNotFoundError("bash not found")
-
-    with pytest.raises(FileNotFoundError):
-        _subprocess_compat.spawn_bash_with_kill_on_exit(boom)
-
-    assert _subprocess_compat.subprocess._winapi.CreateProcess is real_cp
+# ---------------------------------------------------------------------------
+# spawn_bash_with_kill_on_exit: top-level wrapper contract
+# ---------------------------------------------------------------------------
 
 
 def test_spawn_bash_with_kill_on_exit_noop_on_posix(monkeypatch):
@@ -115,33 +57,111 @@ def test_spawn_bash_with_kill_on_exit_noop_on_posix(monkeypatch):
 
 
 def test_spawn_bash_with_kill_on_exit_falls_open_when_job_unavailable(monkeypatch):
-    """No job object available -> spawn proceeds unpatched, exactly today's
-    behavior, never blocked."""
+    """No job object available -> spawn proceeds without ever installing the
+    patch, exactly today's behavior, never blocked."""
     from hermes_cli import _subprocess_compat
 
     monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(_subprocess_compat, "_get_kill_on_exit_job", lambda: None)
 
+    installed = []
+    monkeypatch.setattr(
+        _subprocess_compat,
+        "_install_job_owned_create_process_once",
+        lambda: installed.append(True),
+    )
+
     sentinel = object()
     result = _subprocess_compat.spawn_bash_with_kill_on_exit(lambda: sentinel)
     assert result is sentinel
+    assert installed == []
 
 
-def test_patched_create_process_suspends_assigns_and_resumes(monkeypatch):
-    """The patched CreateProcess must: OR in CREATE_SUSPENDED on the real
-    call, assign the returned process handle to the job, then resume the
-    thread — in that order, and it must return the same (hp, ht, pid, tid)
-    tuple the real CreateProcess produced."""
+def test_spawn_bash_with_kill_on_exit_sets_and_clears_owner(monkeypatch):
+    """The wrapper must set _spawn_owner.job for the duration of exactly the
+    popen_fn() call on the calling thread, then clear it -- clearing is what
+    keeps a later unrelated Popen on the SAME thread (e.g. the caller doing
+    something else afterward) from being swept into the job too."""
+    from hermes_cli import _subprocess_compat
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    fake_job = object()
+    monkeypatch.setattr(_subprocess_compat, "_get_kill_on_exit_job", lambda: fake_job)
+    monkeypatch.setattr(_subprocess_compat, "_install_job_owned_create_process_once", lambda: None)
+
+    assert getattr(_subprocess_compat._spawn_owner, "job", None) is None
+
+    seen_during_call = {}
+
+    def popen_fn():
+        seen_during_call["job"] = getattr(_subprocess_compat._spawn_owner, "job", None)
+        return "proc-sentinel"
+
+    result = _subprocess_compat.spawn_bash_with_kill_on_exit(popen_fn)
+
+    assert result == "proc-sentinel"
+    assert seen_during_call["job"] is fake_job
+    assert getattr(_subprocess_compat._spawn_owner, "job", None) is None
+
+
+def test_spawn_bash_with_kill_on_exit_clears_owner_on_exception(monkeypatch):
+    """If popen_fn() raises, _spawn_owner.job must still be cleared
+    (finally, not just the happy path), and the exception must propagate."""
+    from hermes_cli import _subprocess_compat
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "_get_kill_on_exit_job", lambda: object())
+    monkeypatch.setattr(_subprocess_compat, "_install_job_owned_create_process_once", lambda: None)
+
+    def boom():
+        raise FileNotFoundError("bash not found")
+
+    with pytest.raises(FileNotFoundError):
+        _subprocess_compat.spawn_bash_with_kill_on_exit(boom)
+
+    assert getattr(_subprocess_compat._spawn_owner, "job", None) is None
+
+
+# ---------------------------------------------------------------------------
+# _job_owned_create_process: the permanently-installed, thread-gated patch
+# ---------------------------------------------------------------------------
+
+
+def test_job_owned_create_process_passes_through_when_no_owner(monkeypatch):
+    """A thread with no _spawn_owner.job set (i.e. any thread not currently
+    inside spawn_bash_with_kill_on_exit) must reach the real CreateProcess
+    completely unmodified -- no CREATE_SUSPENDED, no job assignment. This is
+    the core of the fix for "process-wide patch bleeds into unrelated
+    Popens": the patch is always installed, but inert by default."""
+    from hermes_cli import _subprocess_compat
+
+    assert getattr(_subprocess_compat._spawn_owner, "job", None) is None
+
+    calls = []
+
+    def fake_original(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ("HP", "HT", 1, 2)
+
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
+
+    result = _subprocess_compat._job_owned_create_process("a", "b", flags=0)
+    assert result == ("HP", "HT", 1, 2)
+    assert calls == [(("a", "b"), {"flags": 0})]
+
+
+def test_job_owned_create_process_suspends_assigns_and_resumes_when_owned(monkeypatch):
+    """When the calling thread owns a job (_spawn_owner.job is set), the
+    patch must: OR in CREATE_SUSPENDED on the real call, assign the
+    returned process handle to the job, then resume the thread -- in that
+    order -- and return the same (hp, ht, pid, tid) tuple."""
     from hermes_cli import _subprocess_compat
 
     events = []
     fake_job = object()
 
-    def fake_real_create_process(*args):
+    def fake_original(*args):
         events.append(("create", args[_subprocess_compat._CREATION_FLAGS_ARG_INDEX]))
-        # Real handles are Win32 HANDLE-likes that support int() -- use
-        # plain ints here rather than opaque strings so the code under test
-        # (which does int(hp)/int(ht)) doesn't choke on the fixture itself.
         return (7001, 7002, 111, 222)
 
     class _FakeWin32Job:
@@ -155,13 +175,15 @@ def test_patched_create_process_suspends_assigns_and_resumes(monkeypatch):
         def ResumeThread(handle):
             events.append(("resume", handle))
 
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
     monkeypatch.setattr(_subprocess_compat, "win32job", _FakeWin32Job)
     monkeypatch.setattr(_subprocess_compat, "win32process", _FakeWin32Process)
-
-    patched = _subprocess_compat._make_patched_create_process(fake_job, fake_real_create_process)
-
-    args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
-    result = patched(*args)
+    _subprocess_compat._spawn_owner.job = fake_job
+    try:
+        args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
+        result = _subprocess_compat._job_owned_create_process(*args)
+    finally:
+        _subprocess_compat._spawn_owner.job = None
 
     assert result == (7001, 7002, 111, 222)
     assert events[0] == ("create", _subprocess_compat._CREATE_SUSPENDED)
@@ -169,7 +191,7 @@ def test_patched_create_process_suspends_assigns_and_resumes(monkeypatch):
     assert events[2] == ("resume", 7002)
 
 
-def test_patched_create_process_resumes_even_if_assign_fails(monkeypatch):
+def test_job_owned_create_process_resumes_even_if_assign_fails(monkeypatch):
     """A job-assignment failure (already in a non-nesting job, access
     denied) must not leave the child permanently suspended — resume must
     still run."""
@@ -178,7 +200,7 @@ def test_patched_create_process_resumes_even_if_assign_fails(monkeypatch):
     events = []
     fake_job = object()
 
-    def fake_real_create_process(*args):
+    def fake_original(*args):
         return (7001, 7002, 111, 222)
 
     class _FakeWin32Job:
@@ -191,18 +213,62 @@ def test_patched_create_process_resumes_even_if_assign_fails(monkeypatch):
         def ResumeThread(handle):
             events.append("resumed")
 
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
     monkeypatch.setattr(_subprocess_compat, "win32job", _FakeWin32Job)
     monkeypatch.setattr(_subprocess_compat, "win32process", _FakeWin32Process)
-
-    patched = _subprocess_compat._make_patched_create_process(fake_job, fake_real_create_process)
-    args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
-    result = patched(*args)
+    _subprocess_compat._spawn_owner.job = fake_job
+    try:
+        args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
+        result = _subprocess_compat._job_owned_create_process(*args)
+    finally:
+        _subprocess_compat._spawn_owner.job = None
 
     assert result == (7001, 7002, 111, 222)
     assert events == ["resumed"]
 
 
-def test_patched_create_process_falls_open_on_unexpected_signature(monkeypatch):
+def test_job_owned_create_process_terminates_and_raises_when_resume_fails(monkeypatch):
+    """A ResumeThread failure leaves a live but permanently-suspended child
+    -- any caller reading its stdout would hang forever. The patch must
+    terminate the child and raise, not return a stuck process silently."""
+    from hermes_cli import _subprocess_compat
+
+    events = []
+    fake_job = object()
+
+    def fake_original(*args):
+        return (7001, 7002, 111, 222)
+
+    class _FakeWin32Job:
+        @staticmethod
+        def AssignProcessToJobObject(job, handle):
+            events.append(("assign", handle))
+
+    class _FakeWin32Process:
+        @staticmethod
+        def ResumeThread(handle):
+            raise OSError("invalid handle")
+
+        @staticmethod
+        def TerminateProcess(handle, code):
+            events.append(("terminate", handle, code))
+
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
+    monkeypatch.setattr(_subprocess_compat, "win32job", _FakeWin32Job)
+    monkeypatch.setattr(_subprocess_compat, "win32process", _FakeWin32Process)
+    _subprocess_compat._spawn_owner.job = fake_job
+    try:
+        args = ["app", "cmdline", None, None, 0, 0, {}, None, "startupinfo"]
+        with pytest.raises(OSError):
+            _subprocess_compat._job_owned_create_process(*args)
+    finally:
+        _subprocess_compat._spawn_owner.job = None
+
+    assert ("assign", 7001) in events
+    assert ("terminate", 7001, 1) in events
+
+
+def test_job_owned_create_process_falls_open_on_unexpected_signature(monkeypatch):
     """A future CPython signature change (unexpected argc, or kwargs) must
     not be blindly indexed into — fail open to an unmodified, un-suspended,
     unassigned spawn rather than corrupting an unrelated positional arg."""
@@ -210,15 +276,96 @@ def test_patched_create_process_falls_open_on_unexpected_signature(monkeypatch):
 
     calls = []
 
-    def fake_real_create_process(*args, **kwargs):
+    def fake_original(*args, **kwargs):
         calls.append((args, kwargs))
-        return ("HPROCESS", "HTHREAD", 111, 222)
+        return (7001, 7002, 111, 222)
 
-    patched = _subprocess_compat._make_patched_create_process(object(), fake_real_create_process)
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", fake_original)
+    _subprocess_compat._spawn_owner.job = object()
+    try:
+        result = _subprocess_compat._job_owned_create_process("only", "two", "args")
+    finally:
+        _subprocess_compat._spawn_owner.job = None
 
-    result = patched("only", "two", "args")
-    assert result == ("HPROCESS", "HTHREAD", 111, 222)
+    assert result == (7001, 7002, 111, 222)
     assert calls == [(("only", "two", "args"), {})]
+
+
+def test_install_job_owned_create_process_once_is_idempotent(monkeypatch):
+    """Installing twice must not re-capture (and thereby lose) the true
+    original -- the second call is a no-op."""
+    from hermes_cli import _subprocess_compat
+
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", None)
+    real_cp = object()
+    monkeypatch.setattr(
+        _subprocess_compat.subprocess,
+        "_winapi",
+        type("W", (), {"CreateProcess": real_cp})(),
+    )
+
+    _subprocess_compat._install_job_owned_create_process_once()
+    installed_once = _subprocess_compat.subprocess._winapi.CreateProcess
+    assert _subprocess_compat._original_create_process is real_cp
+    assert installed_once is _subprocess_compat._job_owned_create_process
+
+    _subprocess_compat._install_job_owned_create_process_once()
+    assert _subprocess_compat.subprocess._winapi.CreateProcess is installed_once
+    assert _subprocess_compat._original_create_process is real_cp
+
+
+def test_install_job_owned_create_process_once_concurrent_first_callers(monkeypatch):
+    """Two threads racing the very first install must not each capture a
+    different 'original' -- CreateJobObject-style double-checked locking
+    applies here too. Without the lock, thread B could capture thread A's
+    already-installed patched function as "the original" (finding 1's
+    failure mode), permanently wrapping CreateProcess in a way nothing can
+    ever fully undo. This test rendezvous's both threads inside the capture
+    step to force the race window open."""
+    from hermes_cli import _subprocess_compat
+
+    monkeypatch.setattr(_subprocess_compat, "_original_create_process", None)
+    real_cp = object()
+
+    captured = []
+    entered_capture = threading.Barrier(2, timeout=5)
+
+    class _WinApi:
+        @property
+        def CreateProcess(self):
+            captured.append(True)
+            try:
+                entered_capture.wait(timeout=0.5)
+            except threading.BrokenBarrierError:
+                pass
+            return real_cp
+
+        @CreateProcess.setter
+        def CreateProcess(self, value):
+            self._cp = value
+
+    monkeypatch.setattr(_subprocess_compat.subprocess, "_winapi", _WinApi())
+
+    def call():
+        _subprocess_compat._install_job_owned_create_process_once()
+
+    t1 = threading.Thread(target=call)
+    t2 = threading.Thread(target=call)
+    t1.start()
+    t2.start()
+    t1.join(timeout=3)
+    t2.join(timeout=3)
+
+    assert len(captured) == 1, (
+        f"expected CreateProcess to be captured exactly once, got {len(captured)} -- "
+        "a second capture means the lock did not serialize the install"
+    )
+    assert _subprocess_compat._original_create_process is real_cp
+
+
+# ---------------------------------------------------------------------------
+# Job-object singleton (kept from the prior review round)
+# ---------------------------------------------------------------------------
 
 
 def test_get_kill_on_exit_job_is_singleton(monkeypatch):
@@ -256,29 +403,29 @@ def test_get_kill_on_exit_job_is_singleton(monkeypatch):
     assert len(created) == 1
 
 
-def test_get_kill_on_exit_job_returns_none_when_unavailable(monkeypatch):
+def test_get_kill_on_exit_job_returns_none_when_unavailable_and_warns_once(monkeypatch, caplog):
+    """pywin32 unavailable -> returns None AND emits the one-time warning
+    (previously this path returned before the warning could fire, so the
+    "job assignment unavailable" condition was completely silent)."""
+    import logging
+
     from hermes_cli import _subprocess_compat
 
     monkeypatch.setattr(_subprocess_compat, "_kill_on_exit_job", None)
     monkeypatch.setattr(_subprocess_compat, "_WIN32_JOB_AVAILABLE", False)
+    monkeypatch.setattr(_subprocess_compat, "_warned_job_assignment_unavailable", False)
 
-    assert _subprocess_compat._get_kill_on_exit_job() is None
+    with caplog.at_level(logging.WARNING, logger="hermes_cli._subprocess_compat"):
+        assert _subprocess_compat._get_kill_on_exit_job() is None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "pywin32 unavailable" in warnings[0].getMessage()
 
 
 def test_get_kill_on_exit_job_concurrent_first_callers_create_exactly_one_job(monkeypatch):
     """Two threads racing the very first call must not each create their own
-    job object. Without the lock, both threads can observe
-    ``_kill_on_exit_job is None``, both create a job (A and B), and both
-    publish — the loser's Python-side reference is then dropped, and CPython
-    eventually closes its last handle, which fires
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and kills whatever was concurrently
-    assigned to it. ``CreateJobObject`` is made to rendezvous on a barrier
-    here so both threads are guaranteed to be inside the "is None" window at
-    the same time absent a lock -- against an unlocked
-    check-then-create-then-publish implementation this reliably produces two
-    created jobs; with the lock, the second thread blocks before it can ever
-    reach CreateJobObject, so only one job is ever created.
-    """
+    job object -- see the module-level rationale on _job_singleton_lock."""
     from hermes_cli import _subprocess_compat
 
     monkeypatch.setattr(_subprocess_compat, "_kill_on_exit_job", None)
@@ -347,6 +494,11 @@ def test_warn_job_assignment_once_logs_exactly_once(monkeypatch, caplog):
     assert "reason one" in warnings[0].getMessage()
 
 
+# ---------------------------------------------------------------------------
+# Call-site wiring
+# ---------------------------------------------------------------------------
+
+
 def test_popen_bash_uses_kill_on_exit_wrapper(monkeypatch):
     """tools.environments.base._popen_bash must route its Popen call through
     spawn_bash_with_kill_on_exit rather than calling subprocess.Popen
@@ -391,6 +543,11 @@ def test_local_backend_run_bash_uses_kill_on_exit_wrapper():
     assert "spawn_bash_with_kill_on_exit" in src
 
 
+# ---------------------------------------------------------------------------
+# Real (non-mocked) integration tests -- Windows only
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: Job Object semantics")
 def test_real_grandchild_dies_when_job_handle_closes():
     """End-to-end proof: a child spawned via spawn_bash_with_kill_on_exit,
@@ -402,7 +559,12 @@ def test_real_grandchild_dies_when_job_handle_closes():
     AssignProcessToJobObject could lose the race on -- the suspend/assign/
     resume sequence under test here closes it structurally (the child
     cannot run *any* code, including spawning a grandchild, until resumed
-    after assignment), not just empirically-usually.
+    after assignment), not just empirically-usually. This exercises the
+    Python-Python spawn path; a git-bash-native equivalent was investigated
+    but is not included -- see the commit message for why (MSYS PID
+    virtualization makes deterministic native-child identification
+    impractical). This test still exercises the identical kernel primitive
+    (CreateProcess + Job Object inheritance) that a bash pipeline would.
     """
     import psutil
     import win32api
@@ -454,5 +616,102 @@ def test_real_grandchild_dies_when_job_handle_closes():
                 continue
             try:
                 psutil.Process(pid).kill()
+            except Exception:
+                pass
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: Job Object semantics")
+def test_unrelated_thread_spawn_is_not_swept_into_job():
+    """The critical thread-isolation proof: while thread A is inside
+    spawn_bash_with_kill_on_exit (owns _spawn_owner.job on its own thread),
+    thread B calls plain subprocess.Popen directly, concurrently, on the
+    SAME process (so it goes through the same, permanently-patched
+    subprocess._winapi.CreateProcess). Thread B's child must NOT be
+    assigned to the job -- it must survive closing the job handle, proving
+    the patch stayed inert for a thread that never opted in.
+
+    This is the load-bearing regression test for "process-wide patch bleeds
+    into unrelated Popens": a naive per-call patch swap (rather than the
+    thread-local owner gate) would make thread B's process die here too.
+    """
+    import psutil
+    import win32api
+
+    from hermes_cli import _subprocess_compat
+
+    _subprocess_compat._kill_on_exit_job = None
+
+    owned_ready = threading.Event()
+    unrelated_ready = threading.Event()
+    release_owned = threading.Event()
+
+    owned_proc = {}
+    unrelated_proc = {}
+
+    def owned_thread():
+        def popen_fn():
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+            owned_proc["proc"] = proc
+            owned_ready.set()
+            # Hold this thread "inside" spawn_bash_with_kill_on_exit (i.e.
+            # _spawn_owner.job still set on this thread) while thread B
+            # spawns its own, unrelated process -- this is the window an
+            # unsafe patch could leak into.
+            release_owned.wait(timeout=5)
+            return proc
+
+        _subprocess_compat.spawn_bash_with_kill_on_exit(popen_fn)
+
+    def unrelated_thread():
+        owned_ready.wait(timeout=5)
+        # Plain, direct subprocess.Popen -- NOT going through
+        # spawn_bash_with_kill_on_exit. _spawn_owner.job is unset on this
+        # thread regardless of what thread A is doing concurrently.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+        )
+        unrelated_proc["proc"] = proc
+        unrelated_ready.set()
+
+    t_owned = threading.Thread(target=owned_thread)
+    t_unrelated = threading.Thread(target=unrelated_thread)
+    t_owned.start()
+    t_unrelated.start()
+
+    assert unrelated_ready.wait(timeout=5), "unrelated thread never finished spawning"
+    release_owned.set()
+    t_owned.join(timeout=5)
+    t_unrelated.join(timeout=5)
+
+    owned = owned_proc["proc"]
+    unrelated = unrelated_proc["proc"]
+
+    try:
+        assert psutil.pid_exists(owned.pid)
+        assert psutil.pid_exists(unrelated.pid)
+
+        job = _subprocess_compat._kill_on_exit_job
+        assert job is not None, "job assignment did not happen"
+        win32api.CloseHandle(job)
+        _subprocess_compat._kill_on_exit_job = None
+
+        deadline = time.time() + 5
+        while time.time() < deadline and psutil.pid_exists(owned.pid):
+            time.sleep(0.1)
+
+        assert not psutil.pid_exists(owned.pid), "owned child survived job close"
+        # Give the unrelated process a moment too, then assert it is still
+        # alive -- it was never assigned to the job.
+        time.sleep(0.5)
+        assert psutil.pid_exists(unrelated.pid), (
+            "unrelated thread's process was swept into the job and killed -- "
+            "the CreateProcess patch leaked across threads"
+        )
+    finally:
+        for proc in (owned, unrelated):
+            try:
+                proc.kill()
             except Exception:
                 pass

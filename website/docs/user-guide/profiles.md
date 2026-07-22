@@ -76,6 +76,16 @@ hermes profile create work-backup --clone-from coder --clone-all
 When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
 :::
 
+### Skip bundled skills (`--no-skills`)
+
+```bash
+hermes profile create orchestrator --no-skills
+```
+
+Creates an **empty** profile with zero bundled skills enabled. Hermes writes a `.no-skills` marker into the profile directory so subsequent `hermes update` runs do not re-seed the bundled skill set. Useful for narrow orchestrator profiles, sandbox profiles, or any setup that should not inherit the full skill catalog.
+
+`--no-skills` refuses to combine with `--clone` or `--clone-all` (those would copy skills in anyway). See [`hermes profile create`](../reference/profile-commands.md#hermes-profile-create) in the command reference for the full option list.
+
 ## Using profiles
 
 ### Command aliases

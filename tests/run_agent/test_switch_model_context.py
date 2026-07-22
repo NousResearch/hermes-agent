@@ -248,6 +248,32 @@ def test_direct_start_same_model_on_different_route_drops_context_override():
     assert agent.context_compressor.context_length == 272_000
 
 
+def test_direct_start_drops_context_when_configured_route_has_no_active_url():
+    """A configured endpoint cannot own a runtime whose endpoint is unknown."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://large.example/v1",
+            "context_length": 1_048_576,
+        }
+    }
+    routed_client = MagicMock(api_key="fake-test-token", base_url="")
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(routed_client, "shared-model"),
+    ):
+        agent = _make_direct_start_agent(
+            cfg,
+            model="shared-model",
+            provider="custom",
+            base_url="",
+        )
+
+    assert agent.context_compressor.config_context_length is None
+
+
 def test_direct_start_preserves_context_for_bare_aggregator_model():
     """Aggregator normalization must compare both sides, not rewrite one side."""
     cfg = {

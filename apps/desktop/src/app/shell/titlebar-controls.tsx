@@ -132,6 +132,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // actually drawn beneath its physical edge. The titlebar clusters themselves
   // stay LTR below so icon order and edge placement do not reverse.
   const edgeTargets = resolveTitlebarEdgeTargets(localeDirection(locale) === 'rtl', panesFlipped)
+
   const edgeBindings = {
     files: {
       actionId: 'view.toggleRightSidebar',
@@ -144,6 +145,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       toggle: toggleSidebarOpen
     }
   } as const
+
   const leftEdge = edgeBindings[edgeTargets.left]
   const rightEdge = edgeBindings[edgeTargets.right]
 

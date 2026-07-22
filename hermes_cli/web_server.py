@@ -281,11 +281,17 @@ app.include_router(_memory_oauth_router)
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via
 # HERMES_DASHBOARD_SESSION_TOKEN so its main process can authenticate the
-# /api calls it makes on the user's behalf; otherwise we generate one fresh
-# on every server start. Either way it dies when the process exits and is
-# injected into the SPA HTML so only the legitimate web UI can use it.
+# /api calls it makes on the user's behalf; otherwise we read/generate one
+# (and persist it) via hermes_cli._dashboard_session_token.load_or_create
+# so the same token survives a server restart. Either way it dies when the
+# process exits and is injected into the SPA HTML so only the legitimate
+# web UI can use it.
+#
+# Cross-restart persistence (#53972) lives in the dedicated module so the
+# logic is unit-testable without importing fastapi/uvicorn.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+from hermes_cli import _dashboard_session_token
+_SESSION_TOKEN = _dashboard_session_token.load_or_create()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 

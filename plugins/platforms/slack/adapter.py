@@ -6472,6 +6472,60 @@ class SlackAdapter(BasePlatformAdapter):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+# Cache for Slack user ID -> DM conversation ID resolution in the standalone
+# send path.  Keyed by "{token}:{user_id}" to support multi-workspace setups.
+_slack_dm_cache: Dict[str, str] = {}
+
+
+async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
+    """Resolve a Slack user ID (U.../W...) to a DM conversation ID (D...).
+
+    ``chat.postMessage`` and ``files_upload_v2`` require a conversation ID; a
+    DM must be opened first via ``conversations.open``.  Results are cached
+    per (token, user_id) pair to avoid redundant API calls.  Returns None if
+    resolution fails (missing ``im:write`` scope, unknown user, etc.).
+    """
+    cache_key = f"{token}:{user_id}"
+    if cache_key in _slack_dm_cache:
+        return _slack_dm_cache[cache_key]
+
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    try:
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        url = "https://slack.com/api/conversations.open"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15), **_sess_kw
+        ) as session:
+            payload = {"users": user_id}
+            async with session.post(
+                url, headers=headers, json=payload, **_req_kw
+            ) as resp:
+                data = await resp.json()
+                if data.get("ok") and data.get("channel", {}).get("id"):
+                    channel_id = data["channel"]["id"]
+                    _slack_dm_cache[cache_key] = channel_id
+                    return channel_id
+                logger.warning(
+                    "[Slack] conversations.open failed for %s: %s",
+                    user_id,
+                    data.get("error", "unknown"),
+                )
+                return None
+    except Exception as e:
+        logger.warning("[Slack] conversations.open exception for %s: %s", user_id, e)
+        return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -6495,6 +6549,22 @@ async def _standalone_send(
     token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
     if not token:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
+
+    # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare
+    # user IDs (U.../W...) — resolve to a DM conversation ID (D...) first via
+    # conversations.open so `deliver=slack:U…` cron jobs reach the user's DM
+    # instead of failing with channel_not_found (#17444).
+    chat_id = str(chat_id or "")
+    if chat_id[:1] in ("U", "W"):
+        resolved = await _resolve_slack_user_dm(token, chat_id)
+        if resolved is None:
+            return {
+                "error": (
+                    f"Slack user ID resolution failed for {chat_id} "
+                    "(conversations.open — check the bot's im:write scope)"
+                )
+            }
+        chat_id = resolved
 
     formatted = message
     if message:

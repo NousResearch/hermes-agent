@@ -175,3 +175,51 @@ def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
         )
         assert isinstance(cursor, int)
         assert isinstance(events, list)
+
+
+def test_metadata_column_present_on_fresh_db(tmp_path, monkeypatch):
+    """``tasks.metadata`` exists on a fresh DB (SCHEMA_SQL), not just via migration."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    db_path = kb.kanban_db_path(board="default")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with kb.connect(db_path) as conn:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    assert "metadata" in cols
+
+
+def test_task_metadata_round_trip(tmp_path, monkeypatch):
+    """``create_task(metadata=...)`` persists JSON that ``get_task`` reads back
+    as ``Task.metadata``. ``None`` (the default) stays NULL -> ``None``.
+    Exercises the full create->read path, not just the column.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.discard(
+        str(kb.kanban_db_path(board="default").resolve())
+    )
+
+    with kb.connect(board="default") as conn:
+        # With metadata
+        meta = {"lane": "coder", "tier": "claude_code", "nested": {"k": [1, 2]}}
+        tid = kb.create_task(conn, title="routed task", metadata=meta)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.metadata == meta
+
+        # Without metadata - column is NULL, Task.metadata is None
+        tid2 = kb.create_task(conn, title="plain task")
+        task2 = kb.get_task(conn, tid2)
+        assert task2 is not None
+        assert task2.metadata is None
+
+        # Empty dict is falsy -> stored as NULL, not "{}"
+        tid3 = kb.create_task(conn, title="empty meta", metadata={})
+        task3 = kb.get_task(conn, tid3)
+        assert task3 is not None
+        assert task3.metadata is None

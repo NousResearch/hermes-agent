@@ -230,6 +230,41 @@ CONCLUDE_SCHEMA = {
 ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
 
 
+# Durable-memory guardrail: Honcho conclusions are shared, long-lived memory.
+# Keep transient task state, credentials, raw logs, and implementation artifacts
+# out of the representation layer so multi-agent fleets do not inherit stale work.
+_HONCHO_BLOCKED_CONCLUSION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"github\.com/login/device", re.I), "device-auth flow URL"),
+    (re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b"), "device/auth code"),
+    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"), "GitHub token material"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b", re.I), "GitHub token material"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "API key material"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{20,}\b", re.I), "Slack token material"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key material"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b"), "JWT/bearer token material"),
+    (re.compile(r"\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[A-Za-z0-9-]+)\s+\S+", re.I), "raw SSH public key"),
+    (re.compile(r"BEGIN [A-Z ]*PRIVATE KEY", re.I), "private key material"),
+    (re.compile(r"\b(currently working|working on|in progress|awaiting|waiting for|blocked on|next task is|next step is|todo)\b", re.I), "transient task state"),
+    (re.compile(r"\b(?:PR|pull request|issue)\s*#?\d+\b", re.I), "stale PR/issue artifact"),
+    (re.compile(r"\b(?:commit\s+)?[0-9a-f]{12,40}\b", re.I), "stale commit artifact"),
+    (re.compile(r"\bworkflow run\b", re.I), "stale workflow-run artifact"),
+    (re.compile(r"\b(?:Traceback \(most recent call last\)|Exception in thread|ERROR\s+\[[^\]]+\])", re.I), "raw log/stack trace"),
+]
+
+
+def _honcho_conclusion_guardrail(conclusion: str) -> Optional[str]:
+    """Return a block reason when a conclusion is unsafe for durable Honcho memory."""
+    text = (conclusion or "").strip()
+    if not text:
+        return "empty conclusion"
+    if len(text) > 1200:
+        return "too long for durable memory; summarize before saving"
+    for pattern, reason in _HONCHO_BLOCKED_CONCLUSION_PATTERNS:
+        if pattern.search(text):
+            return reason
+    return None
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -1377,6 +1412,10 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if action != "add" or target != "user" or not content:
             return
+        blocked_reason = _honcho_conclusion_guardrail(content)
+        if blocked_reason:
+            logger.info("Honcho memory mirror blocked unsafe durable conclusion: %s", blocked_reason)
+            return
         if self._cron_skipped:
             return
         if self._recall_mode == "tools" and not self._session_ready():
@@ -1525,6 +1564,13 @@ class HonchoMemoryProvider(MemoryProvider):
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
+                blocked_reason = _honcho_conclusion_guardrail(conclusion)
+                if blocked_reason:
+                    return tool_error(
+                        "Refusing to save unsafe durable Honcho conclusion: "
+                        f"{blocked_reason}. Store transient work in Mission Control/NATS, "
+                        "docs in Obsidian, and procedures in skills instead."
+                    )
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})

@@ -6,6 +6,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
@@ -567,6 +569,79 @@ class TestConcludeToolDispatch:
             "telegram:123",
             "Assistant likes terse replies",
             peer="ai",
+        )
+
+    def test_honcho_conclude_blocks_unsafe_durable_task_state(self):
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "Assistant is currently working on PR #123 and awaiting CI."},
+        )
+
+        parsed = json.loads(result)
+        assert "Refusing to save unsafe durable Honcho conclusion" in parsed["error"]
+        assert "transient task state" in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("conclusion", "reason"),
+        [
+            ("Use github.com/login/device with code ABCD-1234.", "device-auth flow URL"),
+            ("Temporary token " + "ghp_" + "a" * 26, "GitHub token material"),
+            ("OpenAI key " + "sk-" + "a" * 26, "API key material"),
+            ("AWS key " + "AKIA" + "A" * 16, "AWS access key material"),
+            ("Public key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey", "raw SSH public key"),
+            ("Next step is pull request 123 after CI", "transient task state"),
+            ("Deployment came from a1b2c3d4e5f67890", "stale commit artifact"),
+            ("Traceback (most recent call last): boom", "raw log/stack trace"),
+        ],
+    )
+    def test_honcho_conclude_blocks_auth_and_transient_artifacts(self, conclusion, reason):
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": conclusion},
+        )
+
+        parsed = json.loads(result)
+        assert reason in parsed["error"]
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_builtin_memory_mirror_blocks_unsafe_conclusions(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        provider.on_memory_write(
+            "add",
+            "user",
+            "User is blocked on workflow run 123456 and next task is PR #99.",
+        )
+
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_builtin_memory_mirror_allows_durable_preferences(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        provider.on_memory_write("add", "user", "User prefers concise local-time status reports.")
+
+        provider._manager.create_conclusion.assert_called_once_with(
+            "telegram:123",
+            "User prefers concise local-time status reports.",
         )
 
     def test_honcho_profile_can_target_explicit_peer_id(self):

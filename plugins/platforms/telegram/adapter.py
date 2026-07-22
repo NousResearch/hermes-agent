@@ -1023,9 +1023,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # here would contradict the documented orthogonal authorization
         # semantics ("restricted DMs + open groups").
         is_group_context = source.chat_type in {"group", "forum", "supergroup"}
+        # Group scope may be configured either via the adapter extra keys
+        # (``group_allow_from`` / ``group_allowed_chats``) OR via the matching
+        # environment variables (``TELEGRAM_GROUP_ALLOWED_USERS`` /
+        # ``TELEGRAM_GROUP_ALLOWED_CHATS``). The runtime honours both sources
+        # (see ``_telegram_group_allowed_chats``), so the early-return below
+        # must consider both as well — otherwise an env-var group allowlist
+        # combined with a YAML/global ``allow_from`` would still short-circuit
+        # and reject a sender the runner would have authorized (#68716).
         has_group_scope = (
             self.config.extra.get("group_allow_from") is not None
             or self.config.extra.get("group_allowed_chats") is not None
+            or bool(os.getenv("TELEGRAM_GROUP_ALLOWED_USERS", "").strip())
+            or bool(os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "").strip())
         )
         adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None and not (is_group_context and has_group_scope):

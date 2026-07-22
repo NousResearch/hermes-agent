@@ -192,3 +192,61 @@ def test_group_sender_in_global_allowlist_short_circuits_with_group_scope(monkey
 
     assert result is True
     assert runner_called["flag"] is False, "global allowlist member should not invoke runner"
+
+
+# ── Mixed YAML/env sources — env-var group allowlists (#68784) ──────────────
+
+
+def test_group_allow_from_env_defers_past_yaml_allow_from(monkeypatch):
+    """A group allowlist set via TELEGRAM_GROUP_ALLOWED_USERS (with a YAML
+    ``allow_from`` that excludes the sender) must still defer to the runner.
+
+    ``has_group_scope`` previously only inspected ``self.config.extra``, so an
+    env-var group allowlist combined with a YAML/global ``allow_from`` still
+    triggered the early return and rejected a sender the runner would have
+    authorized (#68784).
+    """
+    adapter = _make_adapter(allow_from=["111"])  # sender 222 NOT in YAML allow_from
+
+    runner_called = {"flag": False}
+
+    class _StubRunner:
+        def _is_user_authorized(self, source):
+            runner_called["flag"] = True
+            return True
+
+    adapter._message_handler = SimpleNamespace(__self__=_StubRunner())
+    # Group scope comes ONLY from the env var; no group_allow_from / group_allowed_chats in extra.
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "222")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+
+    msg = _make_message(from_user_id=222, chat_id=-100, chat_type="group")
+    result = adapter._is_user_authorized_from_message(msg)
+
+    assert result is True, "env group allowlist should defer to runner and authorize"
+    assert runner_called["flag"] is True, "env group scope must reach the runner path"
+
+
+def test_group_allowed_chats_env_defers_past_yaml_allow_from(monkeypatch):
+    """A group chat allowlist set via TELEGRAM_GROUP_ALLOWED_CHATS (with a YAML
+    ``allow_from`` that excludes the sender) must still defer to the runner.
+    """
+    adapter = _make_adapter(allow_from=["111"])  # sender 222 NOT in YAML allow_from
+
+    runner_called = {"flag": False}
+
+    class _StubRunner:
+        def _is_user_authorized(self, source):
+            runner_called["flag"] = True
+            return True
+
+    adapter._message_handler = SimpleNamespace(__self__=_StubRunner())
+    # Group scope comes ONLY from the env var; chat -100 is authorized at group scope.
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+
+    msg = _make_message(from_user_id=222, chat_id=-100, chat_type="group")
+    result = adapter._is_user_authorized_from_message(msg)
+
+    assert result is True, "env group chat allowlist should defer to runner and authorize"
+    assert runner_called["flag"] is True, "env group scope must reach the runner path"

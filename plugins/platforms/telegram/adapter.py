@@ -1652,7 +1652,15 @@ class TelegramAdapter(BasePlatformAdapter):
         multi-line content (slash-command lists, etc.) renders correctly
         in the rich-message path.  See ``_rich_normalize_linebreaks``.
         """
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        # Escape bare ``$`` so Telegram's client-side LaTeX parser does not
+        # swallow dollar-amount prose (e.g. ``$395k``) into math spans.
+        # ``\$`` renders as a literal ``$`` in rich-message markdown.
+        # Double-dollar display-math ``$$`` is left untouched — it is
+        # intentional LaTeX authored by the LLM.
+        escaped = content.replace("$$", "\x00DBL$\x00")
+        escaped = escaped.replace("$", r"\$")
+        escaped = escaped.replace("\x00DBL$\x00", "$$")
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(escaped)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

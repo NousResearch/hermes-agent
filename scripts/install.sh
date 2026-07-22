@@ -1345,7 +1345,7 @@ setup_venv() {
 
     log_info "Creating virtual environment with Python $PYTHON_VERSION..."
 
-    if [ -d "venv" ]; then
+    if [ -e "venv" ] || [ -L "venv" ]; then
         log_info "Virtual environment already exists, recreating..."
         rm -rf venv
     fi
@@ -3091,7 +3091,7 @@ run_stage_protocol() {
     # before emitting the frame and the Rust/Electron parser would see "no
     # result frame" instead of a clean {ok:false} contract response.
     set +e
-    ( run_stage_body "$stage" )
+    ( set -e; run_stage_body "$stage" )
     local code=$?
     set -e
 

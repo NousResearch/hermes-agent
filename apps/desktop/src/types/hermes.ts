@@ -485,7 +485,20 @@ export interface UsageStats {
   context_max?: number
   context_percent?: number
   context_used?: number
+  /** Session estimated cost (USD). Absent or 0 when pricing is unavailable. */
   cost_usd?: number
+  /** Pricing provenance when the backend reports it (e.g. estimated / n/a). */
+  cost_status?: string
+  /**
+   * Last API call cache-read tokens (prefer over session sum for Claude-style
+   * hit%). Only present when the provider reports cache usage.
+   */
+  cache_read?: number
+  cache_write?: number
+  /** Last API prompt tokens — denominator for cache hit% when available. */
+  last_prompt?: number
+  /** Cumulative session cache-read (fallback when last-call fields missing). */
+  session_cache_read?: number
   input: number
   output: number
   total: number

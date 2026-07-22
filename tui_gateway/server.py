@@ -3722,8 +3722,28 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        # Desktop status-bar: cache hit + session cost (Claude-style). Prefer
+        # last-call counters when present; fall back to session sums so restored
+        # agents still show something useful.
+        "cache_read": int(getattr(agent, "last_cache_read_tokens", 0) or 0),
+        "cache_write": int(getattr(agent, "last_cache_write_tokens", 0) or 0),
+        "session_cache_read": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+        "cost_usd": float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0),
+        "cost_status": getattr(agent, "session_cost_status", None) or "unknown",
     }
+    if not usage["cache_read"]:
+        usage["cache_read"] = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+    if not usage["cache_write"]:
+        usage["cache_write"] = int(getattr(agent, "session_cache_write_tokens", 0) or 0)
+    # last_prompt lives on the compressor on main; expose for cache hit%.
     comp = getattr(agent, "context_compressor", None)
+    if comp:
+        _lp = int(getattr(comp, "last_prompt_tokens", 0) or 0)
+        if _lp < 0:
+            _lp = 0
+        usage["last_prompt"] = _lp
+    else:
+        usage["last_prompt"] = int(getattr(agent, "last_prompt_tokens", 0) or 0)
     if comp:
         # context_used is the *current-window* occupancy. Do NOT fall back to
         # usage["total"] (cumulative lifetime session_total_tokens): for an

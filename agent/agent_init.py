@@ -2409,6 +2409,9 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
+    # Per-call cache counters for status-bar hit% (session_* are cumulative).
+    agent.last_cache_read_tokens = 0
+    agent.last_cache_write_tokens = 0
     
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.

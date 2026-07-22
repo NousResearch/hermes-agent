@@ -2358,6 +2358,8 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    agent.last_cache_read_tokens = int(canonical_usage.cache_read_tokens or 0)
+                    agent.last_cache_write_tokens = int(canonical_usage.cache_write_tokens or 0)
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

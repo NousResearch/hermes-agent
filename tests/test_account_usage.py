@@ -124,8 +124,8 @@ def test_fetch_account_usage_codex_weekly_only_response_is_not_mislabeled_sessio
                     "primary_window": {
                         "used_percent": 1,
                         "limit_window_seconds": 604800,
-                        "secondary_window": None,
                     },
+                    "secondary_window": None,
                 },
             }
         ),

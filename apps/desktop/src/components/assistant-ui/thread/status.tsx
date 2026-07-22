@@ -155,11 +155,27 @@ export const StreamStallIndicator: FC = () => {
   // see its doc comment example `s.thread.isRunning`), so walk it from the
   // tail to find the last assistant-role message and compare ids — still a
   // single boolean return, so the leaf-only re-render behavior holds.
+  //
+  // Skip the ephemeral optimistic placeholder the external-store runtime
+  // appends when the tail repo message is user/system while the run is busy
+  // (incremental-external-store-runtime.ts adds `{role:'assistant', content:
+  // [], metadata:{isOptimistic:true}, status:'running'}`). It is the last
+  // assistant-role message but renders `null` — `assistant-message.tsx`
+  // suppresses it with the exact same predicate (`status.type === 'running'
+  // && content.length === 0`, its `isPlaceholder`). Without this skip the
+  // reverse scan matches that invisible bubble, the real running bubble
+  // fails the id compare, and every indicator disappears. Mirroring the
+  // isPlaceholder predicate keeps this gate consistent with what actually
+  // renders.
   const isLastAssistantMessage = useAuiState(s => {
     const { messages } = s.thread
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]
+
+      if (message.status?.type === 'running' && message.content.length === 0) {
+        continue
+      }
 
       if (message.role === 'assistant') {
         return message.id === s.message.id

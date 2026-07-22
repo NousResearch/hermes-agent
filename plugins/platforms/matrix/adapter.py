@@ -2468,13 +2468,17 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures.
-                err_str = str(exc).lower()
-                if (
-                    "401" in err_str
-                    or "403" in err_str
-                    or "unauthorized" in err_str
-                    or "forbidden" in err_str
+                # Detect permanent auth/permission failures. Only trust the
+                # structured HTTP status / errcode from mautrix's own error
+                # types here — matching on str(exc) is unsafe because error
+                # bodies can be arbitrary HTML (e.g. a proxy error page)
+                # whose contents may coincidentally contain "401"/"403".
+                http_status = getattr(exc, "http_status", None)
+                errcode = (getattr(exc, "errcode", None) or "").upper()
+                if http_status in (401, 403) or errcode in (
+                    "M_UNKNOWN_TOKEN",
+                    "M_MISSING_TOKEN",
+                    "M_FORBIDDEN",
                 ):
                     logger.error(
                         "Matrix: permanent auth error: %s — stopping sync", exc

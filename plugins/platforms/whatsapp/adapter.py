@@ -639,10 +639,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
-            # Pass WhatsApp history API flags (opt-in, default off)
-            if os.environ.get("WHATSAPP_SYNC_FULL_HISTORY", "").lower() in ("1", "true", "yes", "on"):
+            # Pass WhatsApp history API flags from config.yaml (opt-in, default off).
+            # These are feature flags, not secrets — config.yaml is the right
+            # place per AGENTS.md contribution rubric.
+            if self.config.extra.get("sync_full_history", False):
                 bridge_env["WHATSAPP_SYNC_FULL_HISTORY"] = "true"
-            if os.environ.get("WHATSAPP_ENABLE_HISTORY_API", "").lower() in ("1", "true", "yes", "on"):
+            if self.config.extra.get("enable_history_api", False):
                 bridge_env["WHATSAPP_ENABLE_HISTORY_API"] = "true"
 
             # Windows: the gateway process (pythonw.exe under Electron/Tauri)
@@ -653,18 +655,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # ``CREATE_NO_WINDOW`` alone — no detach, no breakaway — which
             # hides the console window without demanding job-object
             # privileges.
+            node_cmd = [
+                find_node_executable("node") or "node",
+                str(bridge_path),
+                "--port", str(self._bridge_port),
+                "--session", str(self._session_path),
+                "--mode", whatsapp_mode,
+            ]
+            base_kwargs = {
+                "stdout": bridge_log_fh,
+                "stderr": bridge_log_fh,
+                "env": bridge_env,
+            }
             try:
                 self._bridge_process = subprocess.Popen(
-                    [
-                        find_node_executable("node") or "node",
-                        str(bridge_path),
-                        "--port", str(self._bridge_port),
-                        "--session", str(self._session_path),
-                        "--mode", whatsapp_mode,
-                    ],
-                    stdout=bridge_log_fh,
-                    stderr=bridge_log_fh,
-                    env=bridge_env,
+                    node_cmd,
+                    **base_kwargs,
                     **windows_detach_popen_kwargs(),
                 )
             except (PermissionError, OSError):
@@ -673,18 +679,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "falling back to CREATE_NO_WINDOW",
                     self.name,
                 )
+                extra_kwargs = (
+                    {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+                )
                 self._bridge_process = subprocess.Popen(
-                    [
-                        find_node_executable("node") or "node",
-                        str(bridge_path),
-                        "--port", str(self._bridge_port),
-                        "--session", str(self._session_path),
-                        "--mode", whatsapp_mode,
-                    ],
-                    stdout=bridge_log_fh,
-                    stderr=bridge_log_fh,
-                    env=bridge_env,
-                    creationflags=windows_hide_flags(),
+                    node_cmd,
+                    **base_kwargs,
+                    **extra_kwargs,
                 )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             

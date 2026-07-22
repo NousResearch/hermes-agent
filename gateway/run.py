@@ -10497,6 +10497,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # no role-alternation violation.
             if _cmd_def_inner and _cmd_def_inner.name == "steer":
                 steer_text = event.get_command_args().strip()
+                # Telegram/Discord/etc. attachments land on the original MessageEvent,
+                # not the command-args string. Preserve them so the queued/injected
+                # turn can see the file (previously the attachment was silently
+                # dropped — #57928). The AIAgent.steer() API is text-only, so
+                # attach file paths as a hint the model can read_file() — same
+                # shape the normal-message pipeline uses when listing paths.
+                _steer_media_urls = list(getattr(event, "media_urls", []) or [])
+                _steer_media_types = list(getattr(event, "media_types", []) or [])
+                if _steer_media_urls:
+                    _hint = "[Attached files: " + ", ".join(_steer_media_urls) + "]"
+                    steer_text = (
+                        f"{steer_text}\n{_hint}" if steer_text else _hint
+                    )
                 if not steer_text:
                     return "Usage: /steer <prompt>"
                 running_agent = self._running_agents.get(_quick_key)
@@ -10510,6 +10523,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            media_urls=_steer_media_urls,
+                            media_types=_steer_media_types,
+                            reply_to_message_id=event.reply_to_message_id,
+                            reply_to_text=event.reply_to_text,
+                            reply_to_author_id=event.reply_to_author_id,
+                            reply_to_author_name=event.reply_to_author_name,
+                            reply_to_is_own_message=event.reply_to_is_own_message,
+                            auto_skill=event.auto_skill,
+                            internal=event.internal,
+                            timestamp=event.timestamp,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -10532,6 +10555,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        media_urls=_steer_media_urls,
+                        media_types=_steer_media_types,
+                        reply_to_message_id=event.reply_to_message_id,
+                        reply_to_text=event.reply_to_text,
+                        reply_to_author_id=event.reply_to_author_id,
+                        reply_to_author_name=event.reply_to_author_name,
+                        reply_to_is_own_message=event.reply_to_is_own_message,
+                        auto_skill=event.auto_skill,
+                        internal=event.internal,
+                        timestamp=event.timestamp,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."

@@ -446,16 +446,19 @@ export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number 
 }
 
 export const workspaceCwdForNewSession = (): string => {
-  if ($connection.get()?.mode === 'remote') {
-    return getRememberedWorkspaceCwd()
-  }
-
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
   // Only an explicit default-project-dir setting pre-attaches. Entering a
   // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
   // "remember where I was when I'm in a project" case is unaffected.
+  //
+  // This must behave identically in local and remote mode: the remembered CWD
+  // under the remote-keyed workspaceCwdKey() can be from a *different* project
+  // than the one the user is currently scoped into, and bare-new-session in
+  // the wrong workspace was the #57911 symptom. Resume/restore still reads
+  // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
+  // remote-keyed and intentionally sticky).
   return getConfiguredDefaultProjectDir()
 }
 

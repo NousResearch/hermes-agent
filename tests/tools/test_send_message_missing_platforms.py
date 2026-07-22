@@ -178,6 +178,34 @@ class TestSendMatrix:
         assert payload["msgtype"] == "m.text"
         assert payload["body"] == "hello matrix"
 
+    def test_standalone_markdown_html_is_sanitized(self):
+        resp = _make_aiohttp_resp(200, json_data={"event_id": "$safe"})
+        session_ctx, session = _make_aiohttp_session(resp)
+        message = (
+            "safe <details open onclick=\"alert(1)\"><summary>more</summary>"
+            "<script>alert(2)</script></details>"
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            result = asyncio.run(
+                _send_matrix(
+                    "tok",
+                    {"homeserver": "https://matrix.example.com"},
+                    "!room:example.com",
+                    message,
+                )
+            )
+
+        assert result["success"] is True
+        payload = session.put.call_args.kwargs["json"]
+        assert payload["msgtype"] == "m.text"
+        assert payload["format"] == "org.matrix.custom.html"
+        assert "<details>" in payload["formatted_body"]
+        assert "<summary>more</summary>" in payload["formatted_body"]
+        assert "<script" not in payload["formatted_body"]
+        assert "alert(" not in payload["formatted_body"]
+        assert " onclick=" not in payload["formatted_body"]
+
     def test_http_error(self):
         resp = _make_aiohttp_resp(403, text_data="Forbidden")
         session_ctx, _ = _make_aiohttp_session(resp)

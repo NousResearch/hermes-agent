@@ -303,17 +303,27 @@ class TestRunBackgroundTask:
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
 
         approvals = []
+        typed_resolution_counts = []
+        typed_session_key = ""
 
         class MatrixAdapter:
             typed_command_prefix = "!"
 
             async def send_exec_approval(self, **kwargs):
                 approvals.append(kwargs)
-                assert approval.resolve_gateway_approval(
-                    kwargs["session_key"],
+                count = approval.resolve_gateway_approval(
+                    typed_session_key,
                     "once",
                     approval_id=kwargs["metadata"]["approval_id"],
-                ) == 1
+                )
+                typed_resolution_counts.append(count)
+                # Keep the RED test bounded before alias routing is implemented.
+                if not count:
+                    approval.resolve_gateway_approval(
+                        kwargs["session_key"],
+                        "once",
+                        approval_id=kwargs["metadata"]["approval_id"],
+                    )
                 return MagicMock(success=True, error=None)
 
             async def send(self, **_kwargs):
@@ -338,6 +348,7 @@ class TestRunBackgroundTask:
             thread_id="$thread",
         )
         task_id = "bg_approval_test"
+        typed_session_key = runner._session_key_for_source(source)
         observed = {}
 
         monkeypatch.setattr(approval, "is_approved", lambda *_args: False)
@@ -370,6 +381,7 @@ class TestRunBackgroundTask:
 
         assert observed["session_key"] == task_id
         assert observed["decision"]["approved"] is True
+        assert typed_resolution_counts == [1]
         assert len(approvals) == 1
         assert approvals[0]["chat_id"] == source.chat_id
         assert approvals[0]["command"] == "rm -rf -- /tmp/probe"
@@ -379,6 +391,7 @@ class TestRunBackgroundTask:
         assert approvals[0]["metadata"]["thread_id"] == source.thread_id
         with approval._lock:
             assert task_id not in approval._gateway_notify_cbs
+            assert task_id not in approval._gateway_command_session_keys
 
     @pytest.mark.asyncio
     async def test_media_files_routed_by_type(self, monkeypatch):

@@ -375,7 +375,9 @@ def _format_exec_approval_fallback(
     smart_denied: bool = False,
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    # This is the only approval prompt when the richer platform transport
+    # fails, so truncating here would hide an unaudited command tail.
+    cmd_preview = command
     heading = "⚠️ **Dangerous command requires approval:**"
     if smart_denied:
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
@@ -461,21 +463,35 @@ def _make_gateway_approval_notifier(
             allow_session=approval_data.get("allow_session", True),
             smart_denied=approval_data.get("smart_denied", False),
         )
+        fallback_metadata = dict(base_metadata)
+        if getattr(adapter, "approval_fallback_single_event", False):
+            # Matrix approval fallbacks MUST remain one authoritative event.
+            # An explicit (empty) pre-rendered boundary disables chunking while
+            # retaining the adapter's normal escaped Markdown HTML.
+            fallback_metadata["matrix_formatted_body"] = ""
         try:
             future = safe_schedule_threadsafe(
                 adapter.send(
                     chat_id,
                     message,
-                    metadata=base_metadata,
+                    metadata=fallback_metadata,
                 ),
                 loop,
                 logger=logger,
                 log_message="Approval text-send scheduling error",
             )
-            if future is not None:
-                future.result(timeout=15)
+            if future is None:
+                raise RuntimeError("approval fallback send: loop unavailable")
+            result = future.result(timeout=15)
+            if result is not None and getattr(result, "success", True) is False:
+                raise RuntimeError(
+                    str(getattr(result, "error", "") or "approval fallback send failed")
+                )
         except Exception as exc:
             logger.error("Failed to send approval request: %s", exc)
+            # The core approval guard catches notifier failures and denies the
+            # operation immediately instead of waiting on an invisible card.
+            raise
 
     return _approval_notify_sync
 
@@ -15226,6 +15242,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             approval_session_key = task_id
+            command_session_key = self._session_key_for_source(source)
             approval_notify = _make_gateway_approval_notifier(
                 adapter=adapter,
                 chat_id=str(source.chat_id or ""),
@@ -15237,7 +15254,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             approval_token = set_current_session_key(approval_session_key)
             try:
-                register_gateway_notify(approval_session_key, approval_notify)
+                register_gateway_notify(
+                    approval_session_key,
+                    approval_notify,
+                    command_session_key=command_session_key,
+                )
                 try:
                     result = await self._run_in_executor_with_context(run_sync)
                 finally:

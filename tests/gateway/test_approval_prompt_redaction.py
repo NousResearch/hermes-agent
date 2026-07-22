@@ -17,6 +17,13 @@ the redactor regexes so the assertions stay meaningful, but contain no real
 or real-looking key, so secret scanners do not flag this file.
 """
 
+from asyncio import AbstractEventLoop
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import patch
+
+import pytest
+
 from gateway.run import _redact_approval_command
 
 # Synthetic, scanner-safe credential fixtures. Each matches its redactor
@@ -171,6 +178,70 @@ class TestApprovalCommandWiring:
 
 
 class TestApprovalTextFallbackContract:
+    def test_long_command_transport_fallback_is_complete_single_event_or_fails_closed(self):
+        from gateway.run import _make_gateway_approval_notifier
+
+        class _Future:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self, timeout):
+                del timeout
+                return self._result
+
+        class _Adapter:
+            typed_command_prefix = "!"
+            approval_fallback_single_event = True
+
+            def __init__(self):
+                self.fallback_content = ""
+                self.fallback_metadata = {}
+
+            def pause_typing_for_chat(self, chat_id):
+                del chat_id
+
+            def send_exec_approval(self, **kwargs):
+                del kwargs
+                return object()
+
+            def send(self, chat_id, content, metadata=None):
+                del chat_id
+                self.fallback_content = content
+                self.fallback_metadata = dict(metadata or {})
+                return object()
+
+        adapter = _Adapter()
+        results = iter(
+            [
+                SimpleNamespace(success=False, error="rich send failed"),
+                SimpleNamespace(success=False, error="single-event fallback too large"),
+            ]
+        )
+
+        def _schedule(awaitable, loop, **kwargs):
+            del awaitable, loop, kwargs
+            return _Future(next(results))
+
+        notify = _make_gateway_approval_notifier(
+            adapter=adapter,
+            chat_id="!room:test",
+            session_key="matrix:!room:test",
+            metadata={"thread_id": "$thread"},
+            requester_user_id="@owner:test",
+            loop=cast(AbstractEventLoop, object()),
+            pause_typing=False,
+        )
+        tail = "AUDIT_TAIL_MUST_REMAIN_VISIBLE"
+        command = "echo " + ("x" * 500) + tail
+
+        with patch("gateway.run.safe_schedule_threadsafe", side_effect=_schedule):
+            with pytest.raises(RuntimeError, match="single-event fallback too large"):
+                notify({"command": command, "description": "bounded test"})
+
+        assert tail in adapter.fallback_content
+        assert adapter.fallback_metadata["matrix_formatted_body"] == ""
+        assert adapter.fallback_metadata["thread_id"] == "$thread"
+
     def test_smart_deny_only_advertises_one_operation(self):
         from gateway.run import _format_exec_approval_fallback
 

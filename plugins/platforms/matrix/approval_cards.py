@@ -14,10 +14,12 @@ Summary is advisory only and never blocks posting or resolving approvals.
 from __future__ import annotations
 
 import html
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +110,17 @@ def force_redact_command(command: str) -> str:
         return redact_sensitive_text(text, force=True)
     except Exception as exc:
         logger.debug("Matrix approval redact unavailable: %s", exc)
-        return text
+        return "[command hidden because secret redaction failed]"
 
 
 def truncate_command(command: str, limit: int = _CMD_PREVIEW_LIMIT) -> str:
-    cmd = str(command or "")
-    if len(cmd) <= limit:
-        return cmd
-    return cmd[:limit] + "..."
+    """Return the complete audit-authoritative command.
+
+    ``limit`` remains for compatibility with callers that imported this helper
+    while approval cards transitioned away from lossy previews.
+    """
+    del limit
+    return str(command or "")
 
 
 def _md_code_block(command: str) -> str:
@@ -213,7 +218,7 @@ def format_pending_summarized(
     reason = (description or "dangerous command").strip() or "dangerous command"
     clean_summary = sanitize_summary(summary)
 
-    _, reactions = _pending_scope_and_reactions(
+    scope, reactions = _pending_scope_and_reactions(
         allow_permanent=allow_permanent,
         allow_session=allow_session,
         smart_denied=smart_denied,
@@ -224,6 +229,7 @@ def format_pending_summarized(
         f"Reason: {reason}\n"
         f"Advisory interpretation: {clean_summary}\n\n"
         f"Full command:\n{_md_code_block(redacted)}\n\n"
+        f"{scope}\n\n"
         f"{reactions}"
     )
 
@@ -233,9 +239,11 @@ def format_pending_summarized(
     )
     html_body = (
         "<p>⚠️ <strong>Dangerous command requires approval</strong><br/>"
-        f"Reason: {html.escape(reason)}<br/>"
-        f"<em>Advisory interpretation:</em> {html.escape(clean_summary)}</p>"
+        f"Reason: {html.escape(reason)}</p>"
+        f"<blockquote><strong>Advisory interpretation:</strong> "
+        f"{html.escape(clean_summary)}</blockquote>"
         f"{details}"
+        f"<p>{html.escape(scope)}</p>"
         f"<p>{html.escape(reactions)}</p>"
     )
     return text, html_body
@@ -269,8 +277,8 @@ def format_terminal_compact(
     )
     if summary:
         html_body += (
-            f"<p><strong>Advisory interpretation:</strong> "
-            f"{html.escape(sanitize_summary(summary))}</p>"
+            f"<blockquote><strong>Advisory interpretation:</strong> "
+            f"{html.escape(sanitize_summary(summary))}</blockquote>"
         )
     html_body += _details_block(
         summary_label="Full command",
@@ -313,10 +321,54 @@ def build_summary_prompt(*, command: str, description: str) -> list[dict[str, st
     ]
 
 
+def _resolve_approval_summary_route() -> dict[str, Any]:
+    """Resolve the configured approval route before sending command data."""
+    from agent.auxiliary_client import _resolve_task_provider_model
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task="approval"
+    )
+    runtime = resolve_runtime_provider(
+        requested=provider,
+        explicit_api_key=api_key,
+        explicit_base_url=base_url,
+        target_model=model,
+    )
+    return {
+        "provider": str(runtime.get("provider") or provider or ""),
+        "model": model,
+        "base_url": str(runtime.get("base_url") or base_url or ""),
+        "api_key": runtime.get("api_key") or api_key,
+        "api_mode": runtime.get("api_mode") or api_mode,
+    }
+
+
+def _approval_summary_route_is_local(route: Mapping[str, Any]) -> bool:
+    """Recognize loopback, private, link-local, and .local LLM endpoints."""
+    raw_url = str(route.get("base_url") or "").strip()
+    try:
+        hostname = (urlparse(raw_url).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        # Do not resolve arbitrary hostnames here: local_only must fail closed
+        # rather than trust mutable DNS classification.
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
 def generate_command_summary(
     *,
     command: str,
     description: str,
+    provider_policy: str = "local_only",
     timeout_seconds: int = _DEFAULT_LOCAL_TIMEOUT,
     max_chars: int = _DEFAULT_MAX_CHARS,
 ) -> Optional[str]:
@@ -324,14 +376,41 @@ def generate_command_summary(
     try:
         from agent.auxiliary_client import call_llm
 
+        policy = str(provider_policy or "local_only").strip().lower()
+        if policy not in {
+            "disabled",
+            "local_only",
+            "local_preferred",
+            "remote_redacted",
+        }:
+            logger.warning(
+                "Matrix approval summary skipped: unknown provider_policy %r",
+                policy,
+            )
+            return None
+        if policy == "disabled":
+            return None
+
         messages = build_summary_prompt(command=command, description=description)
-        # Prefer task=approval if configured; fall back to default aux routing.
+        call_kwargs: dict[str, Any] = {}
+        if policy == "local_only":
+            route = _resolve_approval_summary_route()
+            if not _approval_summary_route_is_local(route):
+                logger.warning(
+                    "Matrix approval summary skipped: local_only route is not a "
+                    "verified local endpoint"
+                )
+                return None
+            call_kwargs.update(route)
+            call_kwargs["allow_provider_fallback"] = False
+
         response = call_llm(
             task="approval",
             messages=messages,
             temperature=0,
             max_tokens=min(256, max(64, max_chars // 2)),
             timeout=max(1, int(timeout_seconds)),
+            **call_kwargs,
         )
         content = ""
         if response is not None:

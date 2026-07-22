@@ -71,6 +71,8 @@ def _clear_approval_state():
     from tools import approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
+    mod._gateway_command_session_keys.clear()
+    mod._gateway_resolution_outcomes.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
     mod._pending.clear()
@@ -214,6 +216,39 @@ class TestBlockingGatewayApproval:
         assert result["resolved"] is True
         assert result["choice"] == "once"
         assert notified["approval_id"]
+
+    def test_typed_session_alias_resolves_oldest_isolated_background_queue(self):
+        """Typed commands can resolve task-isolated queues from their source session."""
+        from tools.approval import (
+            _ApprovalEntry,
+            _gateway_queues,
+            register_gateway_notify,
+            resolve_gateway_approval,
+        )
+
+        source_session = "agent:main:matrix:group:room:user"
+        first_task = "bg_first"
+        second_task = "bg_second"
+        first = _ApprovalEntry({"command": "first"})
+        second = _ApprovalEntry({"command": "second"})
+        _gateway_queues[first_task] = [first]
+        _gateway_queues[second_task] = [second]
+        register_gateway_notify(
+            first_task,
+            lambda _data: None,
+            command_session_key=source_session,
+        )
+        register_gateway_notify(
+            second_task,
+            lambda _data: None,
+            command_session_key=source_session,
+        )
+
+        assert resolve_gateway_approval(source_session, "session") == 1
+        assert first.result == "session"
+        assert first.event.is_set() is True
+        assert second.result is None
+        assert second.event.is_set() is False
 
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""

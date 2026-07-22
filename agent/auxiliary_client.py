@@ -6924,6 +6924,7 @@ def call_llm(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    allow_provider_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -6959,6 +6960,10 @@ def call_llm(
 
     Raises:
         RuntimeError: If no provider is configured.
+
+    ``allow_provider_fallback=False`` pins the resolved route. Same-provider
+    retries remain available, but no configured, main-model, or auto-detected
+    fallback may receive the request.
     """
     # Capture one immutable runtime snapshot for keying, resolution, retries,
     # and fallbacks. Reading ambient state independently in each phase lets a
@@ -6981,7 +6986,12 @@ def call_llm(
             async_mode=False,
             main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
+        if (
+            allow_provider_fallback
+            and client is None
+            and resolved_provider != "auto"
+            and not resolved_base_url
+        ):
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
@@ -7014,7 +7024,11 @@ def call_llm(
             # tasks because fallback entries may use OAuth / credential-pool
             # auth (for example openai-codex).
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+            if (
+                allow_provider_fallback
+                and _explicit
+                and _explicit not in {"auto", "openrouter", "custom"}
+            ):
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit,
                 )
@@ -7032,7 +7046,7 @@ def call_llm(
             # Pass model=None so each provider uses its own default —
             # resolved_model may be an OpenRouter-format slug that doesn't
             # work on other providers.
-            if client is None and not resolved_base_url:
+            if client is None and allow_provider_fallback and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", main_runtime=main_runtime, task=task)
@@ -7425,7 +7439,7 @@ def call_llm(
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
-        if should_fallback and (is_auto or is_capacity_error):
+        if allow_provider_fallback and should_fallback and (is_auto or is_capacity_error):
             if _is_auth_error(first_err):
                 reason = "auth error"
             elif _is_payment_error(first_err):

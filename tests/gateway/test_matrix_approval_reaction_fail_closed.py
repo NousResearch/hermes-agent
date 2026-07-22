@@ -111,6 +111,9 @@ def _run(adapter, event):
 
     fake_approval = types.ModuleType("tools.approval")
     fake_approval.resolve_gateway_approval = lambda session_key, choice: 1
+    fake_approval.consume_gateway_approval_outcome = (
+        lambda session_key, approval_id: None
+    )
     with patch.dict(sys.modules, {"tools.approval": fake_approval}):
         asyncio.run(adapter._on_reaction(event))
 

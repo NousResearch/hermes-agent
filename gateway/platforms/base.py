@@ -646,14 +646,18 @@ def validate_inbound_media_size(
         )
 
 
-async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
+async def _read_httpx_body_with_limit(
+    response, *, media_type: str, max_bytes: Optional[int] = None
+) -> bytes:
     """Read an httpx streaming response body without exceeding the media cap.
 
     Rejects early on an oversized ``Content-Length`` header, then re-checks
     the running total as chunks arrive so a lying/absent header can't smuggle
     an unbounded body past the cap.
     """
-    max_bytes = get_inbound_media_max_bytes()
+    max_bytes = (
+        get_inbound_media_max_bytes() if max_bytes is None else max_bytes
+    )
     content_length = response.headers.get("content-length")
     if content_length:
         try:
@@ -684,21 +688,26 @@ def get_image_cache_dir() -> Path:
     return d
 
 
+def _detect_image_mimetype(data: bytes) -> Optional[str]:
+    """Return the MIME identified by known image magic bytes, if any."""
+    if len(data) < 4:
+        return None
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _looks_like_image(data: bytes) -> bool:
     """Return True if *data* starts with a known image magic-byte sequence."""
-    if len(data) < 4:
-        return False
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return True
-    if data[:3] == b"\xff\xd8\xff":
-        return True
-    if data[:6] in {b"GIF87a", b"GIF89a"}:
-        return True
-    if data[:2] == b"BM":
-        return True
-    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
-        return True
-    return False
+    return _detect_image_mimetype(data) is not None
 
 
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
@@ -5787,6 +5796,13 @@ class BasePlatformAdapter(ABC):
                     "Profile resolution failed for %s/%s, defaulting to active profile",
                     self.platform, chat_id, exc_info=True,
                 )
+        if not profile:
+            # Secondary multiplex adapters are bound to one profile before
+            # ingestion. Stamp that identity before adapter-specific work derives
+            # session keys; the runner's message handler retains a final guard.
+            profile = str(
+                getattr(self, "_bound_profile_name", "") or ""
+            ).strip() or None
 
         return SessionSource(
             platform=self.platform,

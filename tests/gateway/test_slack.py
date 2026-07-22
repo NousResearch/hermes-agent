@@ -22,6 +22,7 @@ from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy,
 )
@@ -112,6 +113,9 @@ def adapter():
     a._app.client = AsyncMock()
     a._bot_user_id = "U_BOT"
     a._running = True
+    a.set_authorization_check(
+        lambda user_id, chat_type=None, chat_id=None: True
+    )
     # Capture events instead of processing them
     a.handle_message = AsyncMock()
     return a
@@ -119,7 +123,14 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point every media cache to tmp_path so tests don't touch ~/.hermes."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
@@ -1585,12 +1596,14 @@ class TestIncomingDocumentHandling:
         adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_image_still_handled(self, adapter):
+    async def test_image_still_handled(self, adapter, tmp_path):
         """Image attachments should still go through the image path, not document."""
+        cached_image = tmp_path / "cached_image.jpg"
+        cached_image.write_bytes(b"synthetic-image")
         with patch.object(
             adapter, "_download_slack_file", new_callable=AsyncMock
         ) as dl:
-            dl.return_value = "/tmp/cached_image.jpg"
+            dl.return_value = str(cached_image)
             event = self._make_event(
                 files=[
                     {
@@ -1683,6 +1696,28 @@ class TestIncomingDocumentHandling:
         assert len(msg_event.media_urls) == 1
         assert os.path.exists(msg_event.media_urls[0])
         assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_file_shared_denied_requester_does_not_fetch_file_info(
+        self, adapter
+    ):
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: False
+        )
+        adapter._app.client.files_info = AsyncMock()
+
+        await adapter._handle_slack_file_shared(
+            {
+                "type": "file_shared",
+                "channel_id": "D123",
+                "file_id": "FVIDEO",
+                "user_id": "U_DENIED",
+                "event_ts": "1234567890.000002",
+            }
+        )
+
+        adapter._app.client.files_info.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_download_failure_is_surfaced_in_message_text(self, adapter):
@@ -4995,3 +5030,1461 @@ class TestThreadContextUnverifiedTagging:
         # Renders successfully without trust tag (exception → unknown trust).
         assert "U_X: hello" in content
         assert "[unverified]" not in content
+
+
+# ---------------------------------------------------------------------------
+# TestSlackThreadImagePropagation
+# ---------------------------------------------------------------------------
+
+
+class TestSlackThreadImagePropagation:
+    """Regression coverage for images attached only to prior thread messages."""
+
+    @pytest.fixture(autouse=True)
+    def _authorized_requester(self, adapter):
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: True
+        )
+
+    def test_thread_context_cache_is_bounded(self, adapter):
+        adapter._THREAD_CACHE_TTL = 60.0
+        adapter._THREAD_CACHE_MAX = 1
+        adapter._store_thread_context_cache(
+            "old", _slack_mod._ThreadContextCache(content="old", fetched_at=100.0)
+        )
+        adapter._store_thread_context_cache(
+            "new", _slack_mod._ThreadContextCache(content="new", fetched_at=101.0)
+        )
+
+        assert list(adapter._thread_context_cache) == ["new"]
+
+        first_lock = adapter._get_thread_context_lock("old")
+        adapter._get_thread_context_lock("new")
+        assert adapter._get_thread_context_lock("old") is first_lock
+
+    def test_delivery_marker_resets_with_session_entry(self, adapter, tmp_path):
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionSource, SessionStore
+
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C_RESET",
+            chat_type="group",
+            user_id="U_RESET",
+            thread_id="1000.0",
+            scope_id="T_RESET",
+        )
+        entry = store.get_or_create_session(source)
+        adapter.set_session_store(store)
+        assert store.mark_historical_media_delivered(entry.session_key)
+        adapter._historical_media_delivered[entry.session_key] = 1.0
+        assert adapter._historical_media_was_delivered(entry.session_key)
+
+        reset_entry = store.reset_session(entry.session_key)
+
+        assert reset_entry is not None
+        assert reset_entry.historical_media_delivered is False
+        assert not adapter._historical_media_was_delivered(entry.session_key)
+
+    def test_thread_session_key_uses_bound_multiplex_profile(self, adapter, tmp_path):
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+
+        store = SessionStore(
+            tmp_path / "sessions",
+            GatewayConfig(multiplex_profiles=True),
+        )
+        adapter.set_session_store(store)
+        adapter._bound_profile_name = "coder"
+
+        delivery_key = adapter._thread_session_key(
+            channel_id="C_PROFILE",
+            thread_ts="2000.0",
+            user_id="U_PROFILE",
+            team_id="T_PROFILE",
+        )
+        actual_source = adapter.build_source(
+            chat_id="C_PROFILE",
+            chat_type="group",
+            user_id="U_PROFILE",
+            thread_id="2000.0",
+            scope_id="T_PROFILE",
+        )
+        actual_entry = store.get_or_create_session(actual_source)
+
+        assert actual_source.profile == "coder"
+        assert delivery_key == actual_entry.session_key
+        assert delivery_key.startswith("agent:coder:slack:group:C_PROFILE:2000.0")
+
+    def test_profile_adapter_configuration_binds_profile_before_ingestion(
+        self, adapter
+    ):
+        runner = object.__new__(GatewayRunner)
+        runner._make_profile_message_handler = MagicMock(return_value=AsyncMock())
+        runner._make_profile_fatal_error_handler = MagicMock(
+            return_value=AsyncMock()
+        )
+        runner.session_store = MagicMock()
+        runner._handle_active_session_busy_message = AsyncMock()
+        runner._recover_telegram_topic_thread_id = MagicMock()
+        runner._make_adapter_auth_check = MagicMock(
+            return_value=lambda *_args, **_kwargs: True
+        )
+        runner._busy_text_mode = "queue"
+
+        runner._configure_profile_adapter(adapter, "coder", Platform.SLACK)
+
+        assert adapter._bound_profile_name == "coder"
+
+    @staticmethod
+    async def _deliver_root_files(
+        adapter, files, *, root_ts="7000.0", current_files=None
+    ):
+        current_files = current_files or []
+        reply_ts = f"{root_ts[:-1]}1"
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": root_ts,
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": files,
+                    },
+                    {
+                        "ts": reply_ts,
+                        "thread_ts": root_ts,
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> inspect root attachments",
+                        "files": current_files,
+                    },
+                ]
+            }
+        )
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": root_ts,
+                "ts": reply_ts,
+                "user": "U_REPLY",
+                "text": "<@U_BOT> inspect root attachments",
+                "files": current_files,
+            }
+        )
+        return adapter.handle_message.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_file_only_root_reaches_first_text_only_reply(self, adapter, tmp_path):
+        """A blank-text root image must reach the triggering reply's MessageEvent."""
+        image_path = tmp_path / "root.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic-root-image")
+        private_url = "https://files.slack.test/private/F_ROOT?sig=do-not-persist"
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1000.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": [
+                            {
+                                "id": "F_ROOT",
+                                "name": "root.png",
+                                "mimetype": "image/png",
+                                "size": image_path.stat().st_size,
+                                "url_private_download": private_url,
+                            }
+                        ],
+                    },
+                    {
+                        "ts": "1000.1",
+                        "thread_ts": "1000.0",
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> inspect the root image",
+                        "files": [],
+                    },
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "1000.0",
+                "ts": "1000.1",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> inspect the root image",
+                "files": [],
+            }
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        message_event = adapter.handle_message.await_args.args[0]
+        assert message_event.media_urls == [str(image_path)]
+        assert message_event.media_types == ["image/png"]
+        assert message_event.message_type == MessageType.PHOTO
+        assert "inspect the root image" in message_event.text
+        assert (
+            "[attached image: root.png (image/png); source=thread_root; "
+            "message_ts=1000.0; file_id=F_ROOT; sharer_user_id=U_ROOT; "
+            "uploader_id=; uploader_trust=unknown]"
+        ) in message_event.text
+        assert message_event.metadata["slack_attachment_provenance"] == [
+            {
+                "source": "thread_root",
+                "message_ts": "1000.0",
+                "thread_ts": "1000.0",
+                "file_id": "F_ROOT",
+                "name": "root.png",
+                "mimetype": "image/png",
+                "declared_size": image_path.stat().st_size,
+                "actual_size": image_path.stat().st_size,
+                "sha256": _slack_mod._sha256_file(str(image_path)),
+                "sharer_user_id": "U_ROOT",
+                "uploader_id": "",
+                "uploader_trust": "unknown",
+            }
+        ]
+        rendered = repr(
+            {
+                "text": message_event.text,
+                "raw_message": message_event.raw_message,
+                "metadata": message_event.metadata,
+            }
+        )
+        assert private_url not in rendered
+        assert "do-not-persist" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_reply_does_not_download_current_or_historical_files(
+        self, adapter
+    ):
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_BLOCKED")] = "Blocked User"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._is_sender_authorized = MagicMock(return_value=False)
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1050.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "root context",
+                        "files": [
+                            {
+                                "id": "F_ROOT_BLOCKED",
+                                "name": "root.png",
+                                "mimetype": "image/png",
+                                "url_private_download": "https://files.slack.test/root",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock()
+        current_files = [
+            {
+                "id": "F_CURRENT_BLOCKED",
+                "name": "current.png",
+                "mimetype": "image/png",
+                "url_private_download": "https://files.slack.test/current",
+            }
+        ]
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "1050.0",
+                "ts": "1050.1",
+                "user": "U_BLOCKED",
+                "text": "<@U_BOT> inspect the root image",
+                "files": current_files,
+            }
+        )
+
+        adapter._app.client.conversations_replies.assert_not_awaited()
+        adapter._download_slack_file.assert_not_awaited()
+        assert "1050.0" not in adapter._mentioned_threads
+
+    @pytest.mark.asyncio
+    async def test_unknown_requester_authorization_skips_thread_history(
+        self, adapter
+    ):
+        adapter.set_authorization_check(None)
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1075.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "context only",
+                        "files": [
+                            {
+                                "id": "F_UNKNOWN_AUTH",
+                                "name": "unknown-auth.png",
+                                "mimetype": "image/png",
+                                "size": 8,
+                                "url_private_download": "https://files.slack.test/unknown-auth",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock()
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "1075.0",
+                "ts": "1075.1",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> inspect",
+                "files": [],
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == []
+        adapter._download_slack_file.assert_not_awaited()
+        adapter._app.client.conversations_replies.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_text_and_image_root_preserves_both(self, adapter, tmp_path):
+        image_path = tmp_path / "captioned.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic-captioned-image")
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "2000.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "Original caption",
+                        "files": [
+                            {
+                                "id": "F_CAPTIONED",
+                                "name": "captioned.png",
+                                "mimetype": "image/png",
+                                "size": image_path.stat().st_size,
+                                "url_private_download": "https://files.slack.test/F_CAPTIONED",
+                            }
+                        ],
+                    },
+                    {
+                        "ts": "2000.1",
+                        "thread_ts": "2000.0",
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> use the caption and image",
+                        "files": [],
+                    },
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "2000.0",
+                "ts": "2000.1",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> use the caption and image",
+                "files": [],
+            }
+        )
+
+        message_event = adapter.handle_message.await_args.args[0]
+        assert "Root User: Original caption" in message_event.text
+        assert "source=thread_root" in message_event.text
+        assert message_event.media_urls == [str(image_path)]
+        assert message_event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_same_file_in_root_and_current_message_is_downloaded_once(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "duplicate.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nduplicate-image")
+        file_obj = {
+            "id": "F_DUP",
+            "name": "duplicate.png",
+            "mimetype": "image/png",
+            "size": image_path.stat().st_size,
+            "url_private_download": "https://files.slack.test/F_DUP?sig=private",
+        }
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "3000.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": [dict(file_obj)],
+                    },
+                    {
+                        "ts": "3000.1",
+                        "thread_ts": "3000.0",
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> inspect this once",
+                        "files": [dict(file_obj)],
+                    },
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "3000.0",
+                "ts": "3000.1",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> inspect this once",
+                "files": [dict(file_obj)],
+            }
+        )
+
+        message_event = adapter.handle_message.await_args.args[0]
+        adapter._download_slack_file.assert_awaited_once()
+        assert message_event.media_urls == [str(image_path)]
+        assert message_event.media_types == ["image/png"]
+        assert [
+            p["file_id"]
+            for p in message_event.metadata["slack_attachment_provenance"]
+        ] == ["F_DUP"]
+
+    @pytest.mark.asyncio
+    async def test_distinct_file_ids_with_identical_bytes_are_attached_once(
+        self, adapter, tmp_path
+    ):
+        cache_dir = tmp_path / "image_cache"
+        cache_dir.mkdir()
+        first_path = cache_dir / "same-content-a.png"
+        duplicate_path = cache_dir / "same-content-b.png"
+        content = b"\x89PNG\r\n\x1a\nsame-content-image"
+        first_path.write_bytes(content)
+        duplicate_path.write_bytes(content)
+        adapter._download_slack_file = AsyncMock(
+            side_effect=[str(first_path), str(duplicate_path)]
+        )
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_SAME_A",
+                    "name": "same-a.png",
+                    "mimetype": "image/png",
+                    "size": len(content),
+                    "url_private_download": "https://files.slack.test/same-a",
+                },
+                {
+                    "id": "F_SAME_B",
+                    "name": "same-b.png",
+                    "mimetype": "image/png",
+                    "size": len(content),
+                    "url_private_download": "https://files.slack.test/same-b",
+                },
+            ],
+            root_ts="3050.0",
+        )
+
+        assert message_event.media_urls == [str(first_path)]
+        assert [
+            item["file_id"]
+            for item in message_event.metadata["slack_attachment_provenance"]
+        ] == ["F_SAME_A"]
+        assert "duplicates an already accepted image" in message_event.text
+        assert first_path.exists()
+        assert not duplicate_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_historical_slack_connect_file_uses_files_info(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "connect.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nslack-connect-image")
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        local_client = adapter._app.client
+        remote_client = MagicMock()
+        adapter._team_clients["T1"] = local_client
+        adapter._team_clients["T_REMOTE"] = remote_client
+        local_client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "4000.0",
+                        # Slack Connect history can identify the sender's remote
+                        # workspace. File access must still use the local event
+                        # workspace and its bot token.
+                        "team": "T_REMOTE",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": [
+                            {"id": "F_CONNECT", "file_access": "check_file_info"}
+                        ],
+                    },
+                    {
+                        "ts": "4000.1",
+                        "thread_ts": "4000.0",
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> inspect the shared image",
+                        "files": [],
+                    },
+                ]
+            }
+        )
+        resolved_file = {
+            "ok": True,
+            "file": {
+                "id": "F_CONNECT",
+                "name": "connect.png",
+                "mimetype": "image/png",
+                "size": image_path.stat().st_size,
+                "url_private_download": "https://files.slack.test/F_CONNECT?sig=private",
+            },
+        }
+        local_client.files_info = AsyncMock(return_value=resolved_file)
+        remote_client.files_info = AsyncMock(return_value=resolved_file)
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "4000.0",
+                "ts": "4000.1",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> inspect the shared image",
+                "files": [],
+            }
+        )
+
+        local_client.files_info.assert_awaited_once_with(file="F_CONNECT")
+        remote_client.files_info.assert_not_awaited()
+        adapter._download_slack_file.assert_awaited_once()
+        download_call = adapter._download_slack_file.await_args
+        assert download_call is not None
+        assert download_call.kwargs["team_id"] == "T1"
+        message_event = adapter.handle_message.await_args.args[0]
+        assert message_event.media_urls == [str(image_path)]
+        assert message_event.media_types == ["image/png"]
+        assert message_event.metadata["slack_attachment_provenance"][0][
+            "file_id"
+        ] == "F_CONNECT"
+
+    @pytest.mark.asyncio
+    async def test_canonical_file_uploader_trust_is_preserved(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "reshared.png"
+        image_path.write_bytes(b"reshared-image")
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id != "U_OWNER"
+        )
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_RESHARED",
+                    "user": "U_OWNER",
+                    "name": "reshared.png",
+                    "mimetype": "image/png",
+                    "size": image_path.stat().st_size,
+                    "url_private_download": "https://files.slack.test/reshared",
+                }
+            ],
+            root_ts="4050.0",
+        )
+
+        provenance = message_event.metadata["slack_attachment_provenance"][0]
+        assert provenance["uploader_id"] == "U_OWNER"
+        assert provenance["uploader_trust"] == "unverified"
+        assert "uploader_id=U_OWNER" in message_event.text
+        assert "uploader_trust=unverified" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_attachment_filename_is_sanitized_for_prompt_and_provenance(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "safe.png"
+        image_path.write_bytes(b"safe-filename-image")
+        unsafe_name = "../../<@U_ATTACKER>\nunsafe.png"
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_UNSAFE_NAME",
+                    "name": unsafe_name,
+                    "mimetype": "image/png",
+                    "size": image_path.stat().st_size,
+                    "url_private_download": "https://files.slack.test/unsafe-name",
+                }
+            ],
+            root_ts="4075.0",
+        )
+
+        provenance = message_event.metadata["slack_attachment_provenance"][0]
+        assert provenance["name"] == "__U_ATTACKER__unsafe.png"
+        assert unsafe_name not in message_event.text
+        assert "<@U_ATTACKER>" not in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_historical_download_timeout_is_visible_and_redacted(
+        self, adapter, caplog
+    ):
+        private_url = "https://files.slack.test/F_TIMEOUT?sig=private-signed-value"
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "5000.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": [
+                            {
+                                "id": "F_TIMEOUT",
+                                "name": "timeout.png",
+                                "mimetype": "image/png",
+                                "size": 42,
+                                "url_private_download": private_url,
+                            }
+                        ],
+                    },
+                    {
+                        "ts": "5000.1",
+                        "thread_ts": "5000.0",
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> inspect the unavailable image",
+                        "files": [],
+                    },
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock(
+            side_effect=TimeoutError(
+                f"timed out fetching {private_url} with bearer xoxb-private-token"
+            )
+        )
+
+        with caplog.at_level("WARNING"):
+            await adapter._handle_slack_message(
+                {
+                    "type": "app_mention",
+                    "channel": "C1",
+                    "channel_type": "channel",
+                    "team": "T1",
+                    "thread_ts": "5000.0",
+                    "ts": "5000.1",
+                    "user": "U_REPLY",
+                    "text": "<@U_BOT> inspect the unavailable image",
+                    "files": [],
+                }
+            )
+
+        message_event = adapter.handle_message.await_args.args[0]
+        assert "[Slack attachment notice]" in message_event.text
+        assert "timeout.png" in message_event.text
+        assert "could not be downloaded" in message_event.text
+        rendered = message_event.text + "\n" + caplog.text
+        assert private_url not in rendered
+        assert "private-signed-value" not in rendered
+        assert "xoxb-private-token" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_historical_media_is_injected_only_on_first_applicable_turn(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "once.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nonce-only-image")
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "6000.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": [
+                            {
+                                "id": "F_ONCE",
+                                "name": "once.png",
+                                "mimetype": "image/png",
+                                "size": image_path.stat().st_size,
+                                "url_private_download": "https://files.slack.test/F_ONCE",
+                            }
+                        ],
+                    },
+                    {
+                        "ts": "6000.1",
+                        "thread_ts": "6000.0",
+                        "team": "T1",
+                        "user": "U_REPLY",
+                        "text": "<@U_BOT> first request",
+                        "files": [],
+                    },
+                ]
+            }
+        )
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        base_event = {
+            "type": "app_mention",
+            "channel": "C1",
+            "channel_type": "channel",
+            "team": "T1",
+            "thread_ts": "6000.0",
+            "user": "U_REPLY",
+            "files": [],
+        }
+        await adapter._handle_slack_message(
+            {**base_event, "ts": "6000.1", "text": "<@U_BOT> first request"}
+        )
+        first_event = adapter.handle_message.await_args_list[0].args[0]
+        adapter._reactions_enabled = MagicMock(return_value=False)
+        await adapter.on_processing_complete(
+            first_event, ProcessingOutcome.SUCCESS
+        )
+        assert len(adapter._historical_media_delivered) == 1
+        delivery_key = adapter._thread_session_key(
+            channel_id="C1",
+            thread_ts="6000.0",
+            user_id="U_REPLY",
+            team_id="T1",
+        )
+        assert delivery_key in adapter._historical_media_delivered
+        cached_context = adapter._thread_context_cache["C1:6000.0:T1"]
+        assert "source=thread_root" not in cached_context.text_only_content
+        await adapter._handle_slack_message(
+            {**base_event, "ts": "6000.2", "text": "<@U_BOT> second request"}
+        )
+
+        first_event, second_event = [
+            call.args[0] for call in adapter.handle_message.await_args_list
+        ]
+        assert first_event.media_urls == [str(image_path)]
+        assert second_event.media_urls == []
+        assert "source=thread_root" in first_event.text
+        assert "source=thread_root" not in second_event.text
+        adapter._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_processing_releases_claim_for_next_reply(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "retry-after-failure.png"
+        image_path.write_bytes(b"retry-after-failure")
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._reactions_enabled = MagicMock(return_value=False)
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        first_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_RETRY_AFTER_FAILURE",
+                    "name": "retry-after-failure.png",
+                    "mimetype": "image/png",
+                    "size": image_path.stat().st_size,
+                    "url_private_download": "https://files.slack.test/retry-after-failure",
+                }
+            ],
+            root_ts="6075.0",
+        )
+        await adapter.on_processing_complete(
+            first_event, ProcessingOutcome.FAILURE
+        )
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "6075.0",
+                "ts": "6075.2",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> retry",
+                "files": [],
+            }
+        )
+        second_event = adapter.handle_message.await_args.args[0]
+
+        assert first_event.media_urls == [str(image_path)]
+        assert second_event.media_urls == [str(image_path)]
+        assert not adapter._historical_media_delivered
+        adapter._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_replies_fetch_and_attach_history_once(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "concurrent.png"
+        image_path.write_bytes(b"concurrent-image")
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_ROOT")] = "Root User"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        fetch_started = asyncio.Event()
+        release_fetch = asyncio.Event()
+
+        async def delayed_replies(**_kwargs):
+            fetch_started.set()
+            await release_fetch.wait()
+            return {
+                "messages": [
+                    {
+                        "ts": "6025.0",
+                        "team": "T1",
+                        "user": "U_ROOT",
+                        "text": "",
+                        "files": [
+                            {
+                                "id": "F_CONCURRENT",
+                                "name": "concurrent.png",
+                                "mimetype": "image/png",
+                                "size": image_path.stat().st_size,
+                                "url_private_download": "https://files.slack.test/concurrent",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=delayed_replies
+        )
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+        base_event = {
+            "type": "app_mention",
+            "channel": "C1",
+            "channel_type": "channel",
+            "team": "T1",
+            "thread_ts": "6025.0",
+            "user": "U_REPLY",
+            "files": [],
+        }
+
+        first_task = asyncio.create_task(
+            adapter._handle_slack_message(
+                {**base_event, "ts": "6025.1", "text": "<@U_BOT> first"}
+            )
+        )
+        await fetch_started.wait()
+        second_task = asyncio.create_task(
+            adapter._handle_slack_message(
+                {**base_event, "ts": "6025.2", "text": "<@U_BOT> second"}
+            )
+        )
+        await asyncio.sleep(0)
+        assert not second_task.done()
+        release_fetch.set()
+        await asyncio.gather(first_task, second_task)
+
+        events = [call.args[0] for call in adapter.handle_message.await_args_list]
+        assert sum(bool(event.media_urls) for event in events) == 1
+        adapter._app.client.conversations_replies.assert_awaited_once()
+        adapter._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_existing_session_receives_historical_media_if_not_yet_delivered(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "existing-session.png"
+        image_path.write_bytes(b"existing-session-image")
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_EXISTING_SESSION",
+                    "name": "existing-session.png",
+                    "mimetype": "image/png",
+                    "size": image_path.stat().st_size,
+                    "url_private_download": "https://files.slack.test/existing-session",
+                }
+            ],
+            root_ts="6050.0",
+        )
+
+        assert message_event.media_urls == [str(image_path)]
+        assert "source=thread_root" in message_event.text
+        assert "sharer_user_id=U_ROOT" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_durable_session_marker_suppresses_replay_after_adapter_restart(
+        self, adapter
+    ):
+        session_store = MagicMock()
+        session_store._generate_session_key.return_value = "durable-thread-key"
+        session_store.has_historical_media_delivered.return_value = True
+        adapter._session_store = session_store
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._team_bot_user_ids["T1"] = "U_BOT"
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={"messages": [{"ts": "6060.0", "text": "root text"}]}
+        )
+        adapter._download_slack_file = AsyncMock()
+
+        await adapter._handle_slack_message(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "team": "T1",
+                "thread_ts": "6060.0",
+                "ts": "6060.1",
+                "user": "U_REPLY",
+                "text": "<@U_BOT> inspect",
+                "files": [],
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == []
+        adapter._app.client.conversations_replies.assert_awaited_once()
+        adapter._download_slack_file.assert_not_awaited()
+        session_store.has_historical_media_delivered.assert_called_once_with(
+            "durable-thread-key"
+        )
+
+    @pytest.mark.asyncio
+    async def test_historical_file_count_limit_stops_extra_downloads(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(_slack_mod, "_SLACK_MAX_ATTACHMENTS", 1, raising=False)
+        first = tmp_path / "first.png"
+        second = tmp_path / "second.png"
+        first.write_bytes(b"first-image")
+        second.write_bytes(b"second-image")
+        adapter._download_slack_file = AsyncMock(
+            side_effect=[str(first), str(second)]
+        )
+        files = [
+            {
+                "id": "F_FIRST",
+                "name": "first.png",
+                "mimetype": "image/png",
+                "size": first.stat().st_size,
+                "url_private_download": "https://files.slack.test/F_FIRST",
+            },
+            {
+                "id": "F_SECOND",
+                "name": "second.png",
+                "mimetype": "image/png",
+                "size": second.stat().st_size,
+                "url_private_download": "https://files.slack.test/F_SECOND",
+            },
+        ]
+
+        message_event = await self._deliver_root_files(adapter, files)
+
+        adapter._download_slack_file.assert_awaited_once()
+        assert message_event.media_urls == [str(first)]
+        assert "file-count limit" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_unsupported_files_do_not_consume_supported_image_limit(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(_slack_mod, "_SLACK_MAX_ATTACHMENTS", 1, raising=False)
+        valid = tmp_path / "valid.png"
+        valid.write_bytes(b"valid-image")
+        adapter._download_slack_file = AsyncMock(return_value=str(valid))
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_PDF_FIRST",
+                    "name": "document.pdf",
+                    "mimetype": "application/pdf",
+                    "url_private_download": "https://files.slack.test/pdf",
+                },
+                {
+                    "id": "F_VALID_AFTER_PDF",
+                    "name": "valid.png",
+                    "mimetype": "image/png",
+                    "size": valid.stat().st_size,
+                    "url_private_download": "https://files.slack.test/valid",
+                },
+            ],
+            root_ts="7075.0",
+        )
+
+        assert message_event.media_urls == [str(valid)]
+        adapter._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_historical_image_mime_allowlist_is_enforced(self, adapter):
+        adapter._download_slack_file = AsyncMock()
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_SVG",
+                    "name": "vector.svg",
+                    "mimetype": "image/svg+xml",
+                    "size": 128,
+                    "url_private_download": "https://files.slack.test/F_SVG",
+                }
+            ],
+            root_ts="7100.0",
+        )
+
+        adapter._download_slack_file.assert_not_awaited()
+        assert message_event.media_urls == []
+        assert "unsupported image MIME type image/svg+xml" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_declared_mime_must_match_downloaded_image_bytes(
+        self, adapter, tmp_path
+    ):
+        cache_dir = tmp_path / "image_cache"
+        cache_dir.mkdir()
+        mismatched = cache_dir / "declared-png.png"
+        mismatched.write_bytes(b"\xff\xd8\xffsynthetic-jpeg")
+        adapter._download_slack_file = AsyncMock(return_value=str(mismatched))
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_MIME_MISMATCH",
+                    "name": "declared-png.png",
+                    "mimetype": "image/png",
+                    "size": mismatched.stat().st_size,
+                    "url_private_download": "https://files.slack.test/mismatch",
+                }
+            ],
+            root_ts="7110.0",
+        )
+
+        assert message_event.media_urls == []
+        assert "declared image/png but contained image/jpeg" in message_event.text
+        assert not mismatched.exists()
+
+    @pytest.mark.asyncio
+    async def test_historical_declared_size_limit_prevents_download(
+        self, adapter, monkeypatch
+    ):
+        monkeypatch.setattr(
+            _slack_mod, "get_inbound_media_max_bytes", lambda: 10, raising=False
+        )
+        adapter._download_slack_file = AsyncMock()
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_DECLARED_BIG",
+                    "name": "declared-big.png",
+                    "mimetype": "image/png",
+                    "size": 11,
+                    "url_private_download": "https://files.slack.test/F_DECLARED_BIG",
+                }
+            ],
+            root_ts="7200.0",
+        )
+
+        adapter._download_slack_file.assert_not_awaited()
+        assert message_event.media_urls == []
+        assert "declared size" in message_event.text
+        assert "10-byte limit" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_image_downloader_streams_and_stops_at_actual_byte_limit(
+        self, adapter, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "gateway.platforms.base.get_inbound_media_max_bytes", lambda: 10
+        )
+        chunks_read = []
+
+        async def aiter_bytes():
+            for chunk in (b"a" * 6, b"b" * 6, b"c" * 6):
+                chunks_read.append(len(chunk))
+                yield chunk
+
+        response = MagicMock()
+        response.headers = {"content-type": "image/png"}
+        response.raise_for_status = MagicMock()
+        response.aiter_bytes = aiter_bytes
+
+        class StreamContext:
+            async def __aenter__(self):
+                return response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.stream = MagicMock(return_value=StreamContext())
+        client.get = AsyncMock(
+            side_effect=AssertionError("Slack downloads must use streaming")
+        )
+
+        with patch("httpx.AsyncClient", return_value=client):
+            with pytest.raises(ValueError, match="too large"):
+                await adapter._download_slack_file(
+                    "https://files.slack.test/F_STREAM?sig=private", ".png"
+                )
+
+        assert chunks_read == [6, 6]
+        client.get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_historical_actual_size_limit_rejects_underreported_download(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            _slack_mod, "get_inbound_media_max_bytes", lambda: 10
+        )
+        image_path = tmp_path / "actual-big.png"
+        image_path.write_bytes(b"x" * 11)
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_ACTUAL_BIG",
+                    "name": "actual-big.png",
+                    "mimetype": "image/png",
+                    "size": 5,
+                    "url_private_download": "https://files.slack.test/F_ACTUAL_BIG",
+                }
+            ],
+            root_ts="7300.0",
+        )
+
+        adapter._download_slack_file.assert_awaited_once()
+        assert message_event.media_urls == []
+        assert "actual size" in message_event.text
+        assert "10-byte limit" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_historical_total_byte_limit_is_enforced(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            _slack_mod, "get_inbound_media_max_bytes", lambda: 10
+        )
+        first = tmp_path / "total-first.png"
+        second = tmp_path / "total-second.png"
+        first.write_bytes(b"a" * 6)
+        second.write_bytes(b"b" * 6)
+        adapter._download_slack_file = AsyncMock(
+            side_effect=[str(first), str(second)]
+        )
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_TOTAL_1",
+                    "name": "total-first.png",
+                    "mimetype": "image/png",
+                    "size": 6,
+                    "url_private_download": "https://files.slack.test/F_TOTAL_1",
+                },
+                {
+                    "id": "F_TOTAL_2",
+                    "name": "total-second.png",
+                    "mimetype": "image/png",
+                    "size": 6,
+                    "url_private_download": "https://files.slack.test/F_TOTAL_2",
+                },
+            ],
+            root_ts="7400.0",
+        )
+
+        adapter._download_slack_file.assert_awaited_once()
+        assert message_event.media_urls == [str(first)]
+        assert "total-byte limit" in message_event.text
+        assert len(message_event.metadata["slack_attachment_provenance"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_total_byte_budget_spans_historical_and_current_images(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            _slack_mod, "get_inbound_media_max_bytes", lambda: 10
+        )
+        historical = tmp_path / "historical-budget.png"
+        current = tmp_path / "current-budget.png"
+        historical.write_bytes(b"h" * 6)
+        current.write_bytes(b"c" * 6)
+        adapter._download_slack_file = AsyncMock(
+            side_effect=[str(historical), str(current)]
+        )
+        current_file = {
+            "id": "F_BUDGET_CURRENT",
+            "name": "current-budget.png",
+            "mimetype": "image/png",
+            "size": 6,
+            "url_private_download": "https://files.slack.test/F_BUDGET_CURRENT",
+        }
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_BUDGET_HISTORY",
+                    "name": "historical-budget.png",
+                    "mimetype": "image/png",
+                    "size": 6,
+                    "url_private_download": "https://files.slack.test/F_BUDGET_HISTORY",
+                }
+            ],
+            root_ts="7450.0",
+            current_files=[current_file],
+        )
+
+        adapter._download_slack_file.assert_awaited_once()
+        assert message_event.media_urls == [str(historical)]
+        assert "total-byte limit" in message_event.text
+        assert [
+            item["file_id"]
+            for item in message_event.metadata["slack_attachment_provenance"]
+        ] == ["F_BUDGET_HISTORY"]
+
+    @pytest.mark.asyncio
+    async def test_exhausted_budget_rejects_unknown_size_without_downloading(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            _slack_mod, "get_inbound_media_max_bytes", lambda: 10
+        )
+        historical = tmp_path / "full-budget.png"
+        historical.write_bytes(b"h" * 10)
+        adapter._download_slack_file = AsyncMock(return_value=str(historical))
+
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_FULL_BUDGET",
+                    "name": "full-budget.png",
+                    "mimetype": "image/png",
+                    "size": 10,
+                    "url_private_download": "https://files.slack.test/full",
+                }
+            ],
+            root_ts="7475.0",
+            current_files=[
+                {
+                    "id": "F_UNKNOWN_SIZE",
+                    "name": "unknown-size.png",
+                    "mimetype": "image/png",
+                    "size": 0,
+                    "url_private_download": "https://files.slack.test/unknown",
+                }
+            ],
+        )
+
+        adapter._download_slack_file.assert_awaited_once()
+        assert message_event.media_urls == [str(historical)]
+        assert "total-byte limit" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_current_image_uses_same_declared_size_limit(
+        self, adapter, monkeypatch
+    ):
+        monkeypatch.setattr(
+            _slack_mod, "get_inbound_media_max_bytes", lambda: 10
+        )
+        adapter._download_slack_file = AsyncMock()
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        await adapter._handle_slack_message(
+            {
+                "channel": "D1",
+                "channel_type": "im",
+                "team": "T1",
+                "ts": "7500.0",
+                "user": "U_REPLY",
+                "text": "inspect current image",
+                "files": [
+                    {
+                        "id": "F_CURRENT_BIG",
+                        "name": "current-big.png",
+                        "mimetype": "image/png",
+                        "size": 11,
+                        "url_private_download": "https://files.slack.test/F_CURRENT_BIG",
+                    }
+                ],
+            }
+        )
+
+        adapter._download_slack_file.assert_not_awaited()
+        message_event = adapter.handle_message.await_args.args[0]
+        assert message_event.media_urls == []
+        assert "declared size" in message_event.text
+        assert "10-byte limit" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_current_private_file_url_is_removed_from_normalized_event(
+        self, adapter, tmp_path
+    ):
+        image_path = tmp_path / "current-safe.png"
+        image_path.write_bytes(b"safe-current-image")
+        private_url = "https://files.slack.test/F_SAFE?sig=never-persist-this"
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+        adapter._user_name_cache[("T1", "U_REPLY")] = "Reply User"
+        await adapter._handle_slack_message(
+            {
+                "channel": "D1",
+                "channel_type": "im",
+                "team": "T1",
+                "ts": "7600.0",
+                "user": "U_REPLY",
+                "text": "inspect safely",
+                "files": [
+                    {
+                        "id": "F_SAFE",
+                        "name": "current-safe.png",
+                        "mimetype": "image/png",
+                        "size": image_path.stat().st_size,
+                        "url_private": private_url,
+                        "url_private_download": private_url,
+                    }
+                ],
+            }
+        )
+
+        message_event = adapter.handle_message.await_args.args[0]
+        persisted_shape = repr(
+            {
+                "text": message_event.text,
+                "raw_message": message_event.raw_message,
+                "metadata": message_event.metadata,
+            }
+        )
+        assert private_url not in persisted_shape
+        assert "never-persist-this" not in persisted_shape
+        assert message_event.metadata["slack_attachment_provenance"][0][
+            "file_id"
+        ] == "F_SAFE"
+        current_provenance = message_event.metadata[
+            "slack_attachment_provenance"
+        ][0]
+        assert current_provenance["source"] == "current_message"
+        assert current_provenance["sharer_user_id"] == "U_REPLY"
+        assert current_provenance["uploader_id"] == ""
+        assert current_provenance["sha256"] == _slack_mod._sha256_file(
+            str(image_path)
+        )
+        assert "source=current_message" in message_event.text
+        assert "uploader_trust=unknown" in message_event.text
+
+    @pytest.mark.asyncio
+    async def test_root_attachment_provenance_survives_session_reload(
+        self, adapter, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        image_path = tmp_path / "persisted-root.png"
+        image_path.write_bytes(b"persisted-root-image")
+        private_url = "https://files.slack.test/F_PERSIST?sig=never-store"
+        adapter._download_slack_file = AsyncMock(return_value=str(image_path))
+        message_event = await self._deliver_root_files(
+            adapter,
+            [
+                {
+                    "id": "F_PERSIST",
+                    "name": "persisted-root.png",
+                    "mimetype": "image/png",
+                    "size": image_path.stat().st_size,
+                    "url_private_download": private_url,
+                }
+            ],
+            root_ts="7700.0",
+        )
+
+        db_path = tmp_path / "session.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session("slack-thread", source="slack")
+        db.append_message(
+            "slack-thread",
+            role="user",
+            content=message_event.text,
+            platform_message_id=message_event.message_id,
+        )
+        db.close()
+
+        reloaded = SessionDB(db_path=db_path)
+        try:
+            stored = reloaded.get_messages("slack-thread")
+        finally:
+            reloaded.close()
+
+        assert len(stored) == 1
+        assert "source=thread_root" in stored[0]["content"]
+        assert "file_id=F_PERSIST" in stored[0]["content"]
+        assert private_url not in repr(stored)
+        assert "never-store" not in repr(stored)

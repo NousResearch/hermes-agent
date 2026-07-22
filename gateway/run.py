@@ -9614,6 +9614,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
+        # Adapters may need the final multiplex profile before their normalized
+        # MessageEvent reaches the profile handler (for example, to derive a
+        # durable session key while resolving inbound Slack attachments).
+        adapter._bound_profile_name = profile_name
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)

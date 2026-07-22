@@ -751,6 +751,10 @@ class SessionEntry:
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
 
+    # Durable first-turn multimodal delivery marker. Thread-capable adapters
+    # use this to avoid replaying recovered historical media after restart.
+    historical_media_delivered: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -781,6 +785,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "historical_media_delivered": self.historical_media_delivered,
         }
         if self.model_override:
             # Defence-in-depth: strip credentials even if a caller stored an
@@ -857,6 +862,9 @@ class SessionEntry:
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
             model_override=sanitize_model_override(data.get("model_override")),
+            historical_media_delivered=data.get(
+                "historical_media_delivered", False
+            ),
         )
 
 
@@ -2179,6 +2187,35 @@ class SessionStore:
             if entry is None:
                 return None
             return dict(entry.model_override) if entry.model_override else None
+
+    def session_key_for_source(self, source: SessionSource) -> str:
+        """Return this store's profile- and isolation-aware key for *source*."""
+        return self._generate_session_key(source)
+
+    def has_session_key(self, session_key: str) -> bool:
+        """Return whether the routing index currently contains *session_key*."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return session_key in self._entries
+
+    def has_historical_media_delivered(self, session_key: str) -> bool:
+        """Return the durable historical-media delivery marker for a session."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            return bool(entry and entry.historical_media_delivered)
+
+    def mark_historical_media_delivered(self, session_key: str) -> bool:
+        """Persist successful first-turn historical-media delivery."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            if not entry.historical_media_delivered:
+                entry.historical_media_delivered = True
+                self._save()
+            return True
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

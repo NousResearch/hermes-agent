@@ -22412,6 +22412,101 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+def _run_event_loop_health_watchdog(
+    loop: asyncio.AbstractEventLoop,
+    stop_event: threading.Event,
+    *,
+    probe_interval: float = 30.0,
+    probe_timeout: float = 15.0,
+    max_consecutive_failures: int = 3,
+    runner=None,
+) -> None:
+    """Detect a frozen asyncio event loop and force-restart the gateway.
+
+    When the Telegram long-poll socket enters CLOSE-WAIT (remote FIN sent
+    but the local httpx pool is unaware), epoll can still report the socket
+    as readable and no exception is raised — PTB's ``error_callback`` never
+    fires and the event loop gets stuck in ``selectors.select()`` with zero
+    pending callbacks.  All async tasks (heartbeat, cron, housekeeping)
+    silently stop making progress while the process stays alive (issue #69089).
+
+    This watchdog runs in a **background thread** so it is NOT dependent on
+    the event loop scheduling anything.  Each probe cycle it:
+    1. Uses ``loop.call_soon_threadsafe()`` to enqueue a callback that sets
+       a ``threading.Event``.
+    2. Waits up to ``probe_timeout`` seconds for the event to be set.
+    3. If the event is NOT set, the event loop is frozen — increments a
+       failure counter.
+    4. After ``max_consecutive_failures`` consecutive failures, forces a
+       hard restart via ``os._exit(1)`` so the service manager revives
+       the gateway.
+
+    The default cadence (30s probe, 15s timeout, 3 strikes) detects a frozen
+    loop within ~90 seconds without adding significant overhead during normal
+    operation.
+
+    Args:
+        loop: The asyncio event loop to probe.
+        stop_event: Cleared by start_gateway() during normal shutdown
+            to tell the watcher to exit.
+        probe_interval: Seconds between health probes.
+        probe_timeout: Seconds to wait for the loop to respond before
+            declaring the probe failed.
+        max_consecutive_failures: Number of consecutive probe failures
+            before force-restarting the gateway.
+        runner: The GatewayRunner instance (optional, for logging context).
+    """
+    consecutive_failures = 0
+
+    while not stop_event.is_set():
+        try:
+            loop_responded = threading.Event()
+
+            def _mark_responded() -> None:
+                loop_responded.set()
+
+            loop.call_soon_threadsafe(_mark_responded)
+            responded = loop_responded.wait(timeout=probe_timeout)
+
+            if responded:
+                if consecutive_failures > 0:
+                    logger.warning(
+                        "[gateway] Event loop health restored after %d probe failure(s).",
+                        consecutive_failures,
+                    )
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                logger.warning(
+                    "[gateway] Event loop health probe failed (%d/%d) — "
+                    "loop did not respond within %.1fs.",
+                    consecutive_failures,
+                    max_consecutive_failures,
+                    probe_timeout,
+                )
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.critical(
+                        "[gateway] Event loop frozen for >%.0fs across %d consecutive "
+                        "probe failures — force-exiting so service manager restarts "
+                        "the gateway (issue #69089).",
+                        consecutive_failures * probe_interval,
+                        consecutive_failures,
+                    )
+                    try:
+                        from hermes_constants import get_hermes_home
+
+                        from gateway.status import write_planned_stop_marker
+
+                        marker_pid = os.getpid()
+                        write_planned_stop_marker(marker_pid)
+                    except Exception:
+                        pass
+                    os._exit(1)
+        except Exception as _e:
+            logger.debug("Event loop health watchdog tick error: %s", _e)
+        stop_event.wait(probe_interval)
+
+
 def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """Background thread for gateway-only periodic chores (NOT cron).
 
@@ -22951,6 +23046,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     _planned_stop_watcher_thread.start()
 
+    # Event loop health watchdog (background thread) — probes the asyncio
+    # event loop every 30s to catch the "CLOSE-WAIT socket freezes the
+    # entire loop" scenario (issue #69089).  Because it runs in a thread
+    # it is NOT blocked when the event loop is stuck in selectors.select()
+    # with zero pending callbacks.  After 3 consecutive probe failures
+    # (45s total) it force-exits so the service manager (systemd/launchd)
+    # revives the gateway.
+    _event_loop_health_stop = threading.Event()
+    _event_loop_health_thread = threading.Thread(
+        target=_run_event_loop_health_watchdog,
+        args=(loop, _event_loop_health_stop),
+        kwargs={"runner": runner},
+        daemon=True,
+        name="event-loop-health-watchdog",
+    )
+    _event_loop_health_thread.start()
+
     # Claim the PID file BEFORE bringing up any platform adapters.
     # This closes the --replace race window: two concurrent `gateway run
     # --replace` invocations both pass the termination-wait above, but
@@ -23123,6 +23235,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()
     _planned_stop_watcher_thread.join(timeout=2)
+
+    # Stop the event loop health watchdog.
+    _event_loop_health_stop.set()
+    _event_loop_health_thread.join(timeout=2)
 
     # Close MCP server connections
     try:

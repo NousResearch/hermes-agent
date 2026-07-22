@@ -12,6 +12,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { installStdinEofExit } from './lib/stdinEofExit.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -146,6 +147,18 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 }
 
 process.on('beforeExit', () => stopMemoryMonitor())
+
+// Ctrl+D at the terminal-driver level (or the parent closing our pipe) ends
+// stdin. Ink's readable handler catches most of these via `readableEnded`,
+// but if that handler is detached mid-teardown the 'end' event is the last
+// signal left — exit cleanly instead of idling with dead input (#24377).
+installStdinEofExit(process.stdin, {
+  exit: code => process.exit(code),
+  killGateway: () => void gw.kill('stdin-eof'),
+  recordLifecycle: recordParentLifecycle,
+  resetModes: resetTerminalModes,
+  stopMonitor: stopMemoryMonitor
+})
 
 const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
   import('@hermes/ink'),

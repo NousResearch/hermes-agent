@@ -861,6 +861,30 @@ def _has_http_method_substring(text: str) -> bool:
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
 
 
+# Control and line-break characters that must never survive into a formatted log
+# record. An agent/tool/user-supplied value containing a newline (or other line
+# break) would otherwise forge a second physical line that ``hermes logs`` parses
+# as a genuine record with an attacker-chosen level, component, and timestamp.
+# Mirrors ``gateway.platforms.base._LOG_UNSAFE_CHARS``, which already applies this
+# to file-path log sinks.
+_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+# ``hermes logs`` (``hermes_cli.logs._TS_RE``) treats any physical line that
+# starts with a timestamp as the beginning of a new record. The exception
+# traceback appended by the base formatter is legitimately multi-line and its
+# text includes the exception message, which can be attacker-controlled (e.g. a
+# sandboxed tool call failing with a crafted message logged via ``exc_info``).
+# A continuation line that starts with a timestamp is therefore a forged
+# record, not diagnostics; real traceback lines never start with one.
+_TS_LINE_START = re.compile(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")
+
+# ``_LOG_UNSAFE_CHARS`` minus ``\n``: applied to the full formatted output so a
+# traceback keeps its real line structure while a bare ``\r`` (translated to a
+# line break by universal newlines when ``hermes logs`` reads the file) or the
+# other break characters recognized by ``str.splitlines`` cannot smuggle one in.
+_EXC_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f\x85  ]")
+
+
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
@@ -868,5 +892,32 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
-        original = super().format(record)
-        return redact_sensitive_text(original)
+        # Neutralize control/line-break characters in the interpolated message so
+        # an agent/tool/user-supplied value cannot forge an extra log record. The
+        # exception traceback is appended after the message by the base formatter
+        # and is legitimately multi-line, so it is left intact by sanitizing the
+        # message text only. The record is restored afterwards because the same
+        # record is handed to every handler.
+        saved_msg, saved_args = record.msg, record.args
+        try:
+            record.msg = _LOG_UNSAFE_CHARS.sub(" ", record.getMessage())
+            record.args = None
+            original = super().format(record)
+        finally:
+            record.msg, record.args = saved_msg, saved_args
+        return self._defang_continuation_lines(redact_sensitive_text(original))
+
+    @staticmethod
+    def _defang_continuation_lines(formatted: str) -> str:
+        # Indent any continuation line (traceback/stack text) that starts with a
+        # timestamp so ``hermes logs`` cannot parse it as a new record. The
+        # formatted output string is transformed rather than ``record.exc_text``
+        # because the cached exc_text is shared across every handler.
+        first, sep, rest = formatted.partition("\n")
+        if not sep:
+            return formatted
+        lines = [
+            " " + line if _TS_LINE_START.match(line) else line
+            for line in _EXC_UNSAFE_CHARS.sub(" ", rest).split("\n")
+        ]
+        return first + sep + "\n".join(lines)

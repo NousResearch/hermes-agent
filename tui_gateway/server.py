@@ -6301,7 +6301,20 @@ def _(rid, params: dict) -> dict:
         # A delegated child mid-run emits no session events of its own — report
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
-        messages = _history_to_messages(history)
+        # User-visible messages use the VERBATIM display projection (child-only,
+        # no ancestors — matching the repaired read above), so model-invisible
+        # rows persisted by #65919 (verification candidates collapsed by
+        # repair_message_sequence) survive in the watch window just as they do
+        # on the eager resume + REST paths. The repaired ``history`` above still
+        # feeds live replay. Fall back to it if the display read fails.
+        try:
+            display_history = db.get_messages_as_conversation(
+                target, repair_alternation=False
+            )
+        except Exception:
+            logger.debug("child-watch display projection read failed", exc_info=True)
+            display_history = history
+        messages = _history_to_messages(display_history)
         return _ok(
             rid,
             {
@@ -6668,6 +6681,77 @@ def _fallback_session_info(session: dict) -> dict:
     }
 
 
+def _reconcile_display_with_live(
+    db_display: list[dict], in_memory: list[dict]
+) -> list[dict]:
+    """Merge the persisted DISPLAY lineage with the in-memory live history.
+
+    Two projections of the same session that each hold something the other
+    lacks:
+
+    - ``db_display`` — the verbatim persisted lineage. It includes
+      *model-invisible* rows (verification candidates, finish_reason
+      ``verification_required`` / ``verify_hook_continue``) that the in-memory
+      model history collapses out via ``repair_message_sequence`` (#65919), but
+      it can lag the newest turn by a flush.
+    - ``in_memory`` — ``display_history_prefix + session["history"]``. It is the
+      freshest recency authority (a just-appended turn may not be flushed yet)
+      but it is the collapsed *model* projection, so it is missing candidates.
+
+    The merge keeps the DB display (candidate-inclusive) as the base and appends
+    only the in-memory tail that the DB does not yet cover, anchored on the last
+    DB row's ``(role, text)``. This satisfies BOTH invariants at once: the
+    substantive verification answer survives a warm/live switch (matching the
+    eager resume + REST payloads), and a not-yet-flushed live turn is not
+    dropped.
+    """
+    if not db_display:
+        return in_memory
+    if not in_memory:
+        return db_display
+
+    def _key(msg: dict) -> tuple:
+        return (msg.get("role"), _coerce_message_text(msg.get("content")))
+
+    anchor = _key(db_display[-1])
+    last_shared = -1
+    for idx, msg in enumerate(in_memory):
+        if isinstance(msg, dict) and _key(msg) == anchor:
+            last_shared = idx
+    if last_shared == -1:
+        # The DB tail isn't present in memory (DB is ahead, or the histories
+        # diverged) — trust the persisted display rather than risk duplicating.
+        return db_display
+    return list(db_display) + list(in_memory[last_shared + 1 :])
+
+
+def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> list[dict]:
+    """Return the user-visible DISPLAY projection for a live/warm session.
+
+    Serving the raw in-memory *model* history for the user-visible payload
+    dropped model-invisible rows (verification candidates persisted by #65919)
+    whenever a warm/live session was reused, while the eager ``session.resume``
+    path (which reads the verbatim display lineage) still showed them — the two
+    payloads disagreed about the same session, which is the cross-session
+    "substantive answer vanishes on switch" class of bug.
+
+    This reconciles the persisted display lineage (candidate-inclusive, via
+    ``get_messages_as_conversation(..., include_ancestors=True)`` — the same
+    read the eager resume and REST paths use) with the fresh in-memory tail, so
+    all surfaces agree while a not-yet-flushed turn is still shown. Falls back to
+    the in-memory history when the DB/session_key is unavailable or the DB read
+    fails.
+    """
+    key = session.get("session_key")
+    if db is not None and key:
+        try:
+            display = db.get_messages_as_conversation(key, include_ancestors=True)
+            return _reconcile_display_with_live(display, in_memory_fallback)
+        except Exception:
+            logger.debug("live display projection read failed", exc_info=True)
+    return in_memory_fallback
+
+
 def _live_session_payload(
     sid: str,
     session: dict,
@@ -6683,12 +6767,16 @@ def _live_session_payload(
             session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
-        history = list(session.get("display_history_prefix") or []) + list(
+        in_memory_history = list(session.get("display_history_prefix") or []) + list(
             session.get("history") or []
         )
         inflight = _inflight_snapshot(session)
         queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
+    # Prefer the persisted display lineage (candidate-inclusive) so this payload
+    # matches the eager session.resume + REST transcript; the DB has its own
+    # lock, so read it outside the session history lock.
+    history = _live_visible_history(session, _get_db(), in_memory_history)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),

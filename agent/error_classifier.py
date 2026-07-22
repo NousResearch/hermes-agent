@@ -1054,6 +1054,22 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # Hard quota / usage-limit walls (e.g. Copilot "quota exceeded") arrive
+        # as HTTP 429 without a transient "try again / resets at" signal.
+        # Treat them like billing so we fail over instead of sleeping on
+        # Retry-After for up to 600s. Transient quota messages keep rate_limit.
+        has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        if has_usage_limit:
+            has_transient_signal = any(
+                p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+            )
+            if not has_transient_signal:
+                return result_fn(
+                    FailoverReason.billing,
+                    retryable=False,
+                    should_rotate_credential=True,
+                    should_fallback=True,
+                )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

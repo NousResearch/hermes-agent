@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from utils import atomic_replace, fast_safe_load
 
 
@@ -17,6 +17,43 @@ from utils import atomic_replace, fast_safe_load
 # alter arbitrary user env vars, but credentials are known to require
 # pure ASCII (they become HTTP header values).
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+
+# Unresolved secret-manager references must never linger in ``os.environ``.
+# ``load_dotenv(override=True)`` would otherwise re-poison a previously
+# resolved vault value (``op run`` / ``secrets.onepassword``) on every
+# subsequent ``load_hermes_dotenv()`` call — OP apply is idempotent per
+# HERMES_HOME, so the second pass leaves a literal ``op://…`` that
+# ``has_usable_secret`` rejects (Cursor /model → missing_api_key).
+_UNRESOLVED_SECRET_PREFIXES = ("op://", "bw://", "${")
+
+
+def _is_unresolved_secret_ref(value: str | None) -> bool:
+    cleaned = (value or "").strip()
+    return cleaned.startswith(_UNRESOLVED_SECRET_PREFIXES)
+
+
+def _preserve_resolved_secrets_after_dotenv(path: Path, *, before: dict[str, str | None]) -> None:
+    """Undo dotenv injection of unresolved secret refs for keys in ``path``.
+
+    - If the pre-load value was already a real secret, restore it.
+    - Otherwise drop the key so ``secrets.onepassword`` / ``op run`` can
+      fill it later without ``has_usable_secret`` seeing a literal ref.
+    """
+    try:
+        parsed = dotenv_values(path) or {}
+    except Exception:
+        return
+    for key in parsed:
+        if not key:
+            continue
+        current = os.environ.get(key)
+        if not _is_unresolved_secret_ref(current):
+            continue
+        prev = before.get(key)
+        if prev is not None and not _is_unresolved_secret_ref(prev):
+            os.environ[key] = prev
+        else:
+            os.environ.pop(key, None)
 
 # Names we've already warned about during this process, so repeated
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
@@ -160,10 +197,20 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    # Snapshot only keys present in this file so we can restore resolved
+    # secrets if dotenv would overwrite them with ``op://`` / ``bw://`` refs.
+    before: dict[str, str | None] = {}
+    try:
+        for key in (dotenv_values(path) or {}):
+            if key:
+                before[key] = os.environ.get(key)
+    except Exception:
+        before = {}
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    _preserve_resolved_secrets_after_dotenv(path, before=before)
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

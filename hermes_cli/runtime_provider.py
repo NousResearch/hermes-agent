@@ -1569,6 +1569,42 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # Cursor Agent SDK: resolve BEFORE resolve_provider(). Overlay/picker can
+    # know "cursor" while PROVIDER_REGISTRY misses it if plugin auto-extend
+    # failed at import — that produced "Could not resolve credentials …
+    # Unknown provider 'cursor'" on /model despite a working adapter.
+    if requested_provider in {"cursor", "cursor-agent", "cursor-sdk"}:
+        # NOTE: AuthError + has_usable_secret are imported at module scope
+        # (lines 22-39). A local re-import here rebinds has_usable_secret as a
+        # function-local for the ENTIRE resolve_runtime_provider body, so the
+        # openai/api-key path at ~line 2083 hit UnboundLocalError (500:
+        # "cannot access local variable 'has_usable_secret'") whenever this
+        # cursor branch was not taken. Rely on the module-level imports.
+        api_key = (_getenv("CURSOR_API_KEY", "") or "").strip()
+        if not has_usable_secret(api_key):
+            try:
+                from hermes_cli.config import get_env_value_prefer_dotenv
+
+                api_key = (get_env_value_prefer_dotenv("CURSOR_API_KEY") or "").strip()
+            except Exception:
+                api_key = ""
+        if not has_usable_secret(api_key):
+            raise AuthError(
+                "No usable CURSOR_API_KEY found. Set CURSOR_API_KEY to a Cursor "
+                "Dashboard user API key (or resolve op:// via op run / "
+                "secrets.onepassword).",
+                provider="cursor",
+                code="missing_api_key",
+            )
+        return {
+            "provider": "cursor",
+            "api_mode": "chat_completions",
+            "base_url": "cursor://agent",
+            "api_key": api_key,
+            "source": "env:CURSOR_API_KEY",
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).

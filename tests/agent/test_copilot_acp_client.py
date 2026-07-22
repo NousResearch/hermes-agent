@@ -63,14 +63,17 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
                 messages=[{"role": "user", "content": "hello"}],
                 stream=True,
             )
-
-        chunks = list(stream)
-        self.assertEqual(len(chunks), 2)
-        self.assertEqual(chunks[0].choices[0].delta.content, "Hello from ACP")
-        self.assertIsNone(chunks[0].choices[0].delta.tool_calls)
-        self.assertEqual(chunks[0].choices[0].finish_reason, "stop")
-        self.assertEqual(chunks[1].choices, [])
-        self.assertEqual(chunks[1].usage.total_tokens, 0)
+            # Consume inside the patch — stream runs a worker thread.
+            chunks = list(stream)
+        self.assertGreaterEqual(len(chunks), 2)
+        content_chunks = [
+            c.choices[0].delta.content
+            for c in chunks
+            if c.choices and getattr(c.choices[0].delta, "content", None)
+        ]
+        self.assertEqual("".join(content_chunks), "Hello from ACP")
+        self.assertEqual(chunks[-1].choices, [])
+        self.assertGreater(chunks[-1].usage.total_tokens, 0)
 
     def test_stream_true_preserves_tool_call_deltas(self) -> None:
         tool_response = (
@@ -86,11 +89,12 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
                 messages=[{"role": "user", "content": "read README.md"}],
                 stream=True,
             )
-
-        chunks = list(stream)
-        delta = chunks[0].choices[0].delta
-        self.assertIsNone(delta.content)
-        self.assertEqual(chunks[0].choices[0].finish_reason, "tool_calls")
+            chunks = list(stream)
+        finish_chunks = [
+            c for c in chunks if c.choices and c.choices[0].finish_reason == "tool_calls"
+        ]
+        self.assertTrue(finish_chunks)
+        delta = finish_chunks[0].choices[0].delta
         self.assertEqual(len(delta.tool_calls), 1)
         tool_delta = delta.tool_calls[0]
         self.assertEqual(tool_delta.index, 0)
@@ -100,12 +104,17 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             json.loads(tool_delta.function.arguments),
             {"path": "README.md"},
         )
-        self.assertEqual(chunks[1].choices, [])
+        self.assertEqual(chunks[-1].choices, [])
 
     def test_timeout_object_is_coerced_for_streaming_requests(self) -> None:
         captured: dict[str, float] = {}
 
-        def fake_run_prompt(prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        def fake_run_prompt(
+            prompt_text: str,
+            *,
+            timeout_seconds: float,
+            **_kwargs,
+        ) -> tuple[str, str]:
             captured["timeout"] = timeout_seconds
             return "ok", ""
 
@@ -141,7 +150,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertTrue(payload)
         return json.loads(payload)
 
-    def test_request_permission_is_not_auto_allowed(self) -> None:
+    def test_request_permission_without_path_is_denied(self) -> None:
         response = self._dispatch(
             {
                 "jsonrpc": "2.0",
@@ -154,6 +163,69 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
         outcome = (((response.get("result") or {}).get("outcome") or {}).get("outcome"))
         self.assertEqual(outcome, "cancelled")
+
+    def test_request_permission_allows_cwd_safe_fs_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "notes.txt"
+            target.write_text("ok")
+            with patch.dict(os.environ, {"HERMES_COPILOT_ACP_PERMISSION_MODE": "cwd_safe"}):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 11,
+                        "method": "session/request_permission",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=tmpdir,
+                )
+        outcome = ((response.get("result") or {}).get("outcome") or {})
+        self.assertEqual(outcome.get("outcome"), "selected")
+        self.assertEqual(outcome.get("option_id"), "allow_once")
+
+    def test_request_permission_denies_exec_even_in_cwd_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"HERMES_COPILOT_ACP_PERMISSION_MODE": "cwd_safe"}):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 12,
+                        "method": "session/request_permission",
+                        "params": {"toolCall": {"title": "run terminal", "kind": "execute"}},
+                    },
+                    cwd=tmpdir,
+                )
+        outcome = (((response.get("result") or {}).get("outcome") or {}).get("outcome"))
+        self.assertEqual(outcome, "cancelled")
+
+    def test_request_permission_deny_mode_blocks_cwd_fs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "notes.txt"
+            target.write_text("ok")
+            with patch.dict(os.environ, {"HERMES_COPILOT_ACP_PERMISSION_MODE": "deny"}):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 13,
+                        "method": "session/request_permission",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=tmpdir,
+                )
+        outcome = (((response.get("result") or {}).get("outcome") or {}).get("outcome"))
+        self.assertEqual(outcome, "cancelled")
+
+    def test_nested_tool_call_json_is_extracted(self) -> None:
+        from agent.copilot_acp_client import _extract_tool_calls_from_text
+
+        nested = (
+            '<tool_call>{"id":"c1","type":"function","function":'
+            '{"name":"write_file","arguments":"{\\"path\\":\\"a.json\\",\\"content\\":\\"{\\\\\\"k\\\\\\":1}\\"}"}}'
+            "</tool_call>"
+        )
+        calls, cleaned = _extract_tool_calls_from_text(nested)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].function.name, "write_file")
+        self.assertEqual(cleaned, "")
 
     def test_read_text_file_blocks_internal_hermes_hub_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

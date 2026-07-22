@@ -1,0 +1,5 @@
+name: cursor-provider
+kind: model-provider
+version: 1.0.0
+description: Cursor Agent SDK (local; model auto)
+author: Nous Research

@@ -94,6 +94,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "cursor": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("CURSOR_API_KEY",),
+        base_url_override="cursor://agent",
+    ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
@@ -296,6 +302,10 @@ ALIASES: Dict[str, str] = {
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
 
+    # cursor agent sdk
+    "cursor-agent": "cursor",
+    "cursor-sdk": "cursor",
+
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
     "zen": "opencode",
@@ -382,6 +392,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "cursor": "Cursor Agent",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
@@ -763,6 +774,27 @@ def resolve_provider_full(
     if user_providers:
         user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
+            # Catalog-only entries (models list, no endpoint) must not shadow
+            # Hermes built-ins that carry auth/base_url (e.g. providers.cursor).
+            if not str(user_pdef.base_url or "").strip():
+                builtin = get_provider(raw) or (
+                    get_provider(canonical) if canonical != raw else None
+                )
+                if builtin is not None:
+                    if user_pdef.name and user_pdef.name != raw:
+                        return ProviderDef(
+                            id=builtin.id,
+                            name=user_pdef.name,
+                            transport=builtin.transport,
+                            api_key_env_vars=builtin.api_key_env_vars,
+                            base_url=builtin.base_url,
+                            base_url_env_var=builtin.base_url_env_var,
+                            is_aggregator=builtin.is_aggregator,
+                            auth_type=builtin.auth_type,
+                            doc=builtin.doc,
+                            source=builtin.source,
+                        )
+                    return builtin
             return user_pdef
 
     # 0.5 Exact Hermes provider IDs must win over LOSSY alias collapsing.

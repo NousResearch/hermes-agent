@@ -426,6 +426,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OLLAMA_API_KEY",),
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    # Cursor Agent SDK — hardcoded so /model + resolve_runtime_provider work even
+    # when plugin discovery fails at auth import time. Overlay + plugin still
+    # supply picker metadata; runtime uses CURSOR_API_KEY + cursor://agent.
+    "cursor": ProviderConfig(
+        id="cursor",
+        name="Cursor Agent",
+        auth_type="api_key",
+        inference_base_url="cursor://agent",
+        api_key_env_vars=("CURSOR_API_KEY",),
+    ),
     "bedrock": ProviderConfig(
         id="bedrock",
         name="AWS Bedrock",
@@ -477,6 +487,13 @@ try:
                 PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
 except Exception:
     pass
+
+# Hardcoded cursor must still expose plugin aliases even when auto-extend
+# skips the name because it is already in PROVIDER_REGISTRY.
+_cursor_cfg = PROVIDER_REGISTRY.get("cursor")
+if _cursor_cfg is not None:
+    for _cursor_alias in ("cursor-agent", "cursor-sdk"):
+        PROVIDER_REGISTRY.setdefault(_cursor_alias, _cursor_cfg)
 
 
 # =============================================================================
@@ -561,6 +578,9 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     if len(cleaned) < min_length:
         return False
     if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
+        return False
+    # Unresolved secret-manager references are not usable credentials.
+    if cleaned.startswith(("op://", "bw://", "${")):
         return False
     return True
 
@@ -1786,6 +1806,7 @@ def resolve_provider(
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
+        "cursor-agent": "cursor", "cursor-sdk": "cursor",
     }
     # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
     # This keeps providers/ as the single source for new aliases while the

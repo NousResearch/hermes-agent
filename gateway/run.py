@@ -39,6 +39,9 @@ import signal
 import tempfile
 import threading
 import time
+from hermes_sqlite_backend import select_sqlite_backend
+
+select_sqlite_backend()
 import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context

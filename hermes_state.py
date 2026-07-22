@@ -20,16 +20,27 @@ import logging
 import os
 import random
 import re
-import sqlite3
 import sys
 import threading
 import time
 from pathlib import Path
 
-from agent.memory_manager import sanitize_context
-from agent.message_sanitization import _sanitize_surrogates
-from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from hermes_sqlite_backend import select_sqlite_backend
+
+# Modern-SQLite opt-in. When the user installs `hermes-agent[modern-sqlite]`
+# (or pip-installs `pysqlite3-binary` directly), route this module's sqlite3
+# import through pysqlite3 before stdlib sqlite3 is bound in-process. The
+# shared helper is also imported early by gateway.run so the long-lived gateway
+# path sees the same backend selection before its own top-level `import
+# sqlite3`.
+select_sqlite_backend()
+
+import sqlite3  # noqa: E402: must follow the backend-selection hook above
+
+from agent.memory_manager import sanitize_context  # noqa: E402
+from agent.message_sanitization import _sanitize_surrogates  # noqa: E402
+from hermes_constants import get_hermes_home  # noqa: E402
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +159,108 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         )
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
+
+
+# ── SQLite capability check (one-shot, module-level) ─────────────────────────
+#
+# Surface a single actionable WARNING when the runtime SQLite cannot support
+# the trigram FTS5 tokenizer that powers substring + CJK session search.
+# Without this check, operators on RHEL 8 / Rocky 8 / Alma 8 / Amazon Linux 2
+# silently lose substring `session_search` and have no log trail explaining
+# why. See issue #41030 and PR #35931 (companion error-handling fix).
+#
+# Logged once per process. Idempotent across re-imports. Tests reset state by
+# calling `_reset_sqlite_capability_warning_for_tests()`.
+
+_TRIGRAM_MIN_VERSION: Tuple[int, int, int] = (3, 34, 0)
+_capability_check_done = False
+
+
+def _reset_sqlite_capability_warning_for_tests() -> None:
+    """Test-only hook to re-arm the one-shot capability warning."""
+    global _capability_check_done
+    _capability_check_done = False
+
+
+def _probe_trigram_tokenizer() -> Optional[str]:
+    """Return None when trigram FTS5 is available, else the error string.
+
+    Probes by trying to create a temporary virtual table. Cheap (in-memory,
+    immediate teardown when the connection closes).
+    """
+    try:
+        probe = sqlite3.connect(":memory:")
+    except sqlite3.Error as exc:  # pragma: no cover (sqlite3.connect rarely fails)
+        return f"sqlite3.connect failed: {exc}"
+    try:
+        probe.execute(
+            "CREATE VIRTUAL TABLE _hermes_trigram_probe "
+            "USING fts5(x, tokenize='trigram')"
+        )
+    except sqlite3.OperationalError as exc:
+        return str(exc)
+    finally:
+        probe.close()
+    return None
+
+
+def _check_sqlite_capabilities() -> None:
+    """Emit one actionable WARNING per process if trigram FTS5 is unavailable.
+
+    Two separate signals:
+      1. ``sqlite_version_info`` below 3.34. No trigram support is possible.
+         Recommend the ``modern-sqlite`` extra.
+      2. Version is new enough but the build omits the tokenizer (rare:
+         custom builds with ``-DSQLITE_OMIT_*`` flags). Report the runtime
+         probe error so the operator can investigate.
+
+    Safe to call from anywhere; the first call wins, subsequent calls no-op.
+    Never raises. Capability reporting must not break SessionDB init.
+    """
+    global _capability_check_done
+    if _capability_check_done:
+        return
+    _capability_check_done = True
+
+    try:
+        version = sqlite3.sqlite_version
+        version_info = sqlite3.sqlite_version_info
+    except AttributeError:  # pragma: no cover (stdlib always exposes these)
+        return
+
+    if version_info < _TRIGRAM_MIN_VERSION:
+        logger.warning(
+            "SQLite %s lacks the FTS5 trigram tokenizer (requires >= %d.%d.%d). "
+            "Substring and CJK session search will fall back to LIKE-based scans. "
+            "To enable trigram without touching the system library, install the "
+            "modern-sqlite extra into this venv: "
+            "`%s -m pip install 'hermes-agent[modern-sqlite]'` "
+            "(ships pysqlite3-binary with a static modern SQLite).",
+            version,
+            *_TRIGRAM_MIN_VERSION,
+            sys.executable,
+        )
+        return
+
+    probe_error: Optional[str]
+    try:
+        probe_error = _probe_trigram_tokenizer()
+    except Exception as exc:  # noqa: BLE001: defensive: must never break init
+        probe_error = f"unexpected probe failure: {type(exc).__name__}: {exc}"
+    if probe_error is not None:
+        logger.warning(
+            "SQLite %s reports a new-enough version but the trigram FTS5 "
+            "tokenizer probe failed: %s. Substring and CJK session search "
+            "will fall back to LIKE-based scans. This usually means the "
+            "library was built with SQLITE_OMIT_* flags excluding trigram.",
+            version,
+            probe_error,
+        )
+
+
+# Run at import so the warning lands in startup logs, not the first SessionDB
+# construction (which can happen lazily inside request handlers).
+_check_sqlite_capabilities()
 
 T = TypeVar("T")
 

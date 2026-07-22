@@ -1663,6 +1663,9 @@ mistral = [
 modal = [
     { name = "modal" },
 ]
+modern-sqlite = [
+    { name = "pysqlite3-binary" },
+]
 nemo-relay = [
     { name = "nemo-relay" },
 ]
@@ -1817,6 +1820,7 @@ requires-dist = [
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
+    { name = "pysqlite3-binary", marker = "extra == 'modern-sqlite'", specifier = ">=0.5.0,<0.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.2" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==1.3.0" },
     { name = "python-dotenv", specifier = "==1.2.2" },
@@ -1855,7 +1859,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["modern-sqlite", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -3410,6 +3414,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/93/cd/112f092ec27cca83e0516de0a3368dbd9128c187fb6b52aaaa7cde39c96d/pypng-0.20220715.0.tar.gz", hash = "sha256:739c433ba96f078315de54c0db975aee537cbc3e1d0ae4ed9aab0ca1e427e2c1", size = 128992, upload-time = "2022-07-15T14:11:05.301Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3e/b9/3766cc361d93edb2ce81e2e1f87dd98f314d7d513877a342d31b30741680/pypng-0.20220715.0-py3-none-any.whl", hash = "sha256:4a43e969b8f5aaafb2a415536c1a8ec7e341cd6a3f957fd5b5f32a4cfeed902c", size = 58057, upload-time = "2022-07-15T14:11:03.713Z" },
+]
+
+[[package]]
+name = "pysqlite3-binary"
+version = "0.5.4.post2"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6b/40/abd5dc39b7c4a9961f831efb5b8c2f68d6c39499f3b23ea014a592fe8a59/pysqlite3_binary-0.5.4.post2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:3060a56666ede382c9af3e4b086e30c9ffb65133b3fa606c2d1b9fbff512f241", size = 4936341, upload-time = "2025-12-03T18:36:23.328Z" },
+    { url = "https://files.pythonhosted.org/packages/35/e8/292e14aa4ed1ef3d4a70703c0103823fcd4b7d9701d9462e52ef88c2cc10/pysqlite3_binary-0.5.4.post2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:b6162cd966fa563fe85b5372c3e61d11dd7903bd0f09cc185cb0a4c9125f4a0f", size = 4951088, upload-time = "2025-12-03T18:36:39.786Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/89/338819970e306cae579aa570091a35d01df01d95fe159f2e5002b58b7481/pysqlite3_binary-0.5.4.post2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:930c7597a0863ef3da721e538756c2768cee14cb9b8d2c037263d061b24f66a5", size = 4943344, upload-time = "2025-12-03T18:36:54.992Z" },
 ]
 
 [[package]]

@@ -2238,6 +2238,28 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # 0c.5. custom_providers underlying_provider override.
+    # When a custom_providers entry declares ``underlying_provider``
+    # (e.g. ``openai-codex``), the custom endpoint is a reverse proxy
+    # for that provider.  The proxy's /models endpoint reports the
+    # model-native context window, not the proxy provider's enforced
+    # cap — so skip the custom-endpoint /models probe at step 2 and
+    # route directly through the underlying provider's resolution path
+    # at step 5 instead.
+    # See issue #67919.
+    _underlying_provider: str | None = None
+    if custom_providers and base_url and provider in ("", "custom"):
+        try:
+            from hermes_cli.config import get_custom_provider_underlying_provider
+            underlying = get_custom_provider_underlying_provider(
+                base_url=base_url,
+                custom_providers=custom_providers,
+            )
+            if underlying:
+                _underlying_provider = underlying
+        except Exception:
+            pass  # fall through to normal probing
+
     # Malformed user-provided URLs (for example an unmatched IPv6 bracket)
     # make urllib.parse raise. Context resolution should treat those as an
     # unknown endpoint rather than crashing before the inference layer can
@@ -2415,7 +2437,10 @@ def get_model_context_length(
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    # Also skip when `_underlying_provider` is set (step 0c.5): the custom
+    # endpoint is a proxy for a known provider and its /models response
+    # would report the model-native window, not the proxy's enforced cap.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and not _underlying_provider:
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length
@@ -2478,7 +2503,10 @@ def get_model_context_length(
     # since the same model can have different context limits per provider
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
     # If provider is generic (openrouter/custom/empty), try to infer from URL.
-    effective_provider = provider
+    # When `_underlying_provider` is set (step 0c.5), use it as the
+    # effective provider — the custom endpoint is a proxy for a known
+    # provider and should use that provider's resolution path instead.
+    effective_provider = _underlying_provider or provider
     if not effective_provider or effective_provider in {"openrouter", "custom"}:
         if base_url:
             inferred = _infer_provider_from_url(base_url)

@@ -743,20 +743,28 @@ class GatewaySlashCommandsMixin:
             return False
         if origin.chat_id != current.chat_id:
             return False
+        chat_type = (getattr(current, "chat_type", "") or "").lower()
+        caller_is_dm = chat_type in {"dm", "direct", "private", ""}
         # thread_id is part of the session key for every chat type when present
         # (build_session_key appends it unconditionally), so a session in one
-        # thread is a DIFFERENT session from another thread of the same parent
-        # chat. is_shared_multi_user_session only decides participant sharing
-        # WITHIN a thread, never across threads — require thread equality before
-        # any sharing logic so a live origin in thread A cannot match a caller in
-        # thread B of the same parent chat.
-        if str(getattr(current, "thread_id", "") or "") != str(
-            getattr(origin, "thread_id", "") or ""
-        ):
-            return False
-        chat_type = (getattr(current, "chat_type", "") or "").lower()
+        # thread is normally a DIFFERENT session from another thread of the same
+        # parent chat. is_shared_multi_user_session only decides participant
+        # sharing WITHIN a thread, never across threads — require thread
+        # equality before any sharing logic so a live origin in thread A cannot
+        # match a caller in thread B of the same parent chat.
+        # DM sessions are scoped by chat_id (or participant_id) alone —
+        # thread_id is NOT required for same-DM session lookup, and requiring it
+        # here would block listing/resuming sessions in the same DM when
+        # thread_id varies across messages (e.g. Feishu DMs where each message
+        # may carry a different thread_id). Skip thread comparison for DMs so
+        # a caller can see and resume all their own DM sessions.
+        if not caller_is_dm:
+            if str(getattr(current, "thread_id", "") or "") != str(
+                getattr(origin, "thread_id", "") or ""
+            ):
+                return False
         # DM-like chats are always per-user.
-        if chat_type in {"dm", "direct", "private", ""}:
+        if caller_is_dm:
             # chat_id was already required equal above and, when present, IS the
             # DM session key — so an equal non-empty chat_id is sufficient.
             # build_session_key only falls back to the participant id
@@ -892,7 +900,7 @@ class GatewaySlashCommandsMixin:
             origin_ok = (
                 bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_thread == caller_thread
+                and (caller_is_dm or not row_thread or not caller_thread or row_thread == caller_thread)
             )
             if not origin_ok:
                 return False

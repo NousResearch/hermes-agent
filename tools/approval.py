@@ -812,16 +812,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = list(queue)
             queue.clear()
         elif approval_id is not None:
-            # Match by id first; fall back to FIFO when the id is unknown
-            # so the resolver is robust to clients posting stale ids.
+            # Match by id; if the explicit id doesn't match any pending
+            # entry, fail closed (return 0) rather than silently resolving
+            # the head of the queue. A stale/wrong id resolving an unrelated
+            # pending approval is a real safety hazard — see #64001.
             idx = next(
                 (i for i, entry in enumerate(queue) if entry.approval_id == approval_id),
                 None,
             )
             if idx is None:
-                targets = [queue.pop(0)]
-            else:
-                targets = [queue.pop(idx)]
+                return 0  # explicit unknown id — do not resolve anything
+            targets = [queue.pop(idx)]
         else:
             targets = [queue.pop(0)]
         if not queue:

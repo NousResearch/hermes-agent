@@ -182,8 +182,12 @@ class TestBlockingGatewayApproval:
         # The matching entry is removed; siblings stay in queue order.
         assert [e.approval_id for e in _gateway_queues[session_key]] == ["card-A", "card-C"]
 
-    def test_resolve_by_unknown_approval_id_falls_back_to_fifo(self):
-        """An unknown approval_id preserves current FIFO behavior."""
+    def test_resolve_by_unknown_approval_id_fails_closed(self):
+        """An explicit-but-unknown approval_id does NOT silently resolve the
+        head of the queue — that would be a safety hazard (resolving an
+        unrelated pending approval). Returns 0 to leave the queue intact
+        so the caller can re-poll / surface an error.
+        """
         from tools.approval import (
             resolve_gateway_approval,
             _ApprovalEntry, _gateway_queues,
@@ -195,9 +199,11 @@ class TestBlockingGatewayApproval:
 
         count = resolve_gateway_approval(session_key, "once", approval_id="card-DOES-NOT-EXIST")
 
-        assert count == 1
-        assert e1.event.is_set() is True
-        assert e1.result == "once"
+        # Fail closed: unknown id returns 0, queue is unchanged
+        assert count == 0
+        assert _gateway_queues[session_key] == [e1, e2]  # both still pending
+        assert e1.event.is_set() is False
+        assert e1.result is None
         assert e2.event.is_set() is False
 
     def test_resolve_all_overrides_approval_id(self):

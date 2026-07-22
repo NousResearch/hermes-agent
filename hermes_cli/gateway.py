@@ -4347,7 +4347,9 @@ def launchd_stop():
 
 
 def _wait_for_gateway_exit(
-    timeout: float = 10.0, force_after: float | None = 5.0
+    timeout: float = 10.0,
+    force_after: float | None = 5.0,
+    expected_pid: int | None = None,
 ) -> bool:
     """Wait for the gateway process (by saved PID) to exit.
 
@@ -4358,6 +4360,8 @@ def _wait_for_gateway_exit(
     Args:
         timeout: Total seconds to wait before giving up.
         force_after: Seconds of graceful waiting before escalating to force-kill.
+        expected_pid: When set, only wait for this process. A different PID in
+            the pidfile means the old process exited and a replacement started.
     """
     import time
     from gateway.status import get_running_pid
@@ -4370,7 +4374,7 @@ def _wait_for_gateway_exit(
 
     while time.monotonic() < deadline:
         pid = get_running_pid()
-        if pid is None:
+        if pid is None or (expected_pid is not None and pid != expected_pid):
             return True  # Process exited cleanly.
 
         if (
@@ -4390,7 +4394,9 @@ def _wait_for_gateway_exit(
 
     # Timed out even after force-kill.
     remaining_pid = get_running_pid()
-    if remaining_pid is not None:
+    if remaining_pid is not None and (
+        expected_pid is None or remaining_pid == expected_pid
+    ):
         print(
             f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail"
         )
@@ -4426,11 +4432,21 @@ def launchd_restart():
             except (ProcessLookupError, PermissionError, OSError):
                 pid = None
             if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(
-                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
-                    )
+                exited = _wait_for_gateway_exit(
+                    timeout=drain_timeout,
+                    force_after=None,
+                    expected_pid=pid,
+                )
+                if exited:
+                    # KeepAlive is unconditional, so the old process exiting
+                    # already triggers a relaunch. A kickstart -k here can race
+                    # with that relaunch and kill the replacement process.
+                    print("✓ Service restart triggered (launchd KeepAlive)")
+                    _clear_launchd_unsupported_marker()
+                    return
+                print(
+                    f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
+                )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()

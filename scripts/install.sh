@@ -1216,12 +1216,57 @@ clone_repo() {
             # into a multi-minute download that can stall the installer.
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
+
+            # A managed checkout may still carry intentional local commits.
+            # Inventory the target branch before checkout/pull so a different
+            # current branch cannot hide them from the reset fallback below.
+            local local_only_commits=""
+            if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+                if ! local_only_commits="$(git rev-list --reverse "origin/$BRANCH..refs/heads/$BRANCH")"; then
+                    log_error "Could not determine whether $BRANCH carries local-only commits; refusing to update."
+                    log_info "fix: git -C $INSTALL_DIR fetch origin $BRANCH  # verify the remote ref, then rerun the installer"
+                    if [ -n "$autostash_ref" ]; then
+                        git stash apply "$autostash_ref" && git stash drop "$autostash_ref" >/dev/null
+                    fi
+                    exit 4
+                fi
+            else
+                local show_ref_rc=$?
+                if [ "$show_ref_rc" -ne 1 ]; then
+                    log_error "Could not inspect refs/heads/$BRANCH; refusing to assume it has no local commits."
+                    log_info "fix: git -C $INSTALL_DIR show-ref --verify refs/heads/$BRANCH"
+                    if [ -n "$autostash_ref" ]; then
+                        git stash apply "$autostash_ref" && git stash drop "$autostash_ref" >/dev/null
+                    fi
+                    exit 4
+                fi
+            fi
+            if [ -n "$local_only_commits" ]; then
+                local local_only_count
+                local_only_count="$(printf '%s\n' "$local_only_commits" | sed '/^$/d' | wc -l | tr -d ' ')"
+                log_error "Refusing to reset $BRANCH: $local_only_count local commit(s) are not in origin/$BRANCH."
+                while IFS= read -r local_commit; do
+                    [ -n "$local_commit" ] && git show -s --format='  • %h %s' "$local_commit"
+                done <<< "$local_only_commits"
+                log_info "fix: git -C $INSTALL_DIR rebase origin/$BRANCH  # resolve conflicts, then rerun the installer"
+                if [ -n "$autostash_ref" ]; then
+                    log_info "Restoring local changes before aborting..."
+                    if git stash apply "$autostash_ref"; then
+                        git stash drop "$autostash_ref" >/dev/null
+                        autostash_ref=""
+                    else
+                        log_error "Could not restore the installer autostash; it remains preserved."
+                        log_info "fix: git -C $INSTALL_DIR stash apply $autostash_ref"
+                    fi
+                fi
+                exit 4
+            fi
+
             git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
+            # The local-only inventory is positively empty, so reset cannot
+            # discard user commits. Use the already-fetched remote ref rather
+            # than treating an arbitrary pull failure as permission to reset.
+            if ! git merge --ff-only "origin/$BRANCH"; then
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
                 git reset --hard "origin/$BRANCH"
             fi

@@ -1512,13 +1512,67 @@ function Install-Repository {
                     git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
                     if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
                 } else {
+                    # Check the target branch even when another branch is
+                    # currently checked out. A non-empty result makes reset
+                    # unsafe, so restore the installer autostash and abort with
+                    # a manual rebase command instead.
+                    $localOnlyCommits = @()
+                    git -c windows.appendAtomically=false show-ref --verify --quiet "refs/heads/$Branch"
+                    if ($LASTEXITCODE -eq 0) {
+                        $localOnlyCommits = @(
+                            git -c windows.appendAtomically=false rev-list --reverse "origin/$Branch..refs/heads/$Branch" 2>$null |
+                                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                        )
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Err "Could not determine whether $Branch carries local-only commits; refusing to update."
+                            Write-Info "fix: git -C `"$InstallDir`" fetch origin $Branch  # verify the remote ref, then rerun the installer"
+                            if ($autostashRef) {
+                                git -c windows.appendAtomically=false stash apply $autostashRef
+                                if ($LASTEXITCODE -eq 0) {
+                                    git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                                    $autostashRef = ""
+                                }
+                            }
+                            throw "local-only commit check failed"
+                        }
+                    } elseif ($LASTEXITCODE -ne 1) {
+                        Write-Err "Could not inspect refs/heads/$Branch; refusing to assume it has no local commits."
+                        Write-Info "fix: git -C `"$InstallDir`" show-ref --verify refs/heads/$Branch"
+                        if ($autostashRef) {
+                            git -c windows.appendAtomically=false stash apply $autostashRef
+                            if ($LASTEXITCODE -eq 0) {
+                                git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                                $autostashRef = ""
+                            }
+                        }
+                        throw "target branch ref check failed"
+                    }
+                    if ($localOnlyCommits.Count -gt 0) {
+                        Write-Err "Refusing to reset ${Branch}: $($localOnlyCommits.Count) local commit(s) are not in origin/$Branch."
+                        foreach ($localCommit in $localOnlyCommits) {
+                            git -c windows.appendAtomically=false show -s --format="  * %h %s" $localCommit
+                        }
+                        Write-Info "fix: git -C `"$InstallDir`" rebase origin/$Branch  # resolve conflicts, then rerun the installer"
+                        if ($autostashRef) {
+                            Write-Info "Restoring local changes before aborting..."
+                            git -c windows.appendAtomically=false stash apply $autostashRef
+                            if ($LASTEXITCODE -eq 0) {
+                                git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                                $autostashRef = ""
+                            } else {
+                                Write-Err "Could not restore the installer autostash; it remains preserved."
+                                Write-Info "fix: git -C `"$InstallDir`" stash apply $autostashRef"
+                            }
+                        }
+                        throw "installer update refused to discard local-only commits"
+                    }
+
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    # Managed installs should follow origin/$Branch exactly. If
-                    # the checkout has diverged (or has local-only commits),
-                    # ff-only pull cannot succeed -- mirror ``hermes update`` and
-                    # reset to the fetched remote so bootstrap/install can recover.
-                    git -c windows.appendAtomically=false pull --ff-only origin $Branch
+                    # The local-only inventory is positively empty, so reset
+                    # cannot discard user commits. Merge the fetched ref
+                    # explicitly rather than resetting after any pull failure.
+                    git -c windows.appendAtomically=false merge --ff-only "origin/$Branch"
                     if ($LASTEXITCODE -ne 0) {
                         Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
                         git -c windows.appendAtomically=false reset --hard "origin/$Branch"

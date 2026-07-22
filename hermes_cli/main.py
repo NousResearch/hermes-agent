@@ -9173,6 +9173,85 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _local_only_commit_shas(
+    git_cmd: list[str], cwd: Path, branch: str
+) -> list[str]:
+    """Return commits carried only by the target local branch, oldest first.
+
+    The target is deliberately ``refs/heads/<branch>`` rather than ``HEAD``:
+    ``hermes update`` may be invoked while another branch is checked out, but
+    the safety decision must describe the branch that will actually be
+    updated.
+    """
+    local_ref = f"refs/heads/{branch}"
+    remote_ref = f"origin/{branch}"
+    exists = subprocess.run(
+        git_cmd + ["show-ref", "--verify", "--quiet", local_ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if exists.returncode == 1:
+        return []
+    if exists.returncode != 0:
+        raise subprocess.CalledProcessError(
+            exists.returncode,
+            exists.args,
+            output=exists.stdout,
+            stderr=exists.stderr,
+        )
+
+    result = subprocess.run(
+        git_cmd + ["rev-list", "--reverse", f"{remote_ref}..{local_ref}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _local_commit_descriptions(
+    git_cmd: list[str], cwd: Path, commit_shas: list[str]
+) -> list[str]:
+    """Format local-only commits for a human-actionable safety error."""
+    descriptions: list[str] = []
+    for commit_sha in commit_shas:
+        result = subprocess.run(
+            git_cmd + ["show", "-s", "--format=%h %s", commit_sha],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        descriptions.append(
+            result.stdout.strip() if result.returncode == 0 and result.stdout.strip()
+            else commit_sha
+        )
+    return descriptions
+
+
+def _print_rebase_update_error(
+    git_cmd: list[str], cwd: Path, branch: str, commit_shas: list[str], detail: str
+) -> None:
+    """Print the required fix-bearing error after a failed safe rebase."""
+    count = len(commit_shas)
+    print(
+        f"✗ Update stopped: could not rebase {count} local commit(s) "
+        f"onto origin/{branch}."
+    )
+    if detail:
+        print(f"  {detail.strip().splitlines()[0]}")
+    print("  Local commits kept on the branch:")
+    for description in _local_commit_descriptions(git_cmd, cwd, commit_shas):
+        print(f"    • {description}")
+    # TODO(agent-cli-standard): hermes update does not yet have a structured
+    # one-shot envelope; when it does, emit this as status=error/error/fix.
+    print(
+        f"fix: git -C {cwd} rebase origin/{branch}  "
+        "# resolve conflicts, then rerun: hermes update"
+    )
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -9247,11 +9326,22 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 capture_output=True,
                 text=True,
             )
+            origin_fetch_result = fetch_result
             upstream_exists = False
             compare_branch = f"origin/{branch}"
         else:
             upstream_exists = True
             compare_branch = f"upstream/{branch}"
+            # Behind/ahead-to-upstream and local-only-to-origin are separate
+            # facts for forked installs. Refresh origin too so the local-only
+            # count below is not computed from a stale remote-tracking ref.
+            print("→ Refreshing origin for local-commit check...")
+            origin_fetch_result = subprocess.run(
+                git_cmd + ["fetch"] + depth_args + ["origin", branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
@@ -9263,6 +9353,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         )
         upstream_exists = False
         compare_branch = f"origin/{branch}"
+        origin_fetch_result = fetch_result
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
@@ -9289,6 +9380,64 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
+
+    # Report carried commits as a separate dimension from "behind".  The
+    # update banner already exposes this fact; the explicit preflight must not
+    # hide it, especially because permanent local patches are a supported
+    # setup.  Count against refs/heads/<branch> — the ref the apply path will
+    # actually update — never HEAD, so ``--check --branch <b>`` reports the
+    # right number even while another branch is checked out.
+    origin_branch = f"origin/{branch}"
+    local_branch_ref = f"refs/heads/{branch}"
+    origin_is_fresh = (
+        not upstream_exists or origin_fetch_result.returncode == 0
+    )
+    origin_verify = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", origin_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if origin_is_fresh and origin_verify.returncode == 0:
+        local_ref_verify = subprocess.run(
+            git_cmd + ["show-ref", "--verify", "--quiet", local_branch_ref],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if local_ref_verify.returncode == 0:
+            local_result = subprocess.run(
+                git_cmd
+                + ["rev-list", f"{origin_branch}..{local_branch_ref}", "--count"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if local_result.returncode == 0:
+                local_only = int(local_result.stdout.strip() or "0")
+                commits_word = "commit" if local_only == 1 else "commits"
+                print(
+                    f"↻ Local-only: {local_only} {commits_word} on {branch} "
+                    f"not in {origin_branch}."
+                )
+            else:
+                print(
+                    f"⚠ Could not count local-only commits relative to {origin_branch}."
+                )
+        elif local_ref_verify.returncode == 1:
+            # No local branch of that name yet (e.g. checking a branch that has
+            # never been checked out); the update would create it from the
+            # remote, so nothing local can be carried.
+            print(f"↻ Local-only: no local branch '{branch}'; nothing carried.")
+        else:
+            print(
+                f"⚠ Could not count local-only commits: "
+                f"failed to inspect {local_branch_ref}."
+            )
+    elif origin_verify.returncode != 0:
+        print(f"⚠ Could not count local-only commits: {origin_branch} is unavailable.")
+    else:
+        print(f"⚠ Could not refresh {origin_branch}; local-only count is unavailable.")
 
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
@@ -10407,6 +10556,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
 
+        # Inventory the branch we are about to update, not whichever branch
+        # happens to be checked out.  An inability to prove this set is empty
+        # is a safety failure: it must never fall through to the reset path.
+        try:
+            local_only_commits = _local_only_commit_shas(
+                git_cmd, PROJECT_ROOT, branch
+            )
+        except subprocess.CalledProcessError as exc:
+            print(
+                f"✗ Could not determine whether {branch} carries local-only commits."
+            )
+            if exc.stderr:
+                print(f"  {exc.stderr.strip().splitlines()[0]}")
+            # TODO(agent-cli-standard): emit a structured error/fix envelope
+            # once hermes update has a one-shot JSON output contract.
+            print(
+                f"fix: git -C {PROJECT_ROOT} fetch origin {branch}  "
+                "# verify the remote ref, then rerun: hermes update"
+            )
+            sys.exit(4)
+
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
@@ -10482,7 +10652,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         commit_count = int(result.stdout.strip())
 
-        if commit_count == 0:
+        if commit_count == 0 and not local_only_commits:
             _invalidate_update_cache()
 
             # Even if origin is up to date, the fork may be behind upstream
@@ -10560,10 +10730,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if commit_count:
+            print(f"→ Found {commit_count} new commit(s)")
+        if local_only_commits:
+            print(
+                f"→ Preserving {len(local_only_commits)} local commit(s) "
+                f"carried on {branch}"
+            )
 
-        print("→ Pulling updates...")
+        print("→ Syncing updates...")
         update_succeeded = False
+        restore_stash_on_failure = False
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
         # has a syntax error in a critical-path file (PR #28452 incident:
         # orphan merge-conflict markers in hermes_cli/config.py bricked
@@ -10571,33 +10748,68 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+            if local_only_commits:
+                rebase_result = subprocess.run(
+                    git_cmd + ["rebase", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                if rebase_result.returncode != 0:
+                    abort_result = subprocess.run(
+                        git_cmd + ["rebase", "--abort"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
                     )
-                    sys.exit(1)
+                    if abort_result.returncode == 0:
+                        # Rebase abort restored the exact clean pre-rebase
+                        # checkout, so the update-created stash is safe to
+                        # apply in the finally block below.
+                        restore_stash_on_failure = True
+                    else:
+                        print("  ⚠ git rebase --abort also failed; the stash was left intact.")
+                        if abort_result.stderr.strip():
+                            print(f"  {abort_result.stderr.strip().splitlines()[0]}")
+                    detail = rebase_result.stderr or rebase_result.stdout
+                    _print_rebase_update_error(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        branch,
+                        local_only_commits,
+                        detail,
+                    )
+                    sys.exit(4)
+            else:
+                # The local-only inventory is positively empty, so a reset
+                # fallback cannot discard user commits.  Use an explicit
+                # merge instead of treating an arbitrary pull failure as
+                # permission to reset.
+                merge_result = subprocess.run(
+                    git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if merge_result.returncode != 0:
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"fix: git -C {PROJECT_ROOT} fetch origin {branch} && "
+                            f"git -C {PROJECT_ROOT} reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -10627,6 +10839,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         text=True,
                     )
                     if rollback_result.returncode == 0:
+                        restore_stash_on_failure = True
                         print("  ✓ Rollback complete — your install is unchanged.")
                         print("  Try ``hermes update`` again later once a fix lands.")
                     else:
@@ -10640,12 +10853,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
                 sys.exit(1)
 
+            if local_only_commits:
+                print(
+                    f"  ↻ Rebased {len(local_only_commits)} local commit(s) "
+                    f"onto origin/{branch}"
+                )
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
-                if not update_succeeded:
+                if not update_succeeded and restore_stash_on_failure:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                # Don't attempt stash restore for failures that leave the code
+                # checkout in an unknown state. The rebase-abort and successful
+                # syntax-rollback paths above explicitly opt in after restoring
+                # the exact pre-operation commit.
+                elif not update_succeeded:
                     print(
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )

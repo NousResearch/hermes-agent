@@ -73,6 +73,18 @@ _VALID_POLICIES = frozenset(
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
 
+# How long to wait for ``Page.enable`` on a flattened CDP session when
+# reusing an existing remote page as the supervisor's initial page. Some
+# page types (Grok FAQ, SPA with hash routing, ``docs.x.ai``) never reply
+# to ``Page.enable`` on the flattened session — reusing them hung the
+# supervisor silently and made every ``browser_navigate`` time out at
+# 120 s. Long enough to tolerate a genuinely slow page, short enough that
+# the user isn't stuck waiting the full 120 s: we fall back to a fresh
+# ``about:blank`` target (which always responds) when this fires. Only
+# the initial-page handshake uses this — it does not affect in-flight
+# CDP operations elsewhere. See #69331.
+_CDP_HANDSHAKE_TIMEOUT_S = 5.0
+
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
 FRAME_TREE_MAX_OOPIF_DEPTH = 2
@@ -734,22 +746,67 @@ class CDPSupervisor:
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
+        """Find a page target, attach flattened session, enable domains, install dialog bridge.
+
+        Prefers reusing an existing page target, but falls back to a fresh
+        ``about:blank`` page when the existing page's ``Page.enable``
+        handshake doesn't respond within ``_CDP_HANDSHAKE_TIMEOUT_S``. Some
+        remote-page types (Grok FAQ, SPA with hash routing, ``docs.x.ai``)
+        never reply to ``Page.enable`` on the flattened session, so reuse is
+        best-effort — see #69331.
+        """
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
         page_target = next((t for t in targets if t.get("type") == "page"), None)
         if page_target is None:
             created = await self._cdp("Target.createTarget", {"url": "about:blank"})
             target_id = created["result"]["targetId"]
-        else:
-            target_id = page_target["targetId"]
+            await self._attach_and_enable(target_id)
+            return
 
+        target_id = page_target["targetId"]
+        try:
+            await self._attach_and_enable(target_id)
+        except Exception as e:
+            # Existing page is unresponsive on the flattened-session handshake
+            # (Page.enable never replied within the timeout, or attach itself
+            # failed). Give up on it and fall through to a fresh about:blank,
+            # which always responds. Close the unresponsive target first so we
+            # don't leave a zombie the user can't see — but only ever a page
+            # candidate, never a ``type: browser`` target the user opened.
+            logger.warning(
+                "CDP supervisor %s: existing page %s handshake failed (%s); "
+                "falling back to fresh about:blank",
+                self.task_id, target_id, _redact_cdp_error_text(e),
+            )
+            self._page_session_id = None
+            try:
+                await self._cdp("Target.closeTarget", {"targetId": target_id})
+            except Exception:
+                pass
+            created = await self._cdp("Target.createTarget", {"url": "about:blank"})
+            fresh_id = created["result"]["targetId"]
+            await self._attach_and_enable(fresh_id)
+
+    async def _attach_and_enable(self, target_id: str) -> None:
+        """Attach a flattened session to ``target_id`` and enable the domains.
+
+        ``Page.enable`` is raced against ``_CDP_HANDSHAKE_TIMEOUT_S``: if it
+        doesn't reply in time we raise so the caller can fall back to a fresh
+        page. The remaining domain enables use the normal per-call timeout.
+        Raises on any failure so the fallback path in
+        ``_attach_initial_page`` owns the recovery.
+        """
         attach = await self._cdp(
             "Target.attachToTarget",
             {"targetId": target_id, "flatten": True},
         )
         self._page_session_id = attach["result"]["sessionId"]
-        await self._cdp("Page.enable", session_id=self._page_session_id)
+        await self._cdp(
+            "Page.enable",
+            session_id=self._page_session_id,
+            timeout=_CDP_HANDSHAKE_TIMEOUT_S,
+        )
         await self._cdp("Runtime.enable", session_id=self._page_session_id)
         await self._cdp(
             "Target.setAutoAttach",

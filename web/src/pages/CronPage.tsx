@@ -593,7 +593,7 @@ export default function CronPage() {
 
   useEffect(() => {
     api
-      .getCronDeliveryTargets()
+      .getCronDeliveryTargets(resourceProfile)
       .then((res) => setDeliveryTargets(res.targets))
       .catch(() =>
         // Fall back to local-only so the modal still works if the endpoint fails.
@@ -601,7 +601,7 @@ export default function CronPage() {
           { id: "local", name: "Local", home_target_set: true, home_env_var: null },
         ]),
       );
-  }, []);
+  }, [resourceProfile]);
 
   useEffect(() => {
     loadJobs();

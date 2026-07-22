@@ -1221,6 +1221,57 @@ def _finalize_single_query(cli) -> None:
         cli._release_active_session()
 
 
+def kanban_worker_exit_code(result: Optional[dict]) -> int:
+    """Map a chat-turn result dict to the process exit code a kanban worker
+    subprocess should use.
+
+    Mirrors the exit-code logic the quiet (``-Q``/``--quiet``) single-query
+    path already applies (see the ``sys.exit(_exit_code)`` block a few
+    hundred lines below in ``main()``), factored out so the plain
+    (``-q``/``--query``) single-query path — the one the kanban
+    dispatcher's ``_default_spawn`` actually invokes (see
+    ``hermes_cli/kanban_db.py``) — can apply the identical mapping. Before
+    this helper existed, the ``-q`` path had no failure awareness at all:
+    ``cli.chat()`` returns a plain string there, so the structured
+    ``failed``/``failure_reason`` fields the ``-Q`` path relies on were
+    unreachable until ``chat()`` started stashing them on
+    ``self._last_chat_result``. Only call this when
+    ``HERMES_KANBAN_TASK`` is set — non-kanban ``-q`` invocations keep
+    their pre-existing "always exit 0" behavior untouched.
+
+    Semantics (identical to the pre-existing ``-Q`` logic):
+
+    * ``result`` missing/None or ``failed`` falsy → 0 (turn succeeded or
+      there's nothing to report — do not invent a failure).
+    * ``failed`` truthy with ``failure_reason`` in ``("rate_limit",
+      "billing")`` → ``KANBAN_RATE_LIMIT_EXIT_CODE`` (currently 75). The
+      dispatcher's ``detect_crashed_workers()`` maps that sentinel to a
+      quota-wall requeue that does NOT count against the failure circuit
+      breaker.
+    * ``failed`` truthy, any other reason (including total API failure —
+      invalid/unavailable model, persistent auth error, provider outage,
+      exhausted retries+fallback with no further recourse) → 1. The
+      dispatcher's reap classifier sees this as ``nonzero_exit`` — a real
+      crash that counts toward the failure limit like any other crash —
+      NOT ``clean_exit``, so it is never misreported as
+      ``protocol_violation`` (which specifically means the model got a
+      turn and chose not to call kanban_complete/kanban_block; a worker
+      that never got a turn because the API call itself failed did not
+      violate that contract).
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return 0
+    if result.get("failure_reason") in ("rate_limit", "billing"):
+        try:
+            from hermes_cli.kanban_db import (
+                KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+            )
+            return _RL_CODE
+        except Exception:
+            return 1
+    return 1
+
+
 def _reset_terminal_input_modes_on_exit() -> None:
     """Best-effort: disable focus reporting + mouse tracking on TUI exit so they
     don't leak into the next shell session sharing the tab.
@@ -12463,6 +12514,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Get the final response
             response = result.get("final_response", "") if result else ""
 
+            # Stash the structured turn result so non-interactive callers
+            # (notably the kanban dispatcher's `-q` single-query path in
+            # main(), which only receives chat()'s plain string return) can
+            # still see `failed` / `failure_reason` after the call returns.
+            # See kanban_worker_exit_code() below — without this, a total
+            # API failure (quota/auth/model-unavailable, all retries and
+            # fallback exhausted) was indistinguishable from a normal
+            # completed turn at the `-q` call site, so the worker process
+            # fell through to the default exit code 0. The dispatcher's
+            # detect_crashed_workers() then misclassified that as
+            # `protocol_violation` (P0-D) instead of a real infra failure.
+            self._last_chat_result = result
+
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
@@ -16170,6 +16234,29 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary()
+
+                # Kanban-worker exit code (P0-D fix). This branch has no
+                # other failure signal: cli.chat() returns a plain string
+                # and this path (unlike the `-Q` branch above) never called
+                # sys.exit() at all, so a total turn failure (API call
+                # never got a response — invalid/unavailable model,
+                # persistent auth error, provider outage, retries+fallback
+                # exhausted) fell through to the interpreter's default exit
+                # code 0. The dispatcher's detect_crashed_workers() then
+                # classified that as `clean_exit` while the task was still
+                # `running` and reported it as `protocol_violation` — a
+                # claim that the model got a turn and chose not to call
+                # kanban_complete/kanban_block, which is false when the API
+                # call itself never produced a model turn at all. Gated on
+                # HERMES_KANBAN_TASK so plain human/automation `-q` usage
+                # (no dispatcher involved) keeps its prior "always exit 0"
+                # behavior untouched.
+                if os.environ.get("HERMES_KANBAN_TASK"):
+                    sys.exit(
+                        kanban_worker_exit_code(
+                            getattr(cli, "_last_chat_result", None)
+                        )
+                    )
         finally:
             _finalize_single_query(cli)
         return

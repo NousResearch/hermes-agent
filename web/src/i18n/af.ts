@@ -159,6 +159,9 @@ export const af: Translations = {
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
     newChat: "Nuwe klets",
+    copyId: "Kopieer sessie-ID",
+    idCopied: "Sessie-ID gekopieer",
+    copyIdFailed: "Kon nie sessie-ID kopieer nie",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
     roles: {

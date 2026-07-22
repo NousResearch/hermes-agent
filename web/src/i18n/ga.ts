@@ -159,6 +159,9 @@ export const ga: Translations = {
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
     newChat: "Comhrá nua",
+    copyId: "Cóipeáil ID an tseisiúin",
+    idCopied: "Cóipeáladh ID an tseisiúin",
+    copyIdFailed: "Theip ar chóipeáil ID an tseisiúin",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {

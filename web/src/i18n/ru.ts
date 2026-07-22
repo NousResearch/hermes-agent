@@ -159,6 +159,9 @@ export const ru: Translations = {
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",
+    copyId: "Скопировать ID сессии",
+    idCopied: "ID сессии скопирован",
+    copyIdFailed: "Не удалось скопировать ID сессии",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {

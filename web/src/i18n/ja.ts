@@ -159,6 +159,9 @@ export const ja: Translations = {
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
     newChat: "新しいチャット",
+    copyId: "セッション ID をコピー",
+    idCopied: "セッション ID をコピーしました",
+    copyIdFailed: "セッション ID のコピーに失敗しました",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {

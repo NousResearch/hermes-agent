@@ -159,6 +159,9 @@ export const es: Translations = {
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
     newChat: "Nuevo chat",
+    copyId: "Copiar ID de sesión",
+    idCopied: "ID de sesión copiado",
+    copyIdFailed: "No se pudo copiar el ID de sesión",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
     roles: {

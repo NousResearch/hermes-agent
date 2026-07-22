@@ -159,6 +159,9 @@ export const zhHant: Translations = {
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",
+    copyId: "複製工作階段 ID",
+    idCopied: "已複製工作階段 ID",
+    copyIdFailed: "複製工作階段 ID 失敗",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {

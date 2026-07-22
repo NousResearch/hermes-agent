@@ -160,6 +160,13 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     matches the legacy preference; the dispatcher then returns a "set up a
     provider" error to the user.
     """
+    # Ensure plugin discovery has run before resolving web providers.
+    # Without this, bundled plugins (kind: backend) may not have registered
+    # their WebSearchProvider instances, and _resolve() returns None even
+    # when the plugin.yaml + .env exist (#27580, #27683).
+    from hermes_cli.plugins import _ensure_plugins_discovered
+    _ensure_plugins_discovered()
+
     with _lock:
         snapshot = dict(_providers)
 

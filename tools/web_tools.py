@@ -799,6 +799,14 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
+        # Ensure plugin discovery has run before accessing the web
+        # search registry. Without this, plugins (including bundled
+        # backends like searxng) may not have registered their
+        # providers yet, causing spurious "No web search provider
+        # configured" errors (#27683).
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
+
         # Dispatch through the web search registry. All 7 providers
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
@@ -927,6 +935,11 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_extract_backend()
+
+            # Ensure plugin discovery has run before accessing the web
+            # extract registry. Same timing fix as web_search_tool (#27683).
+            from hermes_cli.plugins import _ensure_plugins_discovered
+            _ensure_plugins_discovered()
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a
@@ -1182,6 +1195,11 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+
+        # Ensure plugin discovery has run before accessing the web
+        # crawl registry. Same timing fix as web_search_tool (#27683).
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
 
         # Tavily (and any future plugin advertising supports_crawl=True)
         # dispatches through agent.web_search_registry. The crawl response

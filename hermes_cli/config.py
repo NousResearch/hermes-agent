@@ -2451,6 +2451,13 @@ DEFAULT_CONFIG = {
         # before the agent sees it.  Lets skill authors reference bundled
         # scripts without the agent having to join paths.
         "template_vars": True,
+        # Auto-load skills based on trigger keywords in user input.
+        # When enabled, skills with triggers: in their frontmatter are
+        # automatically loaded when user input matches those triggers.
+        "auto_load": {
+            "enabled": True,
+            "max_skills": 5,
+        },
         # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
         # body.  Their stdout is inlined into the skill message before the
         # agent reads it, so skills can inject dynamic context (dates, git

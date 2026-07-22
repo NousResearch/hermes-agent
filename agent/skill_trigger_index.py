@@ -154,3 +154,80 @@ def auto_load_skills(user_input: str, max_skills: int = 5) -> List[str]:
             logger.warning(f"Failed to auto-load skill {skill_name}: {e}")
     
     return loaded
+
+
+# ── Integration with conversation loop ─────────────────────────────────────
+
+def auto_load_skills_for_turn(user_message: str, max_skills: int = 5) -> str:
+    """Auto-load skills matching user input and return context block.
+    
+    This function is called from the conversation loop before the LLM call.
+    It matches user input against skill triggers, loads matching skills via
+    skill_view, and returns a context block that can be injected into the
+    user message via the api_content sidecar.
+    
+    Returns empty string if no skills match or if auto-loading is disabled.
+    """
+    from hermes_cli.config import cfg_get
+    
+    # Check if auto-loading is enabled (default: True)
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        skills_cfg = config.get("skills", {})
+        auto_load_cfg = skills_cfg.get("auto_load", {})
+        if isinstance(auto_load_cfg, dict):
+            enabled = auto_load_cfg.get("enabled", True)
+        else:
+            enabled = bool(auto_load_cfg)
+        if not enabled:
+            return ""
+    except Exception:
+        pass
+    
+    # Match triggers
+    matched = match_skills_for_input(user_message)
+    if not matched:
+        return ""
+    
+    # Limit to max_skills
+    matched = matched[:max_skills]
+    
+    # Load each skill and collect content
+    loaded_skills = []
+    for skill_name in matched:
+        try:
+            from tools.skills_tool import skill_view
+            result_json = skill_view(skill_name)
+            import json
+            result = json.loads(result_json)
+            if result.get("success"):
+                content = result.get("content", "")
+                if content:
+                    loaded_skills.append(f"## Auto-loaded Skill: {skill_name}\n\n{content[:3000]}")
+                    logger.info(f"Auto-loaded skill: {skill_name}")
+        except Exception as e:
+            logger.warning(f"Failed to auto-load skill {skill_name}: {e}")
+    
+    if not loaded_skills:
+        return ""
+    
+    # Build context block
+    header = "The following skills have been automatically loaded based on your message:\n\n"
+    skills_block = "\n\n---\n\n".join(loaded_skills)
+    footer = "\n\n---\n\nFollow the instructions in these skills for your task."
+    
+    return header + skills_block + footer
+
+
+def get_trigger_index_stats() -> dict:
+    """Return statistics about the trigger index."""
+    index = get_trigger_index()
+    if not index._built:
+        index.build()
+    
+    return {
+        "total_triggers": len(index.index),
+        "total_skills": len(index.skill_triggers),
+        "triggers": dict(index.index),
+    }

@@ -107,8 +107,13 @@ def matches_all_words(name: str, patterns: List[str]) -> bool:
             if not all(word in name_lower for word in words):
                 return False
         else:
-            if not fnmatch.fnmatch(name, pattern):
-                return False
+            # Use fnmatch for glob patterns, or check if pattern appears as substring
+            if any(c in pattern for c in "*?["):
+                if not fnmatch.fnmatch(name.lower(), pattern.lower()):
+                    return False
+            else:
+                if pattern.lower() not in name.lower():
+                    return False
     return True
 
 

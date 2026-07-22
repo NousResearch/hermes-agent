@@ -682,6 +682,106 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_rollback.set_defaults(func=_cmd_rollback)
 
 
+    # Batch operation commands
+    
+    p_pin_batch = subs.add_parser(
+        "pin-batch",
+        help="Batch pin skills by name, usage threshold, or category",
+    )
+    p_pin_batch.add_argument(
+        "--batch", default=None,
+        help="Comma-separated skill names to pin",
+    )
+    p_pin_batch.add_argument(
+        "--by-usage", type=int, default=None, dest="by_usage",
+        help="Pin skills with use_count >= N",
+    )
+    p_pin_batch.add_argument(
+        "--by-category", default=None, dest="by_category",
+        help="Pin skills in category (not yet implemented)",
+    )
+    p_pin_batch.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be pinned without doing it",
+    )
+    p_pin_batch.set_defaults(func=_cmd_pin_batch)
+
+    p_unpin_batch = subs.add_parser(
+        "unpin-batch",
+        help="Batch unpin skills by name, usage threshold, or category",
+    )
+    p_unpin_batch.add_argument(
+        "--batch", default=None,
+        help="Comma-separated skill names to unpin",
+    )
+    p_unpin_batch.add_argument(
+        "--by-usage", type=int, default=None, dest="by_usage",
+        help="Unpin skills with use_count <= N",
+    )
+    p_unpin_batch.add_argument(
+        "--by-category", default=None, dest="by_category",
+        help="Unpin skills in category (not yet implemented)",
+    )
+    p_unpin_batch.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be unpinned without doing it",
+    )
+    p_unpin_batch.set_defaults(func=_cmd_unpin_batch)
+
+    p_archive_batch = subs.add_parser(
+        "archive-batch",
+        help="Batch archive skills by name, usage threshold, or idle days",
+    )
+    p_archive_batch.add_argument(
+        "--batch", default=None,
+        help="Comma-separated skill names to archive",
+    )
+    p_archive_batch.add_argument(
+        "--by-usage", type=int, default=None, dest="by_usage",
+        help="Archive skills with use_count <= N",
+    )
+    p_archive_batch.add_argument(
+        "--stale", type=int, default=None,
+        help="Archive skills idle for >= N days",
+    )
+    p_archive_batch.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    p_archive_batch.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be archived without doing it",
+    )
+    p_archive_batch.set_defaults(func=_cmd_archive_batch)
+
+    # Enhanced usage command with batch filtering
+    p_usage_enhanced = subs.add_parser(
+        "usage-filter",
+        help="Show usage telemetry with filtering options",
+    )
+    p_usage_enhanced.add_argument(
+        "--sort", choices=("activity", "recent", "name"), default="activity",
+        help="Sort order",
+    )
+    p_usage_enhanced.add_argument(
+        "--provenance", choices=("agent", "bundled", "hub"), default=None,
+        help="Filter by provenance",
+    )
+    p_usage_enhanced.add_argument(
+        "--min-usage", type=int, default=None, dest="min_usage",
+        help="Minimum use_count to include",
+    )
+    p_usage_enhanced.add_argument(
+        "--max-usage", type=int, default=None, dest="max_usage",
+        help="Maximum use_count to include",
+    )
+    p_usage_enhanced.add_argument(
+        "--json", action="store_true",
+        help="Output JSON instead of table",
+    )
+    p_usage_enhanced.set_defaults(func=_cmd_usage_batch)
+
+
 def cli_main(argv=None) -> int:
     """Standalone entry (also usable by hermes_cli.main fallthrough)."""
     parser = argparse.ArgumentParser(prog="hermes curator")

@@ -748,6 +748,10 @@ compression:
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
+  background_enabled: true                          # Gateway: compact after delivering the response
+  background_threshold: 0.65                       # Soft trigger, below the 85% hygiene fallback
+  background_chunk_tokens: 96000                    # Maximum old prefix summarized per pass
+  background_use_main_model: true                   # Use the session's active chat model/provider
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -762,6 +766,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+Gateway conversations also use **background compaction** by default. After a successful response is delivered and its transcript is flushed, Hermes snapshots a bounded old prefix at 65% context usage and summarizes it without holding the session turn lease. New messages can continue during that model call. Publication is a short atomic prefix comparison: appended turns are preserved, while a rewind, reset, foreground compression, or ended session makes the background result stale and it is discarded. The existing 85% synchronous hygiene path remains the emergency fallback. Background summaries use the session's active chat model/provider by default, even when `auxiliary.compression` points elsewhere; set `background_use_main_model: false` to use normal auxiliary compression routing.
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 

@@ -84,6 +84,10 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  background_enabled: true   # Gateway post-response prefix compaction
+  background_threshold: 0.65 # Soft gateway trigger (default: 65%)
+  background_chunk_tokens: 96000  # Bounded summary input per pass
+  background_use_main_model: true # Use the session's active chat runtime
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
@@ -104,9 +108,25 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `background_enabled` | `true` | bool | Run gateway prefix compaction after response delivery |
+| `background_threshold` | `0.65` | 0.10-0.84 | Gateway soft trigger, kept below the synchronous hygiene fallback |
+| `background_chunk_tokens` | `96000` | 16000-192000 | Maximum old transcript prefix summarized by one background job |
+| `background_use_main_model` | `true` | bool | Force the session's active chat provider/model for background summaries |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
+
+### Gateway background compaction
+
+The gateway schedules at most one compactor per durable session after a
+successful response has been delivered and persisted. The model call runs on a
+bounded, turn-aligned prefix without holding the foreground turn lease or a DB
+write lock. Commit reacquires the turn lease briefly, takes the existing
+cross-process compression lock, and publishes only when the snapshotted message
+IDs still match the active prefix. New rows appended during summarization are
+rebased after the compacted prefix in the same transaction; destructive history
+changes make the result stale. The 85% pre-turn hygiene path is retained as a
+hard fallback.
 
 ### Codex gpt-5.5 threshold autoraise
 

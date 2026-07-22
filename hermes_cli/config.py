@@ -1472,6 +1472,13 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
+        "background_enabled": True,   # gateway: summarize an old transcript prefix
+                                      # after response delivery instead of blocking
+                                      # the next turn at the hard hygiene threshold
+        "background_threshold": 0.65, # gateway soft trigger as context-window ratio
+        "background_chunk_tokens": 96000,  # bounded prefix sent per background pass
+        "background_use_main_model": True,  # keep background summaries on the
+                                      # session's current chat provider/model
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -8434,6 +8441,20 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        _bg_raw = compression.get('background_enabled', True)
+        _bg_enabled = _bg_raw if isinstance(_bg_raw, bool) else str(_bg_raw).strip().lower() in {'1', 'true', 'yes', 'on'}
+        print(f"  Background:   {'yes' if _bg_enabled else 'no'}")
+        if _bg_enabled:
+            try:
+                _bg_threshold = float(compression.get('background_threshold', 0.65))
+            except (TypeError, ValueError):
+                _bg_threshold = 0.65
+            try:
+                _bg_chunk = int(compression.get('background_chunk_tokens', 96000))
+            except (TypeError, ValueError):
+                _bg_chunk = 96000
+            print(f"  BG threshold: {_bg_threshold * 100:.0f}%")
+            print(f"  BG chunk:     {_bg_chunk:,} tokens")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

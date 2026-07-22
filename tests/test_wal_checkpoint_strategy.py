@@ -6,6 +6,7 @@ while close() and pre-VACUUM paths still use TRUNCATE.
 
 import sqlite3
 import logging
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,6 +72,44 @@ class TestTryWalCheckpointPassive:
     def test_checkpoint_returns_result_on_success(self, db):
         """Successful PASSIVE checkpoint does not raise."""
         db._try_wal_checkpoint()
+
+
+class TestWalJournalSizeLimit:
+    """Writable state DBs keep the reusable WAL high-water mark bounded."""
+
+    def test_session_db_configures_journal_size_limit(self, db):
+        configured = db._conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+
+        assert configured == db._WAL_JOURNAL_SIZE_LIMIT_BYTES
+
+    def test_successful_passive_reset_applies_journal_size_limit(self, db):
+        # Use a small per-test limit so the invariant is exercised without a
+        # 64 MiB fixture. Production keeps the same behavior with a 64 MiB cap.
+        test_limit = 64 * 1024
+        db._conn.execute(f"PRAGMA journal_size_limit={test_limit}")
+        db._conn.execute("PRAGMA wal_autocheckpoint=0")
+        db._conn.execute("CREATE TABLE wal_payload (value BLOB)")
+        payload = b"x" * (256 * 1024)
+        for _ in range(8):
+            db._execute_write(
+                lambda conn: conn.execute(
+                    "INSERT INTO wal_payload (value) VALUES (?)", (payload,)
+                )
+            )
+
+        wal_path = f"{db.db_path}-wal"
+        assert os.path.getsize(wal_path) > test_limit
+        db._try_wal_checkpoint()
+        # PASSIVE copies all frames without taking the exclusive lock needed
+        # to reset the file. The next writer observes the fully checkpointed
+        # WAL, resets it, and SQLite applies journal_size_limit at that point.
+        db._execute_write(
+            lambda conn: conn.execute(
+                "INSERT INTO wal_payload (value) VALUES (?)", (b"next",)
+            )
+        )
+
+        assert os.path.getsize(wal_path) <= test_limit
 
 
 class TestCloseUsesTruncate:

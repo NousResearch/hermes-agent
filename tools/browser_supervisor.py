@@ -737,12 +737,12 @@ class CDPSupervisor:
         """Find a page target, attach flattened session, enable domains, install dialog bridge."""
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
-            created = await self._cdp("Target.createTarget", {"url": "about:blank"})
-            target_id = created["result"]["targetId"]
-        else:
-            target_id = page_target["targetId"]
+        # Always create a fresh about:blank page rather than reusing an
+        # existing page target.  Some page types (SPAs, docs pages) cause
+        # Page.enable to hang indefinitely on a flattened session.  A fresh
+        # page always attaches cleanly.  See #69331.
+        created = await self._cdp("Target.createTarget", {"url": "about:blank"})
+        target_id = created["result"]["targetId"]
 
         attach = await self._cdp(
             "Target.attachToTarget",

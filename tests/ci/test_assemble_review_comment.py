@@ -1,7 +1,7 @@
 """Tests for scripts/ci/assemble_review_comment.py.
 
 The assembler collects status from every CI sub-workflow into ReviewItems
-classified by severity (error / action_required / warning / info), then
+classified by severity (error / action_required / warning / info / debug), then
 renders them into a single PR comment body.
 
 Status data comes from two sources:
@@ -16,7 +16,7 @@ Layout rules tested here:
   - each item is a ### section under its group header
   - errors + action_required always visible
   - warnings shown only when present
-  - info in a collapsible <details> block
+  - info above the fold; debug in a collapsible <details> block
   - sections separated by ---
   - how_to_fix rendered at bottom of action_required items
   - empty → clean banner
@@ -91,6 +91,16 @@ def test_statuses_info():
     assert len(items) == 1
     assert items[0].severity == "info"
     assert sources == {"review-label-gate"}
+
+
+def test_statuses_debug():
+    statuses = _status("ci-timings", [{
+        "kind": "debug",
+        "title": "CI timings",
+        "summary": "No regression.",
+    }])
+    items, _ = _mod.collect_from_statuses(statuses)
+    assert items[0].severity == "debug"
 
 
 def test_statuses_multiple_results_same_source():
@@ -238,24 +248,24 @@ def test_failed_jobs_fallback_to_run_url():
 
 
 def test_render_empty_shows_clean_banner():
-    """Completely clean — dog kaomoji + 'looks good' banner, no sections."""
+    """Completely clean — dog kaomoji + 'all good' banner, no sections."""
     body = _mod.render_comment([])
     assert body.startswith(MARKER)
     assert "૮ >ﻌ< ა" in body
-    assert "looks good to me!" in body
+    assert "all good!" in body
     assert "##" not in body  # no section headers
 
 
-def test_render_info_only_shows_details():
-    """Info items only — header + collapsible details, no blocking sections."""
+def test_render_info_only_is_visible_above_the_fold():
+    """Info items are visible rather than hidden in debug details."""
     items = [
         ReviewItem(severity="info", title="lockfile", summary="No changes."),
         ReviewItem(severity="info", title="timings", summary="OK."),
     ]
     body = _mod.render_comment(items)
     assert "૮ >ﻌ< ა" in body
-    assert "<details>" in body
-    assert "</details>" in body
+    assert "## ℹ️ Info" in body
+    assert "<details>" not in body
     assert "No changes." in body
     assert "OK." in body
     # No blocking sections
@@ -263,12 +273,12 @@ def test_render_info_only_shows_details():
     assert "## ⚠️" not in body
 
 
-def test_render_info_only_with_pending_shows_details_plus_footer():
+def test_render_info_only_with_pending_shows_info_plus_footer():
     items = [ReviewItem(severity="info", title="lockfile", summary="No changes.")]
     body = _mod.render_comment(items, pending_jobs=["ci-timings"])
     assert "૮ >ﻌ< ა" in body
     assert "Still running" in body
-    assert "<details>" in body
+    assert "## ℹ️ Info" in body
     assert "Still running" in body
     assert "`ci-timings`" in body
 
@@ -348,17 +358,19 @@ def test_render_errors_always_visible():
     assert "### tests" in body
     assert "Job **tests** failed." in body
     assert "[View job](https://run)" in body
-    assert "<details>" in body
+    assert "## ℹ️ Info" in body
     assert "No changes." in body
 
 
-def test_render_info_in_collapsible_details():
-    """Each info item is its own <details> block."""
+def test_render_debug_in_collapsible_details():
+    """Debug items have a small label and each has its own <details> block."""
     items = [
-        ReviewItem(severity="info", title="lockfile", summary="No changes."),
-        ReviewItem(severity="info", title="timings", summary="OK."),
+        ReviewItem(severity="debug", title="lockfile", summary="No changes."),
+        ReviewItem(severity="debug", title="timings", summary="OK."),
     ]
     body = _mod.render_comment(items)
+    assert "### debug info" in body
+    assert body.index("### debug info") < body.index("<details>")
     assert body.count("<details>") == 2
     assert body.count("</details>") == 2
     assert "<summary>lockfile</summary>" in body
@@ -367,9 +379,10 @@ def test_render_info_in_collapsible_details():
     assert "OK." in body
 
 
-def test_render_order_errors_then_action_then_warn_then_info():
+def test_render_order_errors_then_action_then_warn_then_info_then_debug():
     items = [
         ReviewItem(severity="info", title="i", summary="info"),
+        ReviewItem(severity="debug", title="d", summary="debug"),
         ReviewItem(severity="warning", title="w", summary="warn"),
         ReviewItem(severity="action_required", title="a", summary="action"),
         ReviewItem(severity="error", title="e", summary="error"),
@@ -378,8 +391,9 @@ def test_render_order_errors_then_action_then_warn_then_info():
     error_pos = body.index("## ❌ Job failures")
     action_pos = body.index("## ⚠️ Action required")
     warn_pos = body.index("## ⚠️ Warnings")
-    info_pos = body.index("<details>")
-    assert error_pos < action_pos < warn_pos < info_pos
+    info_pos = body.index("## ℹ️ Info")
+    debug_pos = body.index("<details>")
+    assert error_pos < action_pos < warn_pos < info_pos < debug_pos
 
 
 # ─── render_comment (pending jobs) ────────────────────────────────────
@@ -422,7 +436,7 @@ def test_assemble_all_skipped_clean_banner():
     body = _mod.assemble()
     assert body.startswith(MARKER)
     assert "૮ >ﻌ< ა" in body
-    assert "looks good to me!" in body
+    assert "all good!" in body
     assert "##" not in body
 
 
@@ -457,6 +471,32 @@ def test_assemble_with_review_statuses():
     assert "## ❌ Job failures" not in body
 
 
+def test_assemble_review_status_detail_renders_sensitive_file_links():
+    statuses = _status("review-label-gate", [{
+        "kind": "action_required",
+        "title": "CI-sensitive file review",
+        "summary": "Changes detected.",
+        "detail": "**Sensitive files:**\n- [`ci.yml`](https://example.test/ci.yml)",
+    }])
+    body = _mod.assemble(review_statuses_json=statuses)
+    assert "**Sensitive files:**" in body
+    assert "[`ci.yml`](https://example.test/ci.yml)" in body
+
+
+def test_assemble_info_keeps_screenshot_details_visible_below_its_summary():
+    statuses = _status("playwright e2e", [{
+        "kind": "info",
+        "title": "Desktop E2E screenshots",
+        "summary": "1 screenshot captured; 0 visual diffs.",
+        "detail": "<details>\n<summary>1 captured screenshot</summary>\n\n- [`proof.png`](https://example.test/artifact)\n\n</details>",
+    }])
+    body = _mod.assemble(review_statuses_json=statuses)
+    assert "## ℹ️ Info" in body
+    assert "1 screenshot captured; 0 visual diffs." in body
+    assert "<summary>1 captured screenshot</summary>" in body
+    assert "[`proof.png`](https://example.test/artifact)" in body
+
+
 def test_assemble_pending_jobs():
     body = _mod.assemble(pending_jobs=["ci-timings"])
     assert "Still running" in body
@@ -473,9 +513,9 @@ def test_assemble_with_items_and_pending():
 
 
 def test_assemble_with_timings_status():
-    """Timings status from the nested format renders as info or warning."""
+    """Timings status from the nested format renders as debug or warning."""
     statuses = _status("ci-timings", [{
-        "kind": "info",
+        "kind": "debug",
         "title": "CI timings",
         "summary": "Wall time 3m (no baseline yet).",
         "detail": "",
@@ -490,14 +530,14 @@ def test_assemble_with_timings_status():
 
 
 def test_assemble_with_lockfile_status():
-    """Lockfile no-changes status renders as info in the details block."""
+    """Lockfile no-changes status renders as visible info."""
     statuses = _status("lockfile-diff", [{
         "kind": "info",
         "title": "package-lock.json",
         "summary": "No lockfile changes — locked versions match the target branch.",
     }])
     body = _mod.assemble(review_statuses_json=statuses)
-    assert "<details>" in body
+    assert "## ℹ️ Info" in body
     assert "### package-lock.json" in body
     assert "No lockfile changes" in body
 
@@ -602,7 +642,7 @@ def test_assemble_passes_commit_info():
     """assemble() passes commit_info through to render_comment."""
     body = _mod.assemble(commit_info="<sub>running on abc1234</sub>")
     assert "running on abc1234" in body
-    assert "looks good to me!" in body
+    assert "all good!" in body
 
 
 def test_render_both_emitted_link_and_job_url():

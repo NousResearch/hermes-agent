@@ -352,6 +352,13 @@ def _merge_statuses(
     return json.dumps(merged) if merged else ""
 
 
+def _commit_info_for_state(commit_info: str, pending: list[str]) -> str:
+    """Use past tense in the final comment after every CI job completes."""
+    if pending:
+        return commit_info
+    return commit_info.replace("<sub>running on ", "<sub>ran on ", 1)
+
+
 # ---------------------------------------------------------------------------
 # Polling loop
 # ---------------------------------------------------------------------------
@@ -410,11 +417,12 @@ def run(
             print(f"  Found ci-timings artifact with {len(artifact_statuses)} status entries")
 
         merged_json = _merge_statuses(base_statuses, artifact_statuses)
+        current_commit_info = _commit_info_for_state(commit_info, pending)
 
         body = build_comment_body(
             asm, completed, pending, run_url, job_urls,
             merged_json,
-            commit_info,
+            current_commit_info,
         )
 
         if body != last_body:

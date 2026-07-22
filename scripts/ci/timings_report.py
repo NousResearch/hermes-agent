@@ -909,7 +909,7 @@ def generate_review_status(
     """Produce a review_status JSON array for the CI timings review section.
 
     Returns a list with one ``{source, results: [...]}`` entry. The
-    result kind is ``"info"`` or ``"warning"`` (timings is never error —
+    result kind is ``"debug"`` or ``"warning"`` (timings is never error —
     it's an observability job). *summary* is a single short line suitable
     for the PR comment. *detail* has the per-job deltas as a markdown
     fragment.
@@ -917,7 +917,7 @@ def generate_review_status(
     stats = compute_stats(timings, baseline)
 
     if baseline is None:
-        severity = "info"
+        severity = "debug"
         summary = f"Wall time {fmt_dur(stats['wall'])} (no baseline yet)."
     else:
         wall = stats["wall"]
@@ -928,10 +928,10 @@ def generate_review_status(
             if pct > _TIMINGS_WARN_PCT * 100:
                 severity = "warning"
             else:
-                severity = "info"
+                severity = "debug"
         else:
             wall_str = f"Wall time {fmt_dur(wall)}."
-            severity = "info"
+            severity = "debug"
 
         if stats["slower"]:
             wall_str += f" {stats['slower']} job(s) slower,"

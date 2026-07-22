@@ -160,3 +160,15 @@ def test_classify_unknown_status_skipped():
     completed, pending, job_urls = _mod.classify_jobs(jobs)
     assert completed == {}
     assert pending == []
+
+
+def test_commit_info_uses_present_tense_while_jobs_are_pending():
+    info = "<sub>running on [abc1234](https://commit-url) — fix: thing</sub>"
+    assert _mod._commit_info_for_state(info, ["Python tests"]) == info
+
+
+def test_commit_info_uses_past_tense_after_jobs_complete():
+    info = "<sub>running on [abc1234](https://commit-url) — fix: thing</sub>"
+    assert _mod._commit_info_for_state(info, []) == (
+        "<sub>ran on [abc1234](https://commit-url) — fix: thing</sub>"
+    )

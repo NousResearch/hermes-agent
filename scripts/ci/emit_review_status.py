@@ -27,8 +27,10 @@ with the verification checklist.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from urllib.parse import quote
 
 # The source identifier used for error-synthesis exclusion. This must
 # match (as a normalized substring) the job name as it appears in the
@@ -41,24 +43,57 @@ import sys
 SOURCE = "review-label-gate"
 
 
+def _ci_review_detail(
+    files_json: str, repo_url: str, base_sha: str, head_sha: str,
+) -> str:
+    """Render links to the changed CI-sensitive files that triggered review."""
+    try:
+        files = json.loads(files_json)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(files, list) or not repo_url or not base_sha or not head_sha:
+        return ""
+
+    links = []
+    for path in files:
+        if not isinstance(path, str) or not path:
+            continue
+        label = path.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        path_hash = hashlib.sha256(path.encode()).hexdigest()
+        url = (
+            f"{repo_url}/compare/{quote(base_sha, safe='')}...{quote(head_sha, safe='')}"
+            f"#diff-{path_hash}"
+        )
+        links.append(f"- [`{label}`]({url})")
+    return "**Sensitive files changed:**\n" + "\n".join(links) if links else ""
+
+
 def build_results(
     ci_review: bool,
     mcp_catalog: bool,
     supply_chain: bool,
     label_present: bool,
+    ci_review_files: str = "[]",
+    repo_url: str = "",
+    base_sha: str = "",
+    head_sha: str = "",
 ) -> list[dict]:
     """Build the list of result objects for this source."""
     results: list[dict] = []
 
     if ci_review:
+        detail = _ci_review_detail(ci_review_files, repo_url, base_sha, head_sha)
         if label_present:
-            results.append({
+            result = {
                 "kind": "info",
                 "title": "CI-sensitive file review",
-                "summary": "`ci-reviewed` label is present.",
-            })
+                "summary": (
+                    "PR touches sensitive files, but the `ci-reviewed` label has been "
+                    "added, approving them."
+                ),
+            }
         else:
-            results.append({
+            result = {
                 "kind": "action_required",
                 "title": "CI-sensitive file review",
                 "summary": (
@@ -72,12 +107,15 @@ def build_results(
                     "- no workflow changes that widen permissions or remove guards,\n"
                     "- no composite action changes that alter what gets executed."
                 ),
-            })
+            }
+        if detail:
+            result["detail"] = detail
+        results.append(result)
 
     if mcp_catalog:
         if label_present:
             results.append({
-                "kind": "info",
+                "kind": "debug",
                 "title": "MCP catalog security review",
                 "summary": "`ci-reviewed` label is present.",
             })
@@ -119,9 +157,16 @@ def build_statuses(
     mcp_catalog: bool,
     supply_chain: bool,
     label_present: bool,
+    ci_review_files: str = "[]",
+    repo_url: str = "",
+    base_sha: str = "",
+    head_sha: str = "",
 ) -> list[dict]:
     """Build the full review_status array (one entry with a results list)."""
-    results = build_results(ci_review, mcp_catalog, supply_chain, label_present)
+    results = build_results(
+        ci_review, mcp_catalog, supply_chain, label_present,
+        ci_review_files, repo_url, base_sha, head_sha,
+    )
     if not results:
         return []
     return [{"source": SOURCE, "results": results}]
@@ -131,18 +176,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ci-review", action="store_true",
                         help="Whether CI-sensitive files changed.")
+    parser.add_argument("--ci-review-files", default="[]",
+                        help="JSON list of CI-sensitive files changed.")
     parser.add_argument("--mcp-catalog", action="store_true",
                         help="Whether the MCP catalog / installer changed.")
     parser.add_argument("--supply-chain", action="store_true",
                         help="Whether the critical supply-chain scanner found a risk.")
     parser.add_argument("--label-present", action="store_true",
                         help="Whether the ci-reviewed label is present.")
+    parser.add_argument("--repo-url", default="",
+                        help="Repository URL used for changed-file links.")
+    parser.add_argument("--base-sha", default="",
+                        help="Pull request base SHA used for changed-file links.")
+    parser.add_argument("--head-sha", default="",
+                        help="Pull request head SHA used for changed-file links.")
     parser.add_argument("--output", default="-",
                         help="Output file ('-' for stdout, or a GITHUB_OUTPUT path).")
     args = parser.parse_args()
 
     statuses = build_statuses(
-        args.ci_review, args.mcp_catalog, args.supply_chain, args.label_present
+        args.ci_review, args.mcp_catalog, args.supply_chain, args.label_present,
+        args.ci_review_files, args.repo_url, args.base_sha, args.head_sha,
     )
     json_str = json.dumps(statuses)
 

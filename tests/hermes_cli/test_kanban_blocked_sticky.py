@@ -83,6 +83,126 @@ def _append_raw_event(conn, task_id, kind, payload):
     conn.commit()
 
 
+def test_initial_gate_preserves_blocked_lifecycle_event(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        events = kb.list_events(conn, gate)
+        assert [event.kind for event in events] == [
+            "created",
+            "human_gate_created",
+            "blocked",
+        ]
+        assert events[-1].payload == {
+            "reason": "initial-status: created-blocked",
+            "source": "create_task",
+        }
+
+
+def test_initial_gate_idempotency_refuses_existing_runnable_task(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        existing = kb.create_task(
+            conn,
+            title="ordinary task",
+            assignee="worker",
+            idempotency_key="shared-operation",
+        )
+
+        with pytest.raises(ValueError, match="not a human gate"):
+            kb.create_task(
+                conn,
+                title="approval required",
+                assignee="worker",
+                initial_status="blocked",
+                idempotency_key="shared-operation",
+            )
+
+        task = kb.get_task(conn, existing)
+        assert task is not None and task.status == "ready"
+        assert _event_kinds(conn, existing) == ["created"]
+
+
+def test_initial_gate_idempotent_retry_accepts_existing_gate(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        first = kb.create_task(
+            conn,
+            title="approval required",
+            assignee="worker",
+            initial_status="blocked",
+            idempotency_key="same-gate",
+        )
+        second = kb.create_task(
+            conn,
+            title="retry",
+            assignee="worker",
+            initial_status="blocked",
+            idempotency_key="same-gate",
+        )
+
+        assert second == first
+        assert _event_kinds(conn, first) == [
+            "created",
+            "human_gate_created",
+            "blocked",
+        ]
+
+
+def test_authorization_is_bound_to_task_execution_content(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        gate = kb.create_task(
+            conn,
+            title="approved operation",
+            body="print safe report",
+            assignee="worker",
+            initial_status="blocked",
+        )
+        assert kb.unblock_task(
+            conn,
+            gate,
+            actor="chief",
+            reason="approved safe report",
+        )
+        authorization = next(
+            event
+            for event in kb.list_events(conn, gate)
+            if event.kind == "human_gate_authorized"
+        )
+        assert authorization.payload is not None
+        assert isinstance(authorization.payload["task_fingerprint"], str)
+        assert len(authorization.payload["task_fingerprint"]) == 64
+
+        conn.execute(
+            "UPDATE tasks SET body=? WHERE id=?",
+            ("perform different operation", gate),
+        )
+        conn.commit()
+
+        assert kb.has_spawnable_ready(conn) is False
+        assert kb.claim_task(conn, gate, claimer="worker") is None
+        task = kb.get_task(conn, gate)
+        assert task is not None and task.status == "blocked"
+        rejected = kb.list_events(conn, gate)[-1]
+        assert rejected.kind == "claim_rejected"
+        assert rejected.payload == {"reason": "human_gate_not_authorized"}
+
+        assert kb.unblock_task(
+            conn,
+            gate,
+            actor="chief",
+            reason="approved changed operation",
+        )
+        claimed = kb.claim_task(conn, gate, claimer="worker")
+        assert claimed is not None
+        assert claimed.body == "perform different operation"
+
+
 def test_initial_blocked_gate_survives_parent_completion(kanban_home: Path) -> None:
     with kb.connect() as conn:
         gate, parent = _initial_gate(conn, with_parent=True)
@@ -98,7 +218,8 @@ def test_legacy_initial_gate_is_detected_without_new_marker(kanban_home: Path) -
     with kb.connect() as conn:
         gate, parent = _initial_gate(conn, with_parent=True)
         conn.execute(
-            "DELETE FROM task_events WHERE task_id = ? AND kind = 'human_gate_created'",
+            "DELETE FROM task_events WHERE task_id = ? "
+            "AND kind IN ('human_gate_created', 'blocked')",
             (gate,),
         )
         conn.commit()
@@ -184,15 +305,20 @@ def test_human_gate_authorization_event_precedes_unblocked_with_trimmed_payload(
         assert [event.kind for event in events] == [
             "created",
             "human_gate_created",
+            "blocked",
             "human_gate_authorized",
             "unblocked",
         ]
         authorization, unblocked = events[-2:]
         assert authorization.id < unblocked.id
-        assert authorization.payload == {
-            "actor": "chief",
-            "reason": "User authorized exact SHA abc123 in session s_1",
-        }
+        assert authorization.payload is not None
+        assert authorization.payload["actor"] == "chief"
+        assert (
+            authorization.payload["reason"]
+            == "User authorized exact SHA abc123 in session s_1"
+        )
+        assert isinstance(authorization.payload["task_fingerprint"], str)
+        assert len(authorization.payload["task_fingerprint"]) == 64
         assert unblocked.payload is None
 
 

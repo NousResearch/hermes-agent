@@ -189,7 +189,11 @@ def test_run_slash_human_gate_requires_reason_without_misleading_comment(
             for event in kb.list_events(conn, tid)
             if event.kind == "human_gate_authorized"
         )
-        assert authorization.payload == {"actor": "chief", "reason": reason}
+        assert authorization.payload is not None
+        assert authorization.payload["actor"] == "chief"
+        assert authorization.payload["reason"] == reason
+        assert isinstance(authorization.payload["task_fingerprint"], str)
+        assert len(authorization.payload["task_fingerprint"]) == 64
 
 
 def test_run_slash_json_output(kanban_home):

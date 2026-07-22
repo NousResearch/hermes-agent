@@ -2880,10 +2880,17 @@ def create_task(
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
         if row:
+            if initial_status == "blocked" and not _is_human_gate(
+                conn, row["id"]
+            ):
+                raise ValueError(
+                    "idempotency_key already belongs to a task that is not a "
+                    "human gate"
+                )
             return row["id"]
 
     now = int(time.time())
@@ -3021,6 +3028,19 @@ def create_task(
                         task_id,
                         "human_gate_created",
                         {"source": "initial_status"},
+                    )
+                    # Keep the established blocked lifecycle event as well as
+                    # the dedicated authorization marker. Gateway notifications
+                    # and stale-block diagnostics intentionally key off this
+                    # event rather than inferring lifecycle from task.status.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial-status: created-blocked",
+                            "source": "create_task",
+                        },
                     )
             return task_id
         except sqlite3.IntegrityError:
@@ -3704,29 +3724,83 @@ def _event_payload_object(raw: object) -> Optional[dict]:
     return payload if isinstance(payload, dict) else None
 
 
-def _valid_human_gate_authorization(payload: Optional[dict]) -> bool:
-    """Return whether an authorization payload has usable audit provenance."""
+def _human_gate_task_fingerprint(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Hash the execution-relevant task definition for gate authorization.
+
+    Runtime state (status, claims, timestamps, counters) is deliberately
+    excluded. A later edit to what will execute, where it will execute, or
+    which profile will execute it invalidates the recorded authorization.
+    """
+    row = conn.execute(
+        """
+        SELECT title, body, assignee, workspace_kind, workspace_path,
+               branch_name, project_id, tenant, max_runtime_seconds,
+               workflow_template_id, current_step_key, skills,
+               model_override, max_retries, goal_mode, goal_max_turns,
+               session_id
+        FROM tasks WHERE id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    parents = [
+        parent["parent_id"]
+        for parent in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? "
+            "ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+    ]
+    definition = {key: row[key] for key in row.keys()}
+    definition["parents"] = parents
+    canonical = json.dumps(
+        definition,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _valid_human_gate_authorization(
+    payload: Optional[dict],
+    *,
+    task_fingerprint: Optional[str],
+) -> bool:
+    """Return whether an authorization matches current task content."""
     if payload is None:
         return False
     actor = payload.get("actor")
     reason = payload.get("reason")
+    recorded_fingerprint = payload.get("task_fingerprint")
     return (
         isinstance(actor, str)
         and bool(actor.strip())
         and isinstance(reason, str)
         and bool(reason.strip())
+        and isinstance(task_fingerprint, str)
+        and isinstance(recorded_fingerprint, str)
+        and secrets.compare_digest(recorded_fingerprint, task_fingerprint)
     )
 
 
-def _has_unresolved_human_gate(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return True while an initial-status human gate lacks authorization.
+def _human_gate_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[bool, bool]:
+    """Return ``(is_gate, authorized_for_current_content)``.
 
     New gates emit ``human_gate_created``. Legacy gates are recognized from
     the existing ``created`` payload's ``status='blocked'`` so the fix is
     fail-closed without a data migration. Authorization only counts when a
-    later event contains non-empty string ``actor`` and ``reason`` fields.
-    A malformed later authorization attempt resets a prior valid attempt so
-    ambiguous audit history cannot make a gate runnable.
+    later event contains non-empty ``actor`` / ``reason`` fields and the
+    fingerprint of the current execution-relevant task definition. A malformed
+    or stale later authorization resets a prior valid attempt so ambiguous
+    audit history cannot make a gate runnable.
     """
     rows = conn.execute(
         "SELECT kind, payload FROM task_events "
@@ -3777,7 +3851,22 @@ def _has_unresolved_human_gate(conn: sqlite3.Connection, task_id: str) -> bool:
         elif kind == "human_gate_authorized" and is_gate:
             # The latest attempt after the marker decides the state. Invalid
             # JSON, non-object payloads, wrong types and blanks all fail closed.
-            authorized = _valid_human_gate_authorization(payload)
+            authorized = _valid_human_gate_authorization(
+                payload,
+                task_fingerprint=_human_gate_task_fingerprint(conn, task_id),
+            )
+    return is_gate, authorized
+
+
+def _is_human_gate(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a task was created as an initial-status human gate."""
+    is_gate, _authorized = _human_gate_state(conn, task_id)
+    return is_gate
+
+
+def _has_unresolved_human_gate(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True while a human gate lacks current-content authorization."""
+    is_gate, authorized = _human_gate_state(conn, task_id)
     return is_gate and not authorized
 
 
@@ -5652,8 +5741,16 @@ def unblock_task(
     normalized_reason = reason.strip() if isinstance(reason, str) else ""
     with write_txn(conn):
         human_gate = _has_unresolved_human_gate(conn, task_id)
-        if human_gate and (not normalized_actor or not normalized_reason):
-            return False
+        task_fingerprint = (
+            _human_gate_task_fingerprint(conn, task_id) if human_gate else None
+        )
+        if human_gate:
+            if (
+                not normalized_actor
+                or not normalized_reason
+                or task_fingerprint is None
+            ):
+                return False
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -5706,7 +5803,11 @@ def unblock_task(
                 conn,
                 task_id,
                 "human_gate_authorized",
-                {"actor": normalized_actor, "reason": normalized_reason},
+                {
+                    "actor": normalized_actor,
+                    "reason": normalized_reason,
+                    "task_fingerprint": task_fingerprint,
+                },
             )
         _append_event(
             conn, task_id, "unblocked",

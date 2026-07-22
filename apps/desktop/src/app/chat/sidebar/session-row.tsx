@@ -177,6 +177,17 @@ function SidebarSessionRowImpl({
           onClick={event => {
             const mod = event.metaKey || event.ctrlKey
 
+            // Ctrl+Shift-click → archive immediately. Keep this Ctrl-specific:
+            // on macOS, Cmd+Shift-click remains the standalone-window gesture.
+            if (event.ctrlKey && event.shiftKey) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              onArchive()
+
+              return
+            }
+
             // ⇧⌘-click → pop into its own window (needs standalone windows).
             if (mod && event.shiftKey) {
               event.preventDefault()

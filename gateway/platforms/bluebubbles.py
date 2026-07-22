@@ -73,6 +73,11 @@ _TAPBACK_REMOVED = {
 _MESSAGE_EVENTS = {"new-message", "message"}
 _WEBHOOK_EVENTS = ["new-message"]
 
+# BlueBubbles sends each webhook once and only logs non-2xx responses. Retry
+# attachment downloads inside that one delivery rather than relying on the
+# provider to redeliver the webhook.
+_ATTACHMENT_RETRY_DELAYS = (0.25, 0.75)
+
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
@@ -160,6 +165,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
         self._message_dedup = MessageDeduplicator(ttl_seconds=300)
         self._inflight_message_ids: Dict[str, asyncio.Future] = {}
+        # Only registrations created by this adapter instance may be removed
+        # during disconnect. Reused registrations can belong to another live
+        # gateway process or survive an earlier crash intentionally.
+        self._owned_webhook_ids: set[str] = set()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -296,8 +305,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
 
         # Register webhook with BlueBubbles server
-        # This is required for the server to know where to send events
-        if not await self._register_webhook():
+        # This is required for the server to know where to send events.
+        try:
+            registered = await self._register_webhook()
+        except asyncio.CancelledError:
+            # A cancelled POST may still have created a registration. The
+            # registration helper lets the request settle before propagating
+            # cancellation, but same-URL responses cannot prove ownership.
+            # Remove only independently proven IDs, then always release the
+            # listener/client before leaving connect().
+            try:
+                await self._unregister_webhook()
+            finally:
+                await self._cleanup_local_resources()
+            raise
+        if not registered:
             logger.error("[bluebubbles] webhook registration failed")
             # Do not unregister here: a failed lookup/POST means this adapter
             # did not establish ownership of a replacement, and removing an
@@ -386,6 +408,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     self._api_url(f"/api/v1/webhook/{webhook_id}")
                 )
                 response.raise_for_status()
+                self._owned_webhook_ids.discard(str(webhook_id))
             except Exception as exc:
                 removed_all = False
                 logger.warning(
@@ -393,6 +416,172 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     exc,
                 )
         return removed_all
+
+    async def _post_webhook_registration(
+        self, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Let an ambiguous same-URL POST finish before propagating cancellation.
+
+        Cancelling an in-flight HTTP request does not prove that BlueBubbles
+        ignored it. BlueBubbles also does not say whether POST created the row
+        or returned a concurrent same-URL row, so the returned ID is never
+        treated as owned by this adapter instance.
+        """
+        post = asyncio.create_task(self._api_post("/api/v1/webhook", payload))
+        try:
+            response = await asyncio.shield(post)
+        except asyncio.CancelledError as cancelled:
+            try:
+                await post
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] webhook registration failed while connect was cancelled: %s",
+                    exc,
+                )
+            raise cancelled
+        return response
+
+    async def _migrate_webhook_registration(
+        self,
+        webhook_url: str,
+        existing: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> bool:
+        """Replace stale same-URL registrations with rollback on failure.
+
+        BlueBubbles POST is idempotent by URL and does not update events, so a
+        stale registration must be removed before the desired event set can be
+        created. This coroutine is run as a shielded unit by the caller.
+        """
+        assert self.client is not None
+        if any(webhook.get("id") is None for webhook in existing):
+            logger.warning("[bluebubbles] stale webhook has no ID; migration aborted")
+            return False
+        removed: List[Dict[str, Any]] = []
+        for webhook in existing:
+            webhook_id = webhook.get("id")
+            try:
+                response = await self.client.delete(
+                    self._api_url(f"/api/v1/webhook/{webhook_id}")
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] failed to remove stale webhook registration: %s",
+                    exc,
+                )
+                if removed:
+                    current = await self._find_registered_webhooks(webhook_url)
+                    if current == []:
+                        rollback_events = list(
+                            removed[0].get("events") or _WEBHOOK_EVENTS
+                        )
+                        try:
+                            await self._api_post(
+                                "/api/v1/webhook",
+                                {"url": webhook_url, "events": rollback_events},
+                            )
+                        except Exception as rollback_exc:
+                            logger.error(
+                                "[bluebubbles] failed to restore webhook after "
+                                "partial stale cleanup: %s",
+                                rollback_exc,
+                            )
+                return False
+            self._owned_webhook_ids.discard(str(webhook_id))
+            removed.append(webhook)
+
+        try:
+            response = await self._api_post("/api/v1/webhook", payload)
+            status = response.get("status", 0)
+            data = response.get("data")
+            returned_events = data.get("events") if isinstance(data, dict) else None
+            if not 200 <= status < 300:
+                raise RuntimeError(f"replacement returned status {status}")
+            if (
+                returned_events is not None
+                and set(returned_events) != set(payload["events"])
+            ):
+                raise RuntimeError("replacement retained the stale event set")
+
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] webhook replacement failed; reconciling server state: %s",
+                exc,
+            )
+            current = await self._find_registered_webhooks(webhook_url)
+            if current is None:
+                logger.error(
+                    "[bluebubbles] cannot verify webhook state after replacement failure; "
+                    "rollback skipped to avoid changing an unknown owner"
+                )
+                return False
+
+            expected_events = set(payload["events"])
+            exact = [
+                webhook
+                for webhook in current
+                if set(webhook.get("events") or []) == expected_events
+            ]
+            if exact:
+                # The POST can commit server-side and still fail locally (for
+                # example a response timeout). Do not claim the resulting ID:
+                # another process may have won the same-URL race.
+                logger.info(
+                    "[bluebubbles] webhook replacement committed despite local failure"
+                )
+                return True
+
+            if current:
+                logger.error(
+                    "[bluebubbles] webhook URL is occupied after replacement failure; "
+                    "rollback skipped rather than deleting an unowned registration"
+                )
+                return False
+
+            rollback_events = list(removed[0].get("events") or _WEBHOOK_EVENTS)
+            try:
+                rollback = await self._api_post(
+                    "/api/v1/webhook",
+                    {"url": webhook_url, "events": rollback_events},
+                )
+                rollback_status = rollback.get("status", 0)
+                if not 200 <= rollback_status < 300:
+                    raise RuntimeError(f"rollback returned status {rollback_status}")
+            except Exception as rollback_exc:
+                logger.error(
+                    "[bluebubbles] failed to restore prior webhook registration: %s",
+                    rollback_exc,
+                )
+            return False
+
+        logger.info(
+            "[bluebubbles] webhook registration migrated: %s",
+            self._webhook_register_url_for_log,
+        )
+        return True
+
+    async def _run_webhook_migration(
+        self,
+        webhook_url: str,
+        existing: List[Dict[str, Any]],
+        payload: Dict[str, Any],
+    ) -> bool:
+        """Finish migration before propagating caller cancellation."""
+        migration = asyncio.create_task(
+            self._migrate_webhook_registration(webhook_url, existing, payload)
+        )
+        try:
+            return await asyncio.shield(migration)
+        except asyncio.CancelledError as cancelled:
+            try:
+                await migration
+            except Exception as exc:
+                logger.warning(
+                    "[bluebubbles] webhook migration failed during cancellation: %s",
+                    exc,
+                )
+            raise cancelled
 
     async def _register_webhook(self) -> bool:
         """Register this webhook URL with the BlueBubbles server.
@@ -424,7 +613,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self._webhook_register_url_for_log,
             )
             # Keep one exact registration and clean up stale/duplicate entries.
-            keep = exact[0]
+            keep = next(
+                (
+                    webhook
+                    for webhook in exact
+                    if str(webhook.get("id")) in self._owned_webhook_ids
+                ),
+                exact[0],
+            )
             stale = [webhook for webhook in existing if webhook is not keep]
             if stale:
                 await self._remove_registered_webhooks(stale)
@@ -435,18 +631,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             "events": _WEBHOOK_EVENTS,
         }
 
+        if existing:
+            return await self._run_webhook_migration(webhook_url, existing, payload)
+
         try:
-            res = await self._api_post("/api/v1/webhook", payload)
+            res = await self._post_webhook_registration(payload)
             status = res.get("status", 0)
             if 200 <= status < 300:
                 logger.info(
                     "[bluebubbles] webhook registered with server: %s",
                     self._webhook_register_url_for_log,
                 )
-                # Create first, then remove stale registrations. If creation
-                # fails, the existing working webhook remains untouched.
-                if existing:
-                    await self._remove_registered_webhooks(existing)
                 return True
             else:
                 logger.warning(
@@ -463,38 +658,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
 
     async def _unregister_webhook(self) -> bool:
-        """Unregister this webhook URL from the BlueBubbles server.
-
-        Removes *all* matching registrations to clean up any duplicates
-        left by prior crashes.
-        """
+        """Remove only registrations created by this adapter instance."""
         if not self.client:
             return False
-
-        webhook_url = self._webhook_register_url
         removed = False
 
-        try:
-            existing = await self._find_registered_webhooks(webhook_url)
-            if existing is None:
-                return False
-            for wh in existing:
-                wh_id = wh.get("id")
-                if wh_id:
-                    res = await self.client.delete(
-                        self._api_url(f"/api/v1/webhook/{wh_id}")
-                    )
-                    res.raise_for_status()
-                    removed = True
-            if removed:
-                logger.info(
-                    "[bluebubbles] webhook unregistered: %s",
-                    self._webhook_register_url_for_log,
+        for webhook_id in list(self._owned_webhook_ids):
+            try:
+                response = await self.client.delete(
+                    self._api_url(f"/api/v1/webhook/{webhook_id}")
                 )
-        except Exception as exc:
-            logger.debug(
-                "[bluebubbles] failed to unregister webhook (non-critical): %s",
-                exc,
+                response.raise_for_status()
+            except Exception as exc:
+                logger.debug(
+                    "[bluebubbles] failed to unregister owned webhook %s: %s",
+                    webhook_id,
+                    exc,
+                )
+                continue
+            self._owned_webhook_ids.discard(webhook_id)
+            removed = True
+        if removed:
+            logger.info(
+                "[bluebubbles] webhook unregistered: %s",
+                self._webhook_register_url_for_log,
             )
         return removed
 
@@ -911,6 +1098,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             return None
 
+    async def _download_attachment_with_retries(
+        self, att_guid: str, att_meta: Dict[str, Any]
+    ) -> Optional[str]:
+        """Bound retries to the provider's single webhook delivery."""
+        cached = await self._download_attachment(att_guid, att_meta)
+        if cached:
+            return cached
+        for delay in _ATTACHMENT_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            cached = await self._download_attachment(att_guid, att_meta)
+            if cached:
+                return cached
+        return None
+
     # ------------------------------------------------------------------
     # Webhook handling
     # ------------------------------------------------------------------
@@ -1064,7 +1265,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 att_guid = att.get("guid", "")
                 if not att_guid:
                     continue
-                cached = await self._download_attachment(att_guid, att)
+                cached = await self._download_attachment_with_retries(att_guid, att)
                 if not cached:
                     attachment_failed = True
                     continue
@@ -1090,8 +1291,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.Response(text="attachment unavailable", status=503)
 
         if attachment_failed:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
-            return web.Response(text="attachment unavailable", status=503)
+            logger.warning(
+                "[bluebubbles] one or more inbound attachments remained unavailable "
+                "after bounded retries; preserving recoverable message content"
+            )
 
         # With multiple attachments, prefer PHOTO if any images present
         if len(media_urls) > 1:
@@ -1101,6 +1304,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         if not text and media_urls:
             text = "(attachment)"
+        if attachments and not text and not media_urls:
+            # BlueBubbles will not redeliver this webhook. Preserve the user
+            # turn even when every attachment remains unavailable so the agent
+            # can acknowledge the failed media instead of silently losing it.
+            text = "(attachment unavailable)"
         # --- End attachment handling ---
 
         chat_guid = self._value(

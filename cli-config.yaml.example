@@ -367,6 +367,33 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Computer Use (per-task backend provider)
+# =============================================================================
+# By default computer_use spawns cua-driver on the host and drives the host
+# display (singleton backend). For per-thread / per-container isolation (each
+# task_id gets its own display + cua-driver), set ``computer_use.provider`` to
+# a registered provider name and install the matching plugin under
+# ~/.hermes/plugins/computer_use/<name>/. The provider returns a started
+# backend bound to the caller's task_id; the host-DISPLAY gate is bypassed
+# when a provider is available (it supplies its own displays).
+#
+# Built-in / legacy values (no provider, host singleton): "local", "cua",
+# "cua-driver", "builtin", or unset.
+#
+# provider: webtop-pool
+#
+# cua_driver:
+#   # Generic spawn prefix prepended to the cua-driver invocation, letting a
+#   # container or remote runtime own the cua-driver process + display. When
+#   # set, the backend spawns ``[*spawn_prefix, <driver_path>, "mcp"]`` instead
+#   # of resolving cua-driver on the host. A provider typically constructs
+#   # CuaDriverBackend(spawn_prefix=..., driver_path=...) per task; this key
+#   # is documented for standalone use of the host backend against a single
+#   # container.
+#   # spawn_prefix: ["docker", "exec", "-i", "hermes-wt-<slot>", "env", "DISPLAY=:1", "HOME=/config"]
+#   # driver_path: "/config/bin/cua-driver"
+
+# =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed

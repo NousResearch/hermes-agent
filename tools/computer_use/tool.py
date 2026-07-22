@@ -150,9 +150,62 @@ _approval_lock = threading.Lock()
 _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
 
+# Per-process cache of the resolved computer-use provider. None (before first
+# resolution) or a ComputerUseProvider / None result. Re-resolved only when
+# reset by reset_backend_for_tests(); config is not re-read per tool call.
+_cu_provider_lock = threading.Lock()
+_cu_provider_cache: list = []  # [ComputerUseProvider | None] once resolved
 
-def _get_backend() -> ComputerUseBackend:
+
+def _get_active_cu_provider():
+    """Return the active registered ComputerUseProvider, or None for legacy.
+
+    Reads ``computer_use.provider`` from config.yaml once per process and
+    resolves it through :mod:`agent.computer_use_registry`. None (or a
+    legacy sentinel like ``local``/``cua``) means "use the host-spawned
+    singleton backend". A configured-but-unregistered name also returns None
+    (the registry logs it) so the dispatcher falls back to the singleton
+    rather than raising at gate time.
+    """
+    with _cu_provider_lock:
+        if _cu_provider_cache:
+            return _cu_provider_cache[0]
+        configured = None
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            cu = cfg.get("computer_use") or {}
+            configured = cu.get("provider")
+        except Exception as exc:  # noqa: BLE001 - fail open to singleton
+            logger.debug("computer_use: provider config read failed: %s", exc)
+            configured = None
+        from agent.computer_use_registry import _resolve
+        provider = _resolve(configured if isinstance(configured, str) else None)
+        _cu_provider_cache.append(provider)
+        return provider
+
+
+def _get_backend(task_id: Optional[str] = None) -> ComputerUseBackend:
+    """Return a computer-use backend for ``task_id`` (or the host singleton).
+
+    When a provider is active and ``task_id`` is supplied, delegate to
+    ``provider.get_backend(task_id)`` — the provider owns the per-task
+    backend cache, LRU/cap, and ``start()``. Otherwise fall back to the
+    legacy process-global singleton spawned on the host display.
+    """
     global _backend
+    if task_id:
+        provider = _get_active_cu_provider()
+        if provider is not None:
+            try:
+                if not provider.is_available():
+                    raise RuntimeError(
+                        f"computer_use provider {provider.name!r} is not available"
+                    )
+            except Exception:
+                # Let get_backend raise the precise spawn/setup error.
+                pass
+            return provider.get_backend(task_id)
     with _backend_lock:
         if _backend is None:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
@@ -176,7 +229,8 @@ def _get_backend() -> ComputerUseBackend:
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
-    """Test helper — tear down the cached backend and per-session state."""
+    """Test helper — tear down the cached backend, provider cache, and
+    per-session state."""
     global _backend
     with _backend_lock:
         if _backend is not None:
@@ -185,6 +239,8 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
             except Exception:
                 pass
         _backend = None
+    with _cu_provider_lock:
+        _cu_provider_cache.clear()
     with _approval_lock:
         _session_auto_approve.clear()
         _always_allow.clear()
@@ -294,9 +350,11 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         if err is not None:
             return err
 
-    # Dispatch to backend.
+    # Dispatch to backend. task_id routes to a per-task provider backend
+    # when one is configured (e.g. per-container cua-driver); otherwise the
+    # host singleton is used.
     try:
-        backend = _get_backend()
+        backend = _get_backend(kwargs.get("task_id"))
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
@@ -987,11 +1045,35 @@ def check_computer_use_requirements() -> bool:
     upstream. Linux users see specific blocked checks via
     `hermes computer-use doctor` if their session is incomplete (e.g. no
     DISPLAY set).
+
+    On Linux the gateway process is typically headless (no ``DISPLAY``); the
+    cua-driver backend cannot reach an X server without one, so exposing the
+    tool in that state produces capture/input failures that the model then
+    thrashes against. Require a non-empty ``DISPLAY`` on Linux in addition to
+    the binary, so the tool is only surfaced when a display is actually
+    reachable. (A future per-task computer-use provider can override this by
+    registering as available; see ``computer_use.provider``.)
     """
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
+    # A registered, available computer-use provider supplies its own
+    # per-task displays (e.g. per-container cua-driver), so the host-DISPLAY
+    # heuristic below does not apply — surface the tool even on a headless
+    # host when a provider is ready.
+    provider = _get_active_cu_provider()
+    if provider is not None:
+        try:
+            return bool(provider.is_available())
+        except Exception:  # noqa: BLE001 - treat buggy provider as unavailable
+            return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    if not cua_driver_binary_available():
+        return False
+    # Headless Linux has no display for cua-driver to drive; don't surface the
+    # tool until a display exists (or a provider supplies one per-task).
+    if sys.platform == "linux" and not os.environ.get("DISPLAY", "").strip():
+        return False
+    return True
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

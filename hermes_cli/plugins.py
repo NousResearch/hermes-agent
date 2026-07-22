@@ -797,6 +797,42 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- computer use provider registration -----------------------------------
+
+    def register_computer_use_provider(self, provider) -> None:
+        """Register a per-task computer-use backend provider.
+
+        ``provider`` must be an instance of
+        :class:`agent.computer_use_provider.ComputerUseProvider`. The
+        ``provider.name`` attribute is what ``computer_use.provider`` in
+        ``config.yaml`` matches against when routing ``computer_use`` tool
+        calls. A provider returns a started
+        :class:`tools.computer_use.backend.ComputerUseBackend` bound to the
+        caller's ``task_id`` (e.g. a per-container cua-driver), so per-thread
+        OS-level keyboard/mouse is isolated without special-casing any one
+        runtime in core.
+
+        Mirrors :meth:`register_browser_provider` exactly — same registration
+        shape, same gating, same logging. The computer_use subsystem's
+        dispatcher (:func:`tools.computer_use.tool._get_active_cu_provider`)
+        consults the registry built up by these calls.
+        """
+        from agent.computer_use_provider import ComputerUseProvider
+        from agent.computer_use_registry import register_provider as _register_cu_provider
+
+        if not isinstance(provider, ComputerUseProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a computer_use provider that "
+                "does not inherit from ComputerUseProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_cu_provider(provider)
+        logger.info(
+            "Plugin '%s' registered computer_use provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- secret source registration -------------------------------------------
 
     def register_secret_source(self, source) -> None:

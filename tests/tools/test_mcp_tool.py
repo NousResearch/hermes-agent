@@ -123,6 +123,87 @@ class TestLoadMCPConfig:
             assert result == {}
 
 
+class TestLoadMCPConfigScope:
+    """Tests for scope-based MCP server filtering (parent vs delegation)."""
+
+    @staticmethod
+    def _servers():
+        return {
+            "shared": {
+                "command": "echo",
+                "args": ["shared"],
+            },
+            "sub_only": {
+                "command": "echo",
+                "args": ["sub"],
+                "scope": "delegation",
+            },
+            "parent_only": {
+                "command": "echo",
+                "args": ["parent"],
+                "scope": "parent",
+            },
+            "explicit_all": {
+                "command": "echo",
+                "args": ["all"],
+                "scope": "all",
+            },
+        }
+
+    def test_scope_default_all_included_in_parent(self):
+        """Servers without 'scope' field default to 'all' — included for parent."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"mcp_servers": self._servers()}):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config(scope_filter="parent")
+            assert "shared" in result
+            assert "explicit_all" in result
+            assert "parent_only" in result
+            assert "sub_only" not in result
+
+    def test_scope_delegation_only_for_subagents(self):
+        """scope_filter='delegation' returns only delegation-scoped servers."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"mcp_servers": self._servers()}):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config(scope_filter="delegation")
+            assert "sub_only" in result
+            assert "shared" not in result
+            assert "parent_only" not in result
+            assert "explicit_all" not in result
+
+    def test_scope_none_returns_all(self):
+        """scope_filter=None (default, backward compat) returns all servers."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"mcp_servers": self._servers()}):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config(scope_filter=None)
+            assert len(result) == 4
+            assert "shared" in result
+            assert "sub_only" in result
+            assert "parent_only" in result
+
+    def test_scope_invalid_value_treated_as_all(self):
+        """Unknown scope values default to 'all' behavior."""
+        servers = {
+            "weird_scope": {"command": "echo", "scope": "nonsense"},
+        }
+        with patch("hermes_cli.config.load_config",
+                   return_value={"mcp_servers": servers}):
+            from tools.mcp_tool import _load_mcp_config
+            result_parent = _load_mcp_config(scope_filter="parent")
+            result_deleg = _load_mcp_config(scope_filter="delegation")
+            assert "weird_scope" in result_parent   # treated as "all"
+            assert "weird_scope" not in result_deleg  # not "delegation"
+
+    def test_scope_empty_config_returns_empty(self):
+        """Empty config returns empty regardless of scope_filter."""
+        with patch("hermes_cli.config.load_config", return_value={}):
+            from tools.mcp_tool import _load_mcp_config
+            assert _load_mcp_config(scope_filter="parent") == {}
+            assert _load_mcp_config(scope_filter="delegation") == {}
+
+
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
         self, monkeypatch

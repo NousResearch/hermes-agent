@@ -4409,7 +4409,33 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
-def _load_mcp_config() -> Dict[str, dict]:
+VALID_MCP_SCOPES = frozenset({"all", "parent", "delegation"})
+
+
+def _scope_matches(cfg: dict, scope_filter: str | None) -> bool:
+    """Check whether a server config matches the given scope filter.
+
+    ``scope_filter=None`` (default, backward compat): include all servers.
+    ``scope_filter=\"parent\"``: include servers whose scope is ``all``
+    (default), ``parent``, or unset.
+    ``scope_filter=\"delegation\"``: include only servers with
+    ``scope: delegation``.
+    Unknown scope values are treated as ``all`` for forward compat.
+    """
+    if scope_filter is None:
+        return True
+    server_scope = cfg.get("scope", "all")
+    # Treat unknown scope values as "all" (forward compat; new scope values
+    # added in future Hermes versions won't break older installs).
+    if server_scope not in VALID_MCP_SCOPES:
+        server_scope = "all"
+    if scope_filter == "delegation":
+        return server_scope == "delegation"
+    # scope_filter="parent": include "all" (including unset/unknown) and "parent"
+    return server_scope != "delegation"
+
+
+def _load_mcp_config(scope_filter: str | None = None) -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
@@ -4419,6 +4445,12 @@ def _load_mcp_config() -> Dict[str, dict]:
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+
+    Args:
+        scope_filter: If ``None`` (default), returns all configured servers
+            (backward-compatible).  ``\"parent\"`` excludes servers with
+            ``scope: delegation``.  ``\"delegation\"`` returns only servers
+            with ``scope: delegation``.
     """
     try:
         from hermes_cli.config import load_config
@@ -4438,6 +4470,8 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
+            if not _scope_matches(cfg, scope_filter):
+                continue
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 safe_servers[name] = interpolated
@@ -5742,7 +5776,7 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
 
-    servers = _load_mcp_config()
+    servers = _load_mcp_config(scope_filter="parent")
     if not servers:
         logger.debug("No MCP servers configured")
         return []

@@ -250,6 +250,7 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1013,10 +1014,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
-        # Adapter-level allow_from: when set, it is the sole authority.
-        adapter_allow_from = self.config.extra.get("allow_from")
+        # Adapter-level allow_from / group_allow_from: when set, they are the
+        # sole authority.  Group chats use group_allow_from; DMs use allow_from.
+        chat_type = source.chat_type or ""
+        if chat_type in ("group", "forum", "channel"):
+            adapter_allow_from = self.config.extra.get("group_allow_from")
+        else:
+            adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None:
-            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            allowed = _coerce_allow_set(adapter_allow_from)
             return user_id in allowed or "*" in allowed
 
         # Test/custom injection only. The class method named
@@ -5021,6 +5027,7 @@ class TelegramAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
@@ -5055,7 +5062,7 @@ class TelegramAdapter(BasePlatformAdapter):
             buttons = [
                 InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")
             ]
-            if not smart_denied:
+            if not smart_denied and allow_session:
                 buttons.append(
                     InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
                 )
@@ -5963,29 +5970,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="This approval has already been resolved.")
                     return
 
-                # Map choice to human-readable label
-                label_map = {
-                    "once": "✅ Approved once",
-                    "session": "✅ Approved for session",
-                    "always": "✅ Approved permanently",
-                    "deny": "❌ Denied",
-                }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
 
-                await query.answer(text=label)
-
-                # Edit message to show decision, remove buttons
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass  # non-fatal if edit fails
-
-                # Resolve the approval — unblocks the agent thread
+                # Resolve the approval FIRST — unblocks the agent thread.
+                # Rendering happens after so the message reflects what
+                # actually occurred: a tap that lands after the approval
+                # wait timed out (count == 0) must NOT claim "Approved" —
+                # the command was already denied and will not run (#63501
+                # regression follow-up: 60s waits made stale taps common).
                 try:
                     from tools.approval import resolve_gateway_approval
                     count = resolve_gateway_approval(session_key, choice)
@@ -5996,6 +5988,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
                     count = 0
+
+                if count:
+                    # Map choice to human-readable label
+                    label_map = {
+                        "once": "✅ Approved once",
+                        "session": "✅ Approved for session",
+                        "always": "✅ Approved permanently",
+                        "deny": "❌ Denied",
+                    }
+                    label = label_map.get(choice, "Resolved")
+                    edit_text = f"{label} by {user_display}"
+                else:
+                    label = "⌛ Approval expired"
+                    edit_text = (
+                        f"{label} — no command was waiting. "
+                        f"It already timed out (and was denied) or was resolved elsewhere."
+                    )
+
+                await query.answer(text=label)
+
+                # Edit message to show decision, remove buttons
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(edit_text),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if edit fails
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths
@@ -7760,9 +7781,15 @@ class TelegramAdapter(BasePlatformAdapter):
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:
+            # Commands must retain the original source (with user_id) so
+            # slash-access control (_check_slash_access) can identify the
+            # sender.  Replacing the source with an anonymised shared source
+            # (user_id=None) causes admin-only commands like /new to be
+            # denied even when the sender is an admin, because
+            # SlashAccessPolicy.is_admin(None) is always False.
+            # Still inject channel_prompt for group context.
             return dataclasses.replace(
                 event,
-                source=shared_source,
                 channel_prompt=channel_prompt,
             )
         return dataclasses.replace(
@@ -9379,12 +9406,12 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(allowed_users, list):
             allowed_users = ",".join(str(v) for v in allowed_users)
         os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
-    group_allowed_users = telegram_cfg.get("group_allow_from")
+    group_allowed_users = telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from")
     if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
         if isinstance(group_allowed_users, list):
             group_allowed_users = ",".join(str(v) for v in group_allowed_users)
         os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
-    group_allowed_chats = telegram_cfg.get("group_allowed_chats")
+    group_allowed_chats = telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats")
     if group_allowed_chats is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)

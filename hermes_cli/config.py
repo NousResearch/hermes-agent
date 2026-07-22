@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
@@ -1927,6 +1928,9 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Show a color-coded battery read-out as the first status-bar element in
+        # the CLI/TUI (off by default). No-op on machines without a battery.
+        "battery": False,
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
@@ -2672,9 +2676,15 @@ DEFAULT_CONFIG = {
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
+    #
+    # timeout — seconds to wait for the user's approve/deny before failing
+    # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
+    # Messaging approvals arrive as a push notification the user may not see
+    # immediately — 60s proved too tight on Telegram/Discord (the prompt
+    # expired before the user reached their phone), so the default is 300.
     "approvals": {
         "mode": "smart",
-        "timeout": 60,
+        "timeout": 300,
         "cron_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
@@ -3449,6 +3459,11 @@ DEFAULT_CONFIG = {
     # Hermes Desktop (Electron app) launch options. These only affect
     # `hermes desktop`; they do not touch the CLI/gateway.
     "desktop": {
+        # Git repository discovery for the Desktop Projects sidebar. Empty
+        # roots preserve the historical bounded scan of the user's home.
+        "repo_scan_enabled": True,
+        "repo_scan_roots": [],
+        "repo_scan_exclude_paths": [],
         # Extra Electron command-line flags appended to every desktop launch,
         # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
         # explicit ozone backend, or GPU workaround flags. A list of strings;
@@ -5219,6 +5234,8 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
 
     custom_providers: List[Dict[str, Any]] = []
     for key, entry in providers_dict.items():
+        if isinstance(entry, dict) and not is_provider_enabled(entry):
+            continue
         normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
         if normalized is not None:
             custom_providers.append(normalized)
@@ -5304,16 +5321,11 @@ def get_custom_provider_tls_settings(
     if not base_url or not isinstance(custom_providers, list):
         return {}
 
-    # Case-insensitive compare: elsewhere custom_providers are keyed on a
-    # lowercased base_url (see get_compatible_custom_providers dedup), and
-    # scheme/host are case-insensitive anyway — so a config entry written as
-    # https://Ollama.Example.com/v1 must still match a lowercased runtime
-    # base_url. Exact match after rstrip('/') + lower() (no prefix/substring).
-    target_url = (base_url or "").rstrip("/").lower()
+    target_url = normalize_route_base_url(base_url)
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
         out: Dict[str, Any] = {}
@@ -5365,10 +5377,9 @@ def get_custom_provider_extra_headers(
 ) -> Dict[str, str]:
     """Return ``extra_headers`` from a matching ``providers`` / ``custom_providers`` entry.
 
-    Matches the entry whose ``base_url`` equals *base_url* (trailing-slash and
-    case insensitive, mirroring :func:`get_custom_provider_tls_settings`) and
-    returns its ``extra_headers`` dict, or ``{}`` when no entry matches or the
-    entry declares none.
+    Matches the entry whose normalized route identity equals *base_url*,
+    mirroring :func:`get_custom_provider_tls_settings`, and returns its
+    ``extra_headers`` dict, or ``{}`` when no entry matches or declares none.
 
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Callers must never
@@ -5382,11 +5393,11 @@ def get_custom_provider_extra_headers(
     if not base_url or not isinstance(custom_providers, list):
         return {}
 
-    target_url = (base_url or "").rstrip("/").lower()
+    target_url = normalize_route_base_url(base_url)
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
         return normalize_extra_headers(entry.get("extra_headers"))
@@ -5424,9 +5435,9 @@ def get_custom_provider_context_length(
 ) -> Optional[int]:
     """Look up a per-model ``context_length`` override from ``custom_providers``.
 
-    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
-    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
-    if present and valid.  Returns ``None`` when no override applies.
+    Matches any entry whose normalized route identity equals ``base_url`` and
+    returns ``custom_providers[i].models.<model>.context_length`` if present and
+    valid.  Returns ``None`` when no override applies.
 
     This is the single source of truth for custom-provider context overrides,
     used by:
@@ -5453,14 +5464,14 @@ def get_custom_provider_context_length(
     if not isinstance(custom_providers, list):
         return None
 
-    target_url = (base_url or "").rstrip("/")
+    target_url = normalize_route_base_url(base_url)
     if not target_url:
         return None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/")
+        entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
         models = entry.get("models")

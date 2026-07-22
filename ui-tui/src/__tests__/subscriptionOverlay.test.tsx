@@ -177,6 +177,7 @@ describe('SubscriptionOverlay — overview', () => {
     mounted.cleanup()
 
     expect(openManageLink).toHaveBeenCalledTimes(1)
+    expect(openManageLink).toHaveBeenCalledWith('plus')
     expect(preview).not.toHaveBeenCalled()
     // openManageLink narrates the handoff itself.
     expect(sys).not.toHaveBeenCalled()

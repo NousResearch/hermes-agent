@@ -65,81 +65,6 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
-# ---------------------------------------------------------------------------
-# Code-skew detection for the desktop/serve backend (#68178).
-#
-# The agent core is imported once at startup.  If an auto-update (``git pull``
-# / ``hermes update``) rewrites the source tree underneath a running process,
-# any lazy import that resolves a newly-added symbol from a freshly-updated
-# file will load new code against a stale in-memory ``AIAgent`` class —
-# producing an ``AttributeError`` that the conversation loop would otherwise
-# retry indefinitely, burning provider API calls.
-#
-# We snapshot the checkout revision at module import time and expose a cheap
-# check that the outer loop can use to refuse new work with a clear message.
-# ---------------------------------------------------------------------------
-_agent_boot_fingerprint: str | None = None
-
-
-def _record_agent_boot_fingerprint() -> None:
-    """Snapshot the checkout revision when ``run_agent`` is first imported.
-
-    Idempotent — subsequent calls are no-ops.  Safe on non-git installs
-    (falls back to ``None`` and the skew check becomes a no-op).
-    """
-    global _agent_boot_fingerprint
-    if _agent_boot_fingerprint is not None:
-        return
-    try:
-        from hermes_cli.main import _read_git_revision_fingerprint
-
-        _agent_boot_fingerprint = _read_git_revision_fingerprint(
-            Path(__file__).resolve().parent
-        )
-    except Exception:
-        _agent_boot_fingerprint = None
-
-
-_record_agent_boot_fingerprint()
-
-# Cached result of the first confirmed skew detection.  Once skew is found
-# it is irreversible without external intervention (git reset/checkout), so
-# we avoid repeated disk I/O on every turn.
-_agent_code_skew_confirmed: bool = False
-_agent_code_skew_labels: tuple[str, str] | None = None
-
-
-def _detect_agent_code_skew() -> tuple[str, str] | None:
-    """Check whether the checkout revision has drifted since this process
-    started.  Returns ``(boot_rev, disk_rev)`` short labels if skew is
-    detected, else ``None``.  Once confirmed, the result is cached.
-
-    See #68178.
-    """
-    global _agent_code_skew_confirmed, _agent_code_skew_labels
-    if _agent_code_skew_confirmed:
-        return _agent_code_skew_labels
-    if _agent_boot_fingerprint is None:
-        return None
-    try:
-        from hermes_cli.main import _read_git_revision_fingerprint
-
-        current = _read_git_revision_fingerprint(Path(__file__).resolve().parent)
-    except Exception:
-        return None
-    if current is None or current == _agent_boot_fingerprint:
-        return None
-    # Skew confirmed — cache permanently for this process.
-    def _short(fp: str) -> str:
-        sha = fp.rsplit(":", 1)[-1]
-        if sha and sha != "unresolved" and len(sha) > 10:
-            return sha[:10]
-        return sha or fp
-    _agent_code_skew_confirmed = True
-    _agent_code_skew_labels = (_short(_agent_boot_fingerprint), _short(current))
-    return _agent_code_skew_labels
-
-
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -4760,8 +4685,12 @@ class AIAgent:
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
-    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.client_headers import merge_default_headers
+    def _apply_client_headers_for_base_url(
+        self,
+        base_url: str,
+        *,
+        apply_user_headers: bool = True,
+    ) -> None:
         from agent.auxiliary_client import (
             build_nvidia_nim_headers,
             build_or_headers,
@@ -4806,10 +4735,10 @@ class AIAgent:
                 self._default_headers,
             )
 
-        # User-configured overrides win over URL/profile defaults — keep them
-        # applied across credential swaps and client rebuilds, not just at
-        # first construction.
-        self._apply_user_default_headers()
+        # User-configured overrides win over URL/profile defaults for the same
+        # route. A credential swap to another endpoint must not inherit them.
+        if apply_user_headers:
+            self._apply_user_default_headers()
 
         # Per-provider extra HTTP headers (providers.<name>.extra_headers /
         # custom_providers[].extra_headers) — applied last so the most
@@ -4860,6 +4789,11 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        from hermes_cli.route_identity import normalize_route_base_url
+
+        route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
+            runtime_base
+        )
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
@@ -4870,22 +4804,44 @@ class AIAgent:
                 pass
 
             self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base
+            self._anthropic_base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
             self._anthropic_client = build_anthropic_client(
-                runtime_key, runtime_base,
+                runtime_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 default_headers=getattr(self, "_default_headers", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
-            self.base_url = runtime_base
+            self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
             return
 
         self.api_key = runtime_key
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
-        self._apply_client_headers_for_base_url(self.base_url)
+        self._client_kwargs.pop("ssl_verify", None)
+        self._client_kwargs.pop("ssl_ca_cert", None)
+        try:
+            from hermes_cli.config import (
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config_readonly,
+            )
+
+            apply_custom_provider_tls_to_client_kwargs(
+                self._client_kwargs,
+                str(self.base_url or ""),
+                get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            logger.debug(
+                "custom-provider TLS resolution skipped on credential rotation",
+                exc_info=True,
+            )
+        self._apply_client_headers_for_base_url(
+            self.base_url,
+            apply_user_headers=not route_changed,
+        )
         self._replace_primary_openai_client(reason="credential_rotation")
 
     def _recover_with_credential_pool(
@@ -6528,30 +6484,6 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
-
-    def _check_code_skew_before_turn(self) -> str | None:
-        """Return a warning string if the source tree has been updated
-        underneath this process (code skew), else ``None``.
-
-        Long-lived desktop/serve backend processes can have their source
-        rewritten by an auto-update while still running.  If a lazy import
-        (e.g. ``agent/conversation_loop.py``) resolves newly-added symbols
-        against the stale in-memory ``AIAgent`` class, it produces an
-        ``AttributeError`` that would otherwise retry indefinitely.
-
-        When skew is detected, the caller should refuse new work with a
-        clear message.  See #68178.
-        """
-        skew = _detect_agent_code_skew()
-        if skew is None:
-            return None
-        boot_rev, disk_rev = skew
-        return (
-            f"Code skew detected: this process was loaded at revision {boot_rev} "
-            f"but the source tree is now at {disk_rev}. A lazy import could resolve "
-            f"new symbols against the stale in-memory class (AttributeError). "
-            f"Please restart the application to apply the update safely."
-        )
 
     def _run_codex_app_server_turn(
         self,

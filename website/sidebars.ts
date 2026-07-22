@@ -274,7 +274,11 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-note-taking',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/note-taking/note-taking-json-canvas',
                     'user-guide/skills/bundled/note-taking/note-taking-obsidian',
+                    'user-guide/skills/bundled/note-taking/note-taking-obsidian-bases',
+                    'user-guide/skills/bundled/note-taking/note-taking-obsidian-cli',
+                    'user-guide/skills/bundled/note-taking/note-taking-obsidian-markdown',
                   ],
                 },
                 {

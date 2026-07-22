@@ -16,7 +16,12 @@ Read, search, create, and edit notes in the Obsidian vault.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/note-taking/obsidian` |
+| Version | `1.1.0` |
+| Author | Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
+| Tags | `obsidian`, `note-taking`, `vault`, `markdown` |
+| Related skills | [`obsidian-markdown`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian-markdown), [`obsidian-cli`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian-cli), [`obsidian-bases`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian-bases), [`json-canvas`](/docs/user-guide/skills/bundled/note-taking/note-taking-json-canvas) |
 
 ## Reference: full SKILL.md
 
@@ -27,6 +32,12 @@ The following is the complete skill definition that Hermes loads when this skill
 # Obsidian Vault
 
 Use this skill for filesystem-first Obsidian vault work: reading notes, listing notes, searching note files, creating notes, appending content, and adding wikilinks.
+
+When the task is format-specific or app-specific, route to the specialized skills instead:
+- `.md` note authoring with wikilinks, properties/frontmatter, callouts, embeds, or Obsidian-specific Markdown semantics -> `obsidian-markdown`
+- running Obsidian app workflows, Obsidian CLI usage, plugin development, or theme development -> `obsidian-cli`
+- editing `.base` files or working with Bases filters, views, and formulas -> `obsidian-bases`
+- editing `.canvas` files or visual canvases -> `json-canvas`
 
 ## Vault path
 

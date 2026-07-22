@@ -51,11 +51,53 @@ def test_empty_body_fallback_redacts_secrets(monkeypatch):
     redactor — a proxy echoing an API key in the error must not leak it into
     final_response/logs (the empty-body path previously hid it as bare HTTP 400)."""
     monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    secret = "sk-proj-" + "A" * 48
     err = _make_empty_body_error(
-        '{"error": {"message": "bad key: sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"}}'
+        '{"error": {"message": "bad key: ' + secret + '"}}'
     )
     summary = AIAgent._summarize_api_error(err)
-    assert "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in summary
+    assert secret not in summary
+
+
+class _UnreadStreamingResponse:
+    def __init__(self, payload: str):
+        self._payload = payload
+        self._read = False
+
+    @property
+    def text(self):
+        if not self._read:
+            raise RuntimeError("Attempted to access streaming response content")
+        return self._payload
+
+    def read(self):
+        self._read = True
+        return self._payload.encode()
+
+
+class _StreamingApiError(Exception):
+    status_code: int
+    body: dict
+    response: _UnreadStreamingResponse
+
+
+def test_empty_body_streaming_response_is_read_before_summarizing():
+    """Regression: an unread streaming response must not crash error summary.
+
+    In the gateway, a provider stream can fail before delivery. The SDK error
+    carries an httpx response whose .text raises until .read() is called; a
+    secondary crash here masked the original provider error and produced the
+    user-visible truncation/fallback error.
+    """
+    err = _StreamingApiError("")
+    err.status_code = 429
+    err.body = {}
+    err.response = _UnreadStreamingResponse(
+        '{"error": {"message": "quota exhausted, retry later"}}'
+    )
+    summary = AIAgent._summarize_api_error(err)
+    assert "HTTP 429" in summary
+    assert "quota exhausted" in summary
 
 
 def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_message():

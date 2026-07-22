@@ -897,9 +897,52 @@ def get_active_skin() -> SkinConfig:
     return _active_skin
 
 
+def resolve_auto_skin() -> str:
+    """Resolve the 'auto' virtual skin selector to a concrete skin name.
+
+    Uses the existing CLI light-mode detection chain (cli._detect_light_mode:
+    HERMES_LIGHT/HERMES_TUI_LIGHT env override, HERMES_TUI_THEME, explicit
+    background hex, COLORFGBG, OSC 11 terminal query, TERM_PROGRAM allow-list)
+    that already drives color remapping in cli.py. This avoids OS-specific
+    probes (e.g. GNOME dconf) that cannot work over SSH or Docker, and reuses
+    the same signal sources for consistency.
+
+    Falls back to 'default' on any error (SSH, Docker, missing cli module,
+    or a circular-import timing issue if this somehow runs before cli.py has
+    finished its own module-level execution) or when detection is
+    inconclusive.
+    """
+    try:
+        # Import lazily (not at module level) to avoid a circular dependency:
+        # cli.py imports skin_engine, so we cannot import cli at module scope
+        # here. The surrounding try/except also fail-safes the (unlikely)
+        # case where this executes before cli.py's own top-level init has
+        # reached the function's definition.
+        from cli import _detect_light_mode  # type: ignore[import]
+        # "daylight" is the built-in light-background skin (there is no
+        # skin literally named "light" -- see _BUILTIN_SKINS below).
+        return "daylight" if _detect_light_mode() else "default"
+    except Exception:
+        return "default"
+
+
 def set_active_skin(name: str) -> SkinConfig:
-    """Switch the active skin. Returns the new SkinConfig."""
+    """Switch the active skin. Returns the new SkinConfig.
+
+    Accepts the virtual name 'auto', which resolves to 'daylight' or
+    'default' based on the current terminal's background luminance via the
+    existing CLI detection chain (resolve_auto_skin()). The resolved name
+    (not 'auto') is stored so that get_active_skin_name() reflects the
+    actual skin in use.
+
+    A user-installed skin file literally named auto.yaml takes precedence
+    over the virtual selector -- list_skins()/load_skin() already resolve
+    user skins before built-ins, so we only virtual-resolve when no such
+    file exists, to avoid silently shadowing a real user skin (#49783).
+    """
     global _active_skin, _active_skin_name
+    if name == "auto" and not (_skins_dir() / "auto.yaml").is_file():
+        name = resolve_auto_skin()
     _active_skin_name = name
     _active_skin = load_skin(name)
     return _active_skin

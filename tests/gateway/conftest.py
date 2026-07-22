@@ -48,6 +48,41 @@ def make_async_session_db(sync_mock=None):
     return AsyncSessionDB(sync_mock), sync_mock
 
 
+class _FakeEnumMember(str):
+    """A python-telegram-bot-faithful stand-in for a ``StrEnum`` member.
+
+    PTB constants (``ParseMode``, ``ChatType``) are ``StrEnum`` members:
+    ``str(x)`` and equality give the *value* (``"supergroup"``) while
+    ``repr(x)`` shows the qualified *member name*
+    (``<ChatType.SUPERGROUP>``). Test stubs that pick only one of those
+    shapes break the other consumer: plain strings fail assertions like
+    ``"MARKDOWN_V2" in repr(parse_mode)``, while auto-generated MagicMock
+    attributes fail the adapter's ``str(chat.type)`` normalization
+    (``adapter.py`` ``_build_message_event``). This class satisfies both,
+    so every telegram test sees the same semantics regardless of which
+    file's mock installed first.
+    """
+
+    _qualname: str
+
+    def __new__(cls, enum_name: str, member_name: str, value: str):
+        obj = str.__new__(cls, value)
+        obj._qualname = f"{enum_name}.{member_name}"
+        return obj
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return f"<{self._qualname}: {str.__repr__(self)}>"
+
+
+def _fake_str_enum(enum_name: str, **members: str):
+    """Build a ``SimpleNamespace``-like enum of :class:`_FakeEnumMember`."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        **{name: _FakeEnumMember(enum_name, name, value) for name, value in members.items()}
+    )
+
+
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
@@ -61,13 +96,26 @@ def _ensure_telegram_mock() -> None:
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
+    # One shared PTB-faithful enum namespace per constant, attached to BOTH
+    # access paths: ``sys.modules["telegram.constants"]`` is registered as
+    # the root mock below, so ``from telegram.constants import ParseMode``
+    # resolves ``mod.ParseMode`` — while config/docs-style access reads
+    # ``telegram.constants.ParseMode``. Binding the same object to both
+    # keeps every consumer comparing against identical members.
+    _parse_mode = _fake_str_enum(
+        "ParseMode", MARKDOWN="Markdown", MARKDOWN_V2="MarkdownV2", HTML="HTML"
+    )
+    _chat_type = _fake_str_enum(
+        "ChatType",
+        PRIVATE="private",
+        GROUP="group",
+        SUPERGROUP="supergroup",
+        CHANNEL="channel",
+    )
+    mod.ParseMode = _parse_mode
+    mod.constants.ParseMode = _parse_mode
+    mod.ChatType = _chat_type
+    mod.constants.ChatType = _chat_type
 
     # Mirror PTB's exception hierarchy: BadRequest is a semantic API error,
     # but inherits from NetworkError in python-telegram-bot 22.x.

@@ -7,6 +7,11 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
+- GET  /v1/kanban/boards           — bounded revision-aware Kanban board records
+- GET  /v1/kanban/profiles         — bounded Kanban assignee/profile records
+- GET/POST /v1/kanban/tasks        — bounded task listing and idempotent creation
+- GET  /v1/kanban/tasks/{task_id}  — exact task snapshot with revision
+- POST /v1/kanban/tasks/{task_id}/actions — revision-bound fixed task actions
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
@@ -1491,6 +1496,12 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/health/detailed", self._handle_health_detailed),
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
+            ("GET", "/v1/kanban/boards", self._handle_kanban_boards),
+            ("GET", "/v1/kanban/profiles", self._handle_kanban_profiles),
+            ("GET", "/v1/kanban/tasks", self._handle_kanban_tasks),
+            ("POST", "/v1/kanban/tasks", self._handle_create_kanban_task),
+            ("GET", "/v1/kanban/tasks/{task_id}", self._handle_kanban_task),
+            ("POST", "/v1/kanban/tasks/{task_id}/actions", self._handle_kanban_action),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
@@ -2003,6 +2014,93 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"object": "list", "data": models})
 
+    async def _kanban_api_call(self, request: "web.Request", operation, *args, **kwargs) -> "web.Response":
+        """Run one bounded Kanban API operation behind the normal bearer gate."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        # The listener normally cannot start without this key, but keep the
+        # route fail-closed for direct test/manual wiring as well.
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Kanban API requires API key authentication",
+                    code="kanban_api_auth_required",
+                ),
+                status=403,
+            )
+        try:
+            from gateway.kanban_api import KanbanApiError
+            payload = await asyncio.to_thread(operation, *args, **kwargs)
+        except KanbanApiError as exc:
+            return web.json_response(
+                _openai_error(exc.message, code=exc.code), status=exc.status
+            )
+        except Exception:
+            logger.exception("Kanban API operation failed")
+            return web.json_response(
+                _openai_error(
+                    "Kanban API is temporarily unavailable",
+                    err_type="server_error",
+                    code="kanban_api_unavailable",
+                ),
+                status=503,
+            )
+        return web.json_response(payload)
+
+    async def _handle_kanban_boards(self, request: "web.Request") -> "web.Response":
+        from gateway.kanban_api import list_boards
+        return await self._kanban_api_call(request, list_boards)
+
+    async def _handle_kanban_profiles(self, request: "web.Request") -> "web.Response":
+        from gateway.kanban_api import list_profiles
+        return await self._kanban_api_call(request, list_profiles, request.query.get("board"))
+
+    async def _handle_kanban_tasks(self, request: "web.Request") -> "web.Response":
+        from gateway.kanban_api import list_tasks
+        return await self._kanban_api_call(
+            request,
+            list_tasks,
+            request.query.get("board"),
+            status=request.query.get("status"),
+            assignee=request.query.get("assignee"),
+            limit=request.query.get("limit"),
+        )
+
+    async def _handle_kanban_task(self, request: "web.Request") -> "web.Response":
+        from gateway.kanban_api import get_task
+        return await self._kanban_api_call(
+            request, get_task, request.query.get("board"), request.match_info.get("task_id")
+        )
+
+    async def _handle_create_kanban_task(self, request: "web.Request") -> "web.Response":
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Invalid JSON", code="invalid_json"), status=400
+            )
+        from gateway.kanban_api import create_task
+        return await self._kanban_api_call(
+            request, create_task, request.query.get("board"), payload
+        )
+
+    async def _handle_kanban_action(self, request: "web.Request") -> "web.Response":
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Invalid JSON", code="invalid_json"), status=400
+            )
+        from gateway.kanban_api import mutate_task
+        return await self._kanban_api_call(
+            request,
+            mutate_task,
+            request.query.get("board"),
+            request.match_info.get("task_id"),
+            payload,
+        )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -2052,6 +2150,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "kanban_api": bool(self._api_key),
+                "kanban_api_version": 1,
+                "kanban_api_revisioned": True,
+                "kanban_api_idempotency": True,
+                "kanban_api_requires_api_key": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -2062,6 +2165,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "kanban_boards": {"method": "GET", "path": "/v1/kanban/boards"},
+                "kanban_profiles": {"method": "GET", "path": "/v1/kanban/profiles?board={board}"},
+                "kanban_tasks": {"method": "GET", "path": "/v1/kanban/tasks?board={board}"},
+                "kanban_task": {"method": "GET", "path": "/v1/kanban/tasks/{task_id}?board={board}"},
+                "kanban_task_create": {"method": "POST", "path": "/v1/kanban/tasks?board={board}"},
+                "kanban_task_action": {"method": "POST", "path": "/v1/kanban/tasks/{task_id}/actions?board={board}"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},

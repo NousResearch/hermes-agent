@@ -376,6 +376,31 @@ curl http://localhost:8642/v1/toolsets \
 
 `/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to. Both are advertised under `endpoints.*` in `/v1/capabilities`.
 
+## Revision-aware Kanban API
+
+External control planes can use the bearer-authenticated `/v1/kanban` surface
+instead of dashboard routes or Kanban database files. Discover it first through
+`GET /v1/capabilities`: look for `kanban_api`, `kanban_api_revisioned`, and
+`kanban_api_idempotency`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/kanban/boards` | Bounded board records |
+| `GET` | `/v1/kanban/profiles?board=default` | Bounded assignee/profile records |
+| `GET` / `POST` | `/v1/kanban/tasks?board=default` | List tasks or create one idempotently |
+| `GET` | `/v1/kanban/tasks/{task_id}?board=default` | Exact task snapshot and revision |
+| `POST` | `/v1/kanban/tasks/{task_id}/actions?board=default` | Revision-bound action and read-back |
+
+Task details include a `kanbanrev_…` revision. Send that exact value plus a
+new idempotency key with every action. The API rejects stale state before it
+changes anything, and a safe retry returns fresh state without repeating the
+operation. Supported actions are `assign`, `comment`/`reply`, `promote`,
+`block`, `retry`, and `terminate`.
+
+The API intentionally omits attachment locations, worker PIDs and locks, run
+metadata, and raw event payloads. It is a server-to-server control surface, not
+a replacement for the authenticated interactive dashboard.
+
 ## Long-term memory scoping (`X-Hermes-Session-Key`)
 
 Multi-user frontends like Open WebUI need a stable per-channel identifier for long-term memory (Honcho, etc.) that is **independent** of the transcript-scoped `X-Hermes-Session-Id` (which rotates on `/new`). Pass `X-Hermes-Session-Key` on `/v1/chat/completions`, `/v1/responses`, or `/v1/runs` and Hermes threads it through to `AIAgent(gateway_session_key=...)`, where the Honcho memory provider uses it to derive a stable scope.

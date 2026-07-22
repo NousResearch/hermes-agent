@@ -93,6 +93,8 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/stop          Interrupt the run
+GET  /v1/kanban/boards           Bounded bearer-authenticated Kanban boards
+GET/POST /v1/kanban/tasks        Revision-aware Kanban task records/actions
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
 GET  /health, /health/detailed

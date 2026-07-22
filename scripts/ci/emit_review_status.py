@@ -77,7 +77,7 @@ def build_results(
         detail = _ci_review_detail(ci_review_files, repo_url, head_sha)
         if label_present:
             result = {
-                "kind": "debug",
+                "kind": "info",
                 "title": "CI-sensitive file review",
                 "summary": "`ci-reviewed` label is present.",
             }

@@ -249,7 +249,7 @@ def _render_debug_details(items: list[ReviewItem]) -> str:
         blocks.append(
             f"<details>\n<summary>{item.title}</summary>\n\n{inner}\n\n</details>"
         )
-    return "\n\n".join(blocks)
+    return "### debug info\n\n" + "\n\n".join(blocks)
 
 
 def _render_pending_items(pending_jobs: list[str]) -> str:

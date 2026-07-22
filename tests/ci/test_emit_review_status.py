@@ -31,3 +31,25 @@ def test_ci_review_status_links_to_each_sensitive_file_at_pr_head():
         "- [`.github/workflows/ci.yml`](https://github.com/nousresearch/hermes-agent/blob/abc123/.github/workflows/ci.yml)\n"
         "- [`apps/desktop/eslint.config.mjs`](https://github.com/nousresearch/hermes-agent/blob/abc123/apps/desktop/eslint.config.mjs)"
     )
+
+
+def test_approved_ci_review_is_visible_info():
+    results = _mod.build_results(
+        ci_review=True,
+        mcp_catalog=False,
+        supply_chain=False,
+        label_present=True,
+        ci_review_files='[".github/workflows/ci.yml"]',
+        repo_url="https://github.com/nousresearch/hermes-agent",
+        head_sha="abc123",
+    )
+
+    assert results == [{
+        "kind": "info",
+        "title": "CI-sensitive file review",
+        "summary": "`ci-reviewed` label is present.",
+        "detail": (
+            "**Sensitive files:**\n"
+            "- [`.github/workflows/ci.yml`](https://github.com/nousresearch/hermes-agent/blob/abc123/.github/workflows/ci.yml)"
+        ),
+    }]

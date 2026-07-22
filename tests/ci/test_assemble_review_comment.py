@@ -363,12 +363,14 @@ def test_render_errors_always_visible():
 
 
 def test_render_debug_in_collapsible_details():
-    """Each debug item is its own <details> block."""
+    """Debug items have a small label and each has its own <details> block."""
     items = [
         ReviewItem(severity="debug", title="lockfile", summary="No changes."),
         ReviewItem(severity="debug", title="timings", summary="OK."),
     ]
     body = _mod.render_comment(items)
+    assert "### debug info" in body
+    assert body.index("### debug info") < body.index("<details>")
     assert body.count("<details>") == 2
     assert body.count("</details>") == 2
     assert "<summary>lockfile</summary>" in body

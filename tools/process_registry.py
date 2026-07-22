@@ -87,6 +87,90 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
+def _format_ndjson_progress(output_buffer: str) -> str:
+    """Parse NDJSON output from qodercli stream-json and produce a progress summary.
+
+    Returns a compact human-readable string showing the latest activity,
+    replacing spinner glyphs with structured tool/thinking/result events.
+    """
+    lines = output_buffer.strip().split("\n")
+    events = []
+    for line in lines[-50:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        events.append(obj)
+
+    if not events:
+        return "[NDJSON: waiting for first event...]"
+
+    parts = []
+    tool_uses = []
+    last_thinking_len = 0
+    result_event = None
+    init_event = None
+
+    for ev in events:
+        ev_type = ev.get("type", "")
+        if ev_type == "system" and ev.get("subtype") == "init":
+            init_event = ev
+        elif ev_type == "assistant":
+            msg = ev.get("message", {})
+            for block in msg.get("content", []):
+                bt = block.get("type", "")
+                if bt == "tool_use":
+                    name = block.get("name", "unknown")
+                    inp = block.get("input", {})
+                    detail = ""
+                    if name in ("Read", "Edit", "Write") and "file_path" in inp:
+                        detail = f" ({inp['file_path']})"
+                    elif name == "Bash" and "command" in inp:
+                        cmd = inp["command"][:60]
+                        detail = f" ({cmd})"
+                    elif name == "Grep" and "pattern" in inp:
+                        detail = f" (/{inp['pattern']}/)"
+                    elif name == "Agent" and "description" in inp:
+                        detail = f" ({inp['description']})"
+                    tool_uses.append(f"{name}{detail}")
+                elif bt == "thinking":
+                    last_thinking_len = len(block.get("thinking", ""))
+                elif bt == "text":
+                    text = block.get("text", "")
+                    if text:
+                        parts.append(f"Response: {text[:120]}")
+        elif ev_type == "result":
+            result_event = ev
+
+    if init_event and not tool_uses and not parts:
+        model = init_event.get("model", "unknown")
+        parts.append(f"Session started (model: {model})")
+
+    if tool_uses:
+        parts.append(f"Tools used: {', '.join(tool_uses[-5:])}")
+        if len(tool_uses) > 5:
+            parts[0] = f"Tools used ({len(tool_uses)} total): {', '.join(tool_uses[-5:])}"
+
+    if last_thinking_len and not result_event:
+        parts.append(f"Thinking... ({last_thinking_len} chars)")
+
+    if result_event:
+        subtype = result_event.get("subtype", "unknown")
+        turns = result_event.get("num_turns", "?")
+        duration = result_event.get("duration_ms", 0)
+        dur_str = _format_duration(duration // 1000) if duration else "?"
+        result_text = result_event.get("result", "")
+        summary = f"Completed ({subtype}, {turns} turns, {dur_str})"
+        if result_text:
+            summary += f": {result_text[:100]}"
+        parts.append(summary)
+
+    return " | ".join(parts) if parts else "[NDJSON: processing...]"
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -108,6 +192,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    ndjson_mode: bool = False                   # True when output is NDJSON (qodercli stream-json)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -694,6 +779,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        ndjson_mode: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -704,6 +790,8 @@ class ProcessRegistry:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
+            ndjson_mode: If True, output is NDJSON (qodercli stream-json). poll()
+                         will parse structured progress events instead of raw text.
         """
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
@@ -712,6 +800,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            ndjson_mode=ndjson_mode,
         )
 
         if use_pty:
@@ -1343,7 +1432,10 @@ class ProcessRegistry:
         self._reconcile_local_exit(session)
 
         with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+            if session.ndjson_mode and session.output_buffer:
+                output_preview = _format_ndjson_progress(session.output_buffer)
+            else:
+                output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
 
         result = {
             "session_id": session.id,

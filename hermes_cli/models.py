@@ -8,6 +8,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import re
 import urllib.parse
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
-from hermes_cli.urllib_security import open_credentialed_url
+from hermes_cli.urllib_security import open_credentialed_url, url_origin
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -2023,6 +2024,343 @@ def _get_custom_base_url() -> str:
     return str(model_cfg.get("base_url", "")).strip()
 
 
+def _get_provider_config_dict(provider: str) -> dict[str, Any]:
+    """Return config.yaml providers.<provider>, or an empty dict."""
+    key = str(provider or "").strip()
+    if not key:
+        return {}
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        providers_cfg = config.get("providers", {})
+        if isinstance(providers_cfg, dict):
+            entry = providers_cfg.get(key) or providers_cfg.get(key.lower())
+            if isinstance(entry, dict):
+                return entry
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def _root_for_ollama_native_api(base_url: str) -> str:
+    """Convert an OpenAI-style Ollama base URL to the native API root."""
+    root = str(base_url or "").strip().rstrip("/")
+    if root.startswith(":"):
+        root = "http://127.0.0.1" + root
+    elif root and "://" not in root:
+        root = "http://" + root
+    for suffix in ("/api/tags", "/v1/models", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return root
+
+
+def _get_ollama_base_url() -> str:
+    """Resolve the local Ollama-compatible endpoint URL.
+
+    Prefer explicit config under ``providers.ollama.base_url`` because this is
+    how local Ollama-compatible endpoints can be wired without changing the
+    active model provider. Fall back to active ``model.base_url`` only when the
+    active provider is ollama/custom, then to Ollama's local default.
+    """
+    provider_cfg = _get_provider_config_dict("ollama")
+    configured = (
+        provider_cfg.get("base_url", "")
+        or provider_cfg.get("api", "")
+        or provider_cfg.get("url", "")
+        or ""
+    )
+    if configured:
+        return str(configured).strip()
+
+    model_cfg = _get_model_config_dict()
+    model_provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    model_base = str(model_cfg.get("base_url", "") or "").strip()
+    if model_provider == "ollama" and model_base:
+        return model_base
+    if model_provider == "custom" and model_base:
+        # Only reuse the active bare custom endpoint when it is actually
+        # Ollama-compatible. Otherwise a user working against an unrelated
+        # OpenAI-compatible endpoint would make the Ollama picker probe that
+        # endpoint's /api/tags and hide their local Ollama catalog.
+        try:
+            if should_use_ollama_native_catalog("custom", model_base):
+                return model_base
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+
+    env_host = os.getenv("OLLAMA_HOST", "").strip()
+    if env_host:
+        if env_host.startswith(":") and not env_host.startswith("::"):
+            env_host = "127.0.0.1" + env_host
+        elif env_host.startswith("[") and env_host.endswith("]"):
+            env_host = f"{env_host}:11434"
+        elif "://" in env_host:
+            try:
+                parsed = urllib.parse.urlsplit(env_host)
+                if parsed.hostname and parsed.port is None:
+                    hostname = parsed.hostname
+                    if ":" in hostname and not hostname.startswith("["):
+                        hostname = f"[{hostname}]"
+                    userinfo = (
+                        parsed.netloc.rsplit("@", 1)[0] + "@"
+                        if "@" in parsed.netloc
+                        else ""
+                    )
+                    env_host = parsed._replace(
+                        netloc=f"{userinfo}{hostname}:11434"
+                    ).geturl()
+            except ValueError:
+                pass
+        elif env_host.count(":") > 1 and not env_host.startswith("["):
+            env_host = f"[{env_host}]:11434"
+        elif ":" not in env_host:
+            env_host = f"{env_host}:11434"
+        return env_host
+    return "http://localhost:11434"
+
+
+def _get_ollama_request_headers() -> dict[str, str]:
+    """Return configured headers for native Ollama catalog requests."""
+    entry = _get_provider_config_dict("ollama")
+    raw = entry.get("extra_headers")
+    try:
+        from hermes_cli.config import normalize_extra_headers
+
+        return normalize_extra_headers(raw)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return {}
+
+
+_OLLAMA_LOCAL_MODELS_CACHE_TTL: int = 300  # seconds (5 minutes)
+_OLLAMA_LOCAL_MODELS_CACHE: dict[str, tuple[tuple[str, ...], float]] = {}
+_OLLAMA_LOCAL_PROBE_FAILURE_CACHE: dict[str, float] = {}
+_OLLAMA_LOCAL_PROBE_REACHABLE: dict[str, bool] = {}
+_OLLAMA_LOCAL_PROBE_FAILURE_TTL: int = 30
+_OLLAMA_LOCAL_CACHE_MAX_ENTRIES: int = 256
+
+
+def _evict_related_ollama_cache_entries(key: str) -> None:
+    _OLLAMA_LOCAL_MODELS_CACHE.pop(key, None)
+    _OLLAMA_LOCAL_PROBE_REACHABLE.pop(key, None)
+    for failure_key in list(_OLLAMA_LOCAL_PROBE_FAILURE_CACHE):
+        if failure_key == key or failure_key.startswith(f"{key}|timeout:"):
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
+
+
+def _remember_ollama_cache(cache: dict[str, Any], key: str, value: Any) -> None:
+    if key not in cache and len(cache) >= _OLLAMA_LOCAL_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(cache))
+        _evict_related_ollama_cache_entries(
+            oldest_key.split("|timeout:", 1)[0]
+        )
+    cache[key] = value
+
+
+def _ollama_probe_cache_key(root: str, headers: Optional[dict[str, str]]) -> str:
+    cache_key = root
+    if headers:
+        import hashlib
+
+        normalized_headers = sorted(
+            (str(key).lower(), str(value)) for key, value in headers.items()
+        )
+        header_blob = json.dumps(
+            normalized_headers, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8", errors="replace")
+        header_fingerprint = hashlib.blake2b(header_blob, digest_size=8).hexdigest()
+        cache_key = f"{root}|headers:{header_fingerprint}"
+    return cache_key
+
+
+def probe_ollama_local_models(
+    base_url: Optional[str] = None,
+    timeout: float = 2.0,
+    headers: Optional[dict[str, str]] = None,
+) -> Optional[list[str]]:
+    """Probe local Ollama-compatible models from native ``/api/tags``.
+
+    Returns ``None`` when the endpoint cannot be reached or returns malformed
+    data, and a list (possibly empty) when ``/api/tags`` was reachable. Stock
+    Ollama exposes its authoritative local model catalog at ``/api/tags``;
+    OpenAI-compatible ``/v1/models`` is not required for local Ollama servers.
+    """
+    root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
+    if not root:
+        return None
+    cache_key = _ollama_probe_cache_key(root, headers)
+    failure_key = f"{cache_key}|timeout:{float(timeout):.3f}"
+    cached = _OLLAMA_LOCAL_MODELS_CACHE.get(cache_key)
+    if cached is not None:
+        cached_models, cached_at = cached
+        if time.monotonic() - cached_at < _OLLAMA_LOCAL_MODELS_CACHE_TTL:
+            return list(cached_models)
+    failed_at = _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.get(failure_key)
+    if failed_at is not None:
+        if time.monotonic() - failed_at < _OLLAMA_LOCAL_PROBE_FAILURE_TTL:
+            return None
+        _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
+
+    try:
+        url = root.rstrip("/") + "/api/tags"
+        request_headers = {"User-Agent": _HERMES_USER_AGENT}
+        request_headers.update(headers or {})
+        req = urllib.request.Request(url, headers=request_headers)
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except (
+        ValueError,
+        OSError,
+        TimeoutError,
+        http.client.HTTPException,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ):
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+        )
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+        )
+        return None
+
+    raw_models = payload.get("models", []) if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False
+        )
+        _remember_ollama_cache(
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic()
+        )
+        return None
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in raw_models:
+        if isinstance(item, dict):
+            model_id = str(item.get("model") or item.get("name") or "").strip()
+        else:
+            model_id = str(item or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append(model_id)
+    _remember_ollama_cache(_OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, True)
+    _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
+    _remember_ollama_cache(
+        _OLLAMA_LOCAL_MODELS_CACHE,
+        cache_key,
+        (tuple(models), time.monotonic()),
+    )
+    return models
+
+
+def fetch_ollama_local_models(
+    base_url: Optional[str] = None,
+    timeout: float = 2.0,
+    headers: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """Fetch local Ollama-compatible models, returning [] on probe failure."""
+    return probe_ollama_local_models(base_url, timeout, headers=headers) or []
+
+
+def _same_ollama_native_root(left: str, right: str) -> bool:
+    """Return True when two Ollama/OpenAI-style base URLs share an API root."""
+    left_root = _root_for_ollama_native_api(left).rstrip("/")
+    right_root = _root_for_ollama_native_api(right).rstrip("/")
+    if not left_root or not right_root:
+        return False
+    try:
+        left_parts = urllib.parse.urlsplit(left_root)
+        right_parts = urllib.parse.urlsplit(right_root)
+        return (
+            url_origin(left_root) == url_origin(right_root)
+            and left_parts.path.rstrip("/") == right_parts.path.rstrip("/")
+        )
+    except (AttributeError, ValueError):
+        return False
+
+
+def should_use_ollama_native_catalog(
+    provider: Optional[str],
+    base_url: Optional[str],
+    headers: Optional[dict[str, str]] = None,
+) -> bool:
+    """Return True when model discovery should use local Ollama ``/api/tags``.
+
+    Bare ``ollama`` is normalized to ``custom`` elsewhere so runtime paths can
+    share the OpenAI-compatible chat client. For model discovery and validation,
+    however, local Ollama's authoritative model list is ``/api/tags``. Use that
+    path when the caller explicitly asked for Ollama, when the base URL matches
+    configured ``providers.ollama.base_url``, or when an ambiguous custom URL on
+    Ollama's default local port actually serves ``/api/tags``. Ordinary custom
+    endpoints stay on the existing OpenAI-compatible ``/models`` probe path.
+    """
+    requested = str(provider or "").strip().lower()
+    root = _root_for_ollama_native_api(base_url or "")
+    if root:
+        try:
+            host = (urllib.parse.urlparse(root).hostname or "").lower()
+            if host == "ollama.com" or host.endswith(".ollama.com"):
+                return False
+        except ValueError:
+            pass
+
+    known_non_local_providers = {
+        "openrouter",
+        "nous",
+        "anthropic",
+        "openai",
+        "openai-codex",
+        "gemini",
+        "ollama-cloud",
+    }
+    if requested in known_non_local_providers:
+        return False
+
+    if requested == "ollama":
+        if not root:
+            return False
+        configured = _get_provider_config_dict("ollama")
+        configured_base = str(
+            configured.get("base_url")
+            or configured.get("api")
+            or configured.get("url")
+            or ""
+        ).strip()
+        if configured_base and not _same_ollama_native_root(root, configured_base):
+            return probe_ollama_local_models(root, timeout=0.5, headers=headers) is not None
+        return True
+
+    provider_cfg = _get_provider_config_dict("ollama")
+    configured_ollama_base_url = str(
+        provider_cfg.get("base_url", "")
+        or provider_cfg.get("api", "")
+        or provider_cfg.get("url", "")
+        or ""
+    ).strip()
+    if configured_ollama_base_url and _same_ollama_native_root(root, configured_ollama_base_url):
+        return True
+
+    if not root:
+        return False
+
+    local_like_providers = {"", "custom", "local", "llamacpp", "llama.cpp", "llama-cpp", "vllm"}
+    if requested not in local_like_providers and not requested.startswith("custom:"):
+        return False
+
+    try:
+        parsed = urllib.parse.urlparse(root)
+        if parsed.port != 11434:
+            return False
+    except ValueError:
+        return False
+
+    return probe_ollama_local_models(root, timeout=0.5, headers=headers) is not None
+
+
 def _get_model_config_dict() -> dict[str, Any]:
     """Return the main model config mapping, or an empty dict."""
     try:
@@ -2031,7 +2369,7 @@ def _get_model_config_dict() -> dict[str, Any]:
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
             return model_cfg
-    except Exception:
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError):
         pass
     return {}
 
@@ -2568,6 +2906,44 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     models.dev entries are merged on top of curated so new models released
     on the platform appear in ``/model`` without a Hermes release.
     """
+    requested = str(provider or "").strip().lower()
+    if requested == "ollama":
+        if force_refresh:
+            _OLLAMA_LOCAL_MODELS_CACHE.clear()
+            _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
+            _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
+        base_url = _get_ollama_base_url()
+        headers = _get_ollama_request_headers()
+        use_native = should_use_ollama_native_catalog(
+            "ollama", base_url, headers=headers
+        )
+        if use_native:
+            if headers:
+                native_models = fetch_ollama_local_models(base_url, headers=headers)
+            else:
+                native_models = fetch_ollama_local_models(base_url)
+            native_key = _ollama_probe_cache_key(
+                _root_for_ollama_native_api(base_url), headers or None
+            )
+            if native_models or _OLLAMA_LOCAL_PROBE_REACHABLE.get(native_key) is True:
+                return native_models
+        else:
+            return []
+        # gateways that expose only OpenAI-style /v1/models.
+        config = _get_provider_config_dict("ollama")
+        fallback_key = str(config.get("api_key") or "").strip()
+        if not fallback_key:
+            key_env = str(config.get("key_env") or "").strip()
+            fallback_key = os.getenv(key_env, "").strip() if key_env else ""
+        fallback_base = str(config.get("base_url") or base_url).strip()
+        fallback_headers = _get_ollama_request_headers()
+        fallback_models = fetch_api_models(
+            fallback_key,
+            fallback_base,
+            headers=fallback_headers or None,
+        )
+        return fallback_models or []
+
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
@@ -2863,8 +3239,25 @@ def _credential_fingerprint(provider: str) -> str:
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
-    except Exception:
+    except (ImportError, AttributeError):
         pass
+
+    if provider == "ollama":
+        parts.append(f"OLLAMA_HOST={_os.environ.get('OLLAMA_HOST', '')}")
+        provider_cfg = _get_provider_config_dict("ollama")
+        parts.append(
+            "providers.ollama.base_url="
+            f"{provider_cfg.get('base_url', '') or provider_cfg.get('api', '') or provider_cfg.get('url', '')}"
+        )
+        model_cfg = _get_model_config_dict()
+        parts.append(
+            "model.provider="
+            f"{model_cfg.get('provider', '')}|model.base_url={model_cfg.get('base_url', '')}"
+        )
+        parts.append(
+            "providers.ollama.extra_headers="
+            + json.dumps(provider_cfg.get("extra_headers", {}), sort_keys=True, default=str)
+        )
 
     # OAuth / external-file mtimes that change on re-auth
     try:
@@ -2941,9 +3334,12 @@ def cached_provider_model_ids(
     Hits the cache when fresh; otherwise calls the live function and
     persists a non-empty result. Always returns a list (never None).
     """
-    normalized = normalize_provider(provider) or (provider or "")
+    requested = str(provider or "").strip().lower()
+    normalized = requested if requested == "ollama" else (normalize_provider(provider) or (provider or ""))
     if not normalized:
         return []
+    if normalized == "ollama":
+        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
@@ -2955,7 +3351,7 @@ def cached_provider_model_ids(
         and isinstance(entry, dict)
         and entry.get("fp") == fp
         and isinstance(entry.get("models"), list)
-        and entry["models"]
+        and (entry["models"] or normalized == "ollama")
         and (now - float(entry.get("at", 0))) < ttl_seconds
     ):
         return list(entry["models"])
@@ -2970,6 +3366,30 @@ def cached_provider_model_ids(
         }
         _save_provider_models_cache(cache)
         return list(live)
+
+    if normalized == "ollama":
+        base_url = _get_ollama_base_url()
+        headers = _get_ollama_request_headers() or None
+        probe_key = _ollama_probe_cache_key(
+            _root_for_ollama_native_api(base_url), headers
+        )
+        if _OLLAMA_LOCAL_PROBE_REACHABLE.get(probe_key) is True:
+            # A reachable empty native catalog is authoritative for the short
+            # native TTL; do not resurrect a stale disk catalog.
+            cache[normalized] = {"fp": fp, "at": now, "models": []}
+            _save_provider_models_cache(cache)
+            return []
+
+        # A failed/non-native probe is not authoritative. Preserve a stale
+        # catalog rather than blanking the picker during a transient outage.
+        if (
+            isinstance(entry, dict)
+            and entry.get("fp") == fp
+            and isinstance(entry.get("models"), list)
+            and entry["models"]
+        ):
+            return list(entry["models"])
+        return []
 
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
@@ -2992,15 +3412,26 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     ``hermes model --refresh``.
     """
     try:
+        # Native Ollama tags are keyed by root URL rather than provider slug.
+        # A targeted refresh for a custom local-Ollama endpoint cannot identify
+        # the right root from the provider name alone, so clear this small
+        # in-process cache on every explicit provider-cache refresh.
+        _OLLAMA_LOCAL_MODELS_CACHE.clear()
+        _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
+        _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()
             return
         cache = _load_provider_models_cache()
-        normalized = normalize_provider(provider) or provider or ""
+        requested = str(provider or "").strip().lower()
+        normalized = requested if requested == "ollama" else (normalize_provider(provider) or provider or "")
+        changed = False
         if normalized in cache:
             del cache[normalized]
+            changed = True
+        if changed:
             _save_provider_models_cache(cache)
     except Exception:
         pass
@@ -4331,6 +4762,7 @@ def validate_requested_model(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """
     Validate a ``/model`` value for the active provider.
@@ -4421,6 +4853,70 @@ def validate_requested_model(
         return {
             "accepted": False, "persist": False, "recognized": False,
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
+        }
+
+    if str(provider or "").strip().lower() == "ollama" and not base_url:
+        base_url = _get_ollama_base_url()
+    ollama_base_url = base_url
+    configured_ollama_base_url = str(
+        (
+            _get_provider_config_dict("ollama").get("base_url")
+            or _get_provider_config_dict("ollama").get("api")
+            or _get_provider_config_dict("ollama").get("url")
+            or ""
+        )
+    ).strip()
+    configured_headers_allowed = not (
+        configured_ollama_base_url
+        and not _same_ollama_native_root(ollama_base_url or "", configured_ollama_base_url)
+    )
+    ollama_headers = (
+        headers
+        if headers is not None
+        else (
+            _get_ollama_request_headers()
+            if configured_headers_allowed
+            and str(provider or "").strip().lower() == "ollama"
+            else {}
+        )
+    )
+    if should_use_ollama_native_catalog(
+        provider, ollama_base_url, headers=ollama_headers
+    ):
+        ollama_models = probe_ollama_local_models(
+            ollama_base_url, headers=ollama_headers
+        )
+        if ollama_models is None:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: could not reach this Ollama endpoint's `/api/tags` model listing to validate `{requested}`. "
+                    "Hermes will save the model name, but local Ollama model discovery could not verify it."
+                ),
+            }
+        if requested_for_lookup in set(ollama_models):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        suggestions = get_close_matches(requested_for_lookup, ollama_models, n=3, cutoff=0.5)
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar local Ollama models: " + ", ".join(f"`{s}`" for s in suggestions)
+        empty_hint = " No models are currently listed by `/api/tags`." if not ollama_models else ""
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` was not found in this Ollama endpoint's `/api/tags` model listing."
+                f"{empty_hint} It may still work if the server supports hidden or aliased models."
+                f"{suggestion_text}"
+            ),
         }
 
     if normalized == "custom" or normalized.startswith("custom:"):

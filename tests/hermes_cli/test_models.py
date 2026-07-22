@@ -1,5 +1,8 @@
 """Tests for the hermes_cli models module."""
 
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
@@ -993,3 +996,472 @@ class TestClaudeSonnet5InCuratedLists:
     def test_nous_list_includes_sonnet_5(self):
         from hermes_cli.models import _PROVIDER_MODELS
         assert "anthropic/claude-sonnet-5" in _PROVIDER_MODELS["nous"]
+
+
+class _FakeOllamaTagsHandler(BaseHTTPRequestHandler):
+    """Serve Ollama-native /api/tags while rejecting OpenAI /v1/models."""
+
+    models_payload = [
+        {"name": "qwen3:1.7b", "model": "qwen3:1.7b"},
+        {"name": "llama3.2:1b", "model": "llama3.2:1b"},
+    ]
+    paths_seen: list[str] = []
+
+    def do_GET(self):
+        type(self).paths_seen.append(self.path)
+        if self.path.rstrip("/") == "/api/tags":
+            body = json.dumps({"models": type(self).models_payload}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.rstrip("/") == "/v1/models":
+            self.send_response(503)
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _start_fake_ollama_server(models=None):
+    _FakeOllamaTagsHandler.models_payload = (
+        models
+        if models is not None
+        else [
+            {"name": "qwen3:1.7b", "model": "qwen3:1.7b"},
+            {"name": "llama3.2:1b", "model": "llama3.2:1b"},
+        ]
+    )
+    _FakeOllamaTagsHandler.paths_seen = []
+    server = HTTPServer(("127.0.0.1", 0), _FakeOllamaTagsHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, server.server_address[1]
+
+
+class TestLocalOllamaModelDiscovery:
+    def test_provider_model_ids_uses_ollama_api_tags_from_provider_config(self):
+        """Local Ollama discovery should use /api/tags from providers.ollama.base_url."""
+        from hermes_cli.models import provider_model_ids
+
+        server, port = _start_fake_ollama_server()
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": f"http://127.0.0.1:{port}"}}},
+            ):
+                assert provider_model_ids("ollama", force_refresh=True) == [
+                    "qwen3:1.7b",
+                    "llama3.2:1b",
+                ]
+        finally:
+            server.shutdown()
+
+    def test_provider_model_ids_ollama_force_refresh_clears_native_tags_cache(self):
+        from hermes_cli.models import provider_model_ids
+
+        server, port = _start_fake_ollama_server(models=[{"name": "old-model"}])
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": f"http://127.0.0.1:{port}"}}},
+            ):
+                assert provider_model_ids("ollama", force_refresh=True) == ["old-model"]
+                _FakeOllamaTagsHandler.models_payload = [{"name": "new-model"}]
+                assert provider_model_ids("ollama", force_refresh=True) == ["new-model"]
+        finally:
+            server.shutdown()
+
+    def test_native_tags_cache_expires(self, monkeypatch):
+        from hermes_cli.models import fetch_ollama_local_models
+
+        server, port = _start_fake_ollama_server(models=[{"name": "old-model"}])
+        try:
+            base_url = f"http://127.0.0.1:{port}"
+            assert fetch_ollama_local_models(base_url) == ["old-model"]
+            _FakeOllamaTagsHandler.models_payload = [{"name": "new-model"}]
+            root = _models_mod._root_for_ollama_native_api(base_url)
+            cached_models, _ = _models_mod._OLLAMA_LOCAL_MODELS_CACHE[root]
+            _models_mod._OLLAMA_LOCAL_MODELS_CACHE[root] = (cached_models, 0.0)
+            monkeypatch.setattr("hermes_cli.models.time.monotonic", lambda: 301.0)
+            assert fetch_ollama_local_models(base_url) == ["new-model"]
+        finally:
+            server.shutdown()
+
+    def test_ollama_has_no_static_default_model(self):
+        from hermes_cli.models import get_default_model_for_provider
+
+        assert get_default_model_for_provider("ollama") == ""
+
+    def test_fetch_ollama_models_accepts_base_url_without_scheme(self):
+        """OLLAMA_HOST commonly omits http://; discovery should normalize it."""
+        from hermes_cli.models import fetch_ollama_local_models
+
+        server, port = _start_fake_ollama_server(models=[{"name": "qwen2.5:1.5b"}])
+        try:
+            assert fetch_ollama_local_models(f"127.0.0.1:{port}/v1") == ["qwen2.5:1.5b"]
+        finally:
+            server.shutdown()
+
+    def test_fetch_ollama_models_accepts_full_models_url(self):
+        """Pasted OpenAI-style /v1/models URLs should normalize to the native root."""
+        from hermes_cli.models import fetch_ollama_local_models
+
+        server, port = _start_fake_ollama_server(models=[{"name": "qwen2.5:1.5b"}])
+        try:
+            assert fetch_ollama_local_models(f"127.0.0.1:{port}/v1/models") == [
+                "qwen2.5:1.5b"
+            ]
+        finally:
+            server.shutdown()
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models/api/tags" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_runtime_error_from_config_load_does_not_escape_ollama_helpers(self):
+        """Managed-mode config failures should degrade to defaults, not crash pickers."""
+        from hermes_cli.models import _get_ollama_base_url, should_use_ollama_native_catalog
+
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad home")), patch(
+            "hermes_cli.models.probe_ollama_local_models",
+            return_value=None,
+        ):
+            assert _get_ollama_base_url() == "http://localhost:11434"
+            assert should_use_ollama_native_catalog("custom", "127.0.0.1:11434/v1") is False
+
+    def test_probe_ollama_models_malformed_base_url_returns_none(self):
+        """Malformed user-configured URLs should behave like probe failures, not crashes."""
+        from hermes_cli.models import probe_ollama_local_models
+
+        assert probe_ollama_local_models("http://127.0.0.1:bad-port/v1") is None
+
+    def test_ollama_port_detection_requires_working_api_tags(self):
+        from hermes_cli.models import should_use_ollama_native_catalog
+
+        with patch("hermes_cli.models.probe_ollama_local_models", return_value=["qwen3:1.7b"]):
+            assert should_use_ollama_native_catalog("custom", "192.168.1.5:11434/v1") is True
+        with patch("hermes_cli.models.probe_ollama_local_models", return_value=None):
+            assert should_use_ollama_native_catalog("custom", "192.168.1.5:11434/v1") is False
+
+    def test_provider_model_ids_ollama_cloud_config_does_not_probe_local_tags(self):
+        from hermes_cli.models import provider_model_ids
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"providers": {"ollama": {"base_url": "https://ollama.com/v1"}}},
+        ), patch("hermes_cli.models.fetch_ollama_local_models") as fetch_local:
+            assert provider_model_ids("ollama", force_refresh=True) == []
+        fetch_local.assert_not_called()
+
+    def test_provider_model_ids_ignores_active_non_ollama_custom_endpoint(self):
+        from hermes_cli.models import provider_model_ids
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://custom.example/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_ollama_local_models",
+            return_value=["qwen3:1.7b"],
+        ) as fetch_local:
+            assert provider_model_ids("ollama", force_refresh=True) == ["qwen3:1.7b"]
+        fetch_local.assert_called_once_with("http://localhost:11434")
+
+    def test_ollama_cache_fingerprint_does_not_probe_custom_endpoint(self):
+        from hermes_cli.models import _credential_fingerprint
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                }
+            },
+        ), patch("hermes_cli.models.probe_ollama_local_models") as probe_ollama:
+            assert _credential_fingerprint("ollama")
+        probe_ollama.assert_not_called()
+
+    def test_clear_provider_models_cache_clears_ollama_native_tags_cache(self):
+        import hermes_cli.models as models
+
+        cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
+        cache["http://127.0.0.1:11434"] = ("old-model",)
+        models.clear_provider_models_cache("ollama")
+        assert cache == {}
+
+    def test_clear_provider_models_cache_custom_clears_native_tags_cache(self):
+        import hermes_cli.models as models
+
+        cache = getattr(models, "_OLLAMA_LOCAL_MODELS_CACHE")
+        cache["http://127.0.0.1:11434"] = ("old-model",)
+        models.clear_provider_models_cache("custom")
+        assert cache == {}
+
+    def test_clear_provider_models_cache_does_not_remove_custom_disk_cache(self):
+        import hermes_cli.models as models
+
+        disk_cache = {
+            "custom": {"models": ["custom-model"]},
+            "ollama": {"models": ["ollama-model"]},
+        }
+        with patch.object(models, "_load_provider_models_cache", return_value=disk_cache), patch.object(
+            models, "_save_provider_models_cache"
+        ) as save:
+            models.clear_provider_models_cache("ollama")
+        save.assert_called_once_with({"custom": {"models": ["custom-model"]}})
+
+
+    def test_ollama_cloud_urls_do_not_use_native_local_catalog(self):
+        from hermes_cli.models import should_use_ollama_native_catalog
+
+        assert should_use_ollama_native_catalog("ollama-cloud", "https://ollama.com/v1") is False
+        assert should_use_ollama_native_catalog("ollama", "https://ollama.com/v1") is False
+
+    def test_non_ollama_custom_endpoint_uses_generic_catalog_path(self):
+        from hermes_cli.models import should_use_ollama_native_catalog
+
+        assert should_use_ollama_native_catalog("custom", "https://example.test/v1") is False
+        assert should_use_ollama_native_catalog("openrouter", "http://localhost:11434/v1") is False
+
+
+
+
+
+
+
+
+
+
+
+    def test_model_validation_uses_ollama_api_tags_for_ollama_provider(self):
+        """`/model` validation for provider=ollama should not probe `/models`."""
+        from hermes_cli.models import validate_requested_model
+
+        server, port = _start_fake_ollama_server()
+        try:
+            result = validate_requested_model(
+                "qwen3:1.7b",
+                "ollama",
+                base_url=f"http://127.0.0.1:{port}",
+            )
+        finally:
+            server.shutdown()
+
+        assert result == {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_model_validation_ollama_cloud_config_does_not_use_local_tags(self):
+        """provider=ollama with a cloud base URL should not fall into local /api/tags."""
+        from hermes_cli.models import validate_requested_model
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"providers": {"ollama": {"base_url": "https://ollama.com/v1"}}},
+        ), patch("hermes_cli.models.probe_ollama_local_models") as probe_ollama, patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["qwen3:1.7b"],
+                "probed_url": "https://ollama.com/v1/models",
+            },
+        ):
+            result = validate_requested_model("qwen3:1.7b", "ollama")
+
+        probe_ollama.assert_not_called()
+        assert result == {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+
+    def test_model_validation_uses_ollama_api_tags_for_matching_custom_endpoint(self):
+        """Current-provider `custom` on the configured Ollama URL should use `/api/tags`."""
+        from hermes_cli.models import validate_requested_model
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                result = validate_requested_model(
+                    "llama3.2:1b",
+                    "custom",
+                    base_url=base_url,
+                )
+        finally:
+            server.shutdown()
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_model_validation_empty_ollama_tags_does_not_fall_back_to_models(self):
+        """Reachable but empty /api/tags should not produce a misleading /models warning."""
+        from hermes_cli.models import validate_requested_model
+
+        server, port = _start_fake_ollama_server(models=[])
+        base_url = f"http://127.0.0.1:{port}"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                result = validate_requested_model(
+                    "qwen3:1.7b",
+                    "custom",
+                    base_url=base_url,
+                )
+        finally:
+            server.shutdown()
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "/api/tags" in result["message"]
+        assert "/models" not in result["message"]
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+
+
+
+    def test_ollama_root_matching_is_case_insensitive_for_hostnames(self):
+        from hermes_cli.models import _same_ollama_native_root
+
+        assert _same_ollama_native_root(
+            "HTTP://OLLAMA.EXAMPLE:11434/v1",
+            "http://ollama.example:11434",
+        ) is True
+
+    def test_ollama_host_environment_forms_are_normalized(self, monkeypatch):
+        from hermes_cli.models import _get_ollama_base_url, _root_for_ollama_native_api
+
+        monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
+        assert _root_for_ollama_native_api(_get_ollama_base_url()) == "http://0.0.0.0:11434"
+        monkeypatch.setenv("OLLAMA_HOST", ":22434")
+        assert _root_for_ollama_native_api(_get_ollama_base_url()) == "http://127.0.0.1:22434"
+        monkeypatch.setenv("OLLAMA_HOST", "::1")
+        assert _root_for_ollama_native_api(_get_ollama_base_url()) == "http://[::1]:11434"
+        monkeypatch.setenv("OLLAMA_HOST", "[::1]")
+        assert _root_for_ollama_native_api(_get_ollama_base_url()) == "http://[::1]:11434"
+        monkeypatch.setenv("OLLAMA_HOST", "http://ollama.example")
+        assert _get_ollama_base_url() == "http://ollama.example:11434"
+        monkeypatch.setenv("OLLAMA_HOST", "http://user:pass@ollama.example")
+        assert _get_ollama_base_url() == "http://user:pass@ollama.example:11434"
+        assert _root_for_ollama_native_api("http://ollama.example/api/tags") == "http://ollama.example"
+
+    def test_ollama_failed_probe_is_cached_briefly(self):
+        import hermes_cli.models as models
+
+        models._OLLAMA_LOCAL_MODELS_CACHE.clear()
+        models._OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            side_effect=OSError("offline"),
+        ) as request:
+            assert models.probe_ollama_local_models("http://127.0.0.1:19999") is None
+            assert models.probe_ollama_local_models("http://127.0.0.1:19999") is None
+        request.assert_called_once()
+
+    def test_empty_ollama_catalog_does_not_resurrect_stale_disk_models(self):
+        import hermes_cli.models as models
+
+        base_url = "http://127.0.0.1:11434"
+        probe_key = models._ollama_probe_cache_key(base_url, None)
+        models._OLLAMA_LOCAL_PROBE_REACHABLE[probe_key] = True
+        try:
+            with patch.object(
+                models,
+                "_load_provider_models_cache",
+                return_value={"ollama": {"fp": "same", "at": 0, "models": ["stale:model"]}},
+            ), patch.object(models, "_save_provider_models_cache"), patch.object(
+                models, "_credential_fingerprint", return_value="same"
+            ), patch.object(models, "provider_model_ids", return_value=[]), patch.object(
+                models, "_get_ollama_base_url", return_value=base_url
+            ), patch.object(models, "_get_ollama_request_headers", return_value={}):
+                assert models.cached_provider_model_ids("ollama") == []
+        finally:
+            models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
+
+    def test_failed_ollama_catalog_preserves_stale_disk_models(self):
+        import hermes_cli.models as models
+
+        base_url = "http://127.0.0.1:11434"
+        probe_key = models._ollama_probe_cache_key(base_url, None)
+        models._OLLAMA_LOCAL_PROBE_REACHABLE[probe_key] = False
+        try:
+            with patch.object(
+                models,
+                "_load_provider_models_cache",
+                return_value={"ollama": {"fp": "same", "at": 0, "models": ["stale:model"]}},
+            ), patch.object(models, "_save_provider_models_cache"), patch.object(
+                models, "_credential_fingerprint", return_value="same"
+            ), patch.object(models, "provider_model_ids", return_value=[]), patch.object(
+                models, "_get_ollama_base_url", return_value=base_url
+            ), patch.object(models, "_get_ollama_request_headers", return_value={}):
+                assert models.cached_provider_model_ids("ollama") == ["stale:model"]
+        finally:
+            models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
+
+    def test_ollama_native_request_uses_redirect_safe_catalog_helper(self):
+        import hermes_cli.models as models
+
+        response = MagicMock()
+        response.read.return_value = b'{"models": [{"name": "qwen3:1.7b"}]}'
+        response.__enter__.return_value = response
+        with patch.object(
+            models, "_urlopen_model_catalog_request", return_value=response
+        ) as request:
+            assert models.fetch_ollama_local_models("http://127.0.0.1:11434") == [
+                "qwen3:1.7b"
+            ]
+        request.assert_called_once()
+
+    def test_validation_with_nonmatching_ollama_root_does_not_forward_config_headers(self):
+        import hermes_cli.models as models
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "providers": {
+                    "ollama": {
+                        "base_url": "https://ollama.internal/v1",
+                        "extra_headers": {"Authorization": "Bearer secret"},
+                    }
+                }
+            },
+        ), patch.object(models, "should_use_ollama_native_catalog", return_value=True), patch.object(
+            models, "probe_ollama_local_models", return_value=[]
+        ) as probe:
+            models.validate_requested_model(
+                "qwen3:1.7b",
+                "ollama",
+                base_url="https://other.internal/v1",
+            )
+            assert probe.call_args.kwargs["headers"] == {}
+            models.validate_requested_model(
+                "qwen3:1.7b",
+                "ollama",
+                base_url="https://other.internal/v1",
+                headers={"X-Endpoint-Token": "explicit"},
+            )
+            assert probe.call_args.kwargs["headers"] == {"X-Endpoint-Token": "explicit"}

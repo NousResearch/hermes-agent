@@ -1,6 +1,5 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { Suspense, useCallback, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
@@ -17,16 +16,15 @@ import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -40,7 +38,6 @@ import {
   sessionPinId
 } from '@/store/session'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
-import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -255,7 +252,6 @@ export function ChatView({
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
-  const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
   // from the view slice, not the global atoms (which track the primary only).
@@ -357,17 +353,6 @@ export function ChatView({
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
-  const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
-    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
-    enabled: gatewayOpen
-  })
-
-  const quickModels = useMemo(
-    () => quickModelOptions(modelOptionsQuery.data, currentProvider, currentModel),
-    [currentModel, currentProvider, modelOptionsQuery.data]
-  )
-
   const chatBarState = useMemo<ChatBarState>(
     () => ({
       model: {
@@ -375,8 +360,7 @@ export function ChatView({
         provider: currentProvider,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
-        modelMenuContent,
-        quickModels
+        modelMenuContent
       },
       tools: {
         enabled: true,
@@ -388,7 +372,7 @@ export function ChatView({
         active: false
       }
     }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent, quickModels]
+    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent]
   )
 
   // Drop files anywhere in the conversation area, not just on the composer

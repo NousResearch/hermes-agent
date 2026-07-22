@@ -29,6 +29,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from typing import Any
 
 from tui_gateway import server
@@ -282,6 +283,7 @@ def _disable_nagle(ws: Any) -> None:
 
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
+    connection_started = time.monotonic()
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
     messages = 0
@@ -329,6 +331,11 @@ async def handle_ws(ws: Any) -> None:
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation.
             server._ensure_skin_watcher()
+            _log.info(
+                "ws ready peer=%s duration_ms=%.1f",
+                peer,
+                (time.monotonic() - connection_started) * 1000,
+            )
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -457,7 +464,7 @@ async def handle_ws(ws: Any) -> None:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d lifetime_ms=%.1f",
             peer,
             disconnect_reason,
             messages,
@@ -466,4 +473,5 @@ async def handle_ws(ws: Any) -> None:
             send_failures,
             reaped_sessions,
             detached_sessions,
+            (time.monotonic() - connection_started) * 1000,
         )

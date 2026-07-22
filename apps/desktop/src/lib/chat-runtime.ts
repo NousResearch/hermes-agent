@@ -1,12 +1,11 @@
 import type { ThreadMessage } from '@assistant-ui/react'
 
-import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
-import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/hermes'
 
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
 export const BUILTIN_PERSONALITIES = [
@@ -265,74 +264,6 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
     default:
       return null
   }
-}
-
-export function quickModelOptions(
-  data: ModelOptionsResponse | undefined,
-  currentProvider: string,
-  currentModel: string
-): QuickModelOption[] {
-  const seen = new Set<string>()
-  const options: QuickModelOption[] = []
-
-  const providers = [...(data?.providers ?? [])].sort((a, b) => {
-    if (a.slug === currentProvider) {
-      return -1
-    }
-
-    if (b.slug === currentProvider) {
-      return 1
-    }
-
-    if (a.is_current) {
-      return -1
-    }
-
-    if (b.is_current) {
-      return 1
-    }
-
-    return 0
-  })
-
-  const add = (provider: string, providerName: string, model: string) => {
-    const key = `${provider}:${model}`
-
-    if (!model || seen.has(key)) {
-      return
-    }
-
-    seen.add(key)
-    options.push({ provider, providerName, model })
-  }
-
-  if (currentProvider && currentModel) {
-    add(currentProvider, currentProvider, currentModel)
-  }
-
-  for (const provider of providers) {
-    const models = [...(provider.models ?? [])].sort((a, b) => {
-      if (provider.slug === currentProvider && a === currentModel) {
-        return -1
-      }
-
-      if (provider.slug === currentProvider && b === currentModel) {
-        return 1
-      }
-
-      return 0
-    })
-
-    for (const model of models) {
-      add(provider.slug, provider.name, model)
-    }
-
-    if (options.length >= 8) {
-      break
-    }
-  }
-
-  return options.slice(0, 8)
 }
 
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {

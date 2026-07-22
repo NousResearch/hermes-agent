@@ -8185,7 +8185,10 @@ def test_model_options_propagates_list_exception(monkeypatch):
         "hermes_cli.model_switch.list_authenticated_providers",
         side_effect=RuntimeError("catalog blew up"),
     ):
-        resp = server._methods["model.options"](77, {"session_id": ""})
+        resp = server._methods["model.options"](
+            77,
+            {"session_id": "", "refresh": True},
+        )
     assert "error" in resp
     assert resp["error"]["code"] == 5033
     assert "catalog blew up" in resp["error"]["message"]

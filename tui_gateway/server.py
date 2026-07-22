@@ -25,6 +25,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.perf_diagnostics import begin_activity, finish_activity, track_activity
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -1525,20 +1526,31 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
         _rid, method, _params = normalized
         if method not in _LONG_HANDLERS:
-            return handle_request(req)
+            with track_activity("rpc", method, pool=False):
+                return handle_request(req)
 
         # Snapshot the context so the pool worker sees the bound transport.
         ctx = contextvars.copy_context()
+        activity_token = begin_activity("rpc", method, pool=True)
 
         def run():
+            failed = False
             try:
                 resp = handle_request(req)
             except Exception as exc:
+                failed = True
                 resp = _err(req.get("id"), -32000, f"handler error: {exc}")
-            if resp is not None:
-                t.write(resp)
+            try:
+                if resp is not None:
+                    t.write(resp)
+            finally:
+                finish_activity(activity_token, error=failed)
 
-        _pool.submit(lambda: ctx.run(run))
+        try:
+            _pool.submit(lambda: ctx.run(run))
+        except Exception:
+            finish_activity(activity_token, error=True)
+            raise
 
         return None
     finally:
@@ -14632,7 +14644,7 @@ def _model_picker_context(agent):
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.inventory import build_models_payload
+        from hermes_cli.inventory import build_cached_models_payload
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
@@ -14649,7 +14661,7 @@ def _(rid, params: dict) -> dict:
         # Curated model lists are preserved — list_authenticated_providers
         # populates `models` from the curated catalog, not provider_model_ids
         # (which would pull non-agentic models like TTS/embeddings/etc.).
-        payload = build_models_payload(
+        payload = build_cached_models_payload(
             ctx,
             explicit_only=bool(params.get("explicit_only")),
             include_unconfigured=bool(params.get("include_unconfigured")),

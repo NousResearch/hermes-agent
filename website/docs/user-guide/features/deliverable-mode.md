@@ -97,6 +97,18 @@ summary in one place.
 
 Files that don't exist on disk when the notifier runs are silently skipped.
 
+To keep the completion notification while suppressing native artifact uploads,
+set the following in `config.yaml`:
+
+```yaml
+kanban:
+  notify_artifacts: false
+```
+
+This setting affects only native attachments sent with Kanban completion
+notifications. Task artifacts remain recorded with the Kanban task,
+and ordinary Gateway Deliverable Mode responses are unchanged.
+
 ## Connecting more services with MCP
 
 Beyond the artifact-delivery pipeline, the agent can reach into other

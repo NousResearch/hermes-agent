@@ -2866,6 +2866,10 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # Upload artifacts referenced by completed Kanban tasks alongside the
+        # completion notification. Set false to keep the text notification
+        # while suppressing native attachment uploads.
+        "notify_artifacts": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

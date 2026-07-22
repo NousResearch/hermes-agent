@@ -429,7 +429,7 @@ class GatewayKanbanWatchersMixin:
                             # ``send_document`` / ``send_image_file`` uploads
                             # them. Only fires on the ``completed`` event so
                             # we never spam attachments on retries.
-                            if kind == "completed":
+                            if kind == "completed" and kanban_cfg.get("notify_artifacts", True):
                                 try:
                                     await self._deliver_kanban_artifacts(
                                         adapter=adapter,

@@ -102,6 +102,34 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+# The checks below mirror the gateway env ingestion in gateway/config.py
+# (apply_env_overrides): a platform only shows "configured" when the same
+# env combination that enables it at runtime is present.
+
+def _matrix_env_configured() -> bool:
+    """Matrix needs a homeserver plus an access token or password."""
+    return bool(
+        os.getenv("MATRIX_HOMESERVER")
+        and (os.getenv("MATRIX_ACCESS_TOKEN") or os.getenv("MATRIX_PASSWORD"))
+    )
+
+
+def _api_server_env_configured() -> bool:
+    """API server is enabled by a truthy flag or a configured API key."""
+    from utils import is_truthy_value
+
+    return is_truthy_value(os.getenv("API_SERVER_ENABLED", "")) or bool(
+        os.getenv("API_SERVER_KEY")
+    )
+
+
+def _webhook_env_configured() -> bool:
+    """Webhook platform requires a truthy WEBHOOK_ENABLED flag."""
+    from utils import is_truthy_value
+
+    return is_truthy_value(os.getenv("WEBHOOK_ENABLED", ""))
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     deep = getattr(args, 'deep', False)
@@ -453,12 +481,19 @@ def show_status(args):
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
         "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
         "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
+        "Matrix": (_matrix_env_configured, "MATRIX_HOME_ROOM"),
+        "Mattermost": ("MATTERMOST_TOKEN", "MATTERMOST_HOME_CHANNEL"),
+        "HomeAssistant": ("HASS_TOKEN", None),
+        "API Server": (_api_server_env_configured, None),
+        "Webhook": (_webhook_env_configured, None),
     }
 
     for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
-        
+        if callable(token_var):
+            has_token = token_var()
+        else:
+            has_token = bool(os.getenv(token_var, ""))
+
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")

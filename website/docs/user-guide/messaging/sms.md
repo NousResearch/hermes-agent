@@ -51,6 +51,9 @@ TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=your_auth_token_here
 TWILIO_PHONE_NUMBER=+15551234567
 
+# Optional: route outbound messages through a Twilio Messaging Service
+TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
 # Security: restrict to specific phone numbers (recommended)
 SMS_ALLOWED_USERS=+15559876543,+15551112222
 
@@ -124,6 +127,7 @@ Text your Twilio number — Hermes will respond via SMS.
 | `TWILIO_ACCOUNT_SID` | Yes | Twilio Account SID (starts with `AC`) |
 | `TWILIO_AUTH_TOKEN` | Yes | Twilio Auth Token (also used for webhook signature validation) |
 | `TWILIO_PHONE_NUMBER` | Yes | Your Twilio phone number (E.164 format) |
+| `TWILIO_MESSAGING_SERVICE_SID` | No | Twilio Messaging Service SID (starts with `MG`). When set, outbound requests use `MessagingServiceSid` instead of `From` |
 | `SMS_WEBHOOK_URL` | Yes | Public URL for Twilio signature validation — must match the webhook URL in your Twilio Console |
 | `SMS_WEBHOOK_PORT` | No | Webhook listener port (default: `8080`) |
 | `SMS_WEBHOOK_HOST` | No | Webhook bind address (default: `127.0.0.1`) |
@@ -189,8 +193,9 @@ SMS has no built-in encryption. Don't use SMS for sensitive operations unless yo
 ### Replies not sending
 
 1. Check `TWILIO_PHONE_NUMBER` is set correctly (E.164 format with `+`)
-2. Verify your Twilio account has SMS-capable numbers
-3. Check Hermes gateway logs for Twilio API errors
+2. If using a Messaging Service, verify `TWILIO_MESSAGING_SERVICE_SID` starts with `MG` and contains the configured phone number
+3. Verify your Twilio account has SMS-capable numbers
+4. Check Hermes gateway logs for Twilio API errors
 
 ### Webhook port conflicts
 

@@ -72,6 +72,7 @@ def main() -> None:
     logging.getLogger("gateway.platforms.slack").warning("Slack token *** rejected for smoke@example.com")
     emitter.get_emitter().flush(timeout=2.0)
     time.sleep(args.wait)
+    write_runtime_status(gateway_state="stopped", active_agents=0)
     runtime.shutdown()
     emitter.get_emitter().flush(timeout=2.0)
 

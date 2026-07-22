@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 
 from agent.monitoring.emitter import MonitoringEmitter
 from agent.monitoring.events import GatewayHealthEvent
@@ -63,6 +64,35 @@ def test_subscriber_failure_is_isolated():
     em.flush()
     em.close()
     assert len(good) == 1  # the raising subscriber did not break fan-out
+
+
+def test_flush_waits_for_in_flight_subscriber_delivery():
+    em = MonitoringEmitter()
+    subscriber_started = threading.Event()
+    release_subscriber = threading.Event()
+    flush_finished = threading.Event()
+
+    def blocking_subscriber(_batch):
+        subscriber_started.set()
+        release_subscriber.wait(timeout=2.0)
+
+    em.subscribe(blocking_subscriber)
+    em.emit({"event": "gateway_health", "name": "gateway.exit"})
+    assert subscriber_started.wait(timeout=1.0)
+
+    flush_thread = threading.Thread(
+        target=lambda: (em.flush(timeout=1.0), flush_finished.set()),
+        daemon=True,
+    )
+    flush_thread.start()
+
+    try:
+        assert not flush_finished.wait(timeout=0.1)
+    finally:
+        release_subscriber.set()
+
+    assert flush_finished.wait(timeout=1.0)
+    em.close()
 
 
 def test_unsubscribe_stops_delivery():

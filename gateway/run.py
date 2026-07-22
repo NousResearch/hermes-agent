@@ -9770,12 +9770,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("running", self._exit_reason)
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
-            try:
-                _gh_runtime = getattr(self, "_gateway_health_export_runtime", None)
-                if _gh_runtime is not None:
-                    _gh_runtime.shutdown()
-            except Exception:
-                logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
+            _shutdown_gateway_health_export(self)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -23552,6 +23547,18 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
+def _shutdown_gateway_health_export(runner: Any) -> None:
+    """Idempotently drain and detach Gateway Health OTLP export."""
+    runtime = getattr(runner, "_gateway_health_export_runtime", None)
+    if runtime is None:
+        return
+    runner._gateway_health_export_runtime = None
+    try:
+        runtime.shutdown()
+    except Exception:
+        logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -23999,10 +24006,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("MCP tool discovery failed: %s", e)
 
     # Start the gateway
-    success = await runner.start()
+    try:
+        success = await runner.start()
+    except BaseException:
+        _shutdown_gateway_health_export(runner)
+        raise
     if not success:
+        _shutdown_gateway_health_export(runner)
         return False
     if runner.should_exit_cleanly:
+        _shutdown_gateway_health_export(runner)
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         # A clean exit that carries an explicit exit code (e.g. a fatal
@@ -24018,19 +24031,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not runner._running:
         # Startup was intentionally aborted by restart/shutdown before entering
         # running mode; preserve that lifecycle path without starting cron.
-        await runner.wait_for_shutdown()
-        if runner.should_exit_with_failure:
-            if runner.exit_reason:
-                logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-            return False
         try:
-            from tools.mcp_tool import shutdown_mcp_servers
-            shutdown_mcp_servers()
-        except Exception:
-            pass
-        if runner.exit_code is not None:
-            raise SystemExit(runner.exit_code)
-        return True
+            await runner.wait_for_shutdown()
+            if runner.should_exit_with_failure:
+                if runner.exit_reason:
+                    logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+                return False
+            try:
+                from tools.mcp_tool import shutdown_mcp_servers
+                shutdown_mcp_servers()
+            except Exception:
+                pass
+            if runner.exit_code is not None:
+                raise SystemExit(runner.exit_code)
+            return True
+        finally:
+            _shutdown_gateway_health_export(runner)
 
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the

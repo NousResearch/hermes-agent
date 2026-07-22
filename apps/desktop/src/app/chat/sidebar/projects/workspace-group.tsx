@@ -80,14 +80,13 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
 
     // Main-checkout lanes are branch-labeled views over the same repo root path.
     // Clicking "+" on `main` should open on `main`, not whatever branch the root
-    // currently sits on (`test0`, etc.), so explicitly switch first.
+    // currently sits on (`test0`, etc.), so explicitly try to switch first.
     if (group.isMain && group.path && group.label) {
       try {
         await switchBranchInRepo(group.path, group.label)
-      } catch (err) {
-        notifyError(err, t.statusStack.coding.switchFailed(group.label))
-
-        return
+      } catch {
+        // Branch switch is best-effort (e.g. non-git directory, dirty tree, or
+        // label is not a valid branch); proceed to open the new session regardless.
       }
     }
 

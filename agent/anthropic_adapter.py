@@ -1643,6 +1643,39 @@ def _sanitize_tool_id(tool_id: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
     return sanitized or "tool_0"
 
+_VALID_JSON_SCHEMA_TYPES = frozenset({
+    "object", "string", "number", "integer", "boolean", "array", "null",
+})
+
+
+def _coerce_invalid_types(node: Any) -> Any:
+    """Recursively coerce non-standard 'type' string values to 'object'.
+
+    Anthropic's tool-schema validator rejects any ``type`` value not in the
+    JSON Schema primitive set. MCP servers occasionally emit non-standard
+    types (e.g. ``"custom"``) in nested properties that survive upstream
+    sanitization; this walks the entire schema tree and coerces them to
+    ``"object"`` so the parameter is preserved but the schema validates.
+    """
+    if isinstance(node, list):
+        return [_coerce_invalid_types(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: Dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "type" and isinstance(value, str) and value not in _VALID_JSON_SCHEMA_TYPES:
+            logger.debug("anthropic_adapter: coercing invalid type %r to 'object'", value)
+            out["type"] = "object"
+        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            out[key] = {k: _coerce_invalid_types(v) for k, v in value.items()}
+        elif key in {"items", "additionalProperties"} and isinstance(value, dict):
+            out[key] = _coerce_invalid_types(value)
+        elif key in {"anyOf", "oneOf", "allOf"} and isinstance(value, list):
+            out[key] = [_coerce_invalid_types(item) for item in value]
+        else:
+            out[key] = _coerce_invalid_types(value) if isinstance(value, (dict, list)) else value
+    return out
+
 
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     """Normalize tool schemas before sending them to Anthropic.
@@ -1674,6 +1707,9 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
     if not isinstance(normalized, dict):
         return {"type": "object", "properties": {}}
+    # Validate type strings recursively — Anthropic's metaschema rejects
+    # any type value not in the JSON Schema primitive set.
+    normalized = _coerce_invalid_types(normalized)
     # Strip top-level union keywords that Anthropic's validator rejects.
     banned = {"oneOf", "allOf", "anyOf"}
     if banned & normalized.keys():

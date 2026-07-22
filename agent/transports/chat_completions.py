@@ -16,6 +16,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from tools.schema_sanitizer import sanitize_tool_schemas
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -369,6 +370,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
             # tool parameters here keeps aggregator routes (Nous, OpenRouter,
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
+            tools = sanitize_tool_schemas(tools)
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
@@ -556,6 +558,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Tools — apply Moonshot/Kimi schema sanitization regardless of path
         if tools:
+            tools = sanitize_tool_schemas(tools)
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools

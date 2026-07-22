@@ -777,6 +777,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if model_name:
             result["model"] = model_name
         _lift_max_output_tokens(entry, result)
+        # Propagate per-model config (api_mode, context_length) so the runtime
+        # resolver can select the correct transport for each model variant.
+        models = entry.get("models")
+        if isinstance(models, dict):
+            result["models"] = models
         return result
 
     return None
@@ -989,8 +994,26 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
+    # Resolve api_mode: check top-level, then per-model config, then URL detection.
+    # Per-model api_mode (e.g. models: {claude-glm-5.2: {api_mode: anthropic_messages}})
+    # takes precedence over URL-based detection when the active model has one set.
+    resolved_api_mode = (
+        custom_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions"
+    )
+    _model_cfg = _get_model_config()
+    _active_model = (_model_cfg.get("default") or "").strip()
+    _provider_models = custom_provider.get("models")
+    if isinstance(_provider_models, dict) and _active_model:
+        _per_model = _provider_models.get(_active_model)
+        if isinstance(_per_model, dict):
+            _model_api_mode = _parse_api_mode(_per_model.get("api_mode"))
+            if _model_api_mode:
+                resolved_api_mode = _model_api_mode
+
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(base_url, "custom", resolved_api_mode, provider_name=custom_provider.get("name"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -1030,9 +1053,7 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": resolved_api_mode,
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",

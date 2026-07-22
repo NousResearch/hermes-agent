@@ -305,6 +305,17 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out["type"] = "null" if has_null else "object"
             continue
 
+        if key == "type" and isinstance(value, str):
+            _VALID_TYPES = {"object", "string", "number", "integer", "boolean", "array", "null"}
+            if value not in _VALID_TYPES:
+                logger.debug(
+                    "schema_sanitizer[%s]: coercing invalid type %r to 'object'",
+                    path, value,
+                )
+                out["type"] = "object"
+                continue
+            out[key] = value
+            continue
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
             out[key] = {
                 sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}")

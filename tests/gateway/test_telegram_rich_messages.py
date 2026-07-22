@@ -1005,6 +1005,7 @@ def _reply_message(reply_to_id, *, reply_text=None, reply_caption=None, quote_te
         message_id=int(reply_to_id),
         text=reply_text,
         caption=reply_caption,
+        from_user=SimpleNamespace(id=999, full_name="Bob"),
     )
     quote = SimpleNamespace(text=quote_text) if quote_text is not None else None
     return SimpleNamespace(
@@ -1038,6 +1039,7 @@ def _reply_message_with_rich_blocks(
         text=None,
         caption=None,
         api_kwargs=api_kwargs_factory({"rich_message": {"blocks": blocks}}),
+        from_user=SimpleNamespace(id=999, full_name="Bob"),
     )
     quote = SimpleNamespace(text=quote_text) if quote_text is not None else None
     return SimpleNamespace(

@@ -136,6 +136,14 @@ def _get_service_pids() -> set:
                         pid = int(show.stdout.strip())
                         if pid > 0:
                             pids.add(pid)
+                            # MainPID may point at a wrapper (``doppler run``,
+                            # ``direnv exec``, …) rather than the gateway, in
+                            # which case the real gateway is a descendant of
+                            # that PID. Pull it in so hermes update does not
+                            # sweep the service-managed gateway as a manual
+                            # process and relaunch a competing detached
+                            # ``--replace`` watcher (#66900).
+                            pids |= _gateway_descendants_of(pid)
                     except (ValueError, subprocess.TimeoutExpired):
                         pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -156,6 +164,9 @@ def _get_service_pids() -> set:
                 pid = _parse_launchd_pid_from_list_output(result.stdout)
                 if pid is not None and pid > 0:
                     pids.add(pid)
+                    # Same wrapper-descendant case as systemd (#66900): a
+                    # wrapped launchd ExecStart reports the launcher PID.
+                    pids |= _gateway_descendants_of(pid)
                 else:
                     # Fall back to legacy tab-separated format:
                     # "PID\tStatus\tLabel"
@@ -166,12 +177,56 @@ def _get_service_pids() -> set:
                                 pid = int(parts[0])
                                 if pid > 0:
                                     pids.add(pid)
+                                    pids |= _gateway_descendants_of(pid)
                             except ValueError:
                                 pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
     return pids
+
+
+def _gateway_descendants_of(pid: int) -> set:
+    """Gateway-runtime PIDs descended from a service manager's tracked PID.
+
+    A service unit whose ``ExecStart`` is wrapped by a launcher
+    (``doppler run``, ``direnv exec``, …) reports the *wrapper* as its
+    MainPID / launchd PID rather than the gateway. The real gateway runs as
+    a descendant of that wrapper. Walk the subtree and return any process
+    whose command line looks like an actual ``gateway run`` so callers treat
+    the service-managed gateway as managed instead of sweeping it as a
+    manual process (#66900).
+
+    When ``ExecStart`` runs the gateway directly there are no gateway
+    descendants and nothing is added — the tracked PID already is the
+    gateway. Returns an empty set if psutil is unavailable or the process
+    tree cannot be walked.
+    """
+    if pid <= 1:
+        return set()
+    try:
+        import psutil  # type: ignore
+
+        from gateway.status import looks_like_gateway_command_line
+    except ImportError:
+        return set()
+    try:
+        children = psutil.Process(pid).children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return set()
+    except Exception:
+        return set()
+    found: set = set()
+    for child in children:
+        try:
+            cmdline = " ".join(child.cmdline() or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception:
+            continue
+        if cmdline and looks_like_gateway_command_line(cmdline):
+            found.add(child.pid)
+    return found
 
 
 def _get_parent_pid(pid: int) -> int | None:

@@ -1265,3 +1265,185 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for #66900: a service unit whose ExecStart is wrapped by a
+# launcher (doppler run, direnv exec, …) reports the wrapper as MainPID, not
+# the gateway.  _get_service_pids() must resolve the real gateway (a descendant
+# of the wrapper) so hermes update does not sweep it as a manual gateway and
+# relaunch a competing detached --replace watcher.
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    """Minimal stand-in for a psutil Process used by the descendant walk."""
+
+    def __init__(self, pid, cmdline=None, children=()):
+        self.pid = pid
+        self._cmdline = list(cmdline or [])
+        self._children = list(children)
+
+    def children(self, recursive=False):
+        if not recursive:
+            return list(self._children)
+        out, stack = [], list(self._children)
+        while stack:
+            node = stack.pop()
+            out.append(node)
+            stack.extend(node._children)
+        return out
+
+    def cmdline(self):
+        return list(self._cmdline)
+
+
+def _fake_systemctl_run(cmd, **kwargs):
+    """Fake subprocess.run for the systemd list-units / show MainPID calls."""
+    cmd = list(cmd)
+    if "list-units" in cmd:
+        # Only the --user scope owns a unit in this fixture.
+        if "--user" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="hermes-gateway.service loaded active running Hermes Gateway\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if "show" in cmd and any("MainPID" in arg for arg in cmd):
+        # MainPID is the *wrapper* (doppler), not the gateway.
+        return SimpleNamespace(returncode=0, stdout="4321\n", stderr="")
+    raise AssertionError(f"unexpected systemctl command: {cmd}")
+
+
+def _setup_wrapped_systemd_unit(monkeypatch, descendants):
+    """Wire a systemd unit whose MainPID (4321) is a wrapper with descendants."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway.subprocess, "run", _fake_systemctl_run)
+    import psutil
+
+    monkeypatch.setattr(
+        psutil, "Process", lambda pid: _FakeProc(pid, children=descendants)
+    )
+
+
+def test_service_pids_resolves_wrapped_systemd_mainpid_to_gateway_descendant(monkeypatch):
+    """Layer 1: systemd MainPID is a wrapper → real gateway descendant returned.
+
+    On current main this fails: _get_service_pids() returns only the wrapper
+    (4321) and misses the gateway (5500), so hermes update sweeps the
+    service-managed gateway as a manual one and relaunches a detached
+    --replace watcher that races systemd's own restart (#66900).
+    """
+    gateway_descendant = _FakeProc(
+        5500, cmdline=["python", "-m", "hermes_cli.main", "gateway", "run"]
+    )
+    _setup_wrapped_systemd_unit(monkeypatch, descendants=[gateway_descendant])
+
+    pids = gateway._get_service_pids()
+
+    assert 4321 in pids  # wrapper MainPID still present (harmless to exclude)
+    assert 5500 in pids  # the actual service-managed gateway — the fix
+
+
+def test_service_pids_resolves_wrapped_launchd_pid_to_gateway_descendant(monkeypatch):
+    """Layer 2: launchd PID is a wrapper → real gateway descendant returned.
+
+    Same bug class as systemd: launchctl reports the wrapper's PID. The fix
+    must close the whole class, not just the systemd site the reporter hit.
+    """
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway, "get_launchd_label", lambda: "com.hermes.gateway")
+    monkeypatch.setattr(
+        gateway,
+        "_parse_launchd_pid_from_list_output",
+        lambda output: 4321,  # wrapper PID
+    )
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "run",
+        lambda cmd, **kw: SimpleNamespace(returncode=0, stdout="ignored", stderr=""),
+    )
+    import psutil
+
+    gateway_descendant = _FakeProc(
+        5500, cmdline=["python", "-m", "hermes_cli.main", "gateway", "run"]
+    )
+    monkeypatch.setattr(
+        psutil, "Process", lambda pid: _FakeProc(pid, children=[gateway_descendant])
+    )
+
+    pids = gateway._get_service_pids()
+
+    assert 4321 in pids  # wrapper
+    assert 5500 in pids  # the actual gateway
+
+
+def test_service_pids_unwrapped_unit_keeps_mainpid_only(monkeypatch):
+    """Layer 3: no wrapper → MainPID already is the gateway, no spurious PIDs.
+
+    When ExecStart runs the gateway directly, MainPID points at the gateway
+    itself and there are no gateway descendants. The fix must add nothing.
+    """
+    # The MainPID process has a child, but it is NOT a gateway runtime
+    # (e.g. a helper the gateway spawned) — it must not be pulled in.
+    non_gateway_child = _FakeProc(9988, cmdline=["/usr/bin/some-helper", "--watch"])
+    _setup_wrapped_systemd_unit(monkeypatch, descendants=[non_gateway_child])
+
+    pids = gateway._get_service_pids()
+
+    assert pids == {4321}
+    assert 9988 not in pids
+
+
+def test_service_pids_descendant_resolution_tolerates_dead_wrapper(monkeypatch):
+    """Layer 4: if the MainPID process is gone, fall back gracefully — no raise.
+
+    psutil raises NoSuchProcess when the wrapper exited between the MainPID
+    query and the descendant walk. _get_service_pids() must still return the
+    MainPID it already observed and never propagate the exception.
+    """
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway.subprocess, "run", _fake_systemctl_run)
+    import psutil
+
+    def _raise(_pid):
+        raise psutil.NoSuchProcess(_pid)
+
+    monkeypatch.setattr(psutil, "Process", _raise)
+
+    pids = gateway._get_service_pids()
+
+    assert pids == {4321}  # MainPID preserved, descendant walk skipped cleanly
+
+
+def test_wrapped_service_gateway_excluded_from_manual_sweep(monkeypatch):
+    """Reported impact: a wrapped service gateway must not be swept as manual.
+
+    hermes update builds manual_pids = find_gateway_pids(exclude_pids=
+    service_pids). When _get_service_pids() includes the real gateway, the
+    manual sweep excludes it and _prepare_profile_gateway_update_restart is
+    never called for it — no detached --replace watcher races systemd.
+    """
+    gateway_descendant = _FakeProc(
+        5500, cmdline=["python", "-m", "hermes_cli.main", "gateway", "run"]
+    )
+    _setup_wrapped_systemd_unit(monkeypatch, descendants=[gateway_descendant])
+
+    service_pids = gateway._get_service_pids()
+
+    # Simulate the process-table scan finding the real gateway (5500) as a
+    # candidate manual gateway, exactly as find_gateway_pids() would via the
+    # gateway.pid file + cmdline scan.
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda *a, **k: [5500])
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+
+    manual_pids = gateway.find_gateway_pids(
+        exclude_pids=service_pids, all_profiles=True
+    )
+
+    assert 5500 not in manual_pids  # service-managed → not swept as manual

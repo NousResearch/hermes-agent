@@ -216,3 +216,64 @@ class TestYoloMode:
         approval_module.clear_session("session-a")
 
         assert is_session_yolo_enabled("session-a") is False
+
+
+class TestPlatformDefaultYolo:
+    """approvals.yolo_platforms enables YOLO by default for whole platforms."""
+
+    @pytest.fixture(autouse=True)
+    def _clear(self):
+        keys = [
+            "agent:main:discord:dm:42",
+            "agent:main:telegram:dm:42",
+            "agent:work:discord:dm:42",
+        ]
+        for k in keys:
+            approval_module.clear_session(k)
+        yield
+        for k in keys:
+            approval_module.clear_session(k)
+
+    def _force_platforms(self, monkeypatch, platforms):
+        monkeypatch.setattr(
+            approval_module, "_get_approval_config",
+            lambda: {"yolo_platforms": platforms},
+        )
+
+    def test_discord_session_yolo_on_by_default(self, monkeypatch):
+        self._force_platforms(monkeypatch, ["discord"])
+        assert is_session_yolo_enabled("agent:main:discord:dm:42") is True
+        # Honored end-to-end by the dangerous-command guard.
+        token = set_current_session_key("agent:main:discord:dm:42")
+        try:
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            assert result["approved"] is True
+        finally:
+            reset_current_session_key(token)
+
+    def test_other_platforms_unaffected(self, monkeypatch):
+        self._force_platforms(monkeypatch, ["discord"])
+        assert is_session_yolo_enabled("agent:main:telegram:dm:42") is False
+
+    def test_empty_config_means_no_default(self, monkeypatch):
+        self._force_platforms(monkeypatch, [])
+        assert is_session_yolo_enabled("agent:main:discord:dm:42") is False
+
+    def test_comma_separated_string_accepted(self, monkeypatch):
+        self._force_platforms(monkeypatch, "discord, telegram")
+        assert is_session_yolo_enabled("agent:main:discord:dm:42") is True
+        assert is_session_yolo_enabled("agent:main:telegram:dm:42") is True
+
+    def test_explicit_disable_overrides_platform_default(self, monkeypatch):
+        self._force_platforms(monkeypatch, ["discord"])
+        key = "agent:main:discord:dm:42"
+        assert is_session_yolo_enabled(key) is True
+        disable_session_yolo(key)
+        assert is_session_yolo_enabled(key) is False
+        # And re-enabling clears the opt-out.
+        enable_session_yolo(key)
+        assert is_session_yolo_enabled(key) is True
+
+    def test_non_default_profile_namespace_resolves_platform(self, monkeypatch):
+        self._force_platforms(monkeypatch, ["discord"])
+        assert is_session_yolo_enabled("agent:work:discord:dm:42") is True

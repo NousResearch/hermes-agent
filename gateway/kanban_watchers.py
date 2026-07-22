@@ -514,27 +514,25 @@ class GatewayKanbanWatchersMixin:
                                     )
                                     from gateway.session import SessionSource
                                     from gateway.platforms.base import MessageEvent, MessageType
-                                    # KNOWN LIMITATION (tracked follow-up): the
-                                    # subscription row does not persist the
-                                    # creator's chat_type, and it is not carried
-                                    # on the session-context bridge, so we cannot
-                                    # faithfully reconstruct the creator's real
-                                    # session key here. build_session_key() keys
-                                    # DMs (":dm:<chat_id>") on a wholly different
-                                    # shape from group/thread, so any hardcoded
-                                    # value mis-routes some creators. "group" is
-                                    # the least-surprising default for the
-                                    # dashboard/group flows this wake primarily
-                                    # serves; DM-originated creators are handled
-                                    # by the follow-up that stamps + persists
-                                    # chat_type end-to-end. handle_message()
-                                    # get_or_create_session's the target, so a
-                                    # mismatch degrades to "wake lands in a fresh
-                                    # group session" — never an exception.
+                                    # Rebuild the creator's real session scope
+                                    # from the persisted chat_type (#68874). DMs
+                                    # key on ":dm:<chat_id>", a wholly different
+                                    # shape from group/thread, so a DM-created
+                                    # task whose wake was hardcoded to "group"
+                                    # resumed a fresh group session instead of
+                                    # the originating DM. Rows written before
+                                    # chat_type was captured store NULL; fall
+                                    # back to "group" for them (the historical
+                                    # default that suits the dashboard/group
+                                    # flows). handle_message() get_or_create_
+                                    # session's the target, so a mismatch only
+                                    # ever degrades to a fresh session, never an
+                                    # exception.
+                                    _chat_type = (sub.get("chat_type") or "group") or "group"
                                     _source = SessionSource(
                                         platform=plat,
                                         chat_id=sub["chat_id"],
-                                        chat_type="group",
+                                        chat_type=_chat_type,
                                         thread_id=sub.get("thread_id") or None,
                                         user_id=sub.get("user_id"),
                                         profile=sub_profile or None,

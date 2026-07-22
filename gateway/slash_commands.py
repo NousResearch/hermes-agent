@@ -480,6 +480,7 @@ class GatewaySlashCommandsMixin:
                     chat_id = str(getattr(source, "chat_id", "") or "")
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
+                    chat_type = str(getattr(source, "chat_type", "") or "") or None
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
@@ -491,6 +492,7 @@ class GatewaySlashCommandsMixin:
                                     thread_id=thread_id or None,
                                     user_id=user_id,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    chat_type=chat_type,
                                 )
                             finally:
                                 conn.close()

@@ -142,6 +142,38 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return False
 
 
+def _prune_stale_manifest_entries(manifest_path: Path, skills_dir: Path) -> None:
+    """Remove entries from .bundled_manifest for skills not present on disk.
+
+    When a profile is cloned via ``--clone`` / ``--clone-config``, the
+    source's ``.bundled_manifest`` is copied verbatim.  If the source had
+    accumulated stale entries (skills removed from the bundled set in newer
+    releases but still listed in the manifest), the clone inherits them.
+    ``sync_skills()`` treats "in manifest, not on disk" as an intentional
+    user deletion and permanently blocks re-seeding — so the cloned profile
+    can never receive those skills even after a fresh ``hermes update``.
+
+    This helper trims the manifest to only list skills whose directories
+    actually exist under *skills_dir*.
+    """
+    try:
+        lines = manifest_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # v2 format: "name:hash", v1 format: just "name"
+        skill_name = stripped.split(":", 1)[0]
+        if (skills_dir / skill_name).is_dir():
+            kept.append(stripped)
+
+    manifest_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
@@ -1097,6 +1129,17 @@ def create_profile(
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+
+                # Filter .bundled_manifest to only include entries for
+                # skills that actually exist on disk.  The source profile
+                # may have accumulated stale manifest entries for skills
+                # that were removed from the bundled set over time.
+                # Copying those stale entries would trick sync_skills()
+                # into treating the missing skills as "intentionally
+                # deleted by the user", permanently blocking re-seeding.
+                cloned_manifest = profile_dir / "skills" / ".bundled_manifest"
+                if cloned_manifest.is_file():
+                    _prune_stale_manifest_entries(cloned_manifest, profile_dir / "skills")
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

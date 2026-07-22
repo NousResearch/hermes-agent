@@ -1773,7 +1773,7 @@ def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None
     home = Path(hermes_home or str(get_hermes_home())).resolve()
     default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
-        return ""
+        return "--profile default"
     profiles_root = (default / "profiles").resolve()
     try:
         rel = home.relative_to(profiles_root)

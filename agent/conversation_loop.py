@@ -184,6 +184,38 @@ def _ra():
     return run_agent
 
 
+def _should_attempt_eager_error_fallback(
+    reason: FailoverReason,
+    *,
+    retry_count: int,
+    credential_pool: Any,
+) -> bool:
+    """Return whether the error handler should try the fallback chain now.
+
+    Account-level rate-limit failures are special because credential-pool
+    rotation may still recover the primary provider without failover. An
+    upstream-aggregator rate limit must instead switch models because the
+    user's credential is healthy. Transport failures use the same fallback
+    chain after one retry, but credential-pool state is irrelevant to a
+    timeout/unavailable/overloaded endpoint and must not suppress fallback.
+    """
+    if reason in {FailoverReason.timeout, FailoverReason.overloaded}:
+        return retry_count >= 2
+
+    if reason == FailoverReason.billing:
+        return True
+
+    if reason == FailoverReason.upstream_rate_limit:
+        return True
+
+    if reason != FailoverReason.rate_limit:
+        return False
+
+    return not _ra()._pool_may_recover_from_rate_limit(
+        credential_pool,
+    )
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -3349,52 +3381,38 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
-                _should_fallback = (
-                    is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                _should_fallback = _should_attempt_eager_error_fallback(
+                    classified.reason,
+                    retry_count=retry_count,
+                    credential_pool=agent._credential_pool,
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
-                    # Don't eagerly fallback if credential pool rotation may
-                    # still recover.  See _pool_may_recover_from_rate_limit
-                    # for the single-credential-pool exception.  Fixes #11314.
-                    #
-                    # Exception: an upstream-aggregator 429 — the credential
-                    # pool can't help when the *upstream* model (DeepSeek,
-                    # etc.) is throttling OpenRouter, so always fall back to a
-                    # different model regardless of pool state.
                     _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-                    pool_may_recover = (
-                        False if _is_upstream
-                        else _ra()._pool_may_recover_from_rate_limit(
-                            agent._credential_pool,
+                    if _is_upstream:
+                        _upstream_name = (classified.error_context or {}).get(
+                            "upstream_provider", "aggregator"
                         )
-                    )
-                    if not pool_may_recover:
-                        if _is_upstream:
-                            _upstream_name = (classified.error_context or {}).get(
-                                "upstream_provider", "aggregator"
-                            )
-                            agent._buffer_status(
-                                f"⚠️ Upstream {_upstream_name} rate-limited — "
-                                "switching to fallback model..."
-                            )
-                        elif classified.reason == FailoverReason.billing:
-                            agent._buffer_status(
-                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
-                            )
-                        elif _is_transport_failure:
-                            agent._buffer_status(
-                                "⚠️ Provider unreachable — switching to fallback provider..."
-                            )
-                        else:
-                            agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            retry_count = 0
-                            compression_attempts = 0
-                            _retry.primary_recovery_attempted = False
-                            continue
+                        agent._buffer_status(
+                            f"⚠️ Upstream {_upstream_name} rate-limited — "
+                            "switching to fallback model..."
+                        )
+                    elif classified.reason == FailoverReason.billing:
+                        agent._buffer_status(
+                            "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                        )
+                    elif _is_transport_failure:
+                        agent._buffer_status(
+                            "⚠️ Provider unreachable — switching to fallback provider..."
+                        )
+                    else:
+                        agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
 
                 # ── Auth-failure provider failover ───────────────────────
                 # A 401/403 that survives the per-provider credential-refresh

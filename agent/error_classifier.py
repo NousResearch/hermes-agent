@@ -912,7 +912,7 @@ def classify_api_error(
     # ── 8. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
-        return _result(FailoverReason.timeout, retryable=True)
+        return _result(FailoverReason.timeout, retryable=True, should_fallback=True)
 
     # ── 9. Fallback: unknown ────────────────────────────────────────
 

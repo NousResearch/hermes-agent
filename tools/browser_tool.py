@@ -4214,6 +4214,47 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         )
 
         if _should_use_native_vision_fast_path():
+            # Proactive embed cap: this screenshot gets baked into conversation
+            # history and re-sent on every subsequent turn. Anthropic rejects
+            # any single base64 image over 5 MB OR over 8000px per side with a
+            # 400, and because history is immutable an oversized embed
+            # permanently wedges the session — retries can't clear bytes (or
+            # pixels) already in the request. A full-page screenshot can be tall
+            # and low-byte (e.g. 1200×12000 at 0.06 MB), passing the byte check
+            # yet tripping the pixel ceiling. Mirror _vision_analyze_native:
+            # resize DOWN to the embed target (4 MB / 7900px, headroom under
+            # both ceilings) whenever the payload exceeds either limit, not just
+            # at the 20 MB hard ceiling the reactive retry below handles.
+            from tools.vision_tools import (
+                _EMBED_MAX_DIMENSION,
+                _EMBED_TARGET_BYTES,
+                _MAX_BASE64_BYTES,
+                _image_exceeds_dimension,
+                _resize_image_for_vision,
+            )
+
+            if (len(data_url) > _EMBED_TARGET_BYTES
+                    or _image_exceeds_dimension(screenshot_path, _EMBED_MAX_DIMENSION)):
+                data_url = _resize_image_for_vision(
+                    screenshot_path, mime_type="image/png",
+                    max_base64_bytes=_EMBED_TARGET_BYTES,
+                    max_dimension=_EMBED_MAX_DIMENSION,
+                )
+                # If even resizing can't get under the absolute hard ceiling,
+                # reject rather than embed a session-wedging payload.
+                if len(data_url) > _MAX_BASE64_BYTES:
+                    return json.dumps({
+                        "success": False,
+                        "error": (
+                            f"Screenshot too large for native vision: base64 "
+                            f"payload is {len(data_url) / (1024 * 1024):.1f} MB "
+                            f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
+                            f"even after resizing. Install Pillow "
+                            f"(`pip install Pillow`) for better auto-resize."
+                        ),
+                        "screenshot_path": str(screenshot_path),
+                    }, ensure_ascii=False)
+
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,

@@ -25,6 +25,7 @@ import { COMPOSER_FADE_BACKGROUND, type QueueEditState, slashArgStage } from './
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
+import { ComposerDragRegion } from './drag-region'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
@@ -934,20 +935,10 @@ export function ChatBar({
               style={{ background: COMPOSER_FADE_BACKGROUND }}
             />
           )}
-          {/* Drag region: covers the transparent grab margin around the surface.
-              The surface sits on top (z-4) so only the exposed ring receives this
-              element's hover/cursor — grab cursor + a diagonal hatch (/////)
-              appear when you hover the draggable margin, never over the input.
-              The hatch pattern + opacity ladder live in styles.css. */}
-          {popoutAllowed && (
-            <div
-              aria-hidden
-              className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
-              data-dragging={dragging ? '' : undefined}
-              data-slot="composer-drag-region"
-              onDoubleClick={handleComposerToggle}
-            />
-          )}
+          {/* Keep the drag layer above the surface, but expose pointer events
+              only on narrow shell edges so controls remain targetable. Pointer
+              events from an edge bubble to the root gesture handler. */}
+          {popoutAllowed && <ComposerDragRegion dragging={dragging} onDoubleClick={handleComposerToggle} />}
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(

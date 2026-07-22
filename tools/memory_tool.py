@@ -751,7 +751,17 @@ class MemoryStore:
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        # Older/manual writers sometimes leave exactly one terminal delimiter.
+        # It represents no entry content and is safe to normalize away on the
+        # next atomic tool write. Treating that one byte pattern as external
+        # drift blocks otherwise-safe compaction and creates needless backups.
+        # Do not broaden this exception: arbitrary trailing text/whitespace
+        # still needs the fail-closed drift guard below.
+        terminal_delimiter_only = raw == roundtrip + ENTRY_DELIMITER
+        drift_detected = (
+            (raw.strip() != roundtrip and not terminal_delimiter_only)
+            or max_entry_len > char_limit
+        )
         if not drift_detected:
             return None
 

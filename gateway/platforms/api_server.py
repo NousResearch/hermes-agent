@@ -7,6 +7,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
+- GET  /v1/profiles                — lists bounded, safe Hermes profile identities
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
@@ -127,6 +128,9 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+PROFILE_INVENTORY_VERSION = 1
+MAX_PROFILE_INVENTORY_SIZE = 1_000
+PROFILE_INVENTORY_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1491,6 +1495,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/health/detailed", self._handle_health_detailed),
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
+            ("GET", "/v1/profiles", self._handle_profiles),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
@@ -2003,6 +2008,105 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"object": "list", "data": models})
 
+    async def _handle_profiles(self, request: "web.Request") -> "web.Response":
+        """GET /v1/profiles — return a complete, secret-free profile roster.
+
+        The broader local ``ProfileInfo`` object contains paths,
+        provider/model configuration, aliases, distribution metadata, and
+        user-authored description text. None of those fields cross this
+        boundary.
+
+        A configured API key is required even on loopback so this inventory
+        stays on the explicit server-to-server authentication boundary.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Profile inventory requires API key authentication",
+                    code="profile_inventory_auth_required",
+                ),
+                status=403,
+            )
+
+        try:
+            from hermes_cli.profiles import (
+                get_active_profile_name,
+                profiles_to_serve,
+            )
+
+            raw_profiles = profiles_to_serve(multiplex=True)
+            if len(raw_profiles) > MAX_PROFILE_INVENTORY_SIZE:
+                return web.json_response(
+                    _openai_error(
+                        "Profile inventory is too large to return safely",
+                        code="profile_inventory_too_large",
+                    ),
+                    status=409,
+                )
+
+            profile_ids: List[str] = []
+            seen: set[str] = set()
+            for raw_name, _profile_home in raw_profiles:
+                if not isinstance(raw_name, str):
+                    raise ValueError("non-string profile identifier")
+                profile_id = raw_name.strip()
+                if PROFILE_INVENTORY_ID_RE.fullmatch(profile_id) is None:
+                    raise ValueError("invalid profile identifier")
+                if profile_id in seen:
+                    raise ValueError("duplicate profile identifier")
+                seen.add(profile_id)
+                profile_ids.append(profile_id)
+
+            if "default" not in seen:
+                raise ValueError("default profile missing")
+
+            runner = getattr(self, "gateway_runner", None)
+            config = getattr(runner, "config", None)
+            multiplex = bool(getattr(config, "multiplex_profiles", False))
+            active_profile = (
+                _api_request_profile.get()
+                or get_active_profile_name()
+                or "default"
+            )
+            if PROFILE_INVENTORY_ID_RE.fullmatch(active_profile) is None:
+                raise ValueError("invalid active profile identifier")
+            if active_profile not in seen:
+                raise ValueError("active profile missing from inventory")
+            # Derive serving state from the same complete roster snapshot.
+            # A second directory scan could race a concurrent profile change
+            # and accidentally label a stale/partial result as complete.
+            served_ids = set(profile_ids) if multiplex else {active_profile}
+        except Exception:
+            logger.exception("GET /v1/profiles failed")
+            return web.json_response(
+                _openai_error(
+                    "Profile inventory is temporarily unavailable",
+                    err_type="server_error",
+                    code="profile_inventory_unavailable",
+                ),
+                status=503,
+            )
+
+        return web.json_response({
+            "object": "list",
+            "version": PROFILE_INVENTORY_VERSION,
+            "complete": True,
+            "active_profile": active_profile,
+            "data": [
+                {
+                    "id": profile_id,
+                    "object": "hermes.profile",
+                    "is_default": profile_id == "default",
+                    "is_active": profile_id == active_profile,
+                    "served": profile_id in served_ids,
+                }
+                for profile_id in profile_ids
+            ],
+        })
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -2052,6 +2156,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "profile_inventory": bool(self._api_key),
+                "profile_inventory_version": PROFILE_INVENTORY_VERSION,
+                "profile_inventory_complete": True,
+                "profile_inventory_requires_api_key": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -2062,6 +2170,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "profiles": {"method": "GET", "path": "/v1/profiles"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},

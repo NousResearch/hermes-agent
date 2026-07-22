@@ -58,15 +58,17 @@ class TestApiServerProfileResolution:
 
 
 class TestApiServerRouteTable:
-    def test_route_table_includes_models_and_chat(self):
+    def test_route_table_includes_models_profiles_and_chat(self):
         """ /p/{profile}/v1/models must be registered — this is the 404 Fadeway hit. """
         adapter = _make_adapter(multiplex=True)
         paths = {path for _method, path, _handler in adapter._http_route_table()}
         assert "/v1/models" in paths
+        assert "/v1/profiles" in paths
         assert "/v1/chat/completions" in paths
         # connect() mirrors every native path under /p/{profile}/…
         mirrored = {f"/p/{{profile}}{path}" for path in paths}
         assert "/p/{profile}/v1/models" in mirrored
+        assert "/p/{profile}/v1/profiles" in mirrored
         assert "/p/{profile}/v1/chat/completions" in mirrored
 
 

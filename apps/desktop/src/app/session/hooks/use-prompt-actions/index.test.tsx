@@ -1796,6 +1796,393 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(calls).not.toContain('session.resume')
   })
+
+  it('mints a fresh session and retries when the recovery resume also 404s (first-submit draft, no DB row)', async () => {
+    // The dead-end this covers: a new chat's FIRST submit never landed, so the
+    // gateway never persisted a state.db row (rows are written lazily on first
+    // prompt.submit). When the live session is then reaped (sleep/wake WS
+    // drop), prompt.submit 404s AND the recovery session.resume 404s —
+    // previously the resume rejection escaped uncaught and surfaced as the raw
+    // "Prompt failed / session not found" toast, losing the user's text.
+    const STALE_SESSION_ID = 'rt-stale-dead'
+    const FRESH_SESSION_ID = 'rt-fresh-789'
+    const FRESH_STORED_ID = 'stored-fresh-123'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: STALE_SESSION_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+
+    // Mirror the real createBackendSessionForSend: a successful create re-homes
+    // the active runtime ref AND the selected stored id to the minted session
+    // BEFORE returning (the fallback's drift guard and stored-key re-pin read
+    // both).
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = FRESH_SESSION_ID
+      selectedStoredSessionIdRef.current = FRESH_STORED_ID
+
+      return FRESH_SESSION_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const stateWrites: { sessionId: string; storedSessionId: null | string | undefined }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit' && params?.session_id === STALE_SESSION_ID) {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={STALE_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, storedSessionId) => stateWrites.push({ sessionId, storedSessionId })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    const ok = await handle!.submitText('first message after reap')
+
+    expect(ok).toBe(true)
+    // Stale submit → failed resume → fresh create → submit lands there.
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[0]?.params).toMatchObject({ session_id: STALE_SESSION_ID })
+    expect(calls[2]?.params).toEqual({ session_id: FRESH_SESSION_ID, text: 'first message after reap' })
+    // The optimistic message was re-seeded under the minted runtime AND its
+    // minted stored id — the cache maps runtime state through the stored id,
+    // so keying it under the dead draft's stored id would cross-wire it.
+    expect(stateWrites).toContainEqual({ sessionId: FRESH_SESSION_ID, storedSessionId: FRESH_STORED_ID })
+    // No post-recovery write may still key state under the dead stored id.
+    const freshSeedIndex = stateWrites.findIndex(w => w.sessionId === FRESH_SESSION_ID)
+
+    expect(stateWrites.slice(freshSeedIndex).every(w => w.storedSessionId === FRESH_STORED_ID)).toBe(true)
+  })
+
+  it('surfaces the original error (no new session) when the recovery resume fails for a non-404 reason', async () => {
+    // A transport blip during the recovery resume says nothing about whether
+    // the stored chat exists — minting a fresh session here would split a real
+    // conversation in two (#55578 symptom b).
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('gateway exploded')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message')).toBe(false)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls).toEqual(['prompt.submit', 'session.resume'])
+  })
+
+  it('does not mint a new session when a TIMED-OUT submit fails recovery (double-send guard)', async () => {
+    // A timed-out prompt.submit may have actually reached the backend — even
+    // when the recovery resume 404s, re-sending into a freshly minted session
+    // risks the same prompt landing twice. Only a "session not found" submit
+    // failure (provably never landed) takes the fresh-create fallback.
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        throw new Error('request timed out: prompt.submit')
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message')).toBe(false)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls).toEqual(['prompt.submit', 'session.resume'])
+  })
+
+  it('keeps a background queue drain out of the fresh-create fallback (never re-homes the view)', async () => {
+    // A queued drain targeting another chat hits the same double-404 shape when
+    // that chat's draft died before persisting. Minting a session here would
+    // navigate the user's current view to a chat they didn't open.
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const ok = await handle!.submitText('queued message for another chat', {
+      fromQueue: true,
+      sessionId: 'rt-other-chat-dead',
+      storedSessionId: 'stored-other-chat'
+    })
+
+    expect(ok).toBe(false)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+  })
+
+  it('recovers a dead draft whose FILE staging 404s before prompt.submit ever runs', async () => {
+    // file.attach is a session-scoped RPC, so with a newly selected attachment
+    // a dead first-submit draft dies in the initial sync — before the
+    // prompt.submit recovery could fire. The sync failure must take the same
+    // resume-or-mint path, then stage the file against the minted runtime.
+    const STALE_SESSION_ID = 'rt-stale-dead'
+    const FRESH_SESSION_ID = 'rt-fresh-789'
+    const FRESH_STORED_ID = 'stored-fresh-123'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: STALE_SESSION_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = FRESH_SESSION_ID
+      selectedStoredSessionIdRef.current = FRESH_STORED_ID
+
+      return FRESH_SESSION_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (params?.session_id === STALE_SESSION_ID) {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('session not found')
+      }
+
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:data/report.txt', uploaded: false } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={STALE_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    const ok = await handle!.submitText('summarize', {
+      attachments: [
+        {
+          id: 'file:report.txt',
+          kind: 'file',
+          label: 'report.txt',
+          path: '/Users/alice/Downloads/report.txt',
+          refText: '@file:`/Users/alice/Downloads/report.txt`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    // Dead staging → failed resume → mint → re-stage on the minted runtime →
+    // submit lands there with the re-staged ref.
+    expect(calls.map(c => c.method)).toEqual(['file.attach', 'session.resume', 'file.attach', 'prompt.submit'])
+    expect(calls[0]?.params).toMatchObject({ session_id: STALE_SESSION_ID })
+    expect(calls[2]?.params).toMatchObject({ session_id: FRESH_SESSION_ID })
+    expect(calls[3]?.params).toEqual({
+      session_id: FRESH_SESSION_ID,
+      text: '@file:data/report.txt\n\nsummarize'
+    })
+  })
+
+  it('recovers a dead draft whose IMAGE staging 404s before prompt.submit ever runs', async () => {
+    // Same shape as the file case via the image.attach RPC (images are never
+    // eager-uploaded, so a dead draft always hits this at submit time).
+    const STALE_SESSION_ID = 'rt-stale-dead'
+    const FRESH_SESSION_ID = 'rt-fresh-789'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: STALE_SESSION_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = FRESH_SESSION_ID
+      selectedStoredSessionIdRef.current = 'stored-fresh-123'
+
+      return FRESH_SESSION_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (params?.session_id === STALE_SESSION_ID) {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('session not found')
+      }
+
+      if (method === 'image.attach') {
+        return { attached: true, path: '/tmp/hermes/img.png' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={STALE_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    const ok = await handle!.submitText('what is this?', {
+      attachments: [{ id: 'image:img.png', kind: 'image', label: 'img.png', path: '/Users/alice/Pictures/img.png' }]
+    })
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls.map(c => c.method)).toEqual(['image.attach', 'session.resume', 'image.attach', 'prompt.submit'])
+    expect(calls[0]?.params).toMatchObject({ session_id: STALE_SESSION_ID })
+    expect(calls[2]?.params).toMatchObject({ session_id: FRESH_SESSION_ID })
+    expect(calls[3]?.params).toMatchObject({ session_id: FRESH_SESSION_ID })
+  })
+
+  it('rebinds attachment staging to the RESUMED runtime when the stored row still exists', async () => {
+    // Same sync-time 404, but the chat has a persisted row (a real stored
+    // conversation, not a dead draft): recovery must rebind via session.resume
+    // and stage against the resumed runtime — no minting.
+    const STALE_SESSION_ID = 'rt-stale-dead'
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (params?.session_id === STALE_SESSION_ID) {
+        throw new Error('session not found')
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:data/report.txt', uploaded: false } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={STALE_SESSION_ID}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    const ok = await handle!.submitText('summarize', {
+      attachments: [
+        {
+          id: 'file:report.txt',
+          kind: 'file',
+          label: 'report.txt',
+          path: '/Users/alice/Downloads/report.txt',
+          refText: '@file:`/Users/alice/Downloads/report.txt`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls.map(c => c.method)).toEqual(['file.attach', 'session.resume', 'file.attach', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
+    expect(calls[3]?.params).toEqual({
+      session_id: RECOVERED_SESSION_ID,
+      text: '@file:data/report.txt\n\nsummarize'
+    })
+  })
 })
 
 describe('usePromptActions submit session-context isolation (#54527)', () => {

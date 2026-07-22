@@ -401,6 +401,7 @@ class TestSessionBrowseArgparse:
         subparsers = parser.add_subparsers(dest="sessions_action")
         browse = subparsers.add_parser("browse")
         browse.add_argument("--source")
+        browse.add_argument("--exclude-source", action="append")
         browse.add_argument("--limit", type=int, default=500)
 
         args = parser.parse_args(["browse"])
@@ -408,6 +409,28 @@ class TestSessionBrowseArgparse:
 
         args = parser.parse_args(["browse", "--limit", "42"])
         assert args.limit == 42
+
+    def test_browse_exclude_source_is_repeatable(self):
+        """--exclude-source appends: absent → None, repeated → all values."""
+        # Mirror the argparse registration cmd_sessions uses.
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="sessions_action")
+        browse = subparsers.add_parser("browse")
+        browse.add_argument("--source")
+        browse.add_argument("--exclude-source", action="append")
+        browse.add_argument("--limit", type=int, default=500)
+
+        args = parser.parse_args(["browse"])
+        assert args.exclude_source is None
+
+        args = parser.parse_args(["browse", "--exclude-source", "cron"])
+        assert args.exclude_source == ["cron"]
+
+        args = parser.parse_args(
+            ["browse", "--exclude-source", "cron", "--exclude-source", "telegram"]
+        )
+        assert args.exclude_source == ["cron", "telegram"]
 
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────

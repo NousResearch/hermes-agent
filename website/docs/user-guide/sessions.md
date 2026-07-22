@@ -269,9 +269,15 @@ hermes sessions list
 # Filter by platform
 hermes sessions list --source telegram
 
+# Exclude sessions from a source (repeatable — pass it once per source)
+hermes sessions list --exclude-source cron
+hermes sessions list --exclude-source cron --exclude-source telegram
+
 # Show more sessions
 hermes sessions list --limit 50
 ```
+
+`--exclude-source` also works with `hermes sessions browse`. Third-party `tool` sessions are hidden by default; your exclusions are applied on top of that.
 
 When sessions have titles, the output shows titles, previews, and relative timestamps:
 

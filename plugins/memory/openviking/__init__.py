@@ -3936,7 +3936,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 self._turn_count = 0
 
         if compression:
-            self._profile_prefetched_sessions.discard(old_session_id or new_id)
+            # Discard both old and new session IDs so the profile is re-injected
+            # after in-place or forked compression. The key stored in
+            # _profile_prefetched_sessions may be either the session_id passed
+            # to prefetch() or self._session_id, so discard both to be safe.
+            self._profile_prefetched_sessions.discard(old_session_id)
+            self._profile_prefetched_sessions.discard(new_id)
 
         if not rotate:
             # Same-session rewind (/undo) or no-op rotation: no commit and no

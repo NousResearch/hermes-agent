@@ -659,6 +659,28 @@ class TestUpdate:
         assert "gpt-5" in (plan.target_dir / "config.yaml").read_text()
         assert "user override" in (plan.target_dir / "config.yaml").read_text()
 
+    @pytest.mark.platforms("linux")
+    def test_update_replaces_readonly_distribution_tree(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="readonly-tree")
+        installed_skills = plan.target_dir / "skills"
+        installed_skill = installed_skills / "demo"
+        installed_skill_file = installed_skill / "SKILL.md"
+
+        (staged / "skills" / "demo" / "SKILL.md").write_text("# Updated demo skill\n")
+        installed_skill_file.chmod(0o444)
+        installed_skill.chmod(0o555)
+        installed_skills.chmod(0o555)
+
+        try:
+            update_distribution("readonly-tree")
+            assert installed_skill_file.read_text() == "# Updated demo skill\n"
+            assert stat.S_IMODE(installed_skill_file.stat().st_mode) & stat.S_IWUSR
+        finally:
+            for path in (installed_skill_file, installed_skill, installed_skills):
+                if path.exists() and not path.is_symlink():
+                    path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+
 
     def test_update_missing_manifest_errors(self, profile_env):
         # Make a profile without a manifest; update must refuse

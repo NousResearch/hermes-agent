@@ -29,7 +29,7 @@ from hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store,
     profile_path_is_private,
 )
-from utils import rmtree_readonly
+from utils import copy_file_writable, copytree_writable, ensure_owner_writable, rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -371,7 +371,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
 def _remove_existing(path: Path) -> None:
     """Remove one destination entry without following a destination symlink."""
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        rmtree_readonly(path)
     elif os.path.lexists(path):
         # Covers files, dangling/any symlinks, fifos and sockets alike.
         path.unlink()
@@ -383,24 +383,33 @@ def _replace_entry(src: Path, dest: Path) -> None:
 
     A directory is copied beside *dest* and swapped in, so a copy or swap that fails
     part-way (a Windows file lock, say) leaves the existing *dest* in place. Both the
-    copy and the old tree sit in ``DIST_SWAP_DIR``, which skill scanners skip."""
+    copy and the old tree sit in ``DIST_SWAP_DIR``, which skill scanners skip. The
+    copies are made owner-writable: distribution payloads come from read-only sources
+    (Nix store), and a profile copy must stay editable."""
     if not src.is_dir():
         _remove_existing(dest)
-        shutil.copy2(src, dest)
+        copy_file_writable(src, dest)
         return
+    # A pre-fix install inherits read-only modes from the payload source, so the
+    # parent directory that holds the swap could itself be unwritable.
+    ensure_owner_writable(dest.parent)
     holder = dest.parent / DIST_SWAP_DIR
     token = uuid.uuid4().hex
     staging = holder / f"{dest.name}.staging-{token}"
     backup = holder / f"{dest.name}.old-{token}"
     holder.mkdir(exist_ok=True)
     try:
-        shutil.copytree(src, staging)
+        copytree_writable(src, staging)
         if os.path.lexists(dest):
+            # Moving a directory to another parent rewrites its ".." entry, which
+            # needs write permission on *dest* itself — not just on its parent.
+            ensure_owner_writable(dest)
             dest.rename(backup)
         try:
             staging.rename(dest)
         except BaseException:
             if os.path.lexists(backup):
+                ensure_owner_writable(backup)
                 backup.rename(dest)
             raise
         with contextlib.suppress(OSError):
@@ -434,7 +443,7 @@ def _merge_cron_store(src: Path, home: Path) -> None:
         with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
             staged_store = Path(tmp) / "cron"
             staged_store.mkdir()
-            shutil.copy2(src, staged_store / "jobs.json")
+            copy_file_writable(src, staged_store / "jobs.json")
             with cron_jobs.use_cron_store(tmp):
                 shipped = {
                     job["id"]: job for job in cron_jobs.load_jobs()

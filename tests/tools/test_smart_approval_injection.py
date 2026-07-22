@@ -206,5 +206,76 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
 
 
+# ── Issue #68263: bounded verdict cap honored on every route ────────────────
+
+
+class TestSmartApproveBoundedVerdict(unittest.TestCase):
+    """Regression tests for issue #68263.
+
+    The smart-approval guard asks for a 16-token single-word verdict. Two
+    bugs broke that contract:
+
+    1. The auxiliary path silently drops an explicit ``max_tokens`` on
+       OpenAI-compatible routes, so reasoning models spent the whole
+       completion budget on hidden reasoning before the verdict.
+    2. Reasoning models burn budget on hidden reasoning regardless.
+
+    The fix passes ``force_max_tokens=True`` (honor the cap on every route)
+    and ``reasoning_config={"enabled": False}`` (no hidden reasoning) to the
+    guard LLM call.
+    """
+
+    def _make_response(self, answer: str):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = answer
+        return mock_response
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_force_max_tokens_passed(self, mock_call_llm):
+        mock_call_llm.return_value = self._make_response("APPROVE")
+        _smart_approve("ls -la", "list files")
+        kwargs = mock_call_llm.call_args.kwargs
+        assert kwargs.get("max_tokens") == 16
+        assert kwargs.get("force_max_tokens") is True
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_reasoning_disabled_for_guard(self, mock_call_llm):
+        mock_call_llm.return_value = self._make_response("DENY")
+        _smart_approve("rm -rf /", "recursive delete")
+        kwargs = mock_call_llm.call_args.kwargs
+        assert kwargs.get("reasoning_config") == {"enabled": False}
+
+
+class TestBuildCallKwargsForceMaxTokens(unittest.TestCase):
+    """_build_call_kwargs must honor force_max_tokens on every provider route."""
+
+    def _kwargs(self, provider, max_tokens, force_max_tokens=False, base_url=None):
+        from agent.auxiliary_client import _build_call_kwargs
+        return _build_call_kwargs(
+            provider, "some/model", [{"role": "user", "content": "x"}],
+            max_tokens=max_tokens, force_max_tokens=force_max_tokens,
+            base_url=base_url,
+        )
+
+    def test_force_max_tokens_sent_on_openai_compatible(self):
+        """OpenAI-compatible routes must NOT drop the cap when forced (#68263)."""
+        kwargs = self._kwargs("openai", 16, force_max_tokens=True)
+        assert kwargs.get("max_tokens") == 16
+
+    def test_force_max_tokens_sent_on_openrouter(self):
+        kwargs = self._kwargs("openrouter", 16, force_max_tokens=True)
+        assert kwargs.get("max_tokens") == 16
+
+    def test_openai_compatible_still_drops_cap_without_force(self):
+        """Default behavior preserved: no forced cap -> omit max_tokens on OAI routes."""
+        kwargs = self._kwargs("openai", 16, force_max_tokens=False)
+        assert "max_tokens" not in kwargs
+
+    def test_force_max_tokens_sent_on_anthropic_compat(self):
+        kwargs = self._kwargs("anthropic", 16, force_max_tokens=True)
+        assert kwargs.get("max_tokens") == 16
+
+
 if __name__ == "__main__":
     unittest.main()

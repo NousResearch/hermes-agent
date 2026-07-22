@@ -94,11 +94,24 @@ let _sidebarScriptIndex = 0
 /** Per-server counter for the cross-session sidebar script. */
 let _sidebarCrossIndex = 0
 
+/** Per-server counter for the queue-stop script. */
+let _queueStopIndex = 0
+
+/** User messages received by the mock, for E2E assertions on real submits. */
+const _receivedUserTexts: string[] = []
+
 /** Reset the script indices (called between tests via restartMockServer). */
 function resetScriptIndex(): void {
   _scriptIndex = 0
   _sidebarScriptIndex = 0
   _sidebarCrossIndex = 0
+  _queueStopIndex = 0
+  _receivedUserTexts.length = 0
+}
+
+/** Return the user prompts the real backend submitted to this mock server. */
+export function receivedUserTexts(): readonly string[] {
+  return _receivedUserTexts
 }
 
 // ─── Sidebar-states script ─────────────────────────────────────────────
@@ -170,6 +183,14 @@ const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = [
   {
     text: 'Both tasks are running in the background now.',
   },
+]
+
+const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Starting a task that will keep this turn active.',
+    toolCalls: [{ name: 'clarify', args: { question: 'Keep working?', choices: ['Yes', 'No'] } }],
+  },
+  { text: 'The paused task completed.' },
 ]
 
 /**
@@ -257,9 +278,24 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
           const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
           const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
+          if (userText) {
+            _receivedUserTexts.push(userText)
+          }
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
+          const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
+
+          if (isQueueStopTrigger) {
+            const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
+            _queueStopIndex++
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
 
           if (isSidebarCrossTrigger) {
             const turn = SIDEBAR_CROSS_SCRIPT[_sidebarCrossIndex] ?? SIDEBAR_CROSS_SCRIPT[SIDEBAR_CROSS_SCRIPT.length - 1]

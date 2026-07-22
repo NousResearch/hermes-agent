@@ -2672,6 +2672,34 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
+    def test_failed_job_prefixes_configured_failure_mention(self):
+        """Failed jobs can mention an operator without mentioning on success."""
+        mention = "<@U07UP5A50G2>"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"failure_mention": mention}}), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1].startswith(mention + "\n")
+
+    def test_successful_job_does_not_prefix_failure_mention(self):
+        """Configured failure mentions must not notify on successful runs."""
+        mention = "<@U07UP5A50G2>"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "all good", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"failure_mention": mention}}), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+        assert not deliver_mock.call_args.args[1].startswith(mention)
+
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \

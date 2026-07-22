@@ -87,6 +87,32 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _cron_failure_mention_for_delivery(job: dict, cfg: dict | None = None) -> str:
+    """Return the optional mention prefix for failed cron deliveries."""
+    mention = (job or {}).get("failure_mention")
+    if mention is None:
+        try:
+            if cfg is None:
+                cfg = load_config() or {}
+            cron_cfg = (cfg.get("cron", {}) or {}) if isinstance(cfg, dict) else {}
+            mention = cron_cfg.get("failure_mention")
+        except Exception:
+            mention = None
+    text = str(mention or "").strip()
+    return text
+
+
+def _with_cron_failure_mention(job: dict, content: str, cfg: dict | None = None) -> str:
+    """Prefix failed cron delivery content with the configured mention, if any."""
+    mention = _cron_failure_mention_for_delivery(job, cfg)
+    if not mention:
+        return content
+    body = content or ""
+    if body.lstrip().startswith(mention):
+        return body
+    return f"{mention}\n{body}" if body.strip() else mention
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -3819,7 +3845,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            deliver_content = final_response if success else _with_cron_failure_mention(
+                job,
+                _summarize_cron_failure_for_delivery(job, error),
+            )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

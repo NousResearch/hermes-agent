@@ -7775,9 +7775,13 @@ class TelegramAdapter(BasePlatformAdapter):
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:
+            # Slash commands carry admin gating via the sender's user_id. The
+            # shared/anonymized observe source (user_id=None) must NOT replace
+            # it — that would make policy_for_source() treat every group command
+            # as non-admin and silently block operators listed in
+            # group_allow_admin_from (#65085). Only align the channel prompt.
             return dataclasses.replace(
                 event,
-                source=shared_source,
                 channel_prompt=channel_prompt,
             )
         return dataclasses.replace(

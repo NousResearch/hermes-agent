@@ -346,7 +346,9 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
 
     assert attributed.text == "/new@hermes_bot"
     assert attributed.get_command() == "new"
-    assert attributed.source.user_id is None
+    # #65085: slash commands must keep their sender user_id so admin gating
+    # (group_allow_admin_from) is not broken by the shared observe source.
+    assert attributed.source.user_id == "111"
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
@@ -1408,5 +1410,41 @@ def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
         cache_doc.assert_called_once()
         _, message, _ = store.messages[0]
         assert "program.exe" in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_observe_attribution_preserves_command_user_id_for_admin_gating():
+    """#65085: slash commands in an observe-enabled group must keep their
+    sender user_id so group_allow_admin_from admins are not demoted to
+    non-admin (which would block admin-only commands)."""
+
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        adapter._session_store = _FakeSessionStore()
+        # Admin user listed in group_allow_admin_from.
+        text = "/stop"
+        msg = _group_message(
+            text,
+            from_user_id=222,
+            from_user_name="Bob Example",
+        )
+        event = adapter._build_message_event(msg, MessageType.COMMAND, update_id=1004)
+        event.channel_prompt = "Existing topic prompt"
+
+        event = adapter._apply_telegram_group_observe_attribution(event)
+
+        # CRITICAL: the command still carries the sender's user_id so
+        # gateway.slash_access.policy_for_source() recognizes them as admin.
+        assert event.source.user_id == "222"
+        assert event.source.user_name == "Bob Example"
+        # Observe prompt is still attached for attribution context.
+        assert "observed Telegram group context" in event.channel_prompt
+        assert "Existing topic prompt" in event.channel_prompt
 
     asyncio.run(_run())

@@ -172,3 +172,79 @@ class TestLatencyFlagResolution:
         config_path.write_text(json.dumps({'apiKey': 'k', 'timeout': 30}))
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
         assert cfg.timeout == 30.0
+
+
+class TestHonchoBaseUrlSanitize:
+    def test_clean_base_url_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('HONCHO_BASE_URL', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({
+            'apiKey': 'k',
+            'baseUrl': 'https://honcho.example.com',
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url == 'https://honcho.example.com'
+
+    def test_nonprintable_base_url_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('HONCHO_BASE_URL', raising=False)
+        config_path = tmp_path / 'config.json'
+        bad = 'https://honcho.example.com'
+        config_path.write_text(json.dumps({
+            'apiKey': 'k',
+            'baseUrl': bad,
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url is None
+
+    def test_env_nonprintable_dropped(self, monkeypatch):
+        monkeypatch.setenv('HONCHO_BASE_URL', 'https://x.example')
+        monkeypatch.delenv('HONCHO_API_KEY', raising=False)
+        cfg = HonchoClientConfig.from_env()
+        assert cfg.base_url is None
+
+    def test_config_yaml_override_uses_sanitize_helper(self, monkeypatch):
+        """Regression: config.yaml path must call `_sanitize_url`, not undefined `sanitize_url`."""
+        import plugins.memory.honcho.client as client_mod
+
+        calls = []
+        real = client_mod._sanitize_url
+
+        def spy(url):
+            calls.append(url)
+            return real(url)
+
+        monkeypatch.setattr(client_mod, '_sanitize_url', spy)
+
+        # Force override path: no base_url on config, provide control-char in config.yaml
+        cfg = client_mod.HonchoClientConfig(api_key='k', base_url=None, enabled=True)
+        bad = 'https://yaml.example.com\x1b'
+
+        import sys, types
+        config_mod = types.ModuleType('hermes_cli.config')
+        config_mod.load_config = lambda: {'honcho': {'base_url': bad}}
+        hermes_cli = types.ModuleType('hermes_cli')
+        monkeypatch.setitem(sys.modules, 'hermes_cli', hermes_cli)
+        monkeypatch.setitem(sys.modules, 'hermes_cli.config', config_mod)
+
+        class FakeHoncho:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        # Inject FakeHoncho via import path used inside _build
+        honcho_mod = types.ModuleType('honcho')
+        honcho_mod.Honcho = FakeHoncho
+        monkeypatch.setitem(sys.modules, 'honcho', honcho_mod)
+
+        # reset singleton if any
+        if hasattr(client_mod, '_client'):
+            try:
+                client_mod._client = None
+            except Exception:
+                pass
+
+        client = client_mod.get_honcho_client(cfg)
+        assert calls, 'expected _sanitize_url to be invoked for config.yaml base_url'
+        assert any(c == bad for c in calls)
+        # non-printable dropped => base_url key not set or None when passed
+        if hasattr(client, 'kwargs'):
+            assert client.kwargs.get('base_url') in (None, '')

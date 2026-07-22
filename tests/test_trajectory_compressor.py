@@ -628,3 +628,75 @@ class TestCompressionToolPairIntegrity:
             {"from": "tool", "value": "<tool_response>a</tool_response>"},
         ]
         assert tc._snap_boundary(trajectory, 1, 0, 1) == 0
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryCompressor — a failed summary must not corrupt the trajectory
+# ---------------------------------------------------------------------------
+
+
+class TestFailedSummaryKeepsTrajectory:
+    """When summarization fails after all retries the real turns must survive."""
+
+    def _config(self):
+        config = CompressionConfig()
+        config.protect_last_n_turns = 2
+        config.summary_target_tokens = 4
+        return config
+
+    def test_generate_summary_returns_none_when_all_retries_fail(self):
+        config = CompressionConfig(max_retries=2)
+        tc = _make_compressor(config)
+        tc._use_call_llm = False
+        tc.client = MagicMock()
+        tc.client.chat.completions.create.side_effect = RuntimeError("api down")
+        metrics = TrajectoryMetrics()
+
+        assert tc._generate_summary("turns", metrics) is None
+        assert metrics.summarization_errors == 2
+
+    @pytest.mark.asyncio
+    async def test_generate_summary_async_returns_none_when_all_retries_fail(self):
+        config = CompressionConfig(max_retries=2)
+        tc = _make_compressor(config)
+        tc._use_call_llm = False
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=RuntimeError("api down")
+        )
+        tc._get_async_client = MagicMock(return_value=mock_client)
+        metrics = TrajectoryMetrics()
+
+        assert await tc._generate_summary_async("turns", metrics) is None
+        assert metrics.summarization_errors == 2
+
+    def test_sync_failed_summary_leaves_trajectory_uncompressed(self):
+        tc = _make_compressor(self._config())
+        tc._generate_summary = MagicMock(return_value=None)
+        trajectory = _paired_trajectory()
+        tc.config.target_max_tokens = _target_that_splits_after_index_4(tc, trajectory)
+
+        compressed, metrics = tc.compress_trajectory(trajectory)
+
+        # Original turns are preserved verbatim — no placeholder substitution.
+        assert compressed == trajectory
+        assert not metrics.was_compressed
+        assert metrics.still_over_limit
+        assert _count_marker(compressed, "<tool_call>") == _count_marker(
+            compressed, "<tool_response>"
+        )
+        assert "[CONTEXT SUMMARY]" not in "".join(t["value"] for t in compressed)
+
+    @pytest.mark.asyncio
+    async def test_async_failed_summary_leaves_trajectory_uncompressed(self):
+        tc = _make_compressor(self._config())
+        tc._generate_summary_async = AsyncMock(return_value=None)
+        trajectory = _paired_trajectory()
+        tc.config.target_max_tokens = _target_that_splits_after_index_4(tc, trajectory)
+
+        compressed, metrics = await tc.compress_trajectory_async(trajectory)
+
+        assert compressed == trajectory
+        assert not metrics.was_compressed
+        assert metrics.still_over_limit
+        assert "[CONTEXT SUMMARY]" not in "".join(t["value"] for t in compressed)

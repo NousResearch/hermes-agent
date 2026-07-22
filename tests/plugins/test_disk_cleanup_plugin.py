@@ -465,6 +465,51 @@ class TestTrackForgetQuick:
         assert dg.quick()["deleted"] == 0
         assert durable.read_text() == "human state"
 
+    def test_unknown_durable_subtrees_and_cron_control_state_are_protected(
+        self, _isolate_env
+    ):
+        dg = _load_lib()
+        relative_paths = [
+            "secrets/credentials.json",
+            "state/runtime.json",
+            "worker_state/lease.json",
+            "cron_state/scheduler.json",
+            "cron/executions.db",
+            "cron/.jobs.lock",
+            "cron/ticker_heartbeat",
+            "cron/jobs.json.bak-human",
+        ]
+        records = []
+        paths = []
+        for relative in relative_paths:
+            path = _isolate_env / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("durable")
+            paths.append(path)
+            identity = dg._capture_identity(path)
+            assert dg.track(str(path), "test", silent=True) is False
+            records.append({
+                "path": str(path.resolve()),
+                "category": "test",
+                "timestamp": "2025-01-01T00:00:00+00:00",
+                "size": path.stat().st_size,
+                "identity": identity,
+            })
+        dg.save_tracked(records)
+
+        assert dg.quick()["deleted"] == 0
+        assert all(path.read_text() == "durable" for path in paths)
+
+    def test_explicit_disposable_root_remains_trackable(self, _isolate_env):
+        dg = _load_lib()
+        artifact = _isolate_env / "scratch" / "test_result.py"
+        artifact.parent.mkdir()
+        artifact.write_text("temporary")
+
+        assert dg.track(str(artifact), "test", silent=True)
+        assert dg.quick(paths=[str(artifact)])["deleted"] == 1
+        assert not artifact.exists()
+
     def test_quick_commit_preserves_concurrent_tracking_addition(
         self, _isolate_env, monkeypatch
     ):

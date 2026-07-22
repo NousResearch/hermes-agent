@@ -2547,6 +2547,83 @@ def test_completion_rollback_removes_staged_artifact_copy(
     assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
 
 
+def test_completion_interrupt_rolls_back_and_removes_staged_copy(
+    kanban_home, monkeypatch
+):
+    """BaseException exits must not poison the txn or strand copied files."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="interrupt artifact")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "report.txt"
+        artifact.write_text("result")
+
+        def interrupt_insert(*_args, **_kwargs):
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(kb, "_insert_completion_attachment", interrupt_insert)
+        with pytest.raises(KeyboardInterrupt):
+            kb.complete_task(
+                conn,
+                task_id,
+                result="done",
+                metadata={"artifacts": [str(artifact)]},
+            )
+
+        assert conn.in_transaction is False
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
+
+
+def test_rollback_cleanup_preserves_replaced_staged_path(
+    kanban_home, monkeypatch
+):
+    """Rollback ownership is the copied inode, not its replaceable pathname."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="replacement artifact")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "report.txt"
+        artifact.write_text("agent result")
+        original_insert = kb._insert_completion_attachment
+        replacement = None
+
+        def replace_then_insert(connection, current_task_id, **kwargs):
+            nonlocal replacement
+            replacement = Path(kwargs["stored_path"])
+            replacement.unlink()
+            replacement.write_text("human replacement")
+            return original_insert(connection, current_task_id, **kwargs)
+
+        original_boundary = kb._execute_boundary_with_retry
+
+        def fail_commit(connection, sql):
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("forced commit failure")
+            return original_boundary(connection, sql)
+
+        monkeypatch.setattr(kb, "_insert_completion_attachment", replace_then_insert)
+        monkeypatch.setattr(kb, "_execute_boundary_with_retry", fail_commit)
+        with pytest.raises(sqlite3.OperationalError, match="forced commit failure"):
+            kb.complete_task(
+                conn,
+                task_id,
+                result="done",
+                metadata={"artifacts": [str(artifact)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert replacement is not None
+    assert replacement.read_text() == "human replacement"
+
+
 def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
     """A declared scratch deliverable must not disappear behind a false Done."""
     with kb.connect() as conn:

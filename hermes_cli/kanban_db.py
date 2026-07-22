@@ -2677,7 +2677,7 @@ def write_txn(conn: sqlite3.Connection):
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
-    except Exception:
+    except BaseException:
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
@@ -4761,12 +4761,24 @@ def _persist_scratch_completion_artifacts(
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
     used_destinations: set[Path] = set()
+    copied_identities: dict[Path, tuple[int, int, int, int, int]] = {}
     changed = False
+
+    def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns)
+
+    def _current_identity(path: Path) -> Optional[tuple[int, int, int, int, int]]:
+        try:
+            return _stat_identity(path.lstat())
+        except OSError:
+            return None
 
     def _discard_copies() -> None:
         for copied in used_destinations:
             try:
-                copied.unlink(missing_ok=True)
+                expected = copied_identities.get(copied)
+                if expected is not None and _current_identity(copied) == expected:
+                    copied.unlink(missing_ok=True)
             except OSError:
                 pass
         try:
@@ -4806,22 +4818,32 @@ def _persist_scratch_completion_artifacts(
             )
 
         dest: Optional[Path] = None
+        dest_identity: Optional[tuple[int, int, int, int, int]] = None
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
-                copied = 0
-                while chunk := source_file.read(1024 * 1024):
-                    copied += len(chunk)
-                    if copied > KANBAN_ATTACHMENT_MAX_BYTES:
-                        raise ArtifactPreservationError(
-                            f"declared scratch artifact grew beyond the size limit: {artifact}"
-                        )
-                    destination_file.write(chunk)
+                try:
+                    copied = 0
+                    while chunk := source_file.read(1024 * 1024):
+                        copied += len(chunk)
+                        if copied > KANBAN_ATTACHMENT_MAX_BYTES:
+                            raise ArtifactPreservationError(
+                                f"declared scratch artifact grew beyond the size limit: {artifact}"
+                            )
+                        destination_file.write(chunk)
+                finally:
+                    try:
+                        destination_file.flush()
+                        os.fsync(destination_file.fileno())
+                        dest_identity = _stat_identity(os.fstat(destination_file.fileno()))
+                    except OSError:
+                        dest_identity = None
         except Exception as exc:
             if dest is not None:
                 try:
-                    dest.unlink(missing_ok=True)
+                    if dest_identity is not None and _current_identity(dest) == dest_identity:
+                        dest.unlink(missing_ok=True)
                 except OSError:
                     pass
             _discard_copies()
@@ -4831,7 +4853,13 @@ def _persist_scratch_completion_artifacts(
                 f"could not preserve declared scratch artifact {artifact}: {exc}"
             ) from exc
 
+        if dest_identity is None:
+            _discard_copies()
+            raise ArtifactPreservationError(
+                f"could not bind preserved artifact identity: {artifact}"
+            )
         used_destinations.add(dest)
+        copied_identities[dest] = dest_identity
         persisted.append(str(dest.resolve()))
         changed = True
 

@@ -11481,3 +11481,46 @@ def test_spawn_tree_save_marks_session_and_does_not_overwrite_same_second(tmp_pa
         assert json.loads(second_path.read_text())["subagents"][0]["id"] == "b"
     finally:
         reset_hermes_home_override(token)
+
+
+def test_spawn_tree_refuses_foreign_session_directory(tmp_path):
+    """Save/list must not adopt or read a pre-existing unowned directory."""
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        foreign = home / "spawn-trees" / "foreign-session"
+        foreign.mkdir(parents=True)
+        human = foreign / "human.json"
+        human.write_text('{"private": true}')
+
+        save = server._methods["spawn_tree.save"](
+            "r1",
+            {"session_id": "foreign-session", "subagents": [{"id": "a"}]},
+        )
+        listed = server._methods["spawn_tree.list"](
+            "r2", {"session_id": "foreign-session"}
+        )
+
+        assert "error" in save
+        assert listed["result"]["entries"] == []
+        assert human.read_text() == '{"private": true}'
+        assert not (foreign / ".hermes-managed").exists()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_load_rejects_unowned_snapshot(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        foreign = home / "spawn-trees" / "foreign-session"
+        foreign.mkdir(parents=True)
+        human = foreign / "human.json"
+        human.write_text('{"private": true}')
+
+        loaded = server._methods["spawn_tree.load"]("r1", {"path": str(human)})
+
+        assert "error" in loaded
+        assert human.read_text() == '{"private": true}'
+    finally:
+        reset_hermes_home_override(token)

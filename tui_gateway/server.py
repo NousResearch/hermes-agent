@@ -9357,22 +9357,62 @@ def _spawn_trees_root():
     from hermes_constants import get_hermes_home
 
     root = get_hermes_home() / "spawn-trees"
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        if root.is_symlink() or not root.is_dir():
+            raise OSError(f"spawn-tree root is not a regular directory: {root}")
     return root
 
 
-def _spawn_tree_session_dir(session_id: str):
+def _is_owned_spawn_tree_dir(path: Path) -> bool:
+    marker = path / ".hermes-managed"
+    try:
+        return (
+            path.is_dir()
+            and not path.is_symlink()
+            and marker.is_file()
+            and not marker.is_symlink()
+            and marker.read_text(encoding="utf-8").strip() == "spawn-trees"
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def _spawn_tree_session_dir(session_id: str, *, create: bool = True):
     safe = (
         "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
     )
     d = _spawn_trees_root() / safe
-    d.mkdir(parents=True, exist_ok=True)
+    if not create:
+        return d if _is_owned_spawn_tree_dir(d) else None
+    created = False
+    try:
+        d.mkdir(parents=True, exist_ok=False)
+        created = True
+    except FileExistsError:
+        if not _is_owned_spawn_tree_dir(d):
+            raise OSError(f"spawn-tree directory is not exclusively Hermes-owned: {d}")
+        return d
     marker = d / ".hermes-managed"
-    if not marker.exists():
+    try:
+        with marker.open("x", encoding="utf-8") as marker_file:
+            marker_file.write("spawn-trees\n")
+    except (FileExistsError, OSError):
+        if created:
+            try:
+                marker.unlink(missing_ok=True)
+                d.rmdir()
+            except OSError:
+                pass
+        raise
+    if not _is_owned_spawn_tree_dir(d):
         try:
-            marker.write_text("spawn-trees\n", encoding="utf-8")
-        except FileExistsError:
+            marker.unlink(missing_ok=True)
+            d.rmdir()
+        except OSError:
             pass
+        raise OSError(f"spawn-tree ownership marker could not be verified: {d}")
     return d
 
 
@@ -9426,10 +9466,11 @@ def _(rid, params: dict) -> dict:
     label = str(params.get("label") or "")
     ts = datetime.utcfromtimestamp(float(finished_at)).strftime("%Y%m%dT%H%M%S%f")
     fname = f"{ts}-{uuid.uuid4().hex[:8]}.json"
-    d = _spawn_tree_session_dir(session_id or "default")
-    path = d / fname
-    temp_path = d / f".{fname}.{uuid.uuid4().hex}.tmp"
+    temp_path = None
     try:
+        d = _spawn_tree_session_dir(session_id or "default")
+        path = d / fname
+        temp_path = d / f".{fname}.{uuid.uuid4().hex}.tmp"
         payload = {
             "session_id": session_id,
             "started_at": float(started_at) if started_at else None,
@@ -9445,7 +9486,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
     finally:
         try:
-            temp_path.unlink(missing_ok=True)
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -9472,9 +9514,10 @@ def _(rid, params: dict) -> dict:
 
     if cross_session:
         root = _spawn_trees_root()
-        roots = [p for p in root.iterdir() if p.is_dir()]
+        roots = [p for p in root.iterdir() if _is_owned_spawn_tree_dir(p)]
     else:
-        roots = [_spawn_tree_session_dir(session_id or "default")]
+        session_dir = _spawn_tree_session_dir(session_id or "default", create=False)
+        roots = [session_dir] if session_dir is not None else []
 
     entries: list[dict] = []
     for d in roots:
@@ -9530,6 +9573,13 @@ def _(rid, params: dict) -> dict:
         resolved.relative_to(root)
     except (ValueError, OSError) as exc:
         return _err(rid, 4030, f"path outside spawn-trees root: {exc}")
+    if (
+        resolved.parent.parent != root
+        or not _is_owned_spawn_tree_dir(resolved.parent)
+        or resolved.is_symlink()
+        or not resolved.is_file()
+    ):
+        return _err(rid, 4030, "path is not an owned spawn-tree snapshot")
 
     try:
         payload = json.loads(resolved.read_text(encoding="utf-8"))

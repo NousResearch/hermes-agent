@@ -334,6 +334,13 @@ _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD = frozenset(
     name.casefold() for name in _PROTECTED_TRACKED_TOP_LEVEL_FILES
 )
 _DISPOSABLE_TOP_LEVEL_PREFIXES = ("test_", "tmp_", "temp_")
+_DISPOSABLE_TRACKED_ROOTS = frozenset({
+    "artifacts",
+    "downloads",
+    "scratch",
+    "temp",
+    "tmp",
+})
 
 
 def _is_narrow_top_level_artifact(name: str) -> bool:
@@ -358,6 +365,22 @@ def _is_protected_cron_path(p: Path) -> bool:
     protected, because deleting it wholesale erases every job's retained run
     history at once.
     """
+    try:
+        rel = p.resolve().relative_to(get_hermes_home().resolve())
+    except (OSError, ValueError):
+        rel = None
+    if rel is not None and rel.parts:
+        parts = tuple(part.casefold() for part in rel.parts)
+        if parts[0] in {"cron", "cronjobs"}:
+            # Only regular artifacts below cron/output/<job>/ are disposable.
+            # Every other descendant is scheduler control-plane state.
+            return not (
+                len(parts) >= 4
+                and parts[1] == "output"
+                and p.is_file()
+                and not p.is_symlink()
+            )
+
     # Lazily build the set once per process so HERMES_HOME is resolved
     # exactly once.
     if not _PROTECTED_CRON_PATHS:
@@ -381,14 +404,14 @@ def _is_protected_tracked_path(path: Path) -> bool:
     if not rel.parts:
         return True
     top = rel.parts[0].casefold()
-    return (
-        top in _PROTECTED_TRACKED_TOP_LEVEL_CASEFOLD
-        or (len(rel.parts) == 1 and not _is_narrow_top_level_artifact(top))
-        or (
-            len(rel.parts) == 1
-            and top in _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD
+    if len(rel.parts) == 1:
+        return (
+            not _is_narrow_top_level_artifact(top)
+            or top in _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD
         )
-    )
+    if top in {"cron", "cronjobs"}:
+        return False  # _is_protected_cron_path applies the narrower exception.
+    return top not in _DISPOSABLE_TRACKED_ROOTS
 
 
 def _is_owned_empty_dir_root(path: Path) -> bool:

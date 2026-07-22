@@ -129,7 +129,11 @@ import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
-import { remoteHttpStatusError, resolveReadyRemoteConnectionWithRetry } from './remote-connection-retry'
+import {
+  isRetryableRemoteConnectionError,
+  remoteHttpStatusError,
+  resolveReadyRemoteConnectionWithRetry
+} from './remote-connection-retry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
@@ -4656,6 +4660,13 @@ async function waitForHermes(baseUrl, token, signal?) {
       // the caller can open the sign-in flow rather than waiting out the full
       // readiness window and then a retry budget.
       if (isGatewayAuthRejection(error)) {
+        throw error
+      }
+
+      // Only transport/server failures belong to the polling window. Preserve
+      // permanent HTTP/protocol/configuration failures so the outer retry
+      // boundary cannot misclassify them as a timeout.
+      if (!isRetryableRemoteConnectionError(error)) {
         throw error
       }
 

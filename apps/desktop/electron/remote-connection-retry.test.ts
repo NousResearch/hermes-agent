@@ -200,7 +200,7 @@ test('readiness authentication failures bypass retry', async () => {
 })
 
 test('SSH wrappers preserve transient and permanent classification', () => {
-  const refused = Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED', kind: 'unreachable' })
+  const refused = Object.assign(new Error('remote ownership probe failed'), { kind: 'transient-transport-error' })
 
   const transientWrapper = Object.assign(new Error(refused.message, { cause: refused }), {
     isSshBootstrap: true,

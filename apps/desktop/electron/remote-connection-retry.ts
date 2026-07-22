@@ -59,7 +59,11 @@ function isRetryableRemoteConnectionError(error: unknown, seen = new Set<object>
     return true
   }
 
-  if (candidate.kind === 'timeout' || candidate.kind === 'unreachable') {
+  if (
+    candidate.kind === 'timeout' ||
+    candidate.kind === 'transient-transport-error' ||
+    candidate.kind === 'unreachable'
+  ) {
     return true
   }
 

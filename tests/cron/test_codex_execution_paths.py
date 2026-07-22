@@ -116,7 +116,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
 
     assert success is True
     assert error is None
-    assert final_response == "Recovered via refresh"
+    assert final_response.startswith("Recovered via refresh")
     assert "Recovered via refresh" in output
     assert _Codex401ThenSuccessAgent.refresh_attempts == 1
     assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"

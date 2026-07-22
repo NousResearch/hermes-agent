@@ -2664,8 +2664,8 @@ def _build_run_stats_section(
     """Build a compact ``### Run Statistics`` line for cron output docs.
 
     Collapses redundant fields (input≈prompt, output≈completion) and omits
-    zero-valued cache-write.  Cache-read, reasoning tokens, and blocked tool
-    calls appear inline as parenthetical annotations only when non-zero.
+    zero-valued cache-write.  Cache-read and reasoning tokens appear inline
+    as parenthetical annotations with their percentage of total in/out.
     """
     _in = tokens.get("input_tokens", 0)
     _out = tokens.get("output_tokens", 0)
@@ -2673,15 +2673,18 @@ def _build_run_stats_section(
     _cache_read = tokens.get("cache_read_tokens", 0)
     _reasoning = tokens.get("reasoning_tokens", 0)
 
-    if _cache_read and _in:
-        _cache_pct = 100 * _cache_read / _in
+    _in_total = _in + _cache_read
+    _out_total = _out + _reasoning
+
+    if _cache_read and _in_total:
+        _cache_pct = 100 * _cache_read / _in_total
         _cache_str = f" ({_human_tok(_cache_read)}={_cache_pct:.0f}% cache)"
     elif _cache_read:
         _cache_str = f" ({_human_tok(_cache_read)} cache)"
     else:
         _cache_str = ""
-    if _reasoning and _out:
-        _reason_pct = 100 * _reasoning / _out
+    if _reasoning and _out_total:
+        _reason_pct = 100 * _reasoning / _out_total
         _reason_str = f" ({_human_tok(_reasoning)}={_reason_pct:.0f}% think)"
     elif _reasoning:
         _reason_str = f" ({_human_tok(_reasoning)} think)"
@@ -2696,8 +2699,8 @@ def _build_run_stats_section(
     return (
         f"### Run Statistics\n"
         f"{elapsed_seconds:.1f}s · {_human_tok(_total)} tok = "
-        f"in:{_human_tok(_in)}{_cache_str}, "
-        f"out:{_human_tok(_out)}{_reason_str}"
+        f"in:{_human_tok(_in_total)}{_cache_str}, "
+        f"out:{_human_tok(_out_total)}{_reason_str}"
         f"{_blocked_str}\n"
     )
 

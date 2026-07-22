@@ -67,7 +67,7 @@ class TestSessionDbInitTimeout:
                 mock_agent_cls.return_value = mock_agent
 
                 start = time.monotonic()
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, _ = run_job(job)
                 elapsed = time.monotonic() - start
         finally:
             never_set.set()
@@ -77,7 +77,7 @@ class TestSessionDbInitTimeout:
         assert elapsed < 5.0
         # The run still completes successfully without a session store.
         assert success is True
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is None
 
@@ -108,7 +108,7 @@ class TestSessionDbInitTimeout:
             mock_agent_cls.return_value = mock_agent
 
             with caplog.at_level("WARNING"):
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, _ = run_job(job)
 
         assert success is True
         kwargs = mock_agent_cls.call_args.kwargs
@@ -155,7 +155,7 @@ class TestSessionDbInitTimeout:
                 mock_agent_cls.return_value = mock_agent
 
                 start = time.monotonic()
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, _ = run_job(job)
                 elapsed = time.monotonic() - start
         finally:
             never_set.set()

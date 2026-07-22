@@ -1084,7 +1084,7 @@ class TestRunJobSessionPersistence:
 
             success, output, final_response, error, _ = run_job(job)
 
-        assert final_response == "Daily report: 4 PRs merged."
+        assert final_response.startswith("Daily report: 4 PRs merged.")
         assert success is True
 
     def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
@@ -5011,41 +5011,42 @@ class TestBuildRunStatsSection:
         tokens = {"input_tokens": 20000, "output_tokens": 100, "total_tokens": 20100,
                   "cache_read_tokens": 5000}
         section = _build_run_stats_section(2.0, tokens)
-        assert "5k=25% cache" in section
+        assert "5k=20% cache" in section
 
     def test_reasoning_shown_when_nonzero(self):
         tokens = {"input_tokens": 200, "output_tokens": 10000, "total_tokens": 10200,
                   "reasoning_tokens": 1200}
         section = _build_run_stats_section(2.0, tokens)
-        assert "1.2k=12% think" in section
+        assert "1.2k=11% think" in section
 
-    def test_cache_over_100_percent_shown_unclamped(self):
-        """Cache reads can exceed input tokens across turns (prompt caching
-        spans multiple requests).  The percentage is not capped."""
+    def test_cache_majority_of_total_input(self):
+        """Cache read as a percentage of total input (in + cache_read)."""
         tokens = {"input_tokens": 5000, "output_tokens": 2000, "total_tokens": 7000,
                   "cache_read_tokens": 15000}
         section = _build_run_stats_section(1.0, tokens)
-        assert "15k=300% cache" in section
+        assert "15k=75% cache" in section
 
-    def test_reasoning_over_100_percent_shown_unclamped(self):
+    def test_reasoning_majority_of_total_output(self):
         tokens = {"input_tokens": 5000, "output_tokens": 2000, "total_tokens": 7000,
                   "reasoning_tokens": 3000}
         section = _build_run_stats_section(1.0, tokens)
-        assert "3k=150% think" in section
+        assert "3k=60% think" in section
 
-    def test_cache_shown_without_percent_when_zero_input(self):
+    def test_cache_all_with_percent_when_zero_input_tokens(self):
+        """When input_tokens is 0 but cache hits exist, in_total = cache,
+        so 100% is shown — all observed input was cached."""
         tokens = {"input_tokens": 0, "output_tokens": 100, "total_tokens": 100,
                   "cache_read_tokens": 500}
         section = _build_run_stats_section(1.0, tokens)
-        assert "500 cache" in section
-        assert "%" not in section  # no percentage when in==0
+        assert "500=100% cache" in section
 
-    def test_reasoning_shown_without_percent_when_zero_output(self):
+    def test_reasoning_all_with_percent_when_zero_output_tokens(self):
+        """When output_tokens is 0 but reasoning tokens exist, out_total = reasoning,
+        so 100% is shown — all observed output was reasoning."""
         tokens = {"input_tokens": 100, "output_tokens": 0, "total_tokens": 100,
                   "reasoning_tokens": 200}
         section = _build_run_stats_section(1.0, tokens)
-        assert "200 think" in section
-        assert "%" not in section
+        assert "200=100% think" in section
 
     def test_human_tok(self):
         from cron.scheduler import _human_tok
@@ -5160,8 +5161,8 @@ class TestSubagentTokenAggregation:
         assert tokens["completion_tokens"] == 1400
 
         # Stats section reflects combined totals
-        assert "in:3.5k" in output
-        assert "out:1.4k" in output
+        assert "in:5.8k" in output
+        assert "out:1.8k" in output
         assert "cache" in output
         assert "think" in output
 

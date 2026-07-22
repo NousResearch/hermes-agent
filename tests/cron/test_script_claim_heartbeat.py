@@ -97,7 +97,7 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
         jobs.use_cron_store(profile_home),
         patch("hermes_state.SessionDB", return_value=MagicMock()),
     ):
-        success, _doc, _response, error = scheduler.run_job(claimed_job)
+        success, _doc, _response, error, _ = scheduler.run_job(claimed_job)
         profile_claim = jobs.get_job("long-script")["run_claim"]
 
     assert success is True

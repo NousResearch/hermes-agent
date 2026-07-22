@@ -257,7 +257,7 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     monkeypatch.setattr(
         scheduler,
         "run_job",
-        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None),
+        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None, None),
     )
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
     monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)

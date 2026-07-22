@@ -4108,6 +4108,10 @@ class TestHandleMaxIterations:
             and item.get("call_id") == "call_orphan"
             for item in input_items
         )
+        # Summary is toolless: must not leave tool_choice after tools strip.
+        assert "tools" not in captured
+        assert "tool_choice" not in captured
+        assert "parallel_tool_calls" not in captured
 
     def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
         messages = [

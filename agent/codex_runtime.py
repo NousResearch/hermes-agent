@@ -1185,6 +1185,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     payload shape — we never let the SDK reconstruct a typed object from
     the terminal event's ``output`` field.
     """
+    from agent.request_contract import validate_api_kwargs
+
+    validate_api_kwargs(
+        api_kwargs,
+        api_mode=getattr(agent, "api_mode", None) or "codex_responses",
+        where="run_codex_stream",
+    )
+
     import httpx as _httpx
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")

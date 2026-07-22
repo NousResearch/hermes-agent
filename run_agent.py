@@ -4837,6 +4837,12 @@ class AIAgent:
         # Defensive: strip Responses-only kwargs that can leak in under an
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
+        from agent.request_contract import validate_api_kwargs
+        validate_api_kwargs(
+            api_kwargs,
+            api_mode=getattr(self, "api_mode", None),
+            where="_anthropic_messages_create",
+        )
         from agent.anthropic_adapter import create_anthropic_message
         return create_anthropic_message(
             client or self._anthropic_client,
@@ -5845,10 +5851,13 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
-        """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
+    def _build_api_kwargs(self, api_messages: list, **kwargs) -> dict:
+        """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``.
+
+        Accepts ``tools=None`` for an explicit toolless request (summary path).
+        """
         from agent.chat_completion_helpers import build_api_kwargs
-        return build_api_kwargs(self, api_messages)
+        return build_api_kwargs(self, api_messages, **kwargs)
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.

@@ -1927,14 +1927,14 @@ class TestQuickSnapshot:
         import hermes_cli.backup as backup_mod
 
         root = hermes_home / "state-snapshots"
-        legacy = root / "20260101-010101"
+        legacy = root / "20260101-010101-pre update.v1"
         legacy.mkdir(parents=True)
         payload = b"legacy: restored\n"
         (legacy / "config.yaml").write_bytes(payload)
         manifest = {
             "id": legacy.name,
             "timestamp": "20260101-010101",
-            "label": None,
+            "label": "pre update.v1",
             "file_count": 1,
             "total_size": len(payload),
             "files": {"config.yaml": len(payload)},

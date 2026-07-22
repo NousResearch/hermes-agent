@@ -1405,7 +1405,7 @@ def _legacy_quick_snapshot_manifest(snapshot_dir: Path) -> Optional[Dict[str, An
     if (
         os.path.lexists(snapshot_dir / _QUICK_OWNERSHIP_MARKER)
         or os.path.lexists(snapshot_dir / _QUICK_IN_PROGRESS_MARKER)
-        or re.fullmatch(r"\d{8}-\d{6}(?:-\d{6})?(?:-[A-Za-z0-9_-]+)?", snapshot_dir.name)
+        or re.fullmatch(r"\d{8}-\d{6}(?:-[^/\\\x00-\x1f]+)?", snapshot_dir.name)
         is None
     ):
         return None
@@ -1433,6 +1433,24 @@ def _legacy_quick_snapshot_manifest(snapshot_dir: Path) -> Optional[Dict[str, An
             fd = None
             metadata = json.load(stream)
         if not isinstance(metadata, dict) or metadata.get("id") != snapshot_dir.name:
+            return None
+        timestamp = metadata.get("timestamp")
+        label = metadata.get("label")
+        if (
+            not isinstance(timestamp, str)
+            or re.fullmatch(r"\d{8}-\d{6}", timestamp) is None
+            or not (
+                (label is None and snapshot_dir.name == timestamp)
+                or (
+                    isinstance(label, str)
+                    and label
+                    and "/" not in label
+                    and "\\" not in label
+                    and all(ord(char) >= 32 for char in label)
+                    and snapshot_dir.name == f"{timestamp}-{label}"
+                )
+            )
+        ):
             return None
         files = metadata.get("files")
         if not isinstance(files, dict) or not files:

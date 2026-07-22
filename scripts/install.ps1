@@ -1636,14 +1636,19 @@ function Install-Repository {
         $env:GIT_CONFIG_VALUE_0 = "false"
         git config --global windows.appendAtomically false 2>$null
 
-        # Try SSH first, then HTTPS, with -c flag for atomic write fix
+        # Try SSH first, then HTTPS, with -c flag for atomic write fix.
+        # GitHub has no anonymous SSH, so a keyless machine fails the SSH clone.
+        # Rather than trust only the exit code we verify a real git repo with a
+        # checked-out commit landed in $InstallDir; otherwise we fall back to
+        # HTTPS, which clones the public repo with no GitHub account and no key.
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
             Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
-            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
+        $null = git -C $InstallDir rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path "$InstallDir\.git")) { $cloneSuccess = $true }
 
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }

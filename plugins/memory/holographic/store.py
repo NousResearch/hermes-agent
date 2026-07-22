@@ -302,10 +302,13 @@ class MemoryStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT fact_id, trust_score FROM facts WHERE fact_id = ?", (fact_id,)
+                "SELECT fact_id, trust_score, category FROM facts WHERE fact_id = ?",
+                (fact_id,),
             ).fetchone()
             if row is None:
                 return False
+
+            old_category = row["category"]
 
             assignments: list[str] = ["updated_at = CURRENT_TIMESTAMP"]
             params: list = []
@@ -349,6 +352,10 @@ class MemoryStore:
                 "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()["category"]
             self._rebuild_bank(cat)
+            # If category changed, also rebuild the old category's bank
+            # so it no longer contains this fact's stale HRR vector
+            if category is not None and old_category != category:
+                self._rebuild_bank(old_category)
 
             return True
 
@@ -361,10 +368,30 @@ class MemoryStore:
             if row is None:
                 return False
 
+            # Collect entity IDs linked to this fact before deleting links
+            linked_entities = [
+                r["entity_id"]
+                for r in self._conn.execute(
+                    "SELECT entity_id FROM fact_entities WHERE fact_id = ?",
+                    (fact_id,),
+                ).fetchall()
+            ]
             self._conn.execute(
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
+
+            # Clean up entities that no longer have any fact links
+            for entity_id in linked_entities:
+                count = self._conn.execute(
+                    "SELECT COUNT(*) FROM fact_entities WHERE entity_id = ?",
+                    (entity_id,),
+                ).fetchone()[0]
+                if count == 0:
+                    self._conn.execute(
+                        "DELETE FROM entities WHERE entity_id = ?", (entity_id,)
+                    )
+
             self._conn.commit()
             self._rebuild_bank(row["category"])
             return True

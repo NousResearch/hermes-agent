@@ -27,6 +27,10 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _DOWNLOAD_TIMEOUT = 60.0
+PET_IMPORT_MAX_BYTES = 32 * 1024 * 1024
+_PET_ARCHIVE_MAX_EXPANDED_BYTES = 40 * 1024 * 1024
+_PET_ARCHIVE_MAX_MEMBERS = 256
+_PET_METADATA_MAX_BYTES = 1024 * 1024
 
 
 class PetStoreError(RuntimeError):
@@ -51,6 +55,10 @@ class InstalledPet:
     @property
     def generated(self) -> bool:
         return self.created_by == "generator"
+
+    @property
+    def managed_local(self) -> bool:
+        return self.created_by in {"generator", "import"}
 
 
 def pets_dir() -> Path:
@@ -127,7 +135,7 @@ def installed_pets() -> list[InstalledPet]:
     """Return every installed pet (dirs containing a usable spritesheet)."""
     out: list[InstalledPet] = []
     for child in sorted(pets_dir().iterdir()):
-        if not child.is_dir():
+        if not child.is_dir() or child.name.startswith("."):
             continue
         pet = load_pet(child.name)
         if pet and pet.exists:
@@ -272,6 +280,175 @@ def register_local_pet(
     pet = load_pet(slug)
     if pet is None or not pet.exists:
         raise PetStoreError(f"register of generated pet '{slug}' did not produce a spritesheet")
+    return pet
+
+
+def import_pet_package(data: bytes, *, filename: str = "", name: str = "") -> InstalledPet:
+    """Import a Hermes/petdex ZIP package or a raw compatible atlas.
+
+    Archives are read in memory (never extracted), encrypted/symlink entries and
+    oversized payloads are rejected, and only the package metadata plus its
+    declared spritesheet are consumed. Raw PNG/WebP files must match either the
+    current 8x9 or legacy 9x8 atlas geometry.
+    """
+    import io
+    import os
+    import shutil
+    import uuid
+    import warnings
+    import zipfile
+    from pathlib import PurePosixPath
+
+    from PIL import Image
+    from PIL.Image import DecompressionBombError, DecompressionBombWarning
+
+    if not data:
+        raise PetStoreError("pet import is empty")
+    if len(data) > PET_IMPORT_MAX_BYTES:
+        raise PetStoreError("pet import exceeds 32 MB")
+
+    meta: dict = {}
+    image_bytes = data
+    lower = filename.lower()
+    buffer = io.BytesIO(data)
+    is_archive = lower.endswith(".zip") or zipfile.is_zipfile(buffer)
+    if is_archive:
+        try:
+            buffer.seek(0)
+            with zipfile.ZipFile(buffer) as archive:
+                infos = archive.infolist()
+                if len(infos) > _PET_ARCHIVE_MAX_MEMBERS:
+                    raise PetStoreError(
+                        f"pet archive contains more than {_PET_ARCHIVE_MAX_MEMBERS} entries"
+                    )
+                if sum(info.file_size for info in infos) > _PET_ARCHIVE_MAX_EXPANDED_BYTES:
+                    raise PetStoreError("pet archive expands beyond 40 MB")
+                by_path: dict[str, zipfile.ZipInfo] = {}
+                for info in infos:
+                    mode = (info.external_attr >> 16) & 0o170000
+                    if info.flag_bits & 0x1:
+                        raise PetStoreError("encrypted archive entries are not supported")
+                    if mode not in (0, 0o040000, 0o100000):
+                        raise PetStoreError("linked or special archive entries are not supported")
+                    if "\\" in info.filename or "\x00" in info.filename:
+                        raise PetStoreError("pet archive contains an unsafe path")
+                    path = PurePosixPath(info.filename)
+                    if path.is_absolute() or ".." in path.parts or any(":" in part for part in path.parts):
+                        raise PetStoreError("pet archive contains an unsafe path")
+                    normalized = path.as_posix().rstrip("/")
+                    key = normalized.casefold()
+                    if key in by_path:
+                        raise PetStoreError("pet archive contains duplicate paths")
+                    by_path[key] = info
+
+                json_infos = [
+                    info
+                    for key, info in by_path.items()
+                    if PurePosixPath(key).name == "pet.json" and not info.is_dir()
+                ]
+                if len(json_infos) != 1:
+                    raise PetStoreError("pet archive must contain exactly one pet.json")
+                json_info = json_infos[0]
+                if json_info.file_size > _PET_METADATA_MAX_BYTES:
+                    raise PetStoreError("pet.json exceeds 1 MB")
+                decoded = json.loads(archive.read(json_info).decode("utf-8"))
+                if not isinstance(decoded, dict):
+                    raise PetStoreError("pet.json must contain an object")
+                meta = decoded
+                manifest_dir = PurePosixPath(json_info.filename).parent
+                declared_raw = str(meta.get("spritesheetPath") or "").strip()
+                if declared_raw:
+                    if "\\" in declared_raw or "\x00" in declared_raw:
+                        raise PetStoreError("pet.json declares an unsafe spritesheet path")
+                    declared = PurePosixPath(declared_raw)
+                    if declared.is_absolute() or ".." in declared.parts or any(
+                        ":" in part for part in declared.parts
+                    ):
+                        raise PetStoreError("pet.json declares an unsafe spritesheet path")
+                    expected = (manifest_dir / declared).as_posix().casefold()
+                    candidate = by_path.get(expected)
+                    candidates = [candidate] if candidate is not None and not candidate.is_dir() else []
+                else:
+                    conventional = {
+                        (manifest_dir / candidate).as_posix().casefold()
+                        for candidate in (
+                            "spritesheet.webp",
+                            "spritesheet.png",
+                            "sprite.webp",
+                            "sprite.png",
+                        )
+                    }
+                    candidates = [
+                        info for key, info in by_path.items() if key in conventional and not info.is_dir()
+                    ]
+                if len(candidates) != 1:
+                    raise PetStoreError("pet archive must contain one declared spritesheet")
+                sheet_info = candidates[0]
+                if sheet_info.file_size > PET_IMPORT_MAX_BYTES:
+                    raise PetStoreError("pet spritesheet exceeds 32 MB")
+                image_bytes = archive.read(sheet_info)
+        except PetStoreError:
+            raise
+        except (OSError, UnicodeDecodeError, ValueError, zipfile.BadZipFile) as exc:
+            raise PetStoreError(f"invalid pet archive: {exc}") from exc
+    elif not lower.endswith((".png", ".webp")):
+        raise PetStoreError("pet import must be a .zip, .png, or .webp file")
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DecompressionBombWarning)
+            opened = Image.open(io.BytesIO(image_bytes))
+        with opened:
+            if opened.format not in {"PNG", "WEBP"}:
+                raise PetStoreError("pet spritesheet must decode as PNG or WebP")
+            if opened.size not in {(1536, 1872), (1728, 1664)}:
+                raise PetStoreError(
+                    "spritesheet must be 1536x1872 (current) or 1728x1664 (legacy)"
+                )
+            opened.load()
+            sheet = opened.convert("RGBA")
+            idle = sheet.crop((0, 0, 192, 208))
+            if idle.getbbox() is None:
+                raise PetStoreError("spritesheet idle frame is empty")
+    except PetStoreError:
+        raise
+    except (DecompressionBombError, DecompressionBombWarning) as exc:
+        raise PetStoreError("pet spritesheet dimensions are unsafe") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise PetStoreError(f"could not decode pet spritesheet: {exc}") from exc
+
+    display_name = (name or str(meta.get("displayName") or "")).strip()
+    if not display_name:
+        display_name = Path(filename).stem or "Imported Pet"
+    display_name = display_name[:80]
+    description = str(meta.get("description") or "")[:500]
+    slug = unique_slug(display_name)
+    destination = pets_dir() / slug
+    staging = pets_dir() / f".import-{uuid.uuid4().hex}"
+    staging.mkdir(mode=0o700)
+    try:
+        sprite_path = staging / "spritesheet.webp"
+        _write_spritesheet(sheet, sprite_path)
+        clean_meta = {
+            "id": slug,
+            "displayName": display_name,
+            "description": description,
+            "spritesheetPath": sprite_path.name,
+            "createdBy": "import",
+        }
+        (staging / "pet.json").write_text(json.dumps(clean_meta, indent=2), encoding="utf-8")
+        if destination.exists():
+            raise PetStoreError(f"pet '{slug}' was created during import; retry")
+        staging.rename(destination)
+    except Exception as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        if isinstance(exc, PetStoreError):
+            raise
+        raise PetStoreError(f"could not install imported pet: {exc}") from exc
+    pet = load_pet(slug)
+    if pet is None or not pet.exists:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise PetStoreError("import did not produce a usable pet")
     return pet
 
 

@@ -126,9 +126,9 @@ export function PetPalettePage({ search, onGenerate }: PetPalettePageProps) {
               <span className="flex min-w-0 flex-col">
                 <span className="flex items-center gap-1.5">
                   <span className="truncate font-medium">{pet.displayName}</span>
-                  {pet.generated && (
+                  {pet.createdBy && (
                     <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[0.625rem] font-medium text-primary">
-                      {copy.generatedTag}
+                      {pet.createdBy === 'import' ? copy.importedTag : copy.generatedTag}
                     </span>
                   )}
                 </span>

@@ -334,6 +334,11 @@ export const ja = defineLocale({
           'アプリ上に浮かぶ petdex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
         restartHint:
           'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
+        createTitle: '自分のペット',
+        createDesc: '互換性のあるペットパッケージまたはスプライトシートを読み込みます。',
+        importPet: '読み込む',
+        importFailed: 'ペットを読み込めませんでした。',
+        importTooLarge: 'ペットファイルは 32 MB 以下にしてください。',
         scaleTitle: 'サイズ',
         scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
         roamTitle: '散歩',
@@ -347,6 +352,7 @@ export const ja = defineLocale({
         noMatch: query => `「${query}」に一致するペットがありません。`,
         installedTag: 'インストール済み',
         generatedTag: '生成',
+        importedPetTag: '読み込み済み',
         countCapped: (cap, total) => `${total} 件中 ${cap} 件を表示中——入力して絞り込めます。`,
         count: n => `${n} 件のペット。`,
         uninstall: name => `${name} をアンインストール`,
@@ -1087,6 +1093,7 @@ export const ja = defineLocale({
       turnOn: 'オン',
       installed: 'インストール済み',
       generatedTag: '生成',
+      importedTag: '読み込み済み',
       adoptFailed: 'ペットを採用できませんでした。',
       toggleFailed: 'ペットを切り替えできませんでした。',
       noneAvailable: '利用可能なペットがありません。'

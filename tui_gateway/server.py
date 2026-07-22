@@ -222,6 +222,7 @@ _LONG_HANDLERS = frozenset(
         # round-trips per call — so it must never block the reader thread.
         "pet.generate",
         "pet.hatch",
+        "pet.import",
         "pet.info",
         "pet.select",
         "pet.thumb",
@@ -7715,6 +7716,8 @@ def _(rid, params: dict) -> dict:
                         # is the closest signal, so the picker can surface it first.
                         "curated": "/curated/" in entry.spritesheet_url,
                         "generated": entry.slug in installed and installed[entry.slug].generated,
+                        "managedLocal": entry.slug in installed and installed[entry.slug].managed_local,
+                        "createdBy": installed[entry.slug].created_by if entry.slug in installed else "",
                     }
                 )
         except Exception as exc:  # noqa: BLE001 - offline: fall back to installed
@@ -7730,6 +7733,8 @@ def _(rid, params: dict) -> dict:
                         "installed": True,
                         "spritesheetUrl": "",
                         "generated": pet.generated,
+                        "managedLocal": pet.managed_local,
+                        "createdBy": pet.created_by,
                     }
                 )
 
@@ -7828,6 +7833,47 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("pet.export failed: %s", exc)
         return _err(rid, 5031, f"pet.export failed: {exc}")
+
+
+@method("pet.import")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Import a validated pet ZIP or compatible raw spritesheet."""
+    import base64
+    import binascii
+
+    from agent.pet import store
+
+    encoded = str(params.get("dataBase64") or "").strip()
+    if not encoded:
+        return _err(rid, 4004, "missing dataBase64")
+    max_encoded = 4 * ((store.PET_IMPORT_MAX_BYTES + 2) // 3)
+    if len(encoded) > max_encoded:
+        return _err(rid, 4004, "pet import exceeds 32 MB")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        return _err(rid, 4004, f"invalid base64 pet import: {exc}")
+    try:
+        pet = store.import_pet_package(
+            data,
+            filename=str(params.get("filename") or ""),
+            name=str(params.get("name") or ""),
+        )
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "pet": _pet_sprite_payload(pet, scale=_pet_config_scale()),
+            },
+        )
+    except store.PetStoreError as exc:
+        return _err(rid, 4004, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pet.import failed", exc_info=True)
+        return _err(rid, 5031, f"pet.import failed: {exc}")
 
 
 @method("pet.rename")

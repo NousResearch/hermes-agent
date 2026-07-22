@@ -15,7 +15,11 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
   const t = o.type
 
   if (t === 'exec' || t === 'plugin') {
-    return { type: t, output: typeof o.output === 'string' ? o.output : undefined }
+    return {
+      type: t,
+      output: typeof o.output === 'string' ? o.output : undefined,
+      silent_empty: typeof o.silent_empty === 'boolean' ? o.silent_empty : undefined
+    }
   }
 
   if (t === 'alias' && typeof o.target === 'string') {

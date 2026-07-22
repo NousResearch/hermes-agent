@@ -13524,7 +13524,14 @@ def _(rid, params: dict) -> dict:
                     4018,
                     output or f"quick command failed with exit code {r.returncode}",
                 )
-            return _ok(rid, {"type": "exec", "output": output})
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": output,
+                    "silent_empty": qc.get("silent_empty", False),
+                },
+            )
         if qc.get("type") == "alias":
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 

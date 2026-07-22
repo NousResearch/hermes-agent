@@ -5,6 +5,11 @@ import { asCommandDispatch } from '../lib/rpc.js'
 describe('asCommandDispatch', () => {
   it('parses exec, alias, skill, and send', () => {
     expect(asCommandDispatch({ type: 'exec', output: 'hi' })).toEqual({ type: 'exec', output: 'hi' })
+    expect(asCommandDispatch({ type: 'exec', output: '', silent_empty: true })).toEqual({
+      type: 'exec',
+      output: '',
+      silent_empty: true
+    })
     expect(asCommandDispatch({ type: 'alias', target: 'help' })).toEqual({ type: 'alias', target: 'help' })
     expect(asCommandDispatch({ type: 'skill', name: 'x', message: 'do' })).toEqual({
       type: 'skill',

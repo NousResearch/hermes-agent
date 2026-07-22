@@ -1197,7 +1197,7 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
         return [], True
 
 
-def _resolve_shell_init_files() -> list[str]:
+def _resolve_shell_init_files(effective_env: dict[str, str] | None = None) -> list[str]:
     """Resolve the list of files to source before the login-shell snapshot.
 
     Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
@@ -1206,6 +1206,7 @@ def _resolve_shell_init_files() -> list[str]:
     an explicit list — once they have, Hermes trusts them.
     """
     explicit, auto_bashrc = _read_terminal_shell_init_config()
+    env = os.environ if effective_env is None else effective_env
 
     candidates: list[str] = []
     if explicit:
@@ -1231,7 +1232,27 @@ def _resolve_shell_init_files() -> list[str]:
     resolved: list[str] = []
     for raw in candidates:
         try:
-            path = os.path.expandvars(os.path.expanduser(raw))
+            path = re.sub(
+                r"\$(?:\{([^}]+)\}|([A-Za-z_][A-Za-z0-9_]*))",
+                lambda match: env.get(
+                    match.group(1) or match.group(2) or "",
+                    match.group(0),
+                ),
+                raw,
+            )
+            if _IS_WINDOWS:
+                path = re.sub(
+                    r"%([^%]+)%",
+                    lambda match: env.get(match.group(1), match.group(0)),
+                    path,
+                )
+            home = env.get("HOME") or os.path.expanduser("~")
+            if path == "~":
+                path = home
+            elif path.startswith("~/"):
+                path = os.path.join(home, path[2:])
+            else:
+                path = os.path.expanduser(path)
         except Exception:
             continue
         if path and os.path.isfile(path):
@@ -1334,6 +1355,7 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -1341,11 +1363,10 @@ class LocalEnvironment(BaseEnvironment):
         # Non-login invocations are already sourcing the snapshot and
         # don't need this.
         if login:
-            init_files = _resolve_shell_init_files()
+            init_files = _resolve_shell_init_files(run_env)
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

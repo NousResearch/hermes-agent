@@ -35,7 +35,7 @@ Do NOT use for single-file lookups, basic shell commands, or tasks that fit in o
 - **Install:** `npm install -g @qoder-ai/qodercli` or `curl -fsSL https://qoder.com/install | bash`
 - **Auth:** `qodercli login` (interactive) or set `QODER_PERSONAL_ACCESS_TOKEN` env var
 - **Verify:** `qodercli --version` and `qodercli --list-models`
-- **PTY:** always pass `pty=true` for interactive mode (`-i`, background). Print mode (`-p`) works without it, but including it is harmless.
+- **PTY:** pass `pty=true` for interactive foreground (`-i`). Background qodercli auto-switches to pipe mode for NDJSON progress regardless of this flag. Print mode (`-p`) works without it.
 
 ## Binary Resolution (Important)
 

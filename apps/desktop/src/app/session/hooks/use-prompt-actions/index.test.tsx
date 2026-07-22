@@ -1134,6 +1134,175 @@ describe('usePromptActions eager-upload races', () => {
     expect(methods.filter(m => m === 'file.attach').length).toBe(1)
     expect(methods).toContain('prompt.submit')
   })
+
+  it('submits the first "upload + text" send on a brand-new chat even when the route commit to the created session lands during the attachment await', async () => {
+    // Regression: the first send on a freshly-created chat that also carries an
+    // attachment was silently dropped (no prompt.submit, a stranded route that
+    // 404s "Session not found"). Creating the session calls navigate(), which
+    // re-homes the route to the chat it just minted — but that route commit can
+    // land a beat late (render-synced), so an attachment upload's await can
+    // straddle the advance. The old drift guard compared a raw route token
+    // (pathname:search:hash) against a stale baseline and aborted the send as a
+    // "session switch" that never happened. The fix compares the *resolved*
+    // routed session id instead: the delayed commit resolves to exactly the
+    // session we created (still ours), so the send must go through. Here we
+    // model the route resolving to the created session mid-await and assert the
+    // send is NOT aborted.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    // Brand-new chat: nothing selected, no runtime session yet.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    // Mirror the real createBackendSessionForSend: a successful create re-homes
+    // both the active runtime ref and the selected-stored ref to the chat it
+    // minted BEFORE returning (navigate() has run by now).
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = RUNTIME_SESSION_ID
+
+      return RUNTIME_SESSION_ID
+    })
+
+    // Model the delayed route commit: the URL resolves to null (the still-ours
+    // pre-commit new-chat route) right up until the attachment upload's await
+    // yields to a render, after which it resolves to the freshly-created
+    // session. Both values belong to this submit, so neither must abort it.
+    let routeCommitted = false
+    const getRoutedStoredSessionId = () => (routeCommitted ? RUNTIME_SESSION_ID : null)
+
+    let releaseAttach: () => void = () => {}
+    const methods: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+
+      if (method === 'file.attach') {
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+        // The React render that repaints after navigate() commits the route —
+        // model it as happening while the upload is in flight.
+        routeCommitted = true
+
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.pdf', uploaded: true } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={getRoutedStoredSessionId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    $composerAttachments.set([{ id: 'file:doc.pdf', kind: 'file', label: 'doc.pdf', path: '/Users/me/doc.pdf' }])
+    await waitFor(() => expect($composerAttachments.get().length).toBe(1))
+
+    const submitting = handle!.submitText('here you go')
+    await waitFor(() => expect(methods.filter(m => m === 'file.attach').length).toBe(1))
+    releaseAttach()
+
+    expect(await submitting).toBe(true)
+    // The send must reach the gateway on the created session — not be aborted
+    // by a phantom drift.
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(methods).toContain('prompt.submit')
+  })
+
+  it('aborts a brand-new-chat send when the route drifts to an UNRELATED session during the attachment await', async () => {
+    // Counterpart to the delayed-commit case above: the created-session window
+    // must accept the route commit to the session it minted, but it must still
+    // reject a route that resolves to a *different* session. Otherwise the
+    // window would blanket-disable drift detection and let a genuine mid-upload
+    // session switch (#54527) redirect the send into the wrong chat. Here the
+    // route resolves to an unrelated stored id while file.attach is in flight,
+    // so the send must be aborted (no prompt.submit) even though a fresh
+    // session was created.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = RUNTIME_SESSION_ID
+
+      return RUNTIME_SESSION_ID
+    })
+
+    // Route starts unresolved (brand-new chat, nothing committed yet), then
+    // drifts to an UNRELATED session mid-await — a real user switch, which must
+    // abort. Contrast the delayed-commit case, where it would resolve to the
+    // session we just created.
+    let switchedAway = false
+    const getRoutedStoredSessionId = () => (switchedAway ? 'stored-unrelated-999' : null)
+
+    let releaseAttach: () => void = () => {}
+    const methods: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+
+      if (method === 'file.attach') {
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+        // User navigates to a different session while the upload is in flight.
+        switchedAway = true
+
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.pdf', uploaded: true } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={getRoutedStoredSessionId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    $composerAttachments.set([{ id: 'file:doc.pdf', kind: 'file', label: 'doc.pdf', path: '/Users/me/doc.pdf' }])
+    await waitFor(() => expect($composerAttachments.get().length).toBe(1))
+
+    const submitting = handle!.submitText('here you go')
+    await waitFor(() => expect(methods.filter(m => m === 'file.attach').length).toBe(1))
+    releaseAttach()
+
+    // Aborted as a real drift: the send never reaches the gateway.
+    expect(await submitting).toBe(false)
+    expect(methods).not.toContain('prompt.submit')
+  })
 })
 
 describe('usePromptActions sleep/wake session recovery', () => {

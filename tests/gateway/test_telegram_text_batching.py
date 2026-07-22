@@ -139,6 +139,68 @@ class TestTextBatching:
         assert len(adapter._pending_text_batch_tasks) == 0
 
     @pytest.mark.asyncio
+    async def test_resend_after_long_gap_is_deduplicated(self):
+        """A user resending the exact same text after a long unresponsive
+        stretch (e.g. the backend retrying for minutes) must not glue
+        duplicate copies into one garbled turn."""
+        adapter = _make_adapter()
+        key = adapter._text_batch_key(_make_event("tell me about a2ui"))
+
+        adapter._enqueue_text_event(_make_event("tell me about a2ui"))
+        # Simulate two long real-world gaps (each well past
+        # _RESEND_DEDUP_MIN_GAP_SECONDS) by backdating the buffered
+        # event's own arrival timestamp before each resend, rather than
+        # sleeping in the test.
+        for _ in range(2):
+            adapter._pending_text_batches[key]._last_chunk_ts -= (
+                adapter._RESEND_DEDUP_MIN_GAP_SECONDS + 1.0
+            )
+            adapter._enqueue_text_event(_make_event("tell me about a2ui"))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.text == "tell me about a2ui"
+
+    @pytest.mark.asyncio
+    async def test_identical_fast_chunks_are_not_deduplicated(self):
+        """Two genuine split-continuation chunks that happen to be
+        byte-identical (e.g. a paragraph repeated, split down the middle)
+        must both survive — text equality alone must not be the dedup
+        trigger, only equality combined with a resend-scale gap."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(_make_event("same text"))
+        await asyncio.sleep(0.02)  # normal fast split-arrival gap
+        adapter._enqueue_text_event(_make_event("same text"))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.text == "same text\nsame text"
+
+    @pytest.mark.asyncio
+    async def test_identical_near_split_threshold_chunks_both_survive(self):
+        """Reviewer-cited edge case: two consecutive >=4000-char chunks
+        with identical text, arriving at genuine split speed, must both
+        be preserved rather than discarded as a resend."""
+        adapter = _make_adapter()
+        adapter._text_batch_split_delay_seconds = 0.1  # fast for tests
+        big_chunk = "x" * 4000
+
+        adapter._enqueue_text_event(_make_event(big_chunk))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(_make_event(big_chunk))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.text == f"{big_chunk}\n{big_chunk}"
+
+    @pytest.mark.asyncio
     async def test_dm_topic_batching_recovers_thread_before_keying(self):
         """DM-topic text batches should use the recovered topic lane."""
         adapter = _make_adapter()

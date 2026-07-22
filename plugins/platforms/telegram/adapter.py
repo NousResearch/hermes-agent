@@ -598,6 +598,16 @@ class TelegramAdapter(BasePlatformAdapter):
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
+    # Minimum gap (seconds) since the previous chunk before an
+    # exact-duplicate chunk is treated as a user resend rather than a
+    # genuine split continuation. Comfortably above
+    # _text_batch_split_delay_seconds' 4.0s max: a real Telegram
+    # auto-split continuation always arrives well inside that window
+    # (typically "a few hundred milliseconds" — see _enqueue_text_event),
+    # so two identical chunks arriving that fast are still merged
+    # normally. Only a chunk arriving slower than the batching window
+    # itself could plausibly be a resend rather than a continuation.
+    _RESEND_DEDUP_MIN_GAP_SECONDS = 5.0
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
@@ -8278,14 +8288,33 @@ class TelegramAdapter(BasePlatformAdapter):
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
+        now = time.monotonic()
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            event._last_chunk_ts = now  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
-            # Append text from the follow-up chunk
-            if event.text:
+            # Append text from the follow-up chunk. Skip it only when it's
+            # both an exact duplicate of the text buffered so far AND
+            # arrived after a gap too long for a genuine Telegram auto-split
+            # continuation (see _RESEND_DEDUP_MIN_GAP_SECONDS) — this is a
+            # user resending the same message verbatim during an
+            # unresponsive stretch (e.g. the backend retrying for minutes),
+            # which would otherwise glue N identical copies into one
+            # garbled turn. Text equality alone isn't enough: two genuine
+            # split chunks can legitimately be identical text (e.g. a
+            # repeated paragraph split right down the middle), so the
+            # timing gate is required to avoid discarding real content.
+            _elapsed = now - getattr(existing, "_last_chunk_ts", now)
+            _is_probable_resend = (
+                _elapsed >= self._RESEND_DEDUP_MIN_GAP_SECONDS
+                and event.text
+                and event.text.strip() == (existing.text or "").strip()
+            )
+            if event.text and not _is_probable_resend:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            existing._last_chunk_ts = now  # type: ignore[attr-defined]
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)

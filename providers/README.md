@@ -36,6 +36,11 @@ layer reads from it:
   `zai`, `openrouter`, `custom` — those need bespoke token resolution).
 - `hermes_cli/models.py` extends `CANONICAL_PROVIDERS` and calls
   `profile.fetch_models()` inside `provider_model_ids()`.
+  Overrides **must** accept the base signature
+  `fetch_models(*, api_key=None, base_url=None, timeout=8.0)`.
+  Hermes first calls with `base_url=...`; if a third-party override still
+  rejects that kwarg (`TypeError`), it retries without `base_url` so the
+  model picker does not silently show zero models.
 - `hermes_cli/doctor.py` adds a `/models` health check for each
   `auth_type="api_key"` profile.
 - `hermes_cli/config.py` injects every `env_var` into

@@ -2623,7 +2623,18 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
+                # ProviderProfile.fetch_models accepts base_url, but some
+                # third-party model-provider plugins still override it with a
+                # narrower signature (api_key/timeout only). Passing base_url
+                # then raises TypeError, which the outer except Exception
+                # swallows — the picker shows 0 models for an otherwise
+                # healthy provider. Prefer the full call, then fall back.
+                try:
+                    live = _p.fetch_models(
+                        api_key=api_key, base_url=base_url or None
+                    )
+                except TypeError:
+                    live = _p.fetch_models(api_key=api_key)
                 if live:
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,

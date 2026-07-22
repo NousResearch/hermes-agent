@@ -1627,7 +1627,19 @@ setup_path() {
     if [ "$USE_VENV" = true ]; then
         HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
     else
-        HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
+        # --no-venv: prefer a system-wide hermes if one is on PATH, but fall
+        # back to $INSTALL_DIR/venv/bin/hermes because `uv sync --extra all
+        # --locked` (in install_deps) creates a venv at $INSTALL_DIR/venv
+        # unconditionally — see the `UV_PROJECT_ENVIRONMENT=...` invocation
+        # above. Without this fallback, `install.sh --no-venv` would
+        # silently skip shim creation and leave `which hermes` empty even
+        # though the entry point exists at $INSTALL_DIR/venv/bin/hermes.
+        # See #31383.
+        HERMES_BIN="$(command -v hermes 2>/dev/null || echo "")"
+        if [ -z "$HERMES_BIN" ] && [ -x "$INSTALL_DIR/venv/bin/hermes" ]; then
+            HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+            log_info "--no-venv: uv sync created $INSTALL_DIR/venv anyway; using that entry point."
+        fi
         if [ -z "$HERMES_BIN" ]; then
             log_warn "hermes not found on PATH after install"
             return 0

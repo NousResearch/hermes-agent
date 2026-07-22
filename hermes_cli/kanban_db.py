@@ -4496,6 +4496,26 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        state = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if state is None:
+            return False
+        # A blocked card has an explicit action-required handoff. It is not
+        # an acceptance receipt and must never satisfy dependency gates.
+        if state["status"] == "blocked":
+            _append_event(
+                conn,
+                task_id,
+                "completion_rejected",
+                {
+                    "reason": "blocked_task_requires_explicit_unblock",
+                    "prior_status": "blocked",
+                },
+                run_id=state["current_run_id"],
+            )
+            return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4509,7 +4529,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready')
                 """,
                 (result, now, task_id),
             )
@@ -4526,7 +4546,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -6426,9 +6446,13 @@ class DispatchResult:
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+_windows_direct_worker_exits: "set[int]" = set()
+_worker_processes: "dict[int, subprocess.Popen]" = {}
 
 
-def _record_worker_exit(pid: int, raw_status: int) -> None:
+def _record_worker_exit(
+    pid: int, raw_status: int, *, windows_direct: bool = False
+) -> None:
     """Record a reaped child's exit status for later classification.
 
     Called from the reap loop in ``dispatch_once``. Safe to call many
@@ -6436,19 +6460,32 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
     """
     if not pid or pid <= 0:
         return
+    _worker_processes.pop(int(pid), None)
+    if windows_direct:
+        _windows_direct_worker_exits.add(int(pid))
+    else:
+        _windows_direct_worker_exits.discard(int(pid))
     now = time.time()
     _recent_worker_exits[int(pid)] = (int(raw_status), now)
     # Age-based trim: drop entries older than the TTL.
     if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
         cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
-        for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
+        expired = [
+            p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff
+        ]
+        for _pid in expired:
             _recent_worker_exits.pop(_pid, None)
+        _windows_direct_worker_exits.difference_update(expired)
     # Size cap as a final guard.
     if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
         # Drop oldest half.
         ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
-        for _pid, _ in ordered[: len(ordered) // 2]:
+        evicted = [
+            _pid for _pid, _ in ordered[: len(ordered) // 2]
+        ]
+        for _pid in evicted:
             _recent_worker_exits.pop(_pid, None)
+        _windows_direct_worker_exits.difference_update(evicted)
 
 
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
@@ -6479,6 +6516,22 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
+    if os.name == "nt":
+        # Windows has no POSIX wait-status helpers. Popen.poll() returns the
+        # process exit code directly, so classify that value on its own.
+        code = int(raw)
+        if (
+            int(pid) not in _windows_direct_worker_exits
+            and code % 256 == 0
+        ):
+            code //= 256
+        if code < 0:
+            return ("signaled", abs(code))
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
     try:
         if os.WIFEXITED(raw):
             code = os.WEXITSTATUS(raw)
@@ -6498,10 +6551,29 @@ def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children of this process without blocking.
 
     Returns the list of reaped PIDs. Safe to call when there are no
-    children (returns []). No-op on Windows.
+    children (returns []). Uses Popen.poll() on Windows and waitpid on
+    POSIX.
     """
     reaped: "list[int]" = []
-    if os.name != "nt":
+    if os.name == "nt":
+        # Windows has no waitpid-based child reaping. Poll the Popen handles
+        # retained for workers launched by this process and feed direct exit
+        # codes into the shared classification registry.
+        for pid, proc in list(_worker_processes.items()):
+            try:
+                poll = getattr(proc, "poll", None)
+                if poll is None:
+                    _worker_processes.pop(pid, None)
+                    continue
+                status = poll()
+            except (OSError, ValueError):
+                _worker_processes.pop(pid, None)
+                continue
+            if status is None:
+                continue
+            _record_worker_exit(pid, status, windows_direct=True)
+            reaped.append(pid)
+    else:
         try:
             while True:
                 try:
@@ -8690,6 +8762,7 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    _worker_processes[proc.pid] = proc
     return proc.pid
 
 

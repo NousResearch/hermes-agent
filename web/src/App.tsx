@@ -17,6 +17,7 @@ import {
   Navigate,
   useLocation,
   useNavigate,
+  useSearchParams,
 } from "react-router-dom";
 import {
   Activity,
@@ -345,10 +346,12 @@ function buildRoutes(
 }
 
 const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
+const CHAT_RESUME_KEY = "hermes-chat-resume";
 
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const [searchParams] = useSearchParams();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -418,6 +421,32 @@ export default function App() {
     [manifests],
   );
 
+  // Persist the resume session id in localStorage so the sidebar Chat
+  // link survives navigation away from /chat and back.  Without this,
+  // clicking another tab and then clicking "Chat" navigates to plain
+  // /chat (no resume param), which spawns a fresh PTY and loses the
+  // resumed conversation.
+  const resumeId = searchParams.get("resume");
+  const [persistedResume, setPersistedResume] = useState<string | null>(() => {
+    try { return localStorage.getItem(CHAT_RESUME_KEY); } catch { return null; }
+  });
+  useEffect(() => {
+    if (resumeId) {
+      try { localStorage.setItem(CHAT_RESUME_KEY, resumeId); } catch {}
+      setPersistedResume(resumeId);
+    }
+  }, [resumeId]);
+  const activeResume = resumeId ?? persistedResume;
+  const chatNavItem: NavItem = useMemo(
+    () => ({
+      ...CHAT_NAV_ITEM,
+      path: activeResume
+        ? `/chat?resume=${encodeURIComponent(activeResume)}`
+        : "/chat",
+    }),
+    [activeResume],
+  );
+
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
@@ -428,12 +457,12 @@ export default function App() {
 
   const builtinNav = useMemo(() => {
     const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
+      ? [chatNavItem, ...BUILTIN_NAV_REST]
       : BUILTIN_NAV_REST;
     return showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+  }, [embeddedChat, showTokenAnalytics, chatNavItem]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),

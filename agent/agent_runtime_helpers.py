@@ -1321,8 +1321,14 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
+    from agent.cooldown_manager import get_cooldown_manager, build_cooldown_key
+    _primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
+    _primary_key = ((agent._primary_runtime or {}).get("api_key") or "").strip()
+    _mgr = get_cooldown_manager()
+    _ck_provider = _primary_provider
+    _ck_key = build_cooldown_key(_primary_provider, _primary_key or None, "rate_limit")
+    if _mgr.is_cooling(_ck_provider) or _mgr.is_cooling(_ck_key):
+        return False  # primary still on cooldown, stay on fallback
 
     rt = agent._primary_runtime
     try:

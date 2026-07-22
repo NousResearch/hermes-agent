@@ -77,7 +77,9 @@ class TestRestorePrimaryPoolReselect:
         agent._credential_pool = pool
         agent._fallback_activated = True
         agent._fallback_index = 1
-        agent._rate_limited_until = 0
+        # Clear any cooldown state so restore_primary_runtime isn't gated
+        from agent.cooldown_manager import CooldownManager, set_cooldown_manager
+        set_cooldown_manager(CooldownManager(storage_path=False))
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False
         agent.context_compressor = MagicMock()

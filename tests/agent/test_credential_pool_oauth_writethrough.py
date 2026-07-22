@@ -98,14 +98,14 @@ def test_pool_refresh_writes_through_to_root_when_profile_reads_root(
 
     pool = CredentialPool(provider, [])
     pool._sync_device_code_entry_to_auth_store(
-        _entry(provider, id="e1", access_token="new-access", refresh_token="new-refresh")
+        _entry(
+            provider, id="e1", access_token="new-access", refresh_token="new-refresh"
+        )
     )
 
     # Profile got the rotated chain (existing behavior).
     profile = _read_store(profile_path)
-    assert (
-        profile["providers"][provider]["tokens"]["refresh_token"] == "new-refresh"
-    )
+    assert profile["providers"][provider]["tokens"]["refresh_token"] == "new-refresh"
 
     # AND the global root no longer holds the revoked refresh token (#48415).
     root = _read_store(root_path)
@@ -255,7 +255,9 @@ def test_global_write_through_preserves_concurrent_root_update(
             A._save_auth_store(store, target_path=root_path)
         writer_done.set()
 
-    helper = threading.Thread(target=profile_write_through, name="profile-write-through")
+    helper = threading.Thread(
+        target=profile_write_through, name="profile-write-through"
+    )
     helper.start()
     assert helper_loaded.wait(timeout=5)
 
@@ -347,4 +349,3 @@ def test_codex_pool_refresh_holds_auth_store_lock_across_post(monkeypatch, tmp_p
     assert refreshed.refresh_token == "rotated-refresh"
     # The invariant: the single-use token POST ran inside the auth-store lock.
     assert lock_held["during_post"] is True
-

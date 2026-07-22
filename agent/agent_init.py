@@ -346,6 +346,9 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    persist_disabled: bool = False,
+    memory_read_only: bool = False,
+    tools_disabled: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1313,7 +1316,10 @@ def init_agent(
     try:
         from hermes_cli.config import load_config as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+        agent._session_json_enabled = (
+            bool(_sess_cfg.get("write_json_snapshots", False))
+            and not bool(persist_disabled)
+        )
     except Exception:
         pass
     # logs_dir is retained unconditionally for request_dump_*.json (debug
@@ -1366,7 +1372,9 @@ def init_agent(
     # (state.db) or the JSON snapshot, regardless of session_id. Set on the
     # background skill/memory review fork so its harness turn can't leak into
     # the user's real session and hijack the next live turn. Default False.
-    agent._persist_disabled = False
+    agent._persist_disabled = bool(persist_disabled)
+    agent._memory_read_only = bool(memory_read_only)
+    agent._tools_disabled = bool(tools_disabled)
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1458,7 +1466,7 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
-    if not skip_memory:
+    if not skip_memory and not agent._memory_read_only:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
@@ -1523,8 +1531,25 @@ def init_agent(
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
-    _inject_memory_provider_tools(agent)
+    if agent._memory_read_only:
+        # Keep loaded memory available to prompt construction and pre-turn
+        # recall, but remove every model-callable memory mutation surface.
+        agent._memory_nudge_interval = 0
+        agent.tools = [
+            tool for tool in agent.tools
+            if tool.get("function", {}).get("name") != "memory"
+        ]
+        agent.valid_tool_names.discard("memory")
+    else:
+        from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
+        _inject_memory_provider_tools(agent)
+
+    if agent._tools_disabled:
+        # Persistence suppression is not a capability sandbox by itself.
+        # Ephemeral callers must not be able to invoke file, shell, messaging,
+        # scheduling, skill, memory, or plugin tools as an incidental effect.
+        agent.tools = []
+        agent.valid_tool_names.clear()
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1533,6 +1558,10 @@ def init_agent(
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
     except Exception:
         pass
+    if agent._memory_read_only:
+        # Do not let an ephemeral turn auto-promote room content through the
+        # memory or skill curator paths.
+        agent._skill_nudge_interval = 0
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.
@@ -2000,7 +2029,8 @@ def init_agent(
     # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
     if (
-        hasattr(agent, "context_compressor")
+        not agent._tools_disabled
+        and hasattr(agent, "context_compressor")
         and agent.context_compressor
         and agent.tools is not None
         and (

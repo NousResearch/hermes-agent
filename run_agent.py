@@ -483,6 +483,9 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        persist_disabled: bool = False,
+        memory_read_only: bool = False,
+        tools_disabled: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -559,6 +562,9 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
+            persist_disabled=persist_disabled,
+            memory_read_only=memory_read_only,
+            tools_disabled=tools_disabled,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
@@ -2706,6 +2712,8 @@ class AIAgent:
         fewer messages") is preserved so resume + branch don't clobber a
         fuller existing snapshot.
         """
+        if getattr(self, "_persist_disabled", False):
+            return
         if not getattr(self, "_session_json_enabled", False):
             return
         messages = messages or self._session_messages
@@ -3457,6 +3465,8 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        if getattr(self, "_memory_read_only", False):
+            return
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -3481,6 +3491,8 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        if getattr(self, "_memory_read_only", False):
+            return
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -3535,7 +3547,7 @@ class AIAgent:
         providers are strictly best-effort — a misconfigured or offline
         backend must not block the user from seeing their response.
         """
-        if interrupted:
+        if interrupted or getattr(self, "_memory_read_only", False):
             return
         if not (self._memory_manager and final_response and original_user_message):
             return

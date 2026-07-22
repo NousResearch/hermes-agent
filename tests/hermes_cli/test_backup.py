@@ -1604,6 +1604,59 @@ class TestQuickSnapshot:
         out = capsys.readouterr().out
         assert "keeping older snapshots" in out
 
+    def test_oversized_file_inside_protected_dir_blocks_eviction(
+        self, hermes_home
+    ):
+        """The residual-bypass guard must cover the rglob path too: an oversized
+        file inside a protected DIRECTORY (not just a top-level protected file)
+        is recorded in size_skipped and must not let the prune evict the prior
+        complete snapshot (#68907 review)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {"state.db": 100}}'
+        )
+        # Oversized file inside the protected `kanban/boards` directory, which the
+        # snapshot walks via rglob (exercises the directory-contained call site).
+        board = hermes_home / "kanban" / "boards" / "board1"
+        board.mkdir(parents=True)
+        (board / "kanban.db").write_bytes(b"x" * 4096)
+
+        snap_id = create_quick_snapshot(
+            hermes_home=hermes_home, max_file_size=1024, keep=1
+        )
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        # The directory-contained oversized file is recorded via the rglob path.
+        assert "kanban/boards/board1/kanban.db" in meta["size_skipped"]
+        # The prior complete snapshot survives the incomplete run.
+        assert prior.is_dir()
+
+    def test_failed_capture_never_prunes_any_snapshot(self, hermes_home):
+        """A HARD capture failure blocks pruning entirely: an older snapshot may
+        be the only copy of the file this run failed on, so nothing is evicted
+        (the #68474 no-evict guarantee, locked in for the failed path)."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        snaps = hermes_home / "state-snapshots"
+        for name in ("20200101-000000", "20200102-000000"):
+            d = snaps / name
+            d.mkdir(parents=True)
+            (d / "manifest.json").write_text(f'{{"id": "{name}", "files": {{}}}}')
+
+        # Zero out state.db so the copy fails (not a size skip).
+        (hermes_home / "state.db").write_bytes(b"\x00" * 8192)
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+        assert snap_id is not None
+        # Nothing is pruned in the hard-failure case.
+        assert (snaps / "20200101-000000").is_dir()
+        assert (snaps / "20200102-000000").is_dir()
+        assert (snaps / snap_id).is_dir()
+
     def test_max_file_size_none_copies_everything(self, hermes_home):
         """Default (no cap) preserves manual /snapshot behavior."""
         from hermes_cli.backup import create_quick_snapshot

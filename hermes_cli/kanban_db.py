@@ -4186,6 +4186,30 @@ def release_stale_claims(
                 run_id=run_id,
             )
             reclaimed += 1
+        # Increment the unified failure counter so the circuit breaker
+        # eventually fires for tasks that crash before their first
+        # heartbeat (inside the crash-grace window).  Without this,
+        # ``detect_crashed_workers`` skips them (grace-period guard) and
+        # the task respawns every dispatch interval with
+        # ``consecutive_failures`` stuck at 0.  The pattern mirrors
+        # ``enforce_max_runtime`` which also calls ``_record_task_failure``
+        # after flipping the task to ``ready``.  Only count reclaims on
+        # this host — cross-host reclaims indicate a stale lock from a
+        # dead dispatcher, not a worker crash.
+        if host_local:
+            _record_task_failure(
+                conn, row["id"],
+                error=f"stale claim reclaimed: {row['claim_lock']}",
+                outcome="reclaimed",
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={
+                    "worker_pid": (
+                        int(row["worker_pid"])
+                        if row["worker_pid"] is not None else None
+                    ),
+                },
+            )
     return reclaimed
 
 

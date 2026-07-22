@@ -21,13 +21,17 @@ export function SearchableSelect({
   onChange,
   options,
   placeholder = 'Search…',
-  emptyMessage = 'No results found.'
+  emptyMessage = 'No results found.',
+  clearLabel
 }: {
   value: string
   onChange: (value: string) => void
   options: string[]
   placeholder?: string
   emptyMessage?: string
+  /** When set, prepends a "clear" item that sets the value to ''.
+   *  Matches the existing <Select> pattern of EMPTY_SELECT_VALUE + "(none)". */
+  clearLabel?: string
 }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -85,6 +89,18 @@ export function SearchableSelect({
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>
+              {clearLabel && (
+                <CommandItem
+                  onSelect={() => handleSelect('')}
+                  value={clearLabel}
+                >
+                  <Codicon
+                    className={cn('mr-2 size-4', value === '' ? 'opacity-100' : 'opacity-0')}
+                    name="check"
+                  />
+                  {clearLabel}
+                </CommandItem>
+              )}
               {options.map(option => (
                 <CommandItem
                   key={option}

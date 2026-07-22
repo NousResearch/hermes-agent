@@ -430,6 +430,7 @@ export interface Translations {
       commaSeparated: string
       searchPlaceholder: string
       noResults: string
+      systemDefault: string
       loading: string
       emptyTitle: string
       emptyDesc: string

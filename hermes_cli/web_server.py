@@ -793,7 +793,7 @@ def _timezone_options() -> List[str]:
     """Return sorted IANA timezone identifiers, cached at import time."""
     try:
         import zoneinfo
-        return sorted(zoneinfo.available_timezones())
+        return sorted(zoneinfo.available_timezones()) or ["UTC"]
     except Exception:  # pragma: no cover
         return ["UTC"]
 
@@ -804,6 +804,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         "options": _timezone_options(),
         "searchable": True,
+        "clearable": True,
     },
     "memory.provider": {
         "type": "select",

@@ -519,6 +519,7 @@ export const en: Translations = {
       commaSeparated: 'comma-separated values',
       searchPlaceholder: 'Search…',
       noResults: 'No results found',
+      systemDefault: 'System default',
       loading: 'Loading Hermes configuration...',
       emptyTitle: 'Nothing to configure',
       emptyDesc: 'This section has no adjustable settings.',

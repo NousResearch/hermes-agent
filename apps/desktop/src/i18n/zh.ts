@@ -726,6 +726,7 @@ export const zh: Translations = {
       commaSeparated: '逗号分隔的值',
       searchPlaceholder: '搜索…',
       noResults: '未找到结果',
+      systemDefault: '系统默认',
       loading: '正在加载 Hermes 配置...',
       emptyTitle: '无可配置项',
       emptyDesc: '此分区没有可调整的设置。',

@@ -505,6 +505,36 @@ def test_repl_refuses_non_interactive_confirmation(_isolate_hermes_home):
     assert "Confirmation required" in stderr.getvalue()
 
 
+def test_capture_output_surfaces_string_exit_code_as_command_error():
+    from hermes_cli.console_engine import ConsoleCommandError, _capture_output
+
+    def _boom():
+        sys.exit("No credential matching \"nope\".")
+
+    with pytest.raises(ConsoleCommandError) as exc_info:
+        _capture_output(_boom)
+
+    assert "No credential matching" in str(exc_info.value)
+
+
+def test_capture_output_preserves_integer_exit_code_message():
+    from hermes_cli.console_engine import ConsoleCommandError, _capture_output
+
+    with pytest.raises(ConsoleCommandError) as exc_info:
+        _capture_output(lambda: sys.exit(3))
+
+    assert "status 3" in str(exc_info.value)
+
+
+def test_execute_handler_string_exit_returns_error_not_crash(_isolate_hermes_home):
+    result = HermesConsoleEngine().execute(
+        "auth remove openrouter __no_such_credential__", confirmed=True
+    )
+
+    assert result.status == "error"
+    assert result.output
+
+
 def test_main_console_subcommand_smoke(_isolate_hermes_home):
     import subprocess
 

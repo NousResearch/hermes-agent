@@ -10035,6 +10035,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
 
+        # Silent Slack threads (via /silent): the turn must still run through
+        # the normal claimed-turn lifecycle so the agent keeps full context and
+        # the per-thread session key/lease behave exactly like a normal reply —
+        # we only suppress the outbound response. Marking the event lets the
+        # canonical path own the session key (_session_key_for_source) instead
+        # of a parallel handler keyed by ``slack:<chat_id>`` (which collapsed
+        # every silent thread in a channel into one _running_agents slot).
+        # Slash commands are never suppressed so control commands still work.
+        if source.platform.value == 'slack' and not (event.text or "").startswith("/"):
+            adapter = self.adapters.get(source.platform)
+            if (
+                adapter is not None
+                and source.thread_id
+                and source.thread_id in getattr(adapter, "_silent_threads", ())
+            ):
+                event.suppress_response = True
+                logger.info(
+                    "SILENT MODE: thread %s — running turn for context, "
+                    "suppressing response",
+                    source.thread_id,
+                )
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not getattr(event, "internal", False)
@@ -11178,6 +11200,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "leave":
+            return await self._handle_leave_command(event)
+
+        if canonical == "silent":
+            return await self._handle_silent_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -12019,6 +12047,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+
+        # Initialize session env tokens to None in case of early exception
+        # (prevents NameError in the finally: _clear_session_env block)
+        _session_env_tokens = None
+
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
             _platform_name, source.user_name or source.user_id or "unknown",

@@ -2666,6 +2666,305 @@ class GatewaySlashCommandsMixin:
             )
             return t("gateway.voice.help", toggle=toggle_line, channels=channels)
 
+    @staticmethod
+    def _pop_workspace_thread_keys(store, team_id: str, channel_id: str, thread_ts: str) -> int:
+        """Delete workspace-scoped thread entries from a Slack adapter dict.
+
+        Current-main Slack thread-local state (``_assistant_threads``,
+        ``_active_status_threads``) is keyed by ``(team_id, channel_id,
+        thread_ts)``. When ``team_id`` is known we delete the exact key; we
+        also match any entry with the same ``(channel_id, thread_ts)`` so a
+        workspace id we couldn't resolve at cleanup time still clears the
+        right thread. Returns the number of entries removed.
+        """
+        if not isinstance(store, dict) or not channel_id or not thread_ts:
+            return 0
+        removed = 0
+        for key in list(store.keys()):
+            if not (isinstance(key, tuple) and len(key) >= 3):
+                continue
+            k_team, k_channel, k_thread = key[0], key[1], key[2]
+            if k_channel != channel_id or k_thread != thread_ts:
+                continue
+            if team_id and k_team and k_team != team_id:
+                continue
+            del store[key]
+            removed += 1
+        return removed
+
+    @staticmethod
+    def _pop_context_cache_keys(store, team_id: str, channel_id: str, thread_ts: str) -> int:
+        """Delete thread-context-cache entries for a Slack thread.
+
+        The cache key is the string ``"channel_id:thread_ts:team_id"`` on
+        current main. We match on the ``channel_id:thread_ts`` prefix so the
+        entry is cleared even when ``team_id`` differs or is unknown. Returns
+        the number of entries removed.
+        """
+        if not isinstance(store, dict) or not channel_id or not thread_ts:
+            return 0
+        prefix = f"{channel_id}:{thread_ts}"
+        removed = 0
+        for key in list(store.keys()):
+            if not isinstance(key, str):
+                continue
+            # Exact "channel:thread" or the workspace-suffixed
+            # "channel:thread:team" variant.
+            if key == prefix or key.startswith(prefix + ":"):
+                del store[key]
+                removed += 1
+        return removed
+
+    async def _handle_leave_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /leave command to exit current Slack thread."""
+        platform = event.source.platform
+
+        # Only supported on Slack
+        if platform != Platform.SLACK:
+            return EphemeralReply("❌ The `/leave` command is only available on Slack.")
+
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            return EphemeralReply("❌ Slack adapter not available.")
+
+        # Get thread information from the event
+        thread_id = event.source.thread_id
+        chat_id = event.source.chat_id
+        # Slack workspace id (team_id). Current-main thread-local state
+        # (_assistant_threads, _active_status_threads, thread context cache)
+        # is workspace-scoped so Slack Connect can't collide the same
+        # channel/thread IDs across two workspaces. Cleanup must key the
+        # same way or it silently reports success while leaving state intact.
+        team_id = str(getattr(event.source, "scope_id", "") or "")
+
+        # Allow /leave in both threads and channels, but provide different messages
+        is_thread = bool(thread_id)
+
+        # Track what we actually clean up for user feedback
+        cleaned_items = []
+
+        # Remove thread from all tracking data structures
+        try:
+            if is_thread:
+                # Thread-specific cleanup
+
+                # 0. Add to left threads set to block future responses
+                if hasattr(adapter, '_left_threads'):
+                    adapter._left_threads.add(thread_id)
+                    # Manage size of left threads set
+                    if len(adapter._left_threads) > getattr(adapter, '_LEFT_THREADS_MAX', 1000):
+                        excess = len(adapter._left_threads) - getattr(adapter, '_LEFT_THREADS_MAX', 1000) // 2
+                        for old_thread in list(adapter._left_threads)[:excess]:
+                            adapter._left_threads.discard(old_thread)
+                    cleaned_items.append("blocked future responses")
+
+                # 1. Remove from mentioned threads set (stores thread_id string)
+                if hasattr(adapter, '_mentioned_threads') and thread_id in adapter._mentioned_threads:
+                    adapter._mentioned_threads.discard(thread_id)
+                    cleaned_items.append("mentioned threads")
+
+                # 2. Remove from bot message timestamp tracking (stores thread_id string)
+                if hasattr(adapter, '_bot_message_ts') and thread_id in adapter._bot_message_ts:
+                    adapter._bot_message_ts.discard(thread_id)
+                    cleaned_items.append("bot message tracking")
+
+                # 3. Remove from assistant threads dict — current-main key is
+                #    (team_id, channel_id, thread_ts). Fall back to matching on
+                #    (channel_id, thread_ts) so a workspace id we couldn't
+                #    resolve still cleans the right entries.
+                if hasattr(adapter, '_assistant_threads'):
+                    removed = self._pop_workspace_thread_keys(
+                        adapter._assistant_threads, team_id, chat_id, thread_id
+                    )
+                    if removed:
+                        cleaned_items.append("assistant threads")
+
+                # 4. Clear thread context cache — current-main key is
+                #    "channel_id:thread_ts:team_id".
+                if hasattr(adapter, '_thread_context_cache'):
+                    removed = self._pop_context_cache_keys(
+                        adapter._thread_context_cache, team_id, chat_id, thread_id
+                    )
+                    if removed:
+                        cleaned_items.append("thread context cache")
+
+                # 5. Clear any active Assistant status — current-main key is
+                #    (team_id, channel_id, thread_ts).
+                if hasattr(adapter, '_active_status_threads'):
+                    removed = self._pop_workspace_thread_keys(
+                        adapter._active_status_threads, team_id, chat_id, thread_id
+                    )
+                    if removed:
+                        cleaned_items.append("active status")
+
+                # 6. Try to clean up any active session for this thread.
+                #    GatewayRunner owns ``self.session_store`` (not
+                #    ``_session_store``), and the canonical routing key comes
+                #    from ``_session_key_for_source`` — not a hand-rolled
+                #    build_session_key call. Using the wrong attribute/keying
+                #    silently skipped session cleanup entirely, so a restart
+                #    would re-route the "left" thread to its old session.
+                try:
+                    session_store = getattr(self, "session_store", None)
+                    if session_store is not None:
+                        session_key = self._session_key_for_source(event.source)
+
+                        session_store._ensure_loaded()
+                        removed_sessions = 0
+                        if session_key in session_store._entries:
+                            del session_store._entries[session_key]
+                            removed_sessions += 1
+
+                        # Also drop any sibling session that scopes this exact
+                        # thread (defensive: covers isolation-setting drift
+                        # between when the session was created and now).
+                        user_id = event.source.user_id or ""
+                        for existing_key in list(session_store._entries.keys()):
+                            if existing_key == session_key:
+                                continue
+                            if (
+                                chat_id in existing_key
+                                and thread_id in existing_key
+                                and (not user_id or user_id in existing_key)
+                            ):
+                                del session_store._entries[existing_key]
+                                removed_sessions += 1
+
+                        if removed_sessions > 0:
+                            session_store._save()
+                            cleaned_items.append(
+                                "active session"
+                                if removed_sessions == 1
+                                else f"{removed_sessions} session(s)"
+                            )
+
+                except Exception as e:
+                    logger.warning("Failed to clean up session for thread %s: %s", thread_id, e)
+                    # Continue anyway — session cleanup is best-effort
+
+                if cleaned_items:
+                    items_str = ", ".join(cleaned_items)
+                    message = f"👋 I've left this thread and cleaned up: {items_str}. I will no longer respond to messages here unless @mentioned again."
+                else:
+                    message = "ℹ️ I wasn't actively tracking this thread, so there's nothing to leave."
+            else:
+                # Channel-level cleanup — clean up any thread-related tracking for this channel
+                channel_cleaned = []
+
+                if hasattr(adapter, '_assistant_threads'):
+                    # Current-main key is (team_id, channel_id, thread_ts) —
+                    # match on the channel_id element (index 1).
+                    keys_to_remove = [
+                        key for key in list(adapter._assistant_threads.keys())
+                        if isinstance(key, tuple) and len(key) >= 2 and key[1] == chat_id
+                    ]
+                    for key in keys_to_remove:
+                        del adapter._assistant_threads[key]
+                    if keys_to_remove:
+                        channel_cleaned.append("assistant threads")
+
+                if hasattr(adapter, '_thread_context_cache'):
+                    # Cache key is "channel_id:thread_ts:team_id".
+                    keys_to_remove = [
+                        key for key in list(adapter._thread_context_cache.keys())
+                        if isinstance(key, str) and key.startswith(f"{chat_id}:")
+                    ]
+                    for key in keys_to_remove:
+                        del adapter._thread_context_cache[key]
+                    if keys_to_remove:
+                        channel_cleaned.append("thread context cache")
+
+                if hasattr(adapter, '_active_status_threads'):
+                    # Current-main key is (team_id, channel_id, thread_ts).
+                    keys_to_remove = [
+                        key for key in list(adapter._active_status_threads.keys())
+                        if isinstance(key, tuple) and len(key) >= 2 and key[1] == chat_id
+                    ]
+                    for key in keys_to_remove:
+                        del adapter._active_status_threads[key]
+                    if keys_to_remove:
+                        channel_cleaned.append("active status")
+
+                if channel_cleaned:
+                    items_str = ", ".join(set(channel_cleaned))  # deduplicate
+                    message = f"🧹 Cleaned up channel-level tracking: {items_str}."
+                else:
+                    message = "ℹ️ No thread tracking found for this channel."
+
+            # Use ephemeral reply so the bot doesn't re-add itself to tracking when it sends this response
+            return EphemeralReply(message)
+
+        except Exception as e:
+            logger.exception("Failed to leave Slack thread/channel")
+            return EphemeralReply(f"❌ Failed to leave: {str(e)}")
+
+    async def _handle_silent_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /silent command to go silent in current Slack thread but maintain context."""
+        platform = event.source.platform
+
+        # Only supported on Slack
+        if platform != Platform.SLACK:
+            return EphemeralReply("❌ The `/silent` command is only available on Slack.")
+
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            return EphemeralReply("❌ Slack adapter not available.")
+
+        # Get thread information from the event
+        thread_id = event.source.thread_id
+
+        # /silent only supported in threads
+        if not thread_id:
+            return EphemeralReply("❌ Silent mode is only available in threads. Start or reply to a thread and use `/silent` there.")
+
+        # Track what we set up
+        setup_items = []
+
+        try:
+            # 1. Add to silent threads set to enable silent mode
+            if hasattr(adapter, '_silent_threads'):
+                # Remove from any conflicting states first
+                if hasattr(adapter, '_left_threads') and thread_id in adapter._left_threads:
+                    adapter._left_threads.discard(thread_id)
+                    setup_items.append("removed from left threads")
+
+                # Add to silent threads
+                adapter._silent_threads.add(thread_id)
+                # Manage size of silent threads set
+                if len(adapter._silent_threads) > getattr(adapter, '_SILENT_THREADS_MAX', 1000):
+                    excess = len(adapter._silent_threads) - getattr(adapter, '_SILENT_THREADS_MAX', 1000) // 2
+                    for old_thread in list(adapter._silent_threads)[:excess]:
+                        adapter._silent_threads.discard(old_thread)
+                setup_items.append("enabled silent mode")
+
+            # 2. Keep mentioned threads tracking so we continue to process messages
+            if hasattr(adapter, '_mentioned_threads'):
+                if thread_id not in adapter._mentioned_threads:
+                    adapter._mentioned_threads.add(thread_id)
+                    setup_items.append("enabled message processing")
+
+            # 3. Keep bot message tracking for context continuity
+            if hasattr(adapter, '_bot_message_ts'):
+                if thread_id not in adapter._bot_message_ts:
+                    adapter._bot_message_ts.add(thread_id)
+                    setup_items.append("enabled context tracking")
+
+            # 4. Maintain assistant threads and context cache (don't remove)
+            # These help maintain context when the user re-activates the thread
+
+            if setup_items:
+                items_str = ", ".join(setup_items)
+                message = f"🤫 I'm now in silent mode for this thread. I'll read and learn from messages but won't respond unless @mentioned. Setup: {items_str}."
+            else:
+                message = "🤫 I'm now in silent mode for this thread. I'll read and learn from messages but won't respond unless @mentioned."
+
+            # Use ephemeral reply
+            return EphemeralReply(message)
+
+        except Exception as e:
+            logger.exception("Failed to enable silent mode in Slack thread")
+            return EphemeralReply(f"❌ Failed to enable silent mode: {str(e)}")
+
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config

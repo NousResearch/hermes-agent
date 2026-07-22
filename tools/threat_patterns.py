@@ -260,13 +260,15 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     if patterns is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     for compiled, pid in patterns:
-        match = compiled.search(content)
-        if match:
-            # Negation-suppression: if a negation phrase immediately precedes
-            # this match, suppress the match. Catches benign uses like
-            # "Don't pretend to be a specialist you're not". Fix for #64268.
-            if _is_negated(content, match, pid):
-                continue
+        # Iterate ALL matches (not just first) so a benign negated first
+        # occurrence can't mask a real attack later in the same content.
+        # Fix for #64268 + hermes-sweeper review on #67006.
+        any_unnegated = False
+        for match in compiled.finditer(content):
+            if not _is_negated(content, match, pid):
+                any_unnegated = True
+                break
+        if any_unnegated:
             findings.append(pid)
 
     return findings

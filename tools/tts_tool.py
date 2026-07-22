@@ -775,11 +775,14 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
 
 def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree timeout cleanup."""
+    from agent.delegation_context import delegated_child_subprocess_env
+
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": delegated_child_subprocess_env(),
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

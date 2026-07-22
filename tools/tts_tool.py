@@ -1105,9 +1105,11 @@ def _concat_audio_files(
 ) -> Optional[str]:
     """Combine independently encoded chunks with ffmpeg.
 
-    Voice-compatible OGG/Opus is always decoded and re-encoded. A failed or
-    unavailable combine returns ``None`` so callers can preserve the original,
-    individually valid files. Structured audio containers are never byte-joined.
+    OGG/Opus is always decoded and re-encoded, even when a custom provider did
+    not opt in to voice-message presentation. Matching MP3 chunks preserve their
+    encoded frames. A failed or unavailable combine returns ``None`` so callers
+    can preserve the original, individually valid files. Structured audio
+    containers are never byte-joined.
     """
     if not audio_paths:
         raise ValueError("No audio chunks to combine")
@@ -1145,15 +1147,16 @@ def _concat_audio_files(
             str(concat_path),
             "-vn",
         ]
-        if voice_compatible:
+        suffix = destination.suffix.lower()
+        if voice_compatible or suffix in {".ogg", ".opus"}:
             command.extend([
                 "-c:a", "libopus", "-ac", "1", "-b:a", "64k", "-vbr", "off",
             ])
-        else:
-            # Provider chunks already share one output codec/configuration. Preserve
-            # those encoded frames instead of imposing a second lossy encode. The
-            # concat demuxer will fail cleanly on incompatible streams, allowing the
-            # caller to preserve the ordered source files as its safe fallback.
+        elif suffix == ".mp3" and all(
+            Path(path).suffix.lower() == ".mp3" for path in audio_paths
+        ):
+            # Matching MP3 provider chunks already share one output codec/config.
+            # Preserve those encoded frames instead of imposing a second lossy pass.
             command.extend(["-c:a", "copy"])
         command.append(str(temp_output))
 

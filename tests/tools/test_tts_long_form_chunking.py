@@ -90,6 +90,33 @@ def test_non_voice_chunk_combine_preserves_provider_encoded_frames(
     assert "libopus" not in command
 
 
+def test_ogg_combine_reencodes_even_without_voice_presentation_opt_in(
+    tmp_path, monkeypatch,
+):
+    first = tmp_path / "first.ogg"
+    second = tmp_path / "second.ogg"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    commands = []
+
+    monkeypatch.setattr("tools.tts_tool.shutil.which", lambda name: "/usr/bin/ffmpeg")
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"combined opus")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("tools.tts_tool.subprocess.run", fake_run)
+    output = tmp_path / "combined.ogg"
+
+    result = _concat_audio_files([str(first), str(second)], str(output))
+
+    assert result == str(output)
+    command = commands[0]
+    assert command[command.index("-c:a") + 1] == "libopus"
+    assert "copy" not in command
+
+
 def test_failed_combine_preserves_ordered_separate_deliverables(
     tmp_path, monkeypatch,
 ):

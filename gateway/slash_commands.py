@@ -1729,6 +1729,21 @@ class GatewaySlashCommandsMixin:
                                 else:
                                     _persist_model_cfg = {}
                                     _persist_cfg["model"] = _persist_model_cfg
+                                try:
+                                    from hermes_cli.route_identity import should_clear_context_pin
+
+                                    if should_clear_context_pin(
+                                        _persist_model_cfg.get("default")
+                                        or _persist_model_cfg.get("model"),
+                                        result.new_model,
+                                        _persist_model_cfg.get("base_url"),
+                                        result.base_url,
+                                        _persist_model_cfg.get("provider"),
+                                        result.target_provider,
+                                    ):
+                                        _persist_model_cfg.pop("context_length", None)
+                                except Exception:
+                                    _persist_model_cfg.pop("context_length", None)
                                 _persist_model_cfg["default"] = result.new_model
                                 _persist_model_cfg["provider"] = result.target_provider
                                 # Named providers always resolve base_url/api_mode fresh,
@@ -1764,6 +1779,7 @@ class GatewaySlashCommandsMixin:
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
                         _sw_config_ctx = None
+                        _sw_model_cfg = {}
                         try:
                             _sw_cfg = _load_gateway_config()
                             _sw_model_cfg = _sw_cfg.get("model", {})
@@ -1773,6 +1789,8 @@ class GatewaySlashCommandsMixin:
                                     _sw_config_ctx = int(_sw_raw)
                         except Exception:
                             pass
+                        if not isinstance(_sw_model_cfg, dict):
+                            _sw_model_cfg = {}
                         ctx = resolve_display_context_length(
                             result.new_model,
                             result.target_provider,
@@ -1781,6 +1799,12 @@ class GatewaySlashCommandsMixin:
                             model_info=mi,
                             custom_providers=custom_provs,
                             config_context_length=_sw_config_ctx,
+                            configured_model=(
+                                _sw_model_cfg.get("default")
+                                or _sw_model_cfg.get("model")
+                            ),
+                            configured_provider=_sw_model_cfg.get("provider"),
+                            configured_base_url=_sw_model_cfg.get("base_url"),
                         )
                         if ctx:
                             lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
@@ -2033,6 +2057,20 @@ class GatewaySlashCommandsMixin:
                     else:
                         model_cfg = {}
                         cfg["model"] = model_cfg
+                    try:
+                        from hermes_cli.route_identity import should_clear_context_pin
+
+                        if should_clear_context_pin(
+                            model_cfg.get("default") or model_cfg.get("model"),
+                            result.new_model,
+                            model_cfg.get("base_url"),
+                            result.base_url,
+                            model_cfg.get("provider"),
+                            result.target_provider,
+                        ):
+                            model_cfg.pop("context_length", None)
+                    except Exception:
+                        model_cfg.pop("context_length", None)
                     model_cfg["default"] = result.new_model
                     model_cfg["provider"] = result.target_provider
                     # See the picker handler above for why custom providers need an
@@ -2064,6 +2102,7 @@ class GatewaySlashCommandsMixin:
             mi = result.model_info
             from hermes_cli.model_switch import resolve_display_context_length
             _sw2_config_ctx = None
+            _sw2_model_cfg = {}
             try:
                 _sw2_cfg = _load_gateway_config()
                 _sw2_model_cfg = _sw2_cfg.get("model", {})
@@ -2073,6 +2112,8 @@ class GatewaySlashCommandsMixin:
                         _sw2_config_ctx = int(_sw2_raw)
             except Exception:
                 pass
+            if not isinstance(_sw2_model_cfg, dict):
+                _sw2_model_cfg = {}
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,
@@ -2081,6 +2122,12 @@ class GatewaySlashCommandsMixin:
                 model_info=mi,
                 custom_providers=custom_provs,
                 config_context_length=_sw2_config_ctx,
+                configured_model=(
+                    _sw2_model_cfg.get("default")
+                    or _sw2_model_cfg.get("model")
+                ),
+                configured_provider=_sw2_model_cfg.get("provider"),
+                configured_base_url=_sw2_model_cfg.get("base_url"),
             )
             if ctx:
                 lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))

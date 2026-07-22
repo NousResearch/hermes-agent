@@ -1,3 +1,5 @@
+import type { SkinBranding, SkinColors } from '@hermes/shared/skin'
+
 import { desaturate, grayOf, liftForContrast, mix, parseColor, relativeLuminance, toHex } from './lib/color.js'
 
 export interface ThemeColors {
@@ -15,6 +17,17 @@ export interface ThemeColors {
   ok: string
   error: string
   warn: string
+
+  /** Tool-call markers (● bullet, tool spinner). Defaults to `accent`. */
+  tool: string
+  /** Reasoning/thinking body text. Defaults to `muted`. */
+  thinking: string
+
+  /** Code-block syntax highlight. Default to accent/text/border/muted. */
+  syntaxString: string
+  syntaxNumber: string
+  syntaxKeyword: string
+  syntaxComment: string
 
   prompt: string
   sessionLabel: string
@@ -80,10 +93,11 @@ const ANSI_NORMALIZED_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'statusWarn',
   'statusBad',
   'statusCritical',
-  'shellDollar'
+  'shellDollar',
+  'tool'
 ]
 
-const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder']
+const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder', 'thinking']
 
 function xtermEightBitRgb(colorNumber: number): [number, number, number] {
   if (colorNumber >= 232) {
@@ -296,6 +310,18 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     ok: seeds.ok,
     error: seeds.error,
     warn: seeds.warn,
+
+    // Element tokens: independently settable, but default to their semantic
+    // parents (tool marker → accent, reasoning body → muted).
+    tool: seeds.accent,
+    thinking: muted,
+
+    // Code-syntax tokens default to brand tokens (unchanged highlighting)
+    // but are independently skinnable.
+    syntaxString: seeds.accent,
+    syntaxNumber: seeds.text,
+    syntaxKeyword: seeds.border ?? tones.border,
+    syntaxComment: muted,
 
     prompt: seeds.prompt ?? seeds.text,
     // sessionLabel/sessionBorder track the muted tone — "same role, same
@@ -763,8 +789,8 @@ export function defaultThemeForCurrentBackground(env: NodeJS.ProcessEnv = proces
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
 export function fromSkin(
-  colors: Record<string, string>,
-  branding: Record<string, string>,
+  colors: SkinColors,
+  branding: SkinBranding,
   bannerLogo = '',
   bannerHero = '',
   toolPrefix = '',
@@ -814,7 +840,10 @@ export function fromSkin(
   // 3. Authored tone overrides: a skin may still hand-tune any tone; the
   //    derived ladder is the default, not a cage. Chip/selection re-derive
   //    from the FINAL surface so dependents stay coherent with overrides.
-  const surface = c('completion_menu_bg') ?? derived.completionBg
+  // `background` is theme-sdk's cross-surface base: the TUI paints the
+  // terminal with it (applySkin → setTerminalBackground), so panels/status
+  // must sit on it too — fall the surface back to it below completion_menu_bg.
+  const surface = c('completion_menu_bg') ?? c('background') ?? derived.completionBg
 
   // Re-mix the chip only when the skin authored its own surface; otherwise
   // the derived value already carries the identity seeds (e.g. Hermes navy).
@@ -833,8 +862,23 @@ export function fromSkin(
     sessionLabel: c('session_label') ?? c('banner_dim') ?? derived.sessionLabel,
     sessionBorder: c('session_border') ?? c('banner_dim') ?? derived.sessionBorder,
     statusBg: c('status_bar_bg') ?? surface,
-    statusFg: c('status_bar_text') ?? derived.statusFg,
-    selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? derived.selectionBg
+    statusFg: c('status_bar_text') ?? c('ui_text') ?? c('banner_text') ?? derived.statusFg,
+    selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? derived.selectionBg,
+    // Element tokens + skinnable diffs (theme-sdk): overridable, else the
+    // derived defaults (tool→accent, thinking→muted, diff_* → DIFF_* ladder).
+    // thinking tracks the EFFECTIVE muted (banner_dim override included), not
+    // just derived.muted, so recoloring muted carries the reasoning body with it.
+    tool: c('ui_tool') ?? derived.tool,
+    thinking: c('ui_thinking') ?? c('banner_dim') ?? derived.thinking,
+    diffAdded: c('diff_added') ?? derived.diffAdded,
+    diffRemoved: c('diff_removed') ?? derived.diffRemoved,
+    diffAddedWord: c('diff_added_word') ?? derived.diffAddedWord,
+    diffRemovedWord: c('diff_removed_word') ?? derived.diffRemovedWord,
+    // Code-syntax tokens: overridable, else the derived brand-token defaults.
+    syntaxString: c('syntax_string') ?? derived.syntaxString,
+    syntaxNumber: c('syntax_number') ?? derived.syntaxNumber,
+    syntaxKeyword: c('syntax_keyword') ?? derived.syntaxKeyword,
+    syntaxComment: c('syntax_comment') ?? c('banner_dim') ?? derived.syntaxComment
   }
 
   // 4. Guard: contrast floors against the real background + fill polarity.
@@ -848,6 +892,13 @@ export function fromSkin(
 
   return normalizeThemeForAnsiLightTerminal(
     {
+      // The element tokens theme-sdk introduced (ui_primary, ui_text,
+      // ui_border, ui_ok/warn/error, ui_tool, ui_thinking, shell_dollar,
+      // status_bar_*, diff_*) are read into `seeds`/`assembled` above and
+      // flow through buildPalette → adaptColorsToBackground, so `adapted`
+      // already honors them AND applies #20379's contrast/polarity machinery.
+      // Emitting a hand-mapped color block here would bypass that adaptation
+      // and regress theme quality.
       color: adapted,
 
       brand: {

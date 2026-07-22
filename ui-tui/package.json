@@ -8,7 +8,7 @@
     "start": "tsx src/entry.tsx",
     "build": "node scripts/build.mjs",
     "build:ink": "npm run build --prefix packages/hermes-ink",
-    "visual": "FORCE_COLOR=3 COLORTERM=truecolor tsx scripts/visual/render.tsx && electron scripts/visual/shot.mjs",
+    "visual": "node scripts/visual/run.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ packages/",
     "lint:fix": "eslint src/ packages/ --fix",

@@ -1047,21 +1047,23 @@ def clear_model_endpoint_credentials(
     clear_api_mode: bool = True,
     clear_base_url: bool = False,
 ) -> Dict[str, Any]:
-    """Remove stale inline endpoint credentials from a model config.
+    """Remove stale endpoint credentials and transport from a model config.
 
-    ``model.api_key`` is valid only for explicit custom endpoint assignments.
-    Built-in providers resolve credentials from env vars, auth.json, or the
-    credential pool. When switching away from a custom endpoint, leaving these
-    fields behind keeps secrets in config.yaml and can contaminate later custom
-    resolution paths.
+    Custom assignments may use inline keys or environment references, and may
+    select their API protocol through either the legacy or canonical field.
+    When switching away, leaving any of those aliases behind can contaminate
+    later provider resolution.
     """
     if not isinstance(model_cfg, dict):
         return model_cfg
     if clear_api_key:
         model_cfg.pop("api_key", None)
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
         model_cfg.pop("api", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
+        model_cfg.pop("transport", None)
     if clear_base_url:
         model_cfg.pop("base_url", None)
     return model_cfg

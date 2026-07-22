@@ -54,16 +54,22 @@ class TestUpdateConfigForProviderClearsStaleCustomFields:
             "provider": "openrouter",
             "default": "anthropic/claude-sonnet-4.6",
             "api_key": "sk-stale",
+            "key_env": "STALE_KEY",
+            "api_key_env": "STALE_KEY_ALIAS",
             "api": "sk-legacy-stale",
             "api_mode": "anthropic_messages",
+            "transport": "anthropic_messages",
         }
 
         returned = clear_model_endpoint_credentials(model_cfg)
 
         assert returned is model_cfg
         assert "api_key" not in model_cfg
+        assert "key_env" not in model_cfg
+        assert "api_key_env" not in model_cfg
         assert "api" not in model_cfg
         assert "api_mode" not in model_cfg
+        assert "transport" not in model_cfg
         assert model_cfg["provider"] == "openrouter"
 
     def test_switching_to_openrouter_clears_api_key_and_api_mode(self):

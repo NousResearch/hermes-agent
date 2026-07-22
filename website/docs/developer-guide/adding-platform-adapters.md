@@ -458,7 +458,7 @@ See `plugins/platforms/irc/` in the repo for a complete working example — a fu
 
 ---
 
-## Step-by-Step Checklist (Built-in Path)
+## Step-by-Step Checklist (Built-in Path) {#step-by-step-checklist}
 
 :::note
 This checklist is for adding a platform directly to the Hermes core codebase — typically done by core contributors for officially supported platforms. Community/third-party platforms should use the [Plugin Path](#plugin-path-recommended) above.

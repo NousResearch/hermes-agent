@@ -55,9 +55,9 @@
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
     "check": "npm run typecheck && npm run test && npm run test:desktop:all",
-    "test:e2e": "npm run clean:e2e && playwright test e2e/",
-    "test:e2e:visual": "npm run clean:e2e && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- playwright test e2e/ --reporter=list",
-    "test:e2e:update-snapshots": "npm run clean:e2e && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- playwright test e2e/ --reporter=list --update-snapshots"
+    "test:e2e": "npm run build && playwright test e2e/",
+    "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
+    "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.23",

@@ -83,6 +83,47 @@ def test_implicit_runtime_cache_key_covers_full_connection_and_auth_surface():
     assert len(set(keys)) == len(keys)
 
 
+def test_runtime_headers_are_normalized_and_bound_to_implicit_context():
+    """Implicit auxiliary calls inherit a sanitized effective-header snapshot."""
+    runtime = _runtime("same-model")
+    aux.set_runtime_main(
+        **runtime,
+        default_headers={"X-Relay": 7, "X-Drop": None},
+    )
+
+    assert aux._normalize_main_runtime(None)["default_headers"] == {
+        "X-Relay": "7"
+    }
+
+
+@pytest.mark.parametrize("provider", ["auto", "custom"])
+def test_runtime_headers_isolate_client_cache_without_exposing_secrets(provider):
+    """Header changes rebuild clients without retaining credentials in key reprs."""
+    first_secret = "first-header-secret"
+    second_secret = "second-header-secret"
+    first = aux._client_cache_key(
+        provider,
+        async_mode=False,
+        main_runtime={
+            **_runtime("same-model"),
+            "default_headers": {"CF-Access-Client-Secret": first_secret},
+        },
+    )
+    second = aux._client_cache_key(
+        provider,
+        async_mode=False,
+        main_runtime={
+            **_runtime("same-model"),
+            "default_headers": {"CF-Access-Client-Secret": second_secret},
+        },
+    )
+
+    assert first != second
+    rendered = repr((first, second))
+    assert first_secret not in rendered
+    assert second_secret not in rendered
+
+
 def test_implicit_runtime_is_isolated_between_concurrent_session_contexts():
     """Concurrent gateway sessions must not read each other's live runtime."""
     barrier = Barrier(2)

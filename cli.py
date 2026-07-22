@@ -12417,7 +12417,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
-                    from agent.title_generator import maybe_auto_title
+                    from agent.title_generator import maybe_auto_title, snapshot_main_runtime
                     # Route title-generation failures through the agent's
                     # user-visible warning channel so a depleted auxiliary
                     # provider doesn't silently leave sessions untitled
@@ -12438,13 +12438,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         response,
                         self.conversation_history,
                         failure_callback=_title_failure_cb,
-                        main_runtime={
-                            "model": self.model,
-                            "provider": self.provider,
-                            "base_url": self.base_url,
-                            "api_key": self.api_key,
-                            "api_mode": self.api_mode,
-                        },
+                        main_runtime=snapshot_main_runtime(self.agent),
                         runtime_validator=lambda: (
                             getattr(self, "model", None) == _title_model
                             and getattr(self, "provider", None) == _title_provider

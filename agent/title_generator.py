@@ -6,7 +6,7 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 
@@ -38,6 +38,25 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
     "Write the title in {language}. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+
+def snapshot_main_runtime(agent: Any) -> Optional[dict]:
+    """Capture the live main runtime used by background title generation."""
+    if agent is None:
+        return None
+    runtime = {
+        "model": getattr(agent, "model", None),
+        "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None),
+        "api_key": getattr(agent, "api_key", None),
+        "api_mode": getattr(agent, "api_mode", None),
+    }
+    default_headers = dict(
+        getattr(agent, "_client_kwargs", {}).get("default_headers") or {}
+    )
+    if default_headers:
+        runtime["default_headers"] = default_headers
+    return runtime
 
 
 def _title_language() -> str:

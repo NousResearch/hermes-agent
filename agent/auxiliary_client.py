@@ -2382,6 +2382,7 @@ def set_runtime_main(
     api_key: Any = "",
     api_mode: str = "",
     auth_mode: str = "",
+    default_headers: Optional[Dict[str, Any]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2403,6 +2404,12 @@ def set_runtime_main(
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
     }
+    if isinstance(default_headers, dict):
+        from hermes_cli.config import normalize_extra_headers
+
+        normalized_headers = normalize_extra_headers(default_headers)
+        if normalized_headers:
+            runtime["default_headers"] = normalized_headers
     # Publish authoritative context before updating locked compatibility
     # mirrors; concurrent sessions never read those mirrors at runtime.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
@@ -2898,7 +2905,43 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     provider = normalized.get("provider")
     if isinstance(provider, str):
         normalized["provider"] = provider.lower()
+    raw_headers = main_runtime.get("default_headers")
+    if isinstance(raw_headers, dict):
+        from hermes_cli.config import normalize_extra_headers
+
+        default_headers = normalize_extra_headers(raw_headers)
+        if default_headers:
+            normalized["default_headers"] = default_headers
     return normalized
+
+
+def _runtime_default_headers_for_provider(
+    provider: str,
+    runtime: Dict[str, Any],
+    *,
+    base_url: Optional[str] = None,
+) -> Dict[str, str]:
+    """Return runtime headers only for the provider/endpoint that produced them."""
+    headers = dict(runtime.get("default_headers") or {})
+    if not headers:
+        return {}
+    normalized_provider = _normalize_aux_provider(provider)
+    if normalized_provider == "auto":
+        return headers
+    raw_runtime_provider = str(runtime.get("provider") or "").strip().lower()
+    runtime_provider = _normalize_aux_provider(raw_runtime_provider)
+    same_provider = normalized_provider == runtime_provider
+    collapsed_custom = (
+        normalized_provider == "custom"
+        and raw_runtime_provider.startswith("custom:")
+    )
+    if not (same_provider or collapsed_custom):
+        return {}
+    runtime_base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+    requested_base_url = str(base_url or "").strip().rstrip("/")
+    if runtime_base_url and requested_base_url and runtime_base_url != requested_base_url:
+        return {}
+    return headers
 
 
 def _get_provider_chain() -> List[tuple]:
@@ -4522,6 +4565,7 @@ def _resolve_auto(
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                main_runtime=runtime,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -4714,6 +4758,11 @@ def resolve_provider_client(
     original_provider = (provider or "").strip().lower()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
+    runtime = (
+        _normalize_main_runtime(main_runtime)
+        if isinstance(main_runtime, dict)
+        else {}
+    )
 
     # Universal model-resolution fallback for concrete providers. ``auto`` is
     # intentionally excluded: `_resolve_auto(main_runtime=...)` returns the
@@ -4935,6 +4984,9 @@ def resolve_provider_client(
                 custom_base = _main_base
                 custom_key = _main_key
         if custom_base and custom_key:
+            runtime_default_headers = _runtime_default_headers_for_provider(
+                provider, runtime, base_url=custom_base
+            )
             final_model = _normalize_resolved_model(
                 model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
                 provider,
@@ -4963,6 +5015,9 @@ def resolve_provider_client(
                 except Exception:
                     pass
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
+            if runtime_default_headers:
+                _merged_custom = dict(_merged_custom or {})
+                _merged_custom.update(runtime_default_headers)
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
@@ -5005,6 +5060,9 @@ def resolve_provider_client(
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = (custom_entry.get("base_url") or "").strip()
+            runtime_default_headers = _runtime_default_headers_for_provider(
+                provider, runtime, base_url=custom_base
+            )
             custom_key = (custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
@@ -5041,7 +5099,10 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
-                _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                _headers2 = _apply_user_default_headers(None)
+                if runtime_default_headers:
+                    _headers2 = dict(_headers2 or {})
+                    _headers2.update(runtime_default_headers)
                 if _headers2:
                     _extra2["default_headers"] = _headers2
                 logger.debug(
@@ -5066,7 +5127,10 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
-                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        _fb_headers = _apply_user_default_headers(None)
+                        if runtime_default_headers:
+                            _fb_headers = dict(_fb_headers or {})
+                            _fb_headers.update(runtime_default_headers)
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
@@ -5868,6 +5932,12 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     if field == "api_key" and isinstance(value, str) and value:
         digest = hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest()
         return ("api-key-digest", digest)
+    if field == "default_headers" and isinstance(value, dict) and value:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        digest = hashlib.blake2b(encoded, digest_size=16).digest()
+        return ("default-headers-digest", digest)
     return value
 
 
@@ -5888,6 +5958,16 @@ def _client_cache_key(
         _runtime_cache_discriminator(field, runtime.get(field, ""))
         for field in _MAIN_RUNTIME_FIELDS
     ) if provider == "auto" else ()
+    runtime_headers = _runtime_default_headers_for_provider(
+        provider, runtime, base_url=base_url
+    )
+    runtime_headers_key = _runtime_cache_discriminator(
+        "default_headers", runtime_headers
+    )
+    if provider == "auto" and runtime_headers_key:
+        runtime_key = (runtime_key, runtime_headers_key)
+    elif runtime_headers_key:
+        runtime_key = (runtime_headers_key,)
     # `auto` can now resolve through task-specific or main fallback policy,
     # so the task participates in the cache key. Non-auto providers keep the
     # old cache shape because the explicit provider/model tuple is sufficient.

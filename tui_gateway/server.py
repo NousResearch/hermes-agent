@@ -10463,7 +10463,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 and text.strip()
             ):
                 try:
-                    from agent.title_generator import maybe_auto_title
+                    from agent.title_generator import maybe_auto_title, snapshot_main_runtime
 
                     _title_key = session.get("session_key") or sid
                     # Snapshot the runtime identity; the validator lets the
@@ -10481,13 +10481,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         # Desktop/Webapp session. Without this, providers that
                         # rely on runtime auth (for example OpenAI Codex OAuth)
                         # are skipped and the new session remains untitled.
-                        main_runtime={
-                            "model": getattr(agent, "model", None),
-                            "provider": getattr(agent, "provider", None),
-                            "base_url": getattr(agent, "base_url", None),
-                            "api_key": getattr(agent, "api_key", None),
-                            "api_mode": getattr(agent, "api_mode", None),
-                        },
+                        main_runtime=snapshot_main_runtime(agent),
                         runtime_validator=lambda: (
                             getattr(agent, "model", None) == _title_model
                             and getattr(agent, "provider", None) == _title_provider

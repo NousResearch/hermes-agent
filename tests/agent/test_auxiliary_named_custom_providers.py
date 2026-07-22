@@ -136,6 +136,44 @@ class TestResolveProviderClientNamedCustom:
         assert model == "my-model"
         assert "beans.local" in str(client.base_url)
 
+    def test_named_custom_provider_reuses_effective_runtime_headers(self, tmp_path):
+        """The main client's provider-scoped headers keep their final precedence."""
+        _write_config(tmp_path, {
+            "model": {
+                "default": "test-model",
+                "default_headers": {"X-Scope": "global"},
+            },
+            "custom_providers": [
+                {
+                    "name": "beans",
+                    "base_url": "http://beans.local/v1",
+                    "api_key": "k",
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai:
+            from agent.auxiliary_client import resolve_provider_client
+
+            resolve_provider_client(
+                "beans",
+                "my-model",
+                main_runtime={
+                    "provider": "custom:beans",
+                    "model": "my-model",
+                    "base_url": "http://beans.local/v1",
+                    "api_key": "k",
+                    "default_headers": {
+                        "X-Scope": "provider",
+                        "CF-Access-Client-Secret": "scoped-secret",
+                    },
+                },
+            )
+
+        assert mock_openai.call_args.kwargs["default_headers"] == {
+            "X-Scope": "provider",
+            "CF-Access-Client-Secret": "scoped-secret",
+        }
+
     def test_named_custom_provider_default_model(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "main-model"},

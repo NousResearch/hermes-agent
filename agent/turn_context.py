@@ -314,13 +314,21 @@ def build_turn_context(
     # after primary restoration has settled the runtime.
     try:
         from agent.auxiliary_client import set_runtime_main
+        runtime_kwargs = {
+            "base_url": getattr(agent, "base_url", "") or "",
+            "api_key": getattr(agent, "api_key", "") or "",
+            "api_mode": getattr(agent, "api_mode", "") or "",
+            "auth_mode": getattr(agent, "auth_mode", "") or "",
+        }
+        runtime_headers = dict(
+            getattr(agent, "_client_kwargs", {}).get("default_headers") or {}
+        )
+        if runtime_headers:
+            runtime_kwargs["default_headers"] = runtime_headers
         set_runtime_main(
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
-            base_url=getattr(agent, "base_url", "") or "",
-            api_key=getattr(agent, "api_key", "") or "",
-            api_mode=getattr(agent, "api_mode", "") or "",
-            auth_mode=getattr(agent, "auth_mode", "") or "",
+            **runtime_kwargs,
         )
     except Exception:
         pass

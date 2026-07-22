@@ -21184,7 +21184,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
-                    from agent.title_generator import maybe_auto_title
+                    from agent.title_generator import maybe_auto_title, snapshot_main_runtime
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
                     # In Gateway mode, auto-title failures must NOT be
                     # surfaced as user-visible messages (fixes #23246).
@@ -21204,13 +21204,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _title_provider = getattr(agent, "provider", None) if agent else None
                     maybe_auto_title_kwargs = {
                         "failure_callback": _title_failure_cb,
-                        "main_runtime": {
-                            "model": getattr(agent, "model", None),
-                            "provider": getattr(agent, "provider", None),
-                            "base_url": getattr(agent, "base_url", None),
-                            "api_key": getattr(agent, "api_key", None),
-                            "api_mode": getattr(agent, "api_mode", None),
-                        } if agent else None,
+                        "main_runtime": snapshot_main_runtime(agent),
                         "runtime_validator": (lambda: (
                             getattr(agent, "model", None) == _title_model
                             and getattr(agent, "provider", None) == _title_provider

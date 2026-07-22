@@ -8197,6 +8197,9 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
         base_url = "https://chatgpt.example.test/backend-api/codex"
         api_key = object()
         api_mode = "codex_responses"
+        _client_kwargs = {
+            "default_headers": {"CF-Access-Client-Secret": "scoped-secret"}
+        }
 
         def run_conversation(
             self, prompt, conversation_history=None, stream_callback=None
@@ -8236,6 +8239,7 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
         "base_url": "https://chatgpt.example.test/backend-api/codex",
         "api_key": _Agent.api_key,
         "api_mode": "codex_responses",
+        "default_headers": {"CF-Access-Client-Secret": "scoped-secret"},
     }
 
 

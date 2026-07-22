@@ -120,18 +120,54 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
+def _redact_recalled_text(text: Any) -> Any:
+    """Redact secret shapes in stored session text before it re-enters context.
+
+    Session transcripts are written before any output-time redaction ran on
+    them (and older DBs predate the redactor entirely), so recall is the one
+    boundary every stored secret must pass to leak. ``file_read=True`` matches
+    the read_file / search_files policy: recalled content gets the
+    non-reusable sentinel treatment (issue #35519) and skips the source-code
+    ENV/JSON false-positive paths. Display boundary only — nothing here is
+    executed or written back to the store (#57735).
+    """
+    from agent.redact import redact_sensitive_text
+
+    if not isinstance(text, str) or not text:
+        return text
+    return redact_sensitive_text(text, file_read=True)
+
+
+def _redact_recalled_value(value: Any) -> Any:
+    """Recursively redact string leaves in stored structured values.
+
+    Message ``content`` round-trips through ``_decode_content`` and comes back
+    as a list of parts for multimodal messages; ``tool_calls`` deserializes to
+    a list of dicts (and is FTS-indexed, so discover can anchor on it). Both
+    must get the same treatment as plain string content. Dict keys are
+    structural, not stored prose — values only.
+    """
+    if isinstance(value, str):
+        return _redact_recalled_text(value)
+    if isinstance(value, list):
+        return [_redact_recalled_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _redact_recalled_value(v) for k, v in value.items()}
+    return value
+
+
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": _redact_recalled_value(m.get("content")),
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
         entry["tool_name"] = m.get("tool_name")
     if m.get("tool_calls"):
-        entry["tool_calls"] = m.get("tool_calls")
+        entry["tool_calls"] = _redact_recalled_value(m.get("tool_calls"))
     if m.get("tool_call_id"):
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:
@@ -230,10 +266,10 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
         return tool_error(f"failed to load session: {e}", success=False)
 
-    shaped = [_shape_message(m) for m in rows]
-    total = len(shaped)
+    total = len(rows)
     truncated = total > head + tail
-    window = shaped[:head] + shaped[-tail:] if truncated else shaped
+    visible = rows[:head] + rows[-tail:] if truncated else rows
+    window = [_shape_message(m) for m in visible]
 
     response = {
         "success": True,
@@ -243,7 +279,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
             "when": _format_timestamp(meta.get("started_at")),
             "source": meta.get("source"),
             "model": meta.get("model"),
-            "title": meta.get("title"),
+            "title": _redact_recalled_text(meta.get("title")),
         },
         "message_count": total,
         "truncated": truncated,
@@ -278,12 +314,12 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 continue
             results.append({
                 "session_id": sid,
-                "title": s.get("title") or None,
+                "title": _redact_recalled_text(s.get("title")) or None,
                 "source": s.get("source", ""),
                 "started_at": s.get("started_at", ""),
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
-                "preview": s.get("preview", ""),
+                "preview": _redact_recalled_text(s.get("preview", "")),
             })
             if len(results) >= limit:
                 break
@@ -412,7 +448,7 @@ def _scroll(
             "when": _format_timestamp(session_meta.get("started_at")),
             "source": session_meta.get("source"),
             "model": session_meta.get("model"),
-            "title": session_meta.get("title"),
+            "title": _redact_recalled_text(session_meta.get("title")),
         },
         "window": window,
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
@@ -475,15 +511,16 @@ def _title_match_result(
     else:
         view = {}
 
+    display_title = _redact_recalled_text(session_meta.get("title") or title_query)
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
         "source": session_meta.get("source", "unknown"),
         "model": session_meta.get("model") or "unknown",
-        "title": session_meta.get("title") or title_query,
+        "title": display_title,
         "matched_role": "session_title",
         "match_message_id": anchor_id,
-        "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
+        "snippet": f"Session title matched: {display_title}",
         "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
         "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
@@ -592,10 +629,10 @@ def _discover(
             ),
             "source": session_meta.get("source") or match_info.get("source", "unknown"),
             "model": session_meta.get("model") or match_info.get("model") or "unknown",
-            "title": session_meta.get("title") or None,
+            "title": _redact_recalled_text(session_meta.get("title")) or None,
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
-            "snippet": match_info.get("snippet") or "",
+            "snippet": _redact_recalled_text(match_info.get("snippet") or ""),
             "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
             "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
             "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],

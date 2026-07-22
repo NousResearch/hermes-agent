@@ -1,5 +1,5 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { Fragment } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -70,6 +70,12 @@ export function ComposerTriggerPopover({
   const copy = t.composer
   const isSlash = kind === '/'
 
+  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
+
+  useEffect(() => {
+    itemRefs.current.get(activeIndex)?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex])
+
   let lastGroup: string | undefined
 
   return (
@@ -128,6 +134,10 @@ export function ComposerTriggerPopover({
                 data-highlighted={active ? '' : undefined}
                 onClick={() => onPick(item)}
                 onMouseEnter={() => onHover(index)}
+                ref={el => {
+                  if (el) itemRefs.current.set(index, el)
+                  else itemRefs.current.delete(index)
+                }}
                 type="button"
               >
                 {isSlash ? (

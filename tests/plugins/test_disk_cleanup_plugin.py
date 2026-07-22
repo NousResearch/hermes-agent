@@ -986,11 +986,11 @@ class TestTrackForgetQuick:
         displaced = selected.with_name("selected-before-race")
         real_rmdir = dg._atomic_rmdir_empty
 
-        def replace_before_rmdir(path, expected):
+        def replace_before_rmdir(path, expected, root_evidence=None):
             if path == selected:
                 path.rename(displaced)
                 path.mkdir()
-            return real_rmdir(path, expected)
+            return real_rmdir(path, expected, root_evidence)
 
         monkeypatch.setattr(dg, "_atomic_rmdir_empty", replace_before_rmdir)
 
@@ -999,6 +999,45 @@ class TestTrackForgetQuick:
         assert summary["empty_dirs"] == 0
         assert selected.exists(), "replacement directory must survive"
         assert displaced.exists(), "selected directory must remain recoverable"
+
+    def test_empty_sweep_preserves_replacement_root_with_copied_marker(
+        self, _isolate_env, monkeypatch
+    ):
+        """Copied marker text cannot transfer ownership to a replacement root."""
+        dg = _load_lib()
+        managed = _isolate_env / "scratch"
+        selected = managed / "nested" / "empty"
+        selected.mkdir(parents=True)
+        marker = managed / ".hermes-managed"
+        marker.write_text("scratch\n")
+
+        replacement = _isolate_env.parent / "replacement-root"
+        replacement_empty = replacement / "foreign" / "empty"
+        replacement_empty.mkdir(parents=True)
+        (replacement / ".hermes-managed").write_text(marker.read_text())
+        displaced = _isolate_env.parent / "selected-root-before-race"
+        real_is_owned = dg._is_owned_empty_dir_root
+        replaced = False
+
+        def replace_after_validation(evidence):
+            nonlocal replaced
+            owned = real_is_owned(evidence)
+            if owned and evidence.path == managed and not replaced:
+                managed.rename(displaced)
+                replacement.rename(managed)
+                replaced = True
+            return owned
+
+        monkeypatch.setattr(
+            dg, "_is_owned_empty_dir_root", replace_after_validation
+        )
+
+        summary = dg.quick()
+
+        assert replaced, "regression must exercise the validation/capture race"
+        assert summary["empty_dirs"] == 0
+        assert (managed / "foreign" / "empty").exists()
+        assert (displaced / "nested" / "empty").exists()
 
     def test_empty_rmdir_preserves_quarantine_on_identity_uncertainty(
         self, _isolate_env, monkeypatch

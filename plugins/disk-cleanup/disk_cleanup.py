@@ -32,7 +32,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 try:
     from hermes_constants import get_hermes_home
@@ -424,7 +424,38 @@ def _is_protected_tracked_path(path: Path) -> bool:
     return top not in _DISPOSABLE_TRACKED_ROOTS
 
 
-def _is_owned_empty_dir_root(path: Path) -> bool:
+class _OwnedEmptyDirRootEvidence(NamedTuple):
+    """Filesystem objects that authorized one empty-directory sweep."""
+
+    path: Path
+    root_identity: os.stat_result
+    marker_identity: os.stat_result
+
+
+def _same_regular_file_object(path: Path, expected: os.stat_result) -> bool:
+    """Revalidate a selected non-reparse regular file by filesystem ID."""
+    try:
+        current = path.lstat()
+        return (
+            stat.S_ISREG(current.st_mode)
+            and not _is_link_like(path)
+            and os.path.samestat(expected, current)
+        )
+    except OSError:
+        return False
+
+
+def _owned_empty_dir_root_matches(evidence: _OwnedEmptyDirRootEvidence) -> bool:
+    """Return whether both objects that granted sweep ownership are unchanged."""
+    return _same_directory_object(
+        evidence.path, evidence.root_identity
+    ) and _same_regular_file_object(
+        evidence.path / _EMPTY_DIR_OWNERSHIP_MARKER,
+        evidence.marker_identity,
+    )
+
+
+def _is_owned_empty_dir_root(evidence: _OwnedEmptyDirRootEvidence) -> bool:
     """Return whether *path* carries explicit ownership evidence.
 
     Names such as ``scratch`` and ``tmp`` are common in user projects and
@@ -433,22 +464,45 @@ def _is_owned_empty_dir_root(path: Path) -> bool:
     the expected root name.  Missing, symlinked, or malformed markers fail
     closed and keep the entire subtree untouched.
     """
+    path = evidence.path
     if path.name not in _EMPTY_DIR_OWNED_TOP_LEVEL:
         return False
     marker = path / _EMPTY_DIR_OWNERSHIP_MARKER
     try:
-        owned = (
-            marker.is_file()
-            and not marker.is_symlink()
-            and marker.read_text(encoding="utf-8").strip() == path.name
-        )
+        if not _owned_empty_dir_root_matches(evidence):
+            return False
+        owned = marker.read_text(encoding="utf-8").strip() == path.name
         if not owned:
             return False
         # A lock/active marker is evidence that this namespace may still be
         # live.  Treat malformed or inaccessible markers as active too.
-        return not _has_active_maintenance_marker(path)
+        if _has_active_maintenance_marker(path):
+            return False
+        # Bind the content and active-marker checks to the same root and
+        # ownership-marker objects selected before validation.  A replacement
+        # root carrying a copied marker must not inherit deletion authority.
+        return _owned_empty_dir_root_matches(evidence)
     except (OSError, UnicodeError):
         return False
+
+
+def _capture_owned_empty_dir_root(
+    path: Path,
+) -> Optional[_OwnedEmptyDirRootEvidence]:
+    """Capture, validate, and bind a root plus its ownership marker."""
+    try:
+        evidence = _OwnedEmptyDirRootEvidence(
+            path=path,
+            root_identity=path.lstat(),
+            marker_identity=(path / _EMPTY_DIR_OWNERSHIP_MARKER).lstat(),
+        )
+    except OSError:
+        return None
+    if not _is_owned_empty_dir_root(evidence):
+        return None
+    # The validator itself is a Python boundary and can be delayed or wrapped;
+    # revalidate after it returns before exposing the evidence to traversal.
+    return evidence if _owned_empty_dir_root_matches(evidence) else None
 
 
 def _has_active_maintenance_marker(path: Path) -> bool:
@@ -688,7 +742,11 @@ def _remove_tracked_path(path: Path, identity: Dict[str, int]) -> Optional[str]:
     return _atomic_unlink_regular(path, identity)
 
 
-def _atomic_rmdir_empty(path: Path, expected: os.stat_result) -> bool:
+def _atomic_rmdir_empty(
+    path: Path,
+    expected: os.stat_result,
+    root_evidence: Optional[_OwnedEmptyDirRootEvidence] = None,
+) -> bool:
     """Remove the exact selected empty directory, preserving uncertainty."""
     if _is_delete_quarantine_path(path):
         return False
@@ -696,6 +754,11 @@ def _atomic_rmdir_empty(path: Path, expected: os.stat_result) -> bool:
         f".{path.name}{_DELETE_QUARANTINE_TOKEN}{uuid.uuid4().hex}"
     )
     try:
+        if (
+            root_evidence is not None
+            and not _is_owned_empty_dir_root(root_evidence)
+        ):
+            return False
         current = path.lstat()
         if (
             not stat.S_ISDIR(current.st_mode)
@@ -709,6 +772,11 @@ def _atomic_rmdir_empty(path: Path, expected: os.stat_result) -> bool:
             not stat.S_ISDIR(moved.st_mode)
             or _is_link_like(quarantine)
             or not os.path.samestat(expected, moved)
+        ):
+            return False
+        if (
+            root_evidence is not None
+            and not _is_owned_empty_dir_root(root_evidence)
         ):
             return False
         try:
@@ -1078,25 +1146,36 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     # and desktop build under HERMES_HOME; a full rglob over that tree can
     # stall the gateway event loop for minutes.
     empty_removed = 0
-    sweep_stack: List[Tuple[Path, bool, os.stat_result]] = []
+    sweep_stack: List[
+        Tuple[Path, bool, os.stat_result, _OwnedEmptyDirRootEvidence]
+    ] = []
     try:
         for top in hermes_home.iterdir():
+            root_evidence = _capture_owned_empty_dir_root(top)
             if (
-                top.is_dir()
-                and not _is_link_like(top)
+                root_evidence is not None
                 and not _is_delete_quarantine_path(top)
-                and _is_owned_empty_dir_root(top)
             ):
-                sweep_stack.append((top, False, top.lstat()))
+                sweep_stack.append(
+                    (top, False, root_evidence.root_identity, root_evidence)
+                )
     except OSError:
         sweep_stack = []
 
     while sweep_stack:
-        dirpath, visited, selected_identity = sweep_stack.pop()
+        dirpath, visited, selected_identity, root_evidence = sweep_stack.pop()
+        if not _is_owned_empty_dir_root(root_evidence):
+            continue
         if visited:
             try:
-                if not any(dirpath.iterdir()) and _atomic_rmdir_empty(
-                    dirpath, selected_identity
+                if (
+                    not any(dirpath.iterdir())
+                    and _is_owned_empty_dir_root(root_evidence)
+                    and _atomic_rmdir_empty(
+                        dirpath,
+                        selected_identity,
+                        root_evidence,
+                    )
                 ):
                     empty_removed += 1
                     _log(f"DELETED: {dirpath} (empty dir)")
@@ -1104,17 +1183,22 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
                 pass
             continue
 
-        sweep_stack.append((dirpath, True, selected_identity))
+        sweep_stack.append((dirpath, True, selected_identity, root_evidence))
         try:
             for child in dirpath.iterdir():
+                child_identity = child.lstat()
                 if (
-                    child.is_dir()
+                    stat.S_ISDIR(child_identity.st_mode)
                     and not _is_link_like(child)
                     and not _is_delete_quarantine_path(child)
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
                     and child.name not in _EMPTY_DIR_SWEEP_PROTECTED_NAMES
+                    and _same_directory_object(child, child_identity)
+                    and _is_owned_empty_dir_root(root_evidence)
                 ):
-                    sweep_stack.append((child, False, child.lstat()))
+                    sweep_stack.append(
+                        (child, False, child_identity, root_evidence)
+                    )
         except OSError:
             pass
 

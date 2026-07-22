@@ -1030,6 +1030,66 @@ class TestZaiEndpointAutoDetect:
         assert creds["base_url"] == "https://custom.example/v4"
         assert not probe_called
 
+    def test_configured_base_url_skips_probe(self, monkeypatch):
+        """model.base_url should be authoritative when model.provider is zai."""
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "zai",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                }
+            },
+        )
+        probe_called = False
+
+        def _never_called(*a, **kw):
+            nonlocal probe_called
+            probe_called = True
+            return None
+
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://open.bigmodel.cn/api/coding/paas/v4"
+        assert not probe_called
+
+    def test_env_override_wins_over_configured_base_url(self, monkeypatch):
+        """GLM_BASE_URL remains the highest-precedence explicit endpoint."""
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setenv("GLM_BASE_URL", "https://env.example/v4")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "zai",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.detect_zai_endpoint",
+            lambda *a, **kw: pytest.fail("configured endpoints must skip probes"),
+        )
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://env.example/v4"
+
+    def test_configured_base_url_ignored_for_other_provider(self, monkeypatch):
+        """A global model.base_url must not leak into Z.AI unless Z.AI is active."""
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "openrouter",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                }
+            },
+        )
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
     def test_no_key_skips_probe(self, monkeypatch):
         """Without an API key, no probe should occur."""
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)

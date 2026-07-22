@@ -3546,6 +3546,91 @@ class TestThreadReplyHandling:
         assert msg_event.text == "thanks for the help"
 
     @pytest.mark.asyncio
+    async def test_active_thread_explicit_mention_refreshes_context_delta(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Explicit @mention on an active thread must re-fetch the thread and
+        inject only the delta past the stored watermark, as part of the NEW
+        turn (channel_context) — never rewriting prior history (#23918)."""
+        mock_session_store._entries = {"any": MagicMock()}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(
+            return_value=True
+        )
+        # Persisted watermark: session has consumed up to 123.100.
+        metadata = {"slack_thread_watermark:C123:123.000": "123.100"}
+        mock_session_store.get_session_metadata = MagicMock(
+            side_effect=lambda sk, k, d=None: metadata.get(k, d)
+        )
+        mock_session_store.set_session_metadata = MagicMock(
+            side_effect=lambda sk, k, v: metadata.__setitem__(k, v) or True
+        )
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "123.000", "user": "U_PARENT", "text": "Original question"},
+                    {"ts": "123.100", "user": "U_USER", "text": "Old context"},
+                    {"ts": "123.200", "user": "U_OTHER", "text": "Fresh update"},
+                    {"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> what changed?"},
+                ]
+            }
+        )
+        adapter_with_session_store._user_name_cache = {
+            ("T_TEAM", "U_PARENT"): "Parent",
+            ("T_TEAM", "U_USER"): "User",
+            ("T_TEAM", "U_OTHER"): "Other",
+        }
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "<@U_BOT> what changed?",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store._app.client.conversations_replies.assert_awaited_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        # Delta arrives as new-turn channel_context, not baked into text.
+        assert msg_event.text == "what changed?"
+        assert "Fresh update" in msg_event.channel_context
+        # Already-consumed messages must NOT be re-injected.
+        assert "Old context" not in msg_event.channel_context
+        # Watermark advanced to the trigger ts.
+        assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
+
+    @pytest.mark.asyncio
+    async def test_active_thread_unmentioned_reply_does_not_refetch(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Unmentioned replies in active threads keep the existing behavior:
+        no thread re-fetch, no context injection."""
+        mock_session_store._entries = {"any": MagicMock()}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(
+            return_value=True
+        )
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock()
+        adapter_with_session_store._fetch_thread_parent_text = AsyncMock(
+            return_value=""
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "Follow-up without mention",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store.handle_message.assert_called_once()
+        adapter_with_session_store._app.client.conversations_replies.assert_not_called()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.channel_context is None
+
+    @pytest.mark.asyncio
     async def test_top_level_message_requires_mention_even_with_session(
         self, adapter_with_session_store, mock_session_store
     ):

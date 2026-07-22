@@ -49,6 +49,10 @@ A thin GUI installer is also available — useful if you'd rather double-click a
 
 Use the desktop installer when you want a familiar Windows install experience or you're handing Hermes to a non-developer; use the PowerShell one-liner when you're already in a terminal.
 
+### Community installer for users in China
+
+If GitHub or npm downloads are slow from China, the community-maintained [OpenHermes Installer](https://openhermes.cingjin.com/) packages a Windows one-click flow with Alibaba Cloud mirrors and dependency checks. It is not the official Hermes installer, but it can be useful when the normal PowerShell script stalls on network access.
+
 ### Dependency bootstrap (`dep_ensure`)
 
 On first launch (and on demand when a missing tool is detected), Hermes runs a small Python bootstrapper — `hermes_cli/dep_ensure.py` — that checks for and lazily installs the non-Python dependencies it needs. On Windows, the relevant ones are:

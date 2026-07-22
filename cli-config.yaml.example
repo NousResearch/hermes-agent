@@ -1069,6 +1069,25 @@ stt:
 #     model: ""
 
 # =============================================================================
+# Voice Mode (CLI)
+# =============================================================================
+# CLI voice mode: speak your input via microphone, get spoken responses via TTS.
+# Unlike STT (which transcribes voice messages from messaging platforms), this
+# enables voice interaction directly in the terminal.
+#
+# Set `enabled: true` to start every CLI session with voice mode on, so you
+# don't need to type `/voice on` each time.
+#
+# voice:
+#   enabled: false           # Start sessions with voice mode enabled
+#   record_key: "ctrl+b"     # Keyboard shortcut to start/stop recording
+#   max_recording_seconds: 120
+#   auto_tts: true           # Automatically speak responses aloud
+#   beep_enabled: true       # Play audio cues on record start/stop
+#   silence_threshold: 200   # RMS level below which audio is considered silence
+#   silence_duration: 3.0    # Seconds of silence before auto-stopping recording
+
+# =============================================================================
 # Response Pacing (Messaging Platforms)
 # =============================================================================
 # Add human-like delays between message chunks.

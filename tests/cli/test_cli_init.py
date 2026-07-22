@@ -324,6 +324,47 @@ class TestSingleQueryState:
         assert hasattr(cli, "_pending_input")
 
 
+class TestVoiceConfigPersistence:
+    """voice.enabled and voice.auto_tts should initialize _voice_mode and _voice_tts."""
+
+    def test_voice_mode_defaults_to_false(self):
+        """When no voice config, voice mode is off (backward compat)."""
+        cli = _make_cli()
+        assert cli._voice_mode is False
+
+    def test_voice_tts_defaults_to_false(self):
+        """When no voice config, TTS is off (backward compat)."""
+        cli = _make_cli()
+        assert cli._voice_tts is False
+
+    def test_voice_enabled_true_activates_voice_mode(self):
+        """voice.enabled: true should set _voice_mode to True at init."""
+        cli = _make_cli(config_overrides={"voice": {"enabled": True}})
+        assert cli._voice_mode is True
+
+    def test_voice_auto_tts_true_activates_tts(self):
+        """voice.auto_tts: true should set _voice_tts to True at init."""
+        cli = _make_cli(config_overrides={"voice": {"enabled": True, "auto_tts": True}})
+        assert cli._voice_tts is True
+
+    def test_voice_enabled_false_keeps_voice_off(self):
+        """Explicit voice.enabled: false should keep voice mode off."""
+        cli = _make_cli(config_overrides={"voice": {"enabled": False}})
+        assert cli._voice_mode is False
+
+    def test_voice_enabled_without_auto_tts(self):
+        """voice.enabled: true without auto_tts should enable voice but not TTS."""
+        cli = _make_cli(config_overrides={"voice": {"enabled": True}})
+        assert cli._voice_mode is True
+        assert cli._voice_tts is False
+
+    def test_voice_config_nested_get_fallback(self):
+        """Missing voice key in config should not crash -- safe nested .get()."""
+        cli = _make_cli(config_overrides={"agent": {}})
+        assert cli._voice_mode is False
+        assert cli._voice_tts is False
+
+
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
         cli = _make_cli()

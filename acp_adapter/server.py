@@ -1765,6 +1765,23 @@ class HermesACPAgent(acp.Agent):
         if handler is None:
             return None  # not a known command — let the LLM handle it
 
+        # Block session-mutating commands while a turn is still executing on the
+        # worker thread. /reset and /compact rewrite state.history, but the
+        # in-flight turn finishes by doing `state.history = result["messages"]`
+        # (+ save_session), which silently resurrects the cleared history or
+        # discards the compaction. /model <arg> swaps state.agent out from under
+        # the running loop. `/model` with no args only reports the current model,
+        # so it stays allowed. Concurrent same-session writes also interleave the
+        # persisted SQLite transcript (replace_messages vs. the turn's appends).
+        if cmd in {"reset", "compact"} or (cmd == "model" and args):
+            with state.runtime_lock:
+                turn_in_progress = state.is_running
+            if turn_in_progress:
+                return (
+                    f"/{cmd} can't run while a turn is in progress. "
+                    "Interrupt the turn (or wait for it to finish), then try again."
+                )
+
         try:
             return handler(args, state)
         except Exception as e:

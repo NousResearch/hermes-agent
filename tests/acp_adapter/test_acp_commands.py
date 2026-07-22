@@ -182,6 +182,66 @@ async def test_acp_queue_slash_command_adds_next_turn_without_running_now():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/reset", "/compact", "/model gpt-4o"])
+async def test_acp_mutating_slash_command_blocked_during_running_turn(command):
+    # /reset, /compact and /model <arg> mutate shared session state (history or
+    # the agent). Running them while a turn is still executing on the worker
+    # thread is silently undone — the turn finishes with
+    # `state.history = result["messages"]`, resurrecting cleared history /
+    # discarding compaction — or swaps state.agent out from under the live loop.
+    # They must be rejected with a clear message instead of mutating state.
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.history.append({"role": "user", "content": "earlier message"})
+    original_agent = state.agent
+    state.is_running = True
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text=command)],
+    )
+
+    assert response.stop_reason == "end_turn"
+    # State left untouched: history preserved, agent not swapped, turn not run.
+    assert state.history == [{"role": "user", "content": "earlier message"}]
+    assert state.agent is original_agent
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_reset_runs_on_idle_session():
+    # The running-turn guard must not block the command on an idle session.
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.history.append({"role": "user", "content": "earlier message"})
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/reset")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert state.history == []
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_model_query_allowed_during_running_turn():
+    # `/model` with no args only reports the current model — it does not mutate
+    # state, so it stays allowed even while a turn is in progress.
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    original_agent = state.agent
+    state.is_running = True
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/model")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert state.agent is original_agent
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
 async def test_acp_prompt_drains_queued_turns_after_current_run():
     acp_agent, state, fake, conn = make_agent_and_state()
     state.queued_prompts.append("then run tests")

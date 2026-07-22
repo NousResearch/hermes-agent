@@ -508,6 +508,8 @@ SDK.hooks.useMemo
 SDK.hooks.useRef
 SDK.hooks.useContext
 SDK.hooks.createContext
+SDK.hooks.useToast           // toast feedback — { showToast(message, type), toast }
+SDK.hooks.useConfirmDelete   // delete-confirm state machine — { requestDelete, confirm, cancel, isOpen, isDeleting, pendingId }
 
 // UI components (shadcn/ui primitives)
 SDK.components.Card
@@ -516,6 +518,15 @@ SDK.components.CardTitle
 SDK.components.CardContent
 SDK.components.Badge
 SDK.components.Button
+SDK.components.Checkbox
+SDK.components.ConfirmDialog
+SDK.components.Dialog
+SDK.components.DialogClose
+SDK.components.DialogContent
+SDK.components.DialogDescription
+SDK.components.DialogFooter
+SDK.components.DialogHeader
+SDK.components.DialogTitle
 SDK.components.Input
 SDK.components.Label
 SDK.components.Select
@@ -524,6 +535,7 @@ SDK.components.Separator
 SDK.components.Tabs
 SDK.components.TabsList
 SDK.components.TabsTrigger
+SDK.components.Toast
 SDK.components.PluginSlot    // render a named slot (useful for nested plugin UIs)
 
 // Hermes API client + raw fetcher

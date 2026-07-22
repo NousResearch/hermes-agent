@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_inspect, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -96,6 +96,180 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
     do_update(console=console)
     return sink.getvalue(), installs
+
+
+def _capture_inspect(identifier: str) -> str:
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect(identifier, console=console)
+    return sink.getvalue()
+
+
+def test_do_inspect_prefers_installed_runtime_skill_for_bare_name(monkeypatch, tmp_path):
+    import hermes_cli.skills_hub as cli_hub
+
+    skill_md = tmp_path / "skills" / "software-development" / "review" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text("---\nname: review\ndescription: local runtime review\n---\n\n# local review body", encoding="utf-8")
+
+    monkeypatch.setattr(cli_hub, "_find_installed_skill_for_inspect", lambda name: {
+        "name": "review",
+        "description": "local runtime review",
+        "category": "software-development",
+        "path": skill_md,
+        "content": skill_md.read_text(encoding="utf-8"),
+        "source": "local",
+    })
+    monkeypatch.setattr(cli_hub, "_resolve_short_name", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("hub short-name lookup should not run")))
+
+    output = _capture_inspect("review")
+
+    assert "Installed skill: review" in output
+    assert "profile-local runtime skill" in output
+    assert "SKILL.md" in output
+    assert "local review body" in output
+
+
+def test_do_inspect_full_identifier_still_uses_hub_preview(monkeypatch):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+
+    monkeypatch.setattr(cli_hub, "_find_installed_skill_for_inspect", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full hub identifiers should bypass installed lookup")))
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: [object()])
+
+    meta = type("Meta", (), {
+        "name": "review",
+        "description": "hub review",
+        "source": "community",
+        "trust_level": "community",
+        "identifier": "skills-sh/mattpocock/skills/review",
+        "tags": [],
+        "extra": {},
+    })()
+    bundle = type("Bundle", (), {"files": {"SKILL.md": "# hub preview body"}})()
+    monkeypatch.setattr(cli_hub, "_resolve_source_meta_and_bundle", lambda *_args, **_kwargs: (meta, bundle, None))
+
+    output = _capture_inspect("skills-sh/mattpocock/skills/review")
+
+    assert "Identifier:" in output
+    assert "skills-sh/mattpocock/skills/review" in output
+    assert "hub preview body" in output
+
+
+def _isolate_runtime_skills(monkeypatch, tmp_path):
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+    import tools.skills_tool as skills_tool
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda: set())
+    skill_commands._skill_commands = {}
+    skill_commands._skill_commands_platform = None
+    return skills_dir
+
+
+def _write_skill(path, *, name="review", description="local runtime review", body="# local review body"):
+    path.mkdir(parents=True, exist_ok=True)
+    skill_md = path / "SKILL.md"
+    skill_md.write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+    return skill_md
+
+
+def test_do_inspect_real_filesystem_matches_runtime_command_scan(monkeypatch, tmp_path):
+    skills_dir = _isolate_runtime_skills(monkeypatch, tmp_path)
+    skill_md = _write_skill(skills_dir / "software-development" / "review")
+
+    output = _capture_inspect("review")
+
+    assert "Installed skill: review" in output
+    assert "Status:" in output
+    assert "enabled" in output
+    assert "local review body" in output
+
+
+def test_do_inspect_does_not_match_parent_directory_when_runtime_command_differs(monkeypatch, tmp_path):
+    import hermes_cli.skills_hub as cli_hub
+
+    skills_dir = _isolate_runtime_skills(monkeypatch, tmp_path)
+    _write_skill(skills_dir / "software-development" / "review", name="not-review")
+
+    assert cli_hub._find_installed_skill_for_inspect("review") is None
+
+
+def test_do_inspect_reports_disabled_local_skill_without_hub_fallback(monkeypatch, tmp_path):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_tool as skills_tool
+
+    skills_dir = _isolate_runtime_skills(monkeypatch, tmp_path)
+    skill_md = _write_skill(skills_dir / "software-development" / "review")
+    monkeypatch.setattr(skills_tool, "_get_disabled_skill_names", lambda: {"review"})
+    monkeypatch.setattr(cli_hub, "_resolve_short_name", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled local skill should not fall back to hub")))
+
+    output = _capture_inspect("review")
+
+    assert "Installed skill disabled: review" in output
+    assert "Hub preview is not used as a silent fallback" in output
+
+
+def test_installed_inspect_duplicate_name_uses_same_first_skill_as_runtime(monkeypatch, tmp_path):
+    import agent.skill_commands as skill_commands
+    import hermes_cli.skills_hub as cli_hub
+
+    skills_dir = _isolate_runtime_skills(monkeypatch, tmp_path)
+    _write_skill(skills_dir / "alpha" / "review", body="# alpha body")
+    _write_skill(skills_dir / "beta" / "review", body="# beta body")
+
+    runtime_path = skill_commands.scan_skill_commands()["/review"]["skill_md_path"]
+    installed = cli_hub._find_installed_skill_for_inspect("review")
+
+    assert installed is not None
+    assert str(installed["path"]) == runtime_path
+
+
+def test_do_inspect_case_variant_uses_same_runtime_slug(monkeypatch, tmp_path):
+    import hermes_cli.skills_hub as cli_hub
+
+    skills_dir = _isolate_runtime_skills(monkeypatch, tmp_path)
+    skill_md = _write_skill(skills_dir / "software-development" / "review")
+
+    installed = cli_hub._find_installed_skill_for_inspect("Review")
+
+    assert installed is not None
+    assert str(installed["path"]) == str(skill_md)
+
+
+def test_do_inspect_warns_when_installed_lookup_fails_before_hub_fallback(monkeypatch):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+
+    monkeypatch.setattr(cli_hub, "_find_installed_skill_for_inspect", lambda _name: {"lookup_error": "boom"})
+    monkeypatch.setattr(cli_hub, "_resolve_short_name", lambda _name, *_args, **_kwargs: "skills-sh/mattpocock/skills/review")
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: [object()])
+    meta = type("Meta", (), {
+        "name": "review",
+        "description": "hub review",
+        "source": "community",
+        "trust_level": "community",
+        "identifier": "skills-sh/mattpocock/skills/review",
+        "tags": [],
+        "extra": {},
+    })()
+    bundle = type("Bundle", (), {"files": {"SKILL.md": "# hub preview body"}})()
+    monkeypatch.setattr(cli_hub, "_resolve_source_meta_and_bundle", lambda *_args, **_kwargs: (meta, bundle, None))
+
+    output = _capture_inspect("review")
+
+    assert "Could not inspect installed runtime skills: boom" in output
+    assert "Falling back to hub preview" in output
+    assert "skills-sh/mattpocock/skills/review" in output
 
 
 # ---------------------------------------------------------------------------

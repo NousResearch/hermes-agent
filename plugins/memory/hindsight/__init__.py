@@ -614,6 +614,47 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
     return rendered or fallback
 
 
+def _discover_cwd_bank_id(start_dir: str | None = None) -> str | None:
+    """Walk up from *start_dir* (default: cwd) looking for ``.hindsight/config.toml``.
+
+    Mirrors pi's per-project memory behaviour: the closest
+    ``.hindsight/config.toml`` walking up the directory tree wins. Only the
+    ``bank_id`` key is read; any other keys pi writes are ignored. Returns the
+    bank id string, or ``None`` if no readable config with a non-empty
+    ``bank_id`` is found. Never raises — a malformed/unreadable TOML logs a
+    warning and the walk continues (so a broken file does not mask a valid
+    one higher up).
+    """
+    try:
+        import tomllib  # Python 3.11+
+    except Exception:  # pragma: no cover - tomllib always present on 3.11+
+        return None
+
+    from pathlib import Path
+
+    try:
+        current = Path(start_dir).resolve() if start_dir else Path.cwd()
+    except Exception:
+        return None
+
+    for directory in (current, *current.parents):
+        toml_path = directory / ".hindsight" / "config.toml"
+        if not toml_path.is_file():
+            continue
+        try:
+            with toml_path.open("rb") as fh:
+                data = tomllib.load(fh)
+        except Exception as exc:
+            logger.warning(
+                "Ignoring malformed Hindsight config %s: %s", toml_path, exc
+            )
+            continue
+        bank_id = data.get("bank_id")
+        if isinstance(bank_id, str) and bank_id.strip():
+            return bank_id.strip()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -1286,7 +1327,7 @@ class HindsightMemoryProvider(MemoryProvider):
         banks = cfg_get(self._config, "banks", "hermes", default={})
         static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
-        self._bank_id = _resolve_bank_id_template(
+        template_bank_id = _resolve_bank_id_template(
             self._bank_id_template,
             fallback=static_bank_id,
             profile=self._agent_identity,
@@ -1295,6 +1336,18 @@ class HindsightMemoryProvider(MemoryProvider):
             user=self._user_id,
             session=self._session_id,
         )
+        # Bank id precedence (highest first), pi-compatible:
+        #   1. --hindsight-bank CLI flag (HERMES_HINDSIGHT_BANK_OVERRIDE env var)
+        #   2. closest .hindsight/config.toml `bank_id` walking up from cwd
+        #   3. config.json bank_id_template -> bank_id -> banks.bankId -> "hermes"
+        cli_bank_override = os.environ.get("HERMES_HINDSIGHT_BANK_OVERRIDE", "").strip()
+        cwd_bank_id = _discover_cwd_bank_id()
+        if cli_bank_override:
+            self._bank_id = cli_bank_override
+        elif cwd_bank_id:
+            self._bank_id = cwd_bank_id
+        else:
+            self._bank_id = template_bank_id
         budget = self._config.get("recall_budget") or self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
 

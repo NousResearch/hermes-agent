@@ -27,6 +27,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _discover_cwd_bank_id,
 )
 
 
@@ -36,7 +37,7 @@ from plugins.memory.hindsight import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     """Ensure no stale env vars leak between tests."""
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
@@ -45,8 +46,13 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
         "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HERMES_HINDSIGHT_BANK_OVERRIDE",
     ):
         monkeypatch.delenv(key, raising=False)
+    # Run from an isolated, empty cwd so per-project .hindsight/config.toml
+    # walk-up discovery (added for pi-style per-project banks) cannot pick up
+    # an ambient config from the developer's checkout and perturb assertions.
+    monkeypatch.chdir(tmp_path)
 
 
 def _make_mock_client():
@@ -1819,3 +1825,133 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# Per-project bank discovery (pi-style .hindsight/config.toml walk-up)
+# ---------------------------------------------------------------------------
+
+
+def _write_toml(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+class TestDiscoverCwdBankId:
+    """Unit tests for the closest-.hindsight/config.toml walk-up helper."""
+
+    def test_finds_bank_id_in_parent_dir(self, tmp_path, monkeypatch):
+        _write_toml(tmp_path / ".hindsight" / "config.toml", 'bank_id = "project-foo"\n')
+        nested = tmp_path / "a" / "b" / "c"
+        nested.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(nested)
+        assert _discover_cwd_bank_id() == "project-foo"
+
+    def test_closest_config_wins(self, tmp_path, monkeypatch):
+        _write_toml(tmp_path / ".hindsight" / "config.toml", 'bank_id = "outer"\n')
+        inner = tmp_path / "sub"
+        _write_toml(inner / ".hindsight" / "config.toml", 'bank_id = "inner"\n')
+        monkeypatch.chdir(inner)
+        assert _discover_cwd_bank_id() == "inner"
+
+    def test_ignores_other_keys(self, tmp_path, monkeypatch):
+        _write_toml(
+            tmp_path / ".hindsight" / "config.toml",
+            'bank_id = "project-bar"\nbudget = "high"\n[server]\nurl = "http://x"\n',
+        )
+        monkeypatch.chdir(tmp_path)
+        assert _discover_cwd_bank_id() == "project-bar"
+
+    def test_absent_toml_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert _discover_cwd_bank_id() is None
+
+    def test_malformed_toml_returns_none(self, tmp_path, monkeypatch):
+        _write_toml(tmp_path / ".hindsight" / "config.toml", 'bank_id = "unterminated\n')
+        monkeypatch.chdir(tmp_path)
+        assert _discover_cwd_bank_id() is None
+
+    def test_empty_bank_id_returns_none(self, tmp_path, monkeypatch):
+        _write_toml(tmp_path / ".hindsight" / "config.toml", 'bank_id = ""\n')
+        monkeypatch.chdir(tmp_path)
+        assert _discover_cwd_bank_id() is None
+
+    def test_missing_bank_id_key_returns_none(self, tmp_path, monkeypatch):
+        _write_toml(tmp_path / ".hindsight" / "config.toml", 'budget = "mid"\n')
+        monkeypatch.chdir(tmp_path)
+        assert _discover_cwd_bank_id() is None
+
+    def test_explicit_start_dir(self, tmp_path):
+        _write_toml(tmp_path / ".hindsight" / "config.toml", 'bank_id = "explicit"\n')
+        nested = tmp_path / "x" / "y"
+        nested.mkdir(parents=True, exist_ok=True)
+        assert _discover_cwd_bank_id(str(nested)) == "explicit"
+
+
+class TestBankIdPrecedence:
+    """End-to-end bank id resolution precedence through provider.initialize()."""
+
+    def _init(self, tmp_path, monkeypatch, config):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="s1", hermes_home=str(tmp_path), platform="cli")
+        return p
+
+    def test_toml_beats_static_config_bank_id(self, tmp_path, monkeypatch):
+        project = tmp_path / "proj"
+        _write_toml(project / ".hindsight" / "config.toml", 'bank_id = "project-toml"\n')
+        monkeypatch.chdir(project)
+        p = self._init(tmp_path, monkeypatch, {
+            "mode": "cloud", "apiKey": "k", "api_url": "http://x",
+            "bank_id": "static-json",
+        })
+        assert p._bank_id == "project-toml"
+
+    def test_toml_beats_template(self, tmp_path, monkeypatch):
+        project = tmp_path / "proj"
+        _write_toml(project / ".hindsight" / "config.toml", 'bank_id = "project-toml"\n')
+        monkeypatch.chdir(project)
+        p = self._init(tmp_path, monkeypatch, {
+            "mode": "cloud", "apiKey": "k", "api_url": "http://x",
+            "bank_id": "fallback", "bank_id_template": "hermes-{platform}",
+        })
+        assert p._bank_id == "project-toml"
+
+    def test_cli_override_beats_toml(self, tmp_path, monkeypatch):
+        project = tmp_path / "proj"
+        _write_toml(project / ".hindsight" / "config.toml", 'bank_id = "project-toml"\n')
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("HERMES_HINDSIGHT_BANK_OVERRIDE", "cli-bank")
+        p = self._init(tmp_path, monkeypatch, {
+            "mode": "cloud", "apiKey": "k", "api_url": "http://x",
+            "bank_id": "static-json",
+        })
+        assert p._bank_id == "cli-bank"
+
+    def test_cli_override_beats_template_without_toml(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HERMES_HINDSIGHT_BANK_OVERRIDE", "cli-bank")
+        p = self._init(tmp_path, monkeypatch, {
+            "mode": "cloud", "apiKey": "k", "api_url": "http://x",
+            "bank_id": "fallback", "bank_id_template": "hermes-{platform}",
+        })
+        assert p._bank_id == "cli-bank"
+
+    def test_template_used_when_no_toml_or_flag(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        p = self._init(tmp_path, monkeypatch, {
+            "mode": "cloud", "apiKey": "k", "api_url": "http://x",
+            "bank_id": "fallback", "bank_id_template": "hermes-{platform}",
+        })
+        assert p._bank_id == "hermes-cli"
+
+    def test_static_bank_id_used_when_no_toml_flag_or_template(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        p = self._init(tmp_path, monkeypatch, {
+            "mode": "cloud", "apiKey": "k", "api_url": "http://x",
+            "bank_id": "static-json",
+        })
+        assert p._bank_id == "static-json"

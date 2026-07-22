@@ -2571,6 +2571,13 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # --hindsight-bank: force the Hindsight memory bank id for this session.
+    # Exported as an env var so it is read at top precedence by the Hindsight
+    # provider (before any .hindsight/config.toml walk-up or config.json bank
+    # id/template resolution) and survives the TUI relaunch.
+    if getattr(args, "hindsight_bank", None):
+        os.environ["HERMES_HINDSIGHT_BANK_OVERRIDE"] = str(args.hindsight_bank).strip()
+
     _pin_kanban_board_env()
 
     if use_tui:

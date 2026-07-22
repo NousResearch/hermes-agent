@@ -153,6 +153,17 @@ def build_top_level_parser():
         default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
+    _inherited_flag(
+        parser,
+        "--hindsight-bank",
+        default=None,
+        metavar="BANK",
+        help=(
+            "Force the Hindsight long-term-memory bank id for this invocation. "
+            "Overrides any .hindsight/config.toml and the static config.json "
+            "bank id/template. Also settable via HERMES_HINDSIGHT_BANK_OVERRIDE."
+        ),
+    )
     parser.add_argument(
         "--resume",
         "-r",

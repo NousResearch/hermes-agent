@@ -10748,6 +10748,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    async def _discard_recovery_paused_inbox_claim(
+        self,
+        event: MessageEvent,
+        reason: str,
+    ) -> bool:
+        """Release a replay claim that a recovery safety guard rejects.
+
+        Durable-inbox replays carry a task-scoped claim.  Returning early from
+        a recovery guard without completing that claim leaves the session FIFO
+        permanently blocked, so later explicit user instructions can never
+        become the session head.  Keep this optional so recovery remains
+        compatible with deployments that do not enable the durable inbox.
+        """
+        marker_reader = getattr(self, "_inbox_marker", None)
+        if not callable(marker_reader):
+            return False
+        marker = marker_reader(event)
+        if not isinstance(marker, dict) or not marker.get("claim_token"):
+            return False
+        discard = getattr(self, "_inbox_cancel_or_complete_stale_event", None)
+        if not callable(discard):
+            return False
+        try:
+            return bool(await discard(event, reason))
+        except Exception:
+            logger.warning(
+                "Failed to release recovery-paused durable inbox claim",
+                exc_info=True,
+            )
+            return False
+
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self._adapter_for_source(source)
@@ -11117,6 +11148,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _quick_key,
                 _recovery_reason,
             )
+            await self._discard_recovery_paused_inbox_claim(
+                event,
+                "internal event rejected by recovery pause",
+            )
             return None
         if not is_internal and _recovery_reason in DURABLE_RESUME_REASONS:
             store = getattr(self, "_active_run_store", None)
@@ -11133,6 +11168,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "session %s; a new user event is required",
                     inbound_message_id,
                     _quick_key,
+                )
+                await self._discard_recovery_paused_inbox_claim(
+                    event,
+                    "trigger redelivery rejected by recovery pause",
                 )
                 return None
 

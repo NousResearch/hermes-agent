@@ -337,6 +337,8 @@ async def test_internal_event_cannot_resume_safety_paused_session(tmp_path):
     runner.config = store.config
     runner.session_store = store
     runner._active_recovery_reasons = {entry.session_key: "side_effect_unknown"}
+    runner._inbox_marker = MagicMock(return_value={"claim_token": "claim-1"})
+    runner._inbox_cancel_or_complete_stale_event = AsyncMock(return_value=True)
 
     event = MessageEvent(
         text="background completion",
@@ -347,6 +349,10 @@ async def test_internal_event_cannot_resume_safety_paused_session(tmp_path):
 
     assert await runner._handle_message(event) is None
     assert entry.resume_pending is True
+    runner._inbox_cancel_or_complete_stale_event.assert_awaited_once_with(
+        event,
+        "internal event rejected by recovery pause",
+    )
 
 
 @pytest.mark.asyncio
@@ -372,6 +378,8 @@ async def test_trigger_message_redelivery_cannot_resume_safety_pause(tmp_path):
         session_key,
         trigger_message_id="original-message",
     )
+    runner._inbox_marker = MagicMock(return_value={"claim_token": "claim-1"})
+    runner._inbox_cancel_or_complete_stale_event = AsyncMock(return_value=True)
     runner._handle_message_with_agent = AsyncMock(return_value="must not run")
     event = MessageEvent(
         text="original request",
@@ -382,6 +390,10 @@ async def test_trigger_message_redelivery_cannot_resume_safety_pause(tmp_path):
 
     assert await runner._handle_message(event) is None
     runner._handle_message_with_agent.assert_not_awaited()
+    runner._inbox_cancel_or_complete_stale_event.assert_awaited_once_with(
+        event,
+        "trigger redelivery rejected by recovery pause",
+    )
 
 
 @pytest.mark.asyncio

@@ -239,7 +239,10 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return True
 
     # zipfile.write() follows file symlinks, so skip links before any archive
-    # write can copy data from outside HERMES_HOME.
+    # write can copy data from outside HERMES_HOME. Callers use
+    # _find_skipped_symlinks to record and report the skipped links (summary
+    # for run_backup, logger for _write_full_zip_backup) so the omission is
+    # never silent.
     if abs_path.is_symlink():
         return True
 
@@ -247,6 +250,34 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return abs_path.resolve() == out_path.resolve()
     except (OSError, ValueError):
         return False
+
+
+def _find_skipped_symlinks(
+    dirpath: Path, dirnames: List[str], filenames: List[str], hermes_root: Path
+) -> List[str]:
+    """Return relative paths of symlinks under *dirpath* that a backup walk
+    drops but never archives.
+
+    Two cases, both deliberate skips (see ``_should_skip_backup_file``) that
+    would otherwise be silent: symlinked directories — ``os.walk`` with
+    ``followlinks=False`` lists them in *dirnames* but never descends, so the
+    whole subtree is omitted (the highest-impact case for a lost content tree)
+    — and symlinked files that aren't already excluded. Call this AFTER excluded
+    dirs have been pruned from *dirnames* so excluded links aren't reported.
+    Shared by every full-zip producer so the accounting can't drift between
+    ``run_backup`` and ``_write_full_zip_backup``.
+    """
+    rel_dir = dirpath.relative_to(hermes_root)
+    found: List[str] = []
+    for d in dirnames:
+        if (dirpath / d).is_symlink():
+            found.append(str(rel_dir / d))
+    for fname in filenames:
+        fpath = dirpath / fname
+        rel = fpath.relative_to(hermes_root)
+        if fpath.is_symlink() and not _should_exclude(rel):
+            found.append(str(rel))
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +357,7 @@ def run_backup(args) -> None:
     print(f"Scanning {display_hermes_home()} ...")
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
+    skipped_symlinks: list[str] = []
 
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         dp = Path(dirpath)
@@ -342,6 +374,12 @@ def run_backup(args) -> None:
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
+
+        # Record symlinks the walk drops (dir subtrees + files) so they're
+        # reported below rather than silently omitted.
+        skipped_symlinks.extend(
+            _find_skipped_symlinks(dp, dirnames, filenames, hermes_root)
+        )
 
         for fname in filenames:
             fpath = dp / fname
@@ -463,6 +501,17 @@ def run_backup(args) -> None:
         print("\n  Excluded directories:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
+
+    # Symlinks are deliberately not followed into the archive (security), so
+    # this is not an error and does not flip "Backup complete" — but the
+    # dropped content must be visible, especially a whole symlinked subtree an
+    # operator only discovers is missing at restore time.
+    if skipped_symlinks:
+        print(f"\n  Symlinks skipped (not archived): {len(skipped_symlinks)}")
+        for p in sorted(skipped_symlinks)[:10]:
+            print(f"    {p}")
+        if len(skipped_symlinks) > 10:
+            print(f"    ... and {len(skipped_symlinks) - 10} more")
 
     if errors:
         print(f"\n  Warnings ({len(errors)} files skipped):")
@@ -1208,11 +1257,18 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     or write error — caller should surface the outcome but not raise).
     """
     files_to_add: list[tuple[Path, Path]] = []
+    skipped_symlinks: list[str] = []
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
             # Prune excluded directories in-place so os.walk doesn't descend
             dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+
+            # Record symlinks the walk drops (dir subtrees + files); this path
+            # has no interactive summary, so they're logged after the write.
+            skipped_symlinks.extend(
+                _find_skipped_symlinks(dp, dirnames, filenames, hermes_root)
+            )
 
             for fname in filenames:
                 fpath = dp / fname
@@ -1277,6 +1333,20 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         except OSError:
             pass
         return None
+
+    # Surface deliberately-skipped symlinks through this path's only output
+    # surface (it logs rather than prints), so a whole symlinked subtree
+    # dropped from a pre-update/pre-migration backup isn't silent either.
+    if skipped_symlinks:
+        preview = ", ".join(sorted(skipped_symlinks)[:10])
+        more = len(skipped_symlinks) - 10
+        if more > 0:
+            preview += f", ... and {more} more"
+        logger.warning(
+            "Full-zip backup: %d symlink(s) skipped (not archived): %s",
+            len(skipped_symlinks),
+            preview,
+        )
 
     return out_path
 

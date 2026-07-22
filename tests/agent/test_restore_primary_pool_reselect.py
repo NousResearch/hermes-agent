@@ -133,6 +133,37 @@ class TestRestorePrimaryPoolReselect:
         assert agent.api_key == "rotated-key-entry-2"
         assert agent._client_kwargs["api_key"] == "rotated-key-entry-2"
 
+    def test_restore_clears_custom_fallback_headers_before_pool_reselect(self):
+        entries = [
+            _make_entry("entry-1", "original-key-entry-1", priority=0),
+            _make_entry("entry-2", "rotated-key-entry-2", priority=1),
+        ]
+        pool = _build_mock_pool(entries)
+        pool._mark_exhausted(pool._entries[0], 401)
+        pool._current_id = "entry-2"
+        agent = self._make_agent(pool)
+        agent._custom_fallback_header_isolation = True
+        agent._custom_fallback_headers = {
+            "X-Fallback-Auth": "fallback-header-value"
+        }
+        isolation_seen_during_rebuild = []
+
+        def _capture_header_state(_base_url):
+            isolation_seen_during_rebuild.append(
+                (
+                    agent._custom_fallback_header_isolation,
+                    dict(agent._custom_fallback_headers),
+                )
+            )
+
+        agent._apply_client_headers_for_base_url.side_effect = _capture_header_state
+
+        assert agent._restore_primary_runtime() is True
+
+        assert isolation_seen_during_rebuild == [(False, {})]
+        assert agent._custom_fallback_header_isolation is False
+        assert agent._custom_fallback_headers == {}
+
     def test_restore_uses_freshest_available_entry(self):
         """When multiple entries are available, restore should select the pool's best pick."""
         entries = [

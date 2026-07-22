@@ -97,3 +97,91 @@ def test_identity_resolves_back_through_named_lookup(monkeypatch):
     assert entry is not None
     assert entry["base_url"] == "https://api.mimo.example/v1"
     assert entry["api_key"] == "sk-entry"
+
+
+def test_candidate_lookup_preserves_case_sensitive_paths(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {"name": "tenant-upper", "base_url": "https://gateway.example/TenantA"},
+                {"name": "tenant-lower", "base_url": "https://gateway.example/tenanta"},
+            ]
+        },
+    )
+
+    assert rp.find_custom_provider_identities("https://GATEWAY.example/tenanta/") == [
+        "custom:tenant-lower"
+    ]
+
+
+def test_candidate_lookup_returns_all_shared_endpoint_identities(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {"provider": "custom:tenant-b"},
+            "custom_providers": [
+                {"name": "tenant-a", "base_url": "https://gateway.example/v1"},
+                {"name": "tenant-b", "base_url": "https://gateway.example/v1/"},
+            ]
+        },
+    )
+
+    assert rp.find_custom_provider_identities("https://gateway.example/v1") == [
+        "custom:tenant-a",
+        "custom:tenant-b",
+    ]
+    assert rp.find_custom_provider_identity("https://gateway.example/v1") is None
+    assert rp.canonical_custom_identity(base_url="https://gateway.example/v1") is None
+
+
+def test_normalized_name_collision_is_ambiguous(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {"name": "Tenant A", "base_url": "https://gateway.example/v1"},
+                {"name": "tenant-a", "base_url": "https://gateway.example/v1"},
+            ]
+        },
+    )
+
+    assert rp.find_custom_provider_identities("https://gateway.example/v1") == [
+        "custom:tenant-a",
+        "custom:tenant-a",
+    ]
+    assert rp.find_custom_provider_identity("https://gateway.example/v1") is None
+
+
+def test_candidate_lookup_skips_disabled_provider_blocks(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "disabled": {
+                    "enabled": False,
+                    "api": "https://gateway.example/v1",
+                },
+                "enabled": {
+                    "api": "https://gateway.example/v1",
+                },
+            },
+            "custom_providers": [
+                {
+                    "name": "legacy-disabled",
+                    "enabled": False,
+                    "base_url": "https://legacy-disabled.example/v1",
+                    "api_key": "must-not-resolve",
+                }
+            ],
+        },
+    )
+
+    assert rp.find_custom_provider_identities("https://gateway.example/v1") == [
+        "custom:enabled"
+    ]
+    assert rp.find_custom_provider_identities("https://legacy-disabled.example/v1") == []

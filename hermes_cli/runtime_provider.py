@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import (
     get_compatible_custom_providers,
+    is_provider_enabled,
     load_config,
     normalize_extra_headers,
 )
@@ -659,7 +660,6 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
-        from hermes_cli.config import is_provider_enabled
         for ep_name, entry in providers.items():
             if not isinstance(entry, dict):
                 continue
@@ -796,55 +796,88 @@ def has_named_custom_provider(requested_provider: str) -> bool:
         return False
 
 
-def find_custom_provider_identity(base_url: str) -> Optional[str]:
-    """Map an endpoint URL back to its canonical ``custom:<name>`` menu key.
+def find_custom_provider_identities(base_url: Optional[str]) -> list[str]:
+    """Return every enabled ``custom:<name>`` entry owning *base_url*.
 
-    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
-    / ``custom_providers:`` entry whose base_url matches, or ``None`` when no
-    entry owns the URL.
-
-    Session persistence stores the agent's *resolved* provider, and for every
-    named custom endpoint that is the literal string ``"custom"`` — the entry
-    name is lost, and the api_key is deliberately never persisted. The
-    endpoint URL is the one durable fact that survives the round-trip, so
-    this reverse lookup lets persist/rebuild paths recover the entry identity
-    (and with it key_env/api_key/api_mode resolution via
-    :func:`_get_named_custom_provider`) instead of failing with
-    ``auth_unavailable`` or silently rebuilding with placeholder credentials.
+    Callers that select credentials from a bare custom endpoint must require a
+    single candidate. Multiple named providers may deliberately share one URL
+    while using different tenant keys or transports, so choosing the first
+    match would cross a credential boundary.
     """
     target = _normalize_base_url_for_match(base_url)
     if not target:
-        return None
+        return []
     try:
         config = load_config()
     except Exception:
-        return None
+        return []
+
+    identities: list[str] = []
+
+    def _add_identity(name: object) -> None:
+        normalized = _normalize_custom_provider_name(str(name or ""))
+        if not normalized:
+            return
+        identity = f"custom:{normalized}"
+        identities.append(identity)
 
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if not isinstance(entry, dict):
+            if not isinstance(entry, dict) or not is_provider_enabled(entry):
                 continue
             entry_url = (
                 entry.get("api") or entry.get("url") or entry.get("base_url") or ""
             )
             if _normalize_base_url_for_match(entry_url) == target:
-                return f"custom:{_normalize_custom_provider_name(str(ep_name))}"
+                _add_identity(ep_name)
 
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for raw_entry in custom_providers:
+            if not isinstance(raw_entry, dict) or not is_provider_enabled(raw_entry):
+                continue
+            try:
+                entries = get_compatible_custom_providers(
+                    {"custom_providers": [raw_entry]}
+                )
+            except Exception:
+                entries = []
+            for entry in entries:
+                name = entry.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                if _normalize_base_url_for_match(entry.get("base_url")) == target:
+                    _add_identity(name)
+
+    return identities
+
+
+def find_custom_provider_identity(base_url: Optional[str]) -> Optional[str]:
+    """Map an endpoint URL to its unique canonical ``custom:<name>`` key.
+
+    Return ``None`` when no provider or multiple providers own the endpoint;
+    callers must not guess a credential identity for shared URLs.
+    """
+    identities = find_custom_provider_identities(base_url)
+    return identities[0] if len(identities) == 1 else None
+
+
+def is_valid_http_provider_base_url(value: Optional[str]) -> bool:
+    """Return whether *value* is a credential-safe HTTP(S) provider URL."""
+    raw = str(value or "").strip()
+    if not raw:
+        return False
     try:
-        custom_providers = get_compatible_custom_providers(config)
-    except Exception:
-        custom_providers = None
-    for entry in custom_providers or []:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        if _normalize_base_url_for_match(entry.get("base_url")) == target:
-            return f"custom:{_normalize_custom_provider_name(name)}"
-
-    return None
+        parsed = urlparse(raw)
+        return bool(
+            parsed.scheme.lower() in {"http", "https"}
+            and parsed.hostname
+            and parsed.username is None
+            and parsed.password is None
+        )
+    except ValueError:
+        return False
 
 
 def canonical_custom_identity(
@@ -878,11 +911,15 @@ def canonical_custom_identity(
     ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
     resort, e.g. a genuine ad-hoc endpoint with no config entry).
     """
-    # 1. Reverse-lookup by endpoint URL.
+    # 1. Reverse-lookup by endpoint URL. Ambiguity is terminal: falling
+    # through to config.model.provider would silently choose one tenant for a
+    # shared URL.
     if base_url:
-        identity = find_custom_provider_identity(base_url)
-        if identity:
-            return identity
+        identities = find_custom_provider_identities(base_url)
+        if len(identities) == 1:
+            return identities[0]
+        if len(identities) > 1:
+            return None
 
     # 2. Fall back to the configured provider when it names a real entry.
     candidate = str(config_provider or "").strip()
@@ -911,7 +948,34 @@ def canonical_custom_identity(
 
 
 def _normalize_base_url_for_match(value) -> str:
-    return str(value or "").strip().rstrip("/").lower()
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return raw.rstrip("/")
+    if not parsed.scheme or not hostname or parsed.username or parsed.password:
+        return raw.rstrip("/")
+
+    normalized_host = hostname.lower()
+    if ":" in normalized_host:
+        normalized_host = f"[{normalized_host}]"
+    netloc = normalized_host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            netloc,
+            parsed.path.rstrip("/"),
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
 
 
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:

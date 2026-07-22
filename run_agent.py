@@ -2784,6 +2784,29 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
 
+    def _append_jsonl_entry(self, message: Dict[str, Any]):
+        """Append one message as a JSON line to the session JSONL file.
+
+        Gated by ``sessions.write_jsonl`` (default False).  Unlike
+        ``_save_session_log`` which rewrites the full snapshot, this is
+        append-only — one line per message, designed for external tools
+        that tail the file (CC Switch, monitoring, etc.).
+        """
+        if not getattr(self, "_session_jsonl_enabled", False):
+            return
+        try:
+            safe_sid = _safe_session_filename_component(self.session_id)
+            jsonl_file = self.logs_dir / f"session_{safe_sid}.jsonl"
+            entry = {
+                "session_id": self.session_id,
+                "role": message.get("role"),
+                "content": message.get("content"),
+                "timestamp": datetime.now().isoformat(),
+            }
+            with open(jsonl_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def interrupt(self, message: str = None) -> None:
         """

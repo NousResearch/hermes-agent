@@ -3215,6 +3215,10 @@ DEFAULT_CONFIG = {
         # GBs of disk on heavy users.  Opt in only if you have an external
         # tool that consumes the JSON files directly.
         "write_json_snapshots": False,
+        # Append-only JSONL transcript per session, one line per message.
+        # Designed for external tool consumption (tail -f, CC Switch, etc.).
+        # Files at ~/.hermes/sessions/session_{sid}.jsonl
+        "write_jsonl": False,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).

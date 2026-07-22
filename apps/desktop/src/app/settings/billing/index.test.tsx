@@ -15,7 +15,6 @@ import {
   todayBillingState,
   todaySubscriptionState
 } from './fixtures.test-util'
-import { formatUsageUpdatedAgo } from './use-billing-state'
 
 import { BillingSettings } from './index'
 
@@ -265,7 +264,7 @@ describe('BillingSettings', () => {
     // plans capability, so the URL must not surface a grid of Choose buttons.
     renderBilling(['/settings?tab=billing&bview=plans'])
 
-    expect(await screen.findByText('Payment')).toBeTruthy()
+    expect(await screen.findByText('Payment & credits')).toBeTruthy()
     expect(screen.queryByText('Plans')).toBeNull()
     expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
   })
@@ -277,7 +276,7 @@ describe('BillingSettings', () => {
 
     renderBilling(['/settings?tab=billing&bview=plans'])
 
-    expect(await screen.findByText('Payment')).toBeTruthy()
+    expect(await screen.findByText('Payment & credits')).toBeTruthy()
     expect(screen.queryByText('Plans')).toBeNull()
     expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
   })
@@ -314,7 +313,7 @@ describe('BillingSettings', () => {
     await waitFor(() => expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal'))
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
     // Scheduled → back on the overview.
-    expect(await screen.findByText('Payment')).toBeTruthy()
+    expect(await screen.findByText('Payment & credits')).toBeTruthy()
     expect(screen.queryByText('Plans')).toBeNull()
   })
 
@@ -653,65 +652,34 @@ describe('BillingSettings', () => {
     expect(monthlyCapTrack.classList.contains('bg-(--ui-bg-elevated)')).toBe(true)
   })
 
-  it('refreshes both billing queries from the usage refresh button', async () => {
+  it('shows a warn notice that names the no-card blocker with a portal link', async () => {
+    const fixture = billingDevFixtures['no-card']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    renderBilling()
+
+    expect(await screen.findByText('No payment method on file')).toBeTruthy()
+    expect(
+      screen.getByText('Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.')
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Add card/ })).toBeTruthy()
+  })
+
+  it('does not show the no-card notice when a card is on file', async () => {
+    renderBilling()
+
+    await screen.findByText('$996.47')
+    expect(screen.queryByText('No payment method on file')).toBeNull()
+  })
+
+  it('polls billing on an interval without a manual refresh control', async () => {
     renderBilling()
 
     await screen.findByText('$120 of $220 left')
-    expect(apiMocks.fetchBillingState).toHaveBeenCalledTimes(1)
-    expect(apiMocks.fetchSubscriptionState).toHaveBeenCalledTimes(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-
-    await waitFor(() => expect(apiMocks.fetchBillingState).toHaveBeenCalledTimes(2))
-    expect(apiMocks.fetchSubscriptionState).toHaveBeenCalledTimes(2)
-  })
-
-  it('disables the usage refresh button while either query is fetching', async () => {
-    let settleBilling: (value: unknown) => void = () => {}
-
-    let settleSubscription: (value: unknown) => void = () => {}
-
-    apiMocks.fetchBillingState.mockResolvedValueOnce(okBilling(todayBillingState)).mockReturnValueOnce(
-      new Promise(resolve => {
-        settleBilling = resolve
-      })
-    )
-    apiMocks.fetchSubscriptionState.mockResolvedValueOnce(okSubscription(todaySubscriptionState)).mockReturnValueOnce(
-      new Promise(resolve => {
-        settleSubscription = resolve
-      })
-    )
-
-    renderBilling()
-
-    const refresh = await screen.findByRole('button', { name: 'Refresh' })
-
-    fireEvent.click(refresh)
-
-    await waitFor(() => expect(refresh.hasAttribute('disabled')).toBe(true))
-
-    settleBilling(okBilling(todayBillingState))
-    settleSubscription(okSubscription(todaySubscriptionState))
-
-    await waitFor(() => expect(refresh.hasAttribute('disabled')).toBe(false))
-  })
-})
-
-describe('formatUsageUpdatedAgo', () => {
-  it('formats sub-second and current timestamps as just now', () => {
-    expect(formatUsageUpdatedAgo(1_000, 1_000)).toBe('just now')
-    expect(formatUsageUpdatedAgo(1_500, 1_000)).toBe('just now')
-  })
-
-  it('formats seconds below a minute', () => {
-    expect(formatUsageUpdatedAgo(1_000, 60_000)).toBe('59s ago')
-  })
-
-  it('rounds elapsed time to whole minutes from 61 seconds', () => {
-    expect(formatUsageUpdatedAgo(1_000, 62_000)).toBe('1m ago')
-  })
-
-  it('formats one hour and later as hours', () => {
-    expect(formatUsageUpdatedAgo(1_000, 3_601_000)).toBe('1h ago')
+    // The manual refresh affordance is gone — the queries poll on their own.
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
+    expect(screen.queryByText(/Updated/)).toBeNull()
   })
 })

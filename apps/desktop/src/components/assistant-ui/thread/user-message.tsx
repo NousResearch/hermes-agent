@@ -1,16 +1,19 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
+import { MessageAvatar } from '@/components/chat/message-avatar'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $avatarNames, DEFAULT_NAMES, getAvatarName } from '@/store/avatar'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -195,6 +198,8 @@ export const UserMessage: FC<{
 
   useResizeObserver(measureClamp, clampInnerRef)
 
+  const userName = useStore($avatarNames).user || DEFAULT_NAMES.user
+
   // Injected background-process notification, not a human prompt — render the
   // compact system-style notice (after all hooks above have run).
   if (PROCESS_NOTIFICATION_RE.test(messageText.trim())) {
@@ -242,8 +247,13 @@ export const UserMessage: FC<{
 
   return (
     <MessagePrimitive.Root asChild>
-      <StickyHumanMessageContainer
-        attachments={
+      <div className="message-row message-row-user flex w-full min-w-0 items-end justify-end gap-2" data-slot="message-row">
+        <div className="flex min-w-0 max-w-[75%] flex-col items-end">
+          <span className="message-name-label mb-0.5 mr-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary) select-none">
+            {userName}
+          </span>
+          <StickyHumanMessageContainer
+            attachments={
           // Attachments live BELOW the sticky bubble in normal flow, so they
           // scroll away behind the pinned bubble instead of riding along with
           // it. Image refs render as thumbnails, file refs as chips; no border.
@@ -362,6 +372,9 @@ export const UserMessage: FC<{
           </div>
         </ActionBarPrimitive.Root>
       </StickyHumanMessageContainer>
+        </div>
+        <MessageAvatar clickToEdit role="user" />
+      </div>
     </MessagePrimitive.Root>
   )
 }

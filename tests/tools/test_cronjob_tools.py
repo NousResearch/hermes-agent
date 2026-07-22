@@ -1,6 +1,8 @@
 """Tests for tools/cronjob_tools.py — prompt scanning, schedule/list/remove dispatchers."""
 
 import json
+import os
+from pathlib import Path
 import pytest
 
 from tools.cronjob_tools import (
@@ -308,6 +310,52 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
+
+    def test_registry_update_persists_attach_to_session_true_and_false(self, monkeypatch):
+        """Exercise the registered-tool boundary, where False was dropped.
+
+        The global test fixture supplies a temporary HERMES_HOME.  Point the
+        cron module's import-time paths at it, then read jobs.json back rather
+        than only trusting the formatted response. ``None`` remains the API's
+        unset sentinel; the boolean schema has no supported explicit clear.
+        """
+        import cron.jobs as cron_jobs
+        from tools.registry import registry
+
+        cron_dir = Path(os.environ["HERMES_HOME"]) / "cron"
+        monkeypatch.setattr(cron_jobs, "CRON_DIR", cron_dir)
+        monkeypatch.setattr(cron_jobs, "JOBS_FILE", cron_dir / "jobs.json")
+        monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", cron_dir / "output")
+
+        entry = registry.get_entry("cronjob")
+        assert entry is not None
+        handler = entry.handler
+        created = json.loads(handler({
+            "action": "create",
+            "prompt": "Check",
+            "schedule": "every 1h",
+        }))
+        job_id = created["job_id"]
+
+        enabled = json.loads(handler({
+            "action": "update",
+            "job_id": job_id,
+            "attach_to_session": True,
+        }))
+        assert enabled["success"] is True
+
+        jobs_path = Path(os.environ["HERMES_HOME"]) / "cron" / "jobs.json"
+        stored = json.loads(jobs_path.read_text(encoding="utf-8"))
+        assert stored["jobs"][0]["attach_to_session"] is True
+
+        disabled = json.loads(handler({
+            "action": "update",
+            "job_id": job_id,
+            "attach_to_session": False,
+        }))
+        assert disabled["success"] is True
+        stored = json.loads(jobs_path.read_text(encoding="utf-8"))
+        assert stored["jobs"][0]["attach_to_session"] is False
 
     def test_update_runtime_overrides_can_set_and_clear(self):
         created = json.loads(

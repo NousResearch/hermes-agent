@@ -1140,6 +1140,10 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        # ``dict.get`` deliberately preserves an explicit False.  The cronjob
+        # function distinguishes it from None and stores it as the per-job
+        # override for cron.mirror_delivery.
+        attach_to_session=args.get("attach_to_session"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

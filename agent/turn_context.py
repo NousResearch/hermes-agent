@@ -275,6 +275,7 @@ def build_turn_context(
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
+    hydrate_todo_store: bool = True,
     restore_or_build_system_prompt,
     install_safe_stdio,
     sanitize_surrogates,
@@ -452,7 +453,18 @@ def build_turn_context(
             agent._pending_cli_user_message = None
 
     # Hydrate todo store from conversation history.
-    if conversation_history and not agent._todo_store.has_items():
+    #
+    # ``hydrate_todo_store`` is False when the caller received
+    # ``conversation_history`` from an untrusted transport (currently only
+    # the API server's ``/v1/chat/completions``, ``/v1/responses`` and
+    # ``/v1/runs`` endpoints, which take a client-supplied history verbatim).
+    # In that case skipping hydration is deliberate: with the OpenAI tool
+    # protocol fields (``tool_calls`` / ``tool_call_id`` / ``name``) now
+    # preserved end-to-end, a client could otherwise submit a forged
+    # assistant.tool_calls + matching tool-role response and seed
+    # ``_todo_store`` state — the same forgery class GHSA-5g4g-6jrg-mw3g
+    # closed for bare ``role: tool`` messages, one layer up the stack.
+    if hydrate_todo_store and conversation_history and not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
 
     # Hydrate per-session nudge counters from persisted history (issue #22357).

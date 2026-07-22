@@ -6357,8 +6357,23 @@ class AIAgent:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        hydrate_todo_store: bool = True,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``agent.conversation_loop.run_conversation``.
+
+        ``hydrate_todo_store`` gates the "replay the last todo tool result
+        from history into ``_todo_store``" recovery path in
+        ``build_turn_context``.  Default ``True`` preserves the existing
+        internal-caller behaviour (CLI/gateway sessions load history from
+        the trusted SessionDB).  Callers that receive ``conversation_history``
+        from an untrusted transport — currently only the API server's
+        ``/v1/chat/completions``, ``/v1/responses`` and ``/v1/runs``
+        handlers — MUST pass ``False``.  With ``tool_calls`` now preserved
+        end-to-end (fix for the tool-protocol drop), a client could
+        otherwise forge a matching assistant.tool_calls + tool.content pair
+        and seed the TodoStore state, which is the same forgery class
+        GHSA-5g4g-6jrg-mw3g mitigated for bare tool messages.
+        """
         from agent.aux_accounting import (
             reset_accounting_context,
             set_accounting_context,
@@ -6399,6 +6414,7 @@ class AIAgent:
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
+                    hydrate_todo_store=hydrate_todo_store,
                 )
             finally:
                 reset_accounting_context(acct_token)

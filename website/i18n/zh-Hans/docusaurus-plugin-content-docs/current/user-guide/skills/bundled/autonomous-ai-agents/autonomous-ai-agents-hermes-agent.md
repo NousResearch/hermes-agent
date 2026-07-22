@@ -710,7 +710,7 @@ export PYTHONPATH="$(pwd)"
 **仅 POSIX 的测试需要跳过守卫。** 代码库中已有的常见标记：
 - 符号链接——Windows 上需要提升权限
 - `0o600` 文件模式——POSIX 模式位在 NTFS 上默认不强制执行
-- `signal.SIGALRM`——仅 Unix（参见 `tests/conftest.py::_enforce_test_timeout`）
+- `signal.SIGALRM`——仅 Unix（参见 `tests/conftest.py::pytest_configure`）
 - Winsock / Windows 特有回归——`@pytest.mark.skipif(sys.platform != "win32", ...)`
 
 使用现有的跳过模式风格（`sys.platform == "win32"` 或 `sys.platform.startswith("win")`）以与测试套件其余部分保持一致。
@@ -902,7 +902,7 @@ export PYTHONPATH="$(pwd)"
 **跨平台测试守卫：** 使用仅 POSIX 系统调用的测试需要跳过标记。代码库中已有的常见标记：
 - 符号链接创建 → `@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")`（参见 `tests/cron/test_cron_script.py`）
 - POSIX 文件模式（0o600 等）→ `@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")`（参见 `tests/hermes_cli/test_auth_toctou_file_modes.py`）
-- `signal.SIGALRM` → 仅 Unix（参见 `tests/conftest.py::_enforce_test_timeout`）
+- `signal.SIGALRM` → 仅 Unix（参见 `tests/conftest.py::pytest_configure`）
 - 实时 Winsock / Windows 特有回归测试 → `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`
 
 **仅 monkeypatch `sys.platform` 是不够的**，当被测代码还调用 `platform.system()` / `platform.release()` / `platform.mac_ver()` 时。这些函数独立重新读取真实 OS，因此在 Windows runner 上将 `sys.platform = "linux"` 的测试仍会看到 `platform.system() == "Windows"` 并走 Windows 分支。需要同时 patch 三者：

@@ -64,6 +64,14 @@ class TestParseDuration:
         with pytest.raises(ValueError):
             parse_duration("m30")
 
+    def test_huge_value_raises_instead_of_overflowing(self):
+        """A duration exceeding timedelta.max must raise ValueError at parse
+        time, not OverflowError later when timedelta(minutes=...) is built."""
+        with pytest.raises(ValueError):
+            # 1e12 days → ~1.44e15 minutes, far beyond timedelta.max
+            parse_duration("999999999999d")
+
+
 
 # =========================================================================
 # parse_schedule

@@ -488,10 +488,15 @@ def ensure_dirs():
 # Schedule Parsing
 # =============================================================================
 
+# timedelta.max expressed in whole minutes — the largest ``minutes`` value
+# that ``timedelta(minutes=...)`` can accept without OverflowError.
+_MAX_DURATION_MINUTES = int(timedelta.max.total_seconds() // 60)
+
+
 def parse_duration(s: str) -> int:
     """
     Parse duration string into minutes.
-    
+
     Examples:
         "30m" → 30
         "2h" → 120
@@ -501,12 +506,21 @@ def parse_duration(s: str) -> int:
     match = re.match(r'^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
     if not match:
         raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
-    
+
     value = int(match.group(1))
     unit = match.group(2)[0]  # First char: m, h, or d
-    
+
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
-    return value * multipliers[unit]
+    minutes = value * multipliers[unit]
+    # ``timedelta(minutes=...)`` (used by schedule computation) raises
+    # OverflowError once the value exceeds ~1.44e12 (timedelta.max in
+    # minutes). Reject absurdly large values here so the error surfaces at
+    # parse time with a clear message instead of crashing the scheduler.
+    if minutes > _MAX_DURATION_MINUTES:
+        raise ValueError(
+            f"Invalid duration: '{s}'. Value is too large (max {_MAX_DURATION_MINUTES} minutes)."
+        )
+    return minutes
 
 
 def parse_schedule(schedule: str) -> Dict[str, Any]:

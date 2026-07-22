@@ -226,9 +226,12 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
         return ""
 
     if src == "clawhub":
-        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time).
+        # ClawHub canonical URL is /skills/skills/<slug> (the /skills/<slug>
+        # path 307-redirects to /skills/skills/<slug>, producing a visible
+        # double-/skills/ in the browser address bar).
         slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
-        return f"https://clawhub.ai/skills/{slug}"
+        return f"https://clawhub.ai/skills/skills/{slug}"
 
     if src in {"skills.sh", "skills-sh"}:
         # "skills-sh/owner/repo/skill" -> the skills.sh detail page

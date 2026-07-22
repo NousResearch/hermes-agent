@@ -65,14 +65,14 @@ def test_source_url_synthesizes_github_root_when_no_subpath(mod):
 
 
 def test_source_url_synthesizes_clawhub(mod):
-    assert mod._source_url("clawhub", "go-music-skill", {}) == "https://clawhub.ai/skills/go-music-skill"
+    assert mod._source_url("clawhub", "go-music-skill", {}) == "https://clawhub.ai/skills/skills/go-music-skill"
 
 
 def test_source_url_synthesizes_clawhub_strips_prefix(mod):
     # identifier may arrive already prefixed; we must not double-prefix.
     assert (
         mod._source_url("clawhub", "clawhub/go-music-skill", {})
-        == "https://clawhub.ai/skills/go-music-skill"
+        == "https://clawhub.ai/skills/skills/go-music-skill"
     )
 
 

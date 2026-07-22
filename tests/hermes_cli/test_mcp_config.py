@@ -1136,3 +1136,17 @@ class TestPlaywrightMcpPreset:
         args = mcp_config._playwright_browser_args()
         assert "--browser=chromium" not in args
 
+    def test_windows_install_dir_counts_as_system_browser(self, monkeypatch):
+        """Regression (review of #63771): the platform-aware resolver must
+        also find a standard Windows install directory (unlike a bare
+        shutil.which() name list, which only matches PATH entries and would
+        misclassify most real Windows Chrome installs as absent)."""
+        from hermes_cli import mcp_config
+        monkeypatch.setattr(mcp_config.sys, "platform", "win32")
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: [r"C:\Program Files\Google\Chrome\Application\chrome.exe"],
+        )
+        args = mcp_config._playwright_browser_args()
+        assert "--browser=chromium" not in args
+

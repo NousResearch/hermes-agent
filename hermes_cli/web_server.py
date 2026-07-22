@@ -405,6 +405,24 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _request_is_authenticated(request: Request) -> bool:
+    """Non-raising sibling of :func:`_require_token`.
+
+    For endpoints on the public allowlist that expose EXTRA detail to a
+    logged-in caller while staying reachable anonymously. Resolves the active
+    auth scheme exactly like ``_require_token`` so the two can't drift.
+
+    Under the OAuth gate this depends on the route being listed in
+    ``dashboard_auth.middleware._OPTIONAL_SESSION_PUBLIC_PATHS``: public routes
+    short-circuit before cookie verification, so without that opt-in
+    ``request.state.session`` is never attached and a logged-in browser would
+    read as anonymous here.
+    """
+    if getattr(request.app.state, "auth_required", False):
+        return getattr(request.state, "session", None) is not None
+    return _has_valid_session_token(request)
+
+
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin
@@ -6208,10 +6226,22 @@ async def get_defaults():
 
 
 @app.get("/api/config/schema")
-async def get_schema(profile: Optional[str] = None):
-    # Voice provider options are merged per-request so user-declared
-    # command providers (tts.providers.* / stt.providers.*) added after
-    # server start still show up, scoped to the requested profile's config.
+async def get_schema(request: Request, profile: Optional[str] = None):
+    # This route is on the PUBLIC_API_PATHS allowlist so the SPA can render
+    # the Config page shell before login — the static CONFIG_SCHEMA is
+    # non-sensitive by construction.
+    #
+    # The per-request voice-provider merge is NOT: it reads
+    # ``tts.providers.*`` / ``stt.providers.*`` out of the operator's
+    # config.yaml, and those keys are user data (internal vendor and host
+    # identifiers), not schema defaults. On a wildcard-subdomain deployment
+    # — the same public reachability that makes /api/status the portal's
+    # liveness probe — anyone who curls the hostname would otherwise
+    # enumerate them. Enrich only for an authenticated caller; anonymous
+    # callers get the plain schema, which is what they got before the
+    # options became config-derived.
+    if not _request_is_authenticated(request):
+        return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
     with _config_profile_scope(profile):
         fields = _schema_with_voice_provider_options()
     return {"fields": fields, "category_order": _CATEGORY_ORDER}

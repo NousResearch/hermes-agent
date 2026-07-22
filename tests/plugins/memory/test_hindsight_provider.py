@@ -23,6 +23,8 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _load_simple_env,
+    _materialize_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -416,6 +418,62 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_materialize_preserves_existing_port(self, tmp_path, monkeypatch):
+        """HINDSIGHT_API_PORT must survive env re-materialization."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        }
+        # Simulate a first-run state where the port already exists.
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.parent.mkdir(parents=True, exist_ok=True)
+        profile_env.write_text(
+            "HINDSIGHT_API_LLM_PROVIDER=openai\n"
+            "HINDSIGHT_API_LLM_API_KEY=old-key\n"
+            "HINDSIGHT_API_LLM_MODEL=old-model\n"
+            "HINDSIGHT_API_LOG_LEVEL=info\n"
+            "HINDSIGHT_API_PORT=9178\n"
+        )
+        _materialize_embedded_profile_env(config, llm_api_key="new-key")
+        result = _load_simple_env(profile_env)
+        assert result["HINDSIGHT_API_PORT"] == "9178"
+        assert result["HINDSIGHT_API_LLM_API_KEY"] == "new-key"
+
+    def test_materialize_no_port_when_absent(self, tmp_path, monkeypatch):
+        """No HINDSIGHT_API_PORT key should be added if it wasn't there before."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        }
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.parent.mkdir(parents=True, exist_ok=True)
+        profile_env.write_text(
+            "HINDSIGHT_API_LLM_PROVIDER=openai\n"
+            "HINDSIGHT_API_LLM_API_KEY=old-key\n"
+            "HINDSIGHT_API_LLM_MODEL=old-model\n"
+            "HINDSIGHT_API_LOG_LEVEL=info\n"
+        )
+        _materialize_embedded_profile_env(config, llm_api_key="new-key")
+        result = _load_simple_env(profile_env)
+        assert "HINDSIGHT_API_PORT" not in result
+
+    def test_materialize_port_first_run(self, tmp_path, monkeypatch):
+        """First materialization (no existing file) must not fabricate a port."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = {
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        }
+        _materialize_embedded_profile_env(config, llm_api_key="key1")
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        result = _load_simple_env(profile_env)
+        assert "HINDSIGHT_API_PORT" not in result
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

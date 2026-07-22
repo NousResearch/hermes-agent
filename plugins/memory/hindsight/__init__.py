@@ -549,10 +549,22 @@ def _embedded_profile_env_path(config: dict[str, Any]):
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
-    """Write the profile-scoped env file that standalone hindsight-embed uses."""
+    """Write the profile-scoped env file that standalone hindsight-embed uses.
+
+    Preserves ``HINDSIGHT_API_PORT`` from the existing file so that a
+    user-specified or hash-allocated port survives gateway restarts.
+    The port is not part of the plugin config dict, so without this
+    preservation every materialization would silently drop it and the
+    daemon would re-bind to a different (hash-derived) port on the next
+    start.
+    """
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    if profile_env.exists():
+        existing = _load_simple_env(profile_env)
+        if "HINDSIGHT_API_PORT" in existing:
+            env_values["HINDSIGHT_API_PORT"] = existing["HINDSIGHT_API_PORT"]
     profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
         encoding="utf-8",
@@ -1421,7 +1433,13 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    # HINDSIGHT_API_PORT is not part of _build_embedded_profile_env
+                    # (it is hash-allocated or user-set and preserved across
+                    # materialization). Exclude it from the drift comparison so
+                    # a stable port does not trigger a spurious daemon restart.
+                    saved_for_compare = {k: v for k, v in saved.items()
+                                         if k != "HINDSIGHT_API_PORT"}
+                    config_changed = saved_for_compare != expected_env
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)

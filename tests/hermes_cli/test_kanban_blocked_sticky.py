@@ -29,6 +29,7 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -46,6 +47,380 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+# ---------------------------------------------------------------------------
+# Initial-status human gates require an affirmative authorization record
+# ---------------------------------------------------------------------------
+
+
+def _initial_gate(conn, *, with_parent=False):
+    parents = []
+    parent = None
+    if with_parent:
+        parent = kb.create_task(conn, title="parent")
+        parents = [parent]
+    gate = kb.create_task(
+        conn,
+        title="human gate",
+        assignee="worker",
+        parents=parents,
+        initial_status="blocked",
+    )
+    return gate, parent
+
+
+def _event_kinds(conn, task_id):
+    return [event.kind for event in kb.list_events(conn, task_id)]
+
+
+def _append_raw_event(conn, task_id, kind, payload):
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (task_id, kind, payload, int(time.time())),
+    )
+    conn.commit()
+
+
+def test_initial_blocked_gate_survives_parent_completion(kanban_home: Path) -> None:
+    with kb.connect() as conn:
+        gate, parent = _initial_gate(conn, with_parent=True)
+        assert kb.get_task(conn, gate).status == "blocked"
+        assert kb.complete_task(conn, parent, result="done")
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, gate).status == "blocked"
+        assert "promoted" not in _event_kinds(conn, gate)
+
+
+def test_legacy_initial_gate_is_detected_without_new_marker(kanban_home: Path) -> None:
+    """A pre-fix DB has only created(status=blocked), not the new marker."""
+    with kb.connect() as conn:
+        gate, parent = _initial_gate(conn, with_parent=True)
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id = ? AND kind = 'human_gate_created'",
+            (gate,),
+        )
+        conn.commit()
+        assert _event_kinds(conn, gate) == ["created"]
+
+        assert kb.complete_task(conn, parent, result="done")
+        assert kb.get_task(conn, gate).status == "blocked"
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (gate,))
+        conn.commit()
+        assert kb.claim_task(conn, gate, claimer="dispatcher") is None
+        assert kb.get_task(conn, gate).status == "blocked"
+
+
+@pytest.mark.parametrize(
+    "created_payload",
+    [
+        None,
+        "{not-json",
+        "null",
+        "[]",
+        "{}",
+        json.dumps({"status": "BLOCKED"}),
+        json.dumps({"status": "BLOCKED", "from_decompose_of": "t_parent"}),
+    ],
+)
+def test_ambiguous_legacy_created_payload_fails_closed(
+    kanban_home: Path, created_payload
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id = ? AND kind = 'human_gate_created'",
+            (gate,),
+        )
+        conn.execute(
+            "UPDATE task_events SET payload = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (created_payload, gate),
+        )
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (gate,))
+        conn.commit()
+        assert kb.claim_task(conn, gate, claimer="dispatcher") is None
+        assert kb.get_task(conn, gate).status == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("actor", "reason"),
+    [
+        (None, "approved"),
+        ("chief", None),
+        ("", "approved"),
+        ("chief", ""),
+        ("   ", "approved"),
+        ("chief", "   "),
+        (123, "approved"),
+        ("chief", 123),
+    ],
+)
+def test_initial_gate_unblock_requires_typed_nonblank_actor_and_reason(
+    kanban_home: Path, actor, reason
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        before = _event_kinds(conn, gate)
+        assert kb.unblock_task(conn, gate, actor=actor, reason=reason) is False
+        assert kb.get_task(conn, gate).status == "blocked"
+        assert _event_kinds(conn, gate) == before
+
+
+def test_human_gate_authorization_event_precedes_unblocked_with_trimmed_payload(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        assert kb.unblock_task(
+            conn,
+            gate,
+            actor="  chief  ",
+            reason="  User authorized exact SHA abc123 in session s_1  ",
+        )
+        assert kb.get_task(conn, gate).status == "ready"
+        events = kb.list_events(conn, gate)
+        assert [event.kind for event in events] == [
+            "created",
+            "human_gate_created",
+            "human_gate_authorized",
+            "unblocked",
+        ]
+        authorization, unblocked = events[-2:]
+        assert authorization.id < unblocked.id
+        assert authorization.payload == {
+            "actor": "chief",
+            "reason": "User authorized exact SHA abc123 in session s_1",
+        }
+        assert unblocked.payload is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        "{not-json",
+        "null",
+        "[]",
+        '"approved"',
+        "{}",
+        json.dumps({"actor": "chief", "reason": "   "}),
+        json.dumps({"actor": 123, "reason": "approved"}),
+    ],
+)
+def test_malformed_authorization_events_fail_closed_without_crashing(
+    kanban_home: Path, payload
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        _append_raw_event(conn, gate, "human_gate_authorized", payload)
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (gate,))
+        conn.commit()
+        assert kb.claim_task(conn, gate, claimer="dispatcher") is None
+        assert kb.get_task(conn, gate).status == "blocked"
+
+
+def test_later_invalid_authorization_relocks_gate(kanban_home: Path) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        _append_raw_event(
+            conn,
+            gate,
+            "human_gate_authorized",
+            json.dumps({"actor": "chief", "reason": "approved"}),
+        )
+        _append_raw_event(conn, gate, "human_gate_authorized", "[]")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (gate,))
+        conn.commit()
+        assert kb.claim_task(conn, gate, claimer="dispatcher") is None
+        assert kb.get_task(conn, gate).status == "blocked"
+
+
+def test_claim_fails_closed_for_gate_forced_to_ready(kanban_home: Path) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (gate,))
+        conn.commit()
+        assert kb.claim_task(conn, gate, claimer="dispatcher") is None
+        assert kb.get_task(conn, gate).status == "blocked"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+        assert "claimed" not in _event_kinds(conn, gate)
+        rejected = [e for e in kb.list_events(conn, gate) if e.kind == "claim_rejected"]
+        assert rejected[-1].payload == {"reason": "human_gate_not_authorized"}
+
+
+def test_dispatch_ready_fails_closed_for_unresolved_gate(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    spawned = []
+
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (gate,))
+        conn.commit()
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append((task.id, workspace)),
+        )
+
+        assert result.spawned == []
+        assert spawned == []
+        task = kb.get_task(conn, gate)
+        assert task is not None and task.status == "blocked"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+        rejected = [e for e in kb.list_events(conn, gate) if e.kind == "claim_rejected"]
+        assert rejected[-1].payload == {"reason": "human_gate_not_authorized"}
+
+
+def test_claim_review_fails_closed_for_gate_forced_to_review(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (gate,))
+        conn.commit()
+
+        assert kb.claim_review_task(conn, gate, claimer="reviewer") is None
+        task = kb.get_task(conn, gate)
+        assert task is not None and task.status == "blocked"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+        assert "claimed" not in _event_kinds(conn, gate)
+        rejected = [e for e in kb.list_events(conn, gate) if e.kind == "claim_rejected"]
+        assert rejected[-1].payload == {"reason": "human_gate_not_authorized"}
+
+
+def test_dispatch_review_fails_closed_for_unresolved_gate(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    spawned = []
+
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (gate,))
+        conn.commit()
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace: spawned.append((task.id, workspace)),
+        )
+
+        assert result.spawned == []
+        assert spawned == []
+        task = kb.get_task(conn, gate)
+        assert task is not None and task.status == "blocked"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+        rejected = [e for e in kb.list_events(conn, gate) if e.kind == "claim_rejected"]
+        assert rejected[-1].payload == {"reason": "human_gate_not_authorized"}
+
+
+def test_dispatch_ready_dry_run_does_not_report_unresolved_gate_spawnable(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (gate,))
+        conn.commit()
+        before = _event_kinds(conn, gate)
+
+        result = kb.dispatch_once(conn, dry_run=True)
+
+        assert result.spawned == []
+        task = kb.get_task(conn, gate)
+        assert task is not None and task.status == "ready"
+        assert _event_kinds(conn, gate) == before
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+
+
+def test_dispatch_review_dry_run_does_not_report_unresolved_gate_spawnable(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (gate,))
+        conn.commit()
+        before = _event_kinds(conn, gate)
+
+        result = kb.dispatch_once(conn, dry_run=True)
+
+        assert result.spawned == []
+        task = kb.get_task(conn, gate)
+        assert task is not None and task.status == "review"
+        assert _event_kinds(conn, gate) == before
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+
+
+def test_unresolved_ready_gate_is_not_reported_spawnable(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (gate,))
+        conn.commit()
+
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_unresolved_review_gate_is_not_reported_spawnable(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (gate,))
+        conn.commit()
+
+        assert kb.has_spawnable_review(conn) is False
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_manual_promote_cannot_bypass_human_gate_even_with_force(
+    kanban_home: Path, dry_run: bool
+) -> None:
+    with kb.connect() as conn:
+        gate, _ = _initial_gate(conn)
+        ok, error = kb.promote_task(
+            conn,
+            gate,
+            actor="operator",
+            reason="recovery",
+            force=True,
+            dry_run=dry_run,
+        )
+        assert ok is False
+        assert "not authorized" in error
+        assert kb.get_task(conn, gate).status == "blocked"
+        assert "promoted_manual" not in _event_kinds(conn, gate)
 
 
 # ---------------------------------------------------------------------------

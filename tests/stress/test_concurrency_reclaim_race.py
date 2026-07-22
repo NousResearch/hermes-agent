@@ -31,6 +31,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from _isolated_kanban import assert_temp_kanban_db, configure_temp_kanban_env
+
 NUM_WORKERS = 5
 NUM_TASKS = 50
 TTL = 1
@@ -39,10 +41,11 @@ WT = str(Path(__file__).resolve().parents[2])
 
 
 def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ["HOME"] = hermes_home
+    home = configure_temp_kanban_env(hermes_home)
     sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
+
+    assert_temp_kanban_db(kb, home)
 
     events = []
     start = time.monotonic()
@@ -96,10 +99,11 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
 
 
 def reclaimer_loop(hermes_home: str, result_file: str) -> None:
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ["HOME"] = hermes_home
+    home = configure_temp_kanban_env(hermes_home)
     sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
+
+    assert_temp_kanban_db(kb, home)
 
     events = []
     start = time.monotonic()
@@ -122,11 +126,11 @@ def reclaimer_loop(hermes_home: str, result_file: str) -> None:
 
 def main():
     home = tempfile.mkdtemp(prefix="hermes_reclaim_race_")
-    os.environ["HERMES_HOME"] = home
-    os.environ["HOME"] = home
+    configure_temp_kanban_env(home)
     sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
 
+    assert_temp_kanban_db(kb, home)
     kb.init_db()
     conn = kb.connect()
     for i in range(NUM_TASKS):

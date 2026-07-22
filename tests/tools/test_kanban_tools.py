@@ -1330,6 +1330,29 @@ def test_unblock_happy_path(monkeypatch, worker_env):
         conn.close()
 
 
+def test_unblock_tool_cannot_authorize_initial_human_gate(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approve exact SHA",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+    result = json.loads(kt._handle_unblock({"task_id": tid}))
+    assert result.get("error")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert not any(
+            event.kind == "human_gate_authorized"
+            for event in kb.list_events(conn, tid)
+        )
+
+
 def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     home = tmp_path / ".hermes"

@@ -18,13 +18,14 @@ tests/stress/conftest.py ignores *.py globs, so this is a script.
 """
 from __future__ import annotations
 
-import os
 import random
 import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
+
+from _isolated_kanban import assert_temp_kanban_db, configure_temp_kanban_env
 
 WT = str(Path(__file__).resolve().parents[2])
 sys.path.insert(0, WT)
@@ -35,11 +36,11 @@ WORKERS_RUN_DURATION_S = 8
 
 def run() -> int:
     home = tempfile.mkdtemp(prefix="hermes_parent_gate_stress_")
-    os.environ["HERMES_HOME"] = home
-    os.environ["HOME"] = home
+    configure_temp_kanban_env(home)
 
     from hermes_cli import kanban_db as kb
 
+    assert_temp_kanban_db(kb, home)
     kb.init_db()
 
     # Seed N parents in 'ready' state. They stay ready for the whole run

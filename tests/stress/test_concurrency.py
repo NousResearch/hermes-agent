@@ -26,6 +26,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from _isolated_kanban import assert_temp_kanban_db, configure_temp_kanban_env
+
 
 NUM_WORKERS = 5
 NUM_TASKS = 100
@@ -40,11 +42,12 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
     repeats until the ready pool is empty. Records every claim + complete
     into its own JSON result file for later aggregation.
     """
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ["HOME"] = hermes_home
+    home = configure_temp_kanban_env(hermes_home)
     sys.path.insert(0, WT)
 
     from hermes_cli import kanban_db as kb
+
+    assert_temp_kanban_db(kb, home)
 
     events = []
     empty_polls = 0
@@ -121,11 +124,11 @@ def main():
     print(f"HERMES_HOME = {home}")
 
     # Seed.
-    os.environ["HERMES_HOME"] = home
-    os.environ["HOME"] = home
+    configure_temp_kanban_env(home)
     sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
 
+    assert_temp_kanban_db(kb, home)
     kb.init_db()
     conn = kb.connect()
     tids = []

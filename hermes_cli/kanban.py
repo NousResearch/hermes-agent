@@ -601,7 +601,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock.add_argument(
         "--reason",
         default=None,
-        help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
+        help="Optional reason/note — recorded as a comment after a successful unblock. Quote multi-word reasons.",
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
@@ -2174,16 +2174,20 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None
-    author = _profile_author() if reason else None
+    author = _profile_author()
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            if not kb.unblock_task(conn, tid, reason=reason, actor=author):
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
+                print(
+                    f"cannot unblock {tid} (not blocked/scheduled, or human gate "
+                    "requires --reason authorization)",
+                    file=sys.stderr,
+                )
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 

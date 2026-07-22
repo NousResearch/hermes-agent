@@ -3541,8 +3541,18 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    # Behavioral analysis — opt-in, default off.
+    # When enabled, ``/behavior`` extracts signals from session history and
+    # produces 5-axis behavioral scores + 15 insight cards.  ``model`` is an
+    # optional override to use a cheaper model for the LLM narrative cards
+    # (null = use the user's currently configured model).
+    "behavior": {
+        "enabled": False,
+        "model": None,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================

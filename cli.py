@@ -10279,6 +10279,52 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as e:
             print(f"  Error generating insights: {e}")
 
+    def _show_behavior(self, command: str = "/behavior"):
+        """Show behavioral analysis and insight cards from session history."""
+        # Config gate — opt-in, default off.
+        behavior_cfg = self.config.get("behavior") or {}
+        if not behavior_cfg.get("enabled"):
+            print(
+                "  Behavioral analysis is disabled. Enable it in config.yaml "
+                "under `behavior.enabled: true`"
+            )
+            return
+
+        # Parse optional --days / --source flags
+        parts = command.split()
+        days = 30
+        source = None
+        i = 1
+        while i < len(parts):
+            if parts[i] == "--days" and i + 1 < len(parts):
+                try:
+                    days = int(parts[i + 1])
+                except ValueError:
+                    print(f"  Invalid --days value: {parts[i + 1]}")
+                    return
+                i += 2
+            elif parts[i] == "--source" and i + 1 < len(parts):
+                source = parts[i + 1]
+                i += 2
+            elif parts[i].isdigit():
+                days = int(parts[i])
+                i += 1
+            else:
+                i += 1
+
+        try:
+            from hermes_state import SessionDB
+            from agent.behavioral_insights import BehavioralAnalyzer
+
+            db = SessionDB()
+            analyzer = BehavioralAnalyzer(db, behavior_cfg)
+            # CLI is single-user; user_id=None means no user filtering.
+            report = analyzer.generate(days=days, source=source, user_id=None)
+            print(analyzer.format_terminal(report))
+            db.close()
+        except Exception as e:
+            print(f"  Error generating behavioral analysis: {e}")
+
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml and react.
 

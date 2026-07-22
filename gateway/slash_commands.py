@@ -4488,6 +4488,75 @@ class GatewaySlashCommandsMixin:
             logger.error("Insights command error: %s", e, exc_info=True)
             return t("gateway.insights.error", error=e)
 
+    async def _handle_behavior_command(self, event: MessageEvent) -> str:
+        """Handle /behavior command -- show behavioral analysis and insight cards."""
+        # Config gate — opt-in, default off.
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+        except Exception:
+            cfg = {}
+        behavior_cfg = cfg.get("behavior") or {}
+        if not behavior_cfg.get("enabled"):
+            return (
+                "Behavioral analysis is disabled. Enable it in config.yaml "
+                "under `behavior.enabled: true`"
+            )
+
+        args = event.get_command_args().strip()
+
+        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+        args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
+
+        days = 30
+        source = None
+
+        # Parse simple args: /behavior 7  or  /behavior --days 7
+        if args:
+            parts = args.split()
+            i = 0
+            while i < len(parts):
+                if parts[i] == "--days" and i + 1 < len(parts):
+                    try:
+                        days = int(parts[i + 1])
+                    except ValueError:
+                        return t("gateway.behavior.invalid_days", value=parts[i + 1])
+                    i += 2
+                elif parts[i] == "--source" and i + 1 < len(parts):
+                    source = parts[i + 1]
+                    i += 2
+                elif parts[i].isdigit():
+                    days = int(parts[i])
+                    i += 1
+                else:
+                    i += 1
+
+        try:
+            from hermes_state import SessionDB
+            from agent.behavioral_insights import BehavioralAnalyzer
+
+            # Extract user_id from the event source to prevent cross-user
+            # data leaks on multi-user gateways.  event.source is a
+            # SessionSource with an optional user_id attribute.
+            user_id = None
+            if event.source is not None:
+                user_id = getattr(event.source, "user_id", None)
+
+            loop = asyncio.get_running_loop()
+
+            def _run_behavior():
+                db = SessionDB()
+                analyzer = BehavioralAnalyzer(db, behavior_cfg)
+                report = analyzer.generate(days=days, source=source, user_id=user_id)
+                result = analyzer.format_gateway(report)
+                db.close()
+                return result
+
+            return await loop.run_in_executor(None, _run_behavior)
+        except Exception as e:
+            logger.error("Behavior command error: %s", e, exc_info=True)
+            return t("gateway.behavior.error", error=e)
+
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.
 

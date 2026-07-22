@@ -665,10 +665,15 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+
     app.router.add_post(
         "/api/platforms/{platform}/events",
         adapter._handle_platform_event_callback,
     )
+
+    app.router.add_post("/api/audio/transcribe", adapter._handle_audio_transcribe)
+    app.router.add_post("/api/audio/speak", adapter._handle_audio_speak)
+
     return app
 
 
@@ -4033,6 +4038,7 @@ class TestSessionKeyHeader:
 
 
 # ---------------------------------------------------------------------------
+
 # Per-client model routing (model_routes)
 # ---------------------------------------------------------------------------
 
@@ -4307,6 +4313,7 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for(None) is None
 
 
+
 # ---------------------------------------------------------------------------
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------
@@ -4431,3 +4438,215 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+# /api/audio/speak — text-to-speech synthesis
+# ---------------------------------------------------------------------------
+
+
+class TestAudioSpeakEndpoint:
+    """Tests for the /api/audio/speak endpoint on the API server."""
+
+    @pytest.mark.asyncio
+    async def test_speak_requires_text(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speak", json={})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+            assert "required" in str(data.get("error", "")).lower()
+
+    @pytest.mark.asyncio
+    async def test_speak_rejects_empty_text(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speak", json={"text": "   "})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_speak_rejects_invalid_json(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speak", data="not json")
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_speak_returns_base64_data_url(self, adapter, tmp_path):
+        app = _create_app(adapter)
+
+        # Create a fake audio file that the mocked TTS will "produce"
+        audio_file = tmp_path / "speech.mp3"
+        audio_file.write_bytes(b"FAKE_MP3_DATA")
+
+        def fake_tts(text):
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+                "provider": "test",
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", fake_tts):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/speak", json={"text": "hello world"})
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["ok"] is True
+                assert data["mime_type"] == "audio/mpeg"
+                assert data["data_url"].startswith("data:audio/mpeg;base64,")
+                assert data["provider"] == "test"
+                # The handler removes the temp file after reading
+                assert not audio_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_speak_handles_tts_failure(self, adapter):
+        app = _create_app(adapter)
+
+        def fake_tts_error(text):
+            return json.dumps({"success": False, "error": "No TTS provider configured"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", fake_tts_error):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/speak", json={"text": "hello"})
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["ok"] is False
+                assert "provider" in str(data.get("error", "")).lower()
+
+    @pytest.mark.asyncio
+    async def test_speak_handles_missing_file(self, adapter):
+        app = _create_app(adapter)
+
+        def fake_tts_no_file(text):
+            return json.dumps({"success": True, "file_path": "/nonexistent/audio.mp3"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", fake_tts_no_file):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/speak", json={"text": "hello"})
+                assert resp.status == 500
+                data = await resp.json()
+                assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_speak_handles_different_audio_format(self, adapter, tmp_path):
+        app = _create_app(adapter)
+
+        audio_file = tmp_path / "speech.ogg"
+        audio_file.write_bytes(b"OGG_DATA")
+
+        def fake_tts_ogg(text):
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", fake_tts_ogg):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/speak", json={"text": "hello"})
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["mime_type"] == "audio/ogg"
+                assert data["data_url"].startswith("data:audio/ogg;base64,")
+
+
+
+    # --- auth tests ---
+
+    @pytest.mark.asyncio
+    async def test_speak_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speak", json={"text": "hello"})
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_transcribe_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:audio/wav;base64,AAAA",
+                "mime_type": "audio/wav",
+            })
+            assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/audio/transcribe — audio transcription
+# ---------------------------------------------------------------------------
+
+
+class TestAudioTranscribeEndpoint:
+    """Tests for the /api/audio/transcribe endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_transcribe_requires_data_url(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcribe_rejects_non_base64(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:audio/wav,not-base64",
+                "mime_type": "audio/wav",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcribe_empty_audio(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:audio/wav;base64,",
+                "mime_type": "audio/wav",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcribe_returns_transcript(self, adapter, tmp_path):
+        app = _create_app(adapter)
+
+        def fake_transcribe(file_path):
+            return {
+                "success": True,
+                "transcript": "hello world",
+                "provider": "test",
+            }
+
+        with patch("tools.transcription_tools.transcribe_audio", fake_transcribe):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/transcribe", json={
+                    "data_url": "data:audio/wav;base64,UklGRg==",
+                    "mime_type": "audio/wav",
+                })
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["ok"] is True
+                assert data["transcript"] == "hello world"
+                assert data["provider"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_rejects_non_audio_mime(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:image/png;base64,AAAA",
+                "mime_type": "image/png",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+

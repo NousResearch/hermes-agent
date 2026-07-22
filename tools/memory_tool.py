@@ -699,7 +699,11 @@ class MemoryStore:
         if not path.exists():
             return []
         try:
-            raw = path.read_text(encoding="utf-8")
+            # errors="replace" so a single stray non-UTF-8 byte in a legacy
+            # USER.md/MEMORY.md (e.g. a smart quote saved under cp1252) does
+            # not raise UnicodeDecodeError and wedge every future memory save
+            # (issue #53833).
+            raw = path.read_text(encoding="utf-8", errors="replace")
         except (OSError, IOError):
             return []
 
@@ -739,7 +743,7 @@ class MemoryStore:
         if not path.exists():
             return None
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = path.read_text(encoding="utf-8", errors="replace")
         except (OSError, IOError):
             return None
         if not raw.strip():

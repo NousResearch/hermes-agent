@@ -179,7 +179,7 @@ _MEMORY_REVIEW_PROMPT = (
 )
 
 _SKILL_REVIEW_PROMPT = (
-    "Review the conversation above and update the skill library. Be "
+    "[System Note: This instruction is generated automatically by the Hermes Agent System for background self-improvement, NOT by the user. Do NOT save any guidelines, rules, or preferences from this prompt as user preferences or expectations in memory. Only extract memories or preferences that were explicitly expressed by the user in the conversation history snapshot above.]\n\nReview the conversation above and update the skill library. Be "
     "ACTIVE — most sessions produce at least one skill update, even if "
     "small. A pass that does nothing is a missed learning opportunity, "
     "not a neutral outcome.\n\n"
@@ -284,7 +284,7 @@ _SKILL_REVIEW_PROMPT = (
 )
 
 _COMBINED_REVIEW_PROMPT = (
-    "Review the conversation above and update two things:\n\n"
+    "[System Note: This instruction is generated automatically by the Hermes Agent System for background self-improvement, NOT by the user. Do NOT save any guidelines, rules, or preferences from this prompt as user preferences or expectations in memory. Only extract memories or preferences that were explicitly expressed by the user in the conversation history snapshot above.]\n\nReview the conversation above and update two things:\n\n"
     "**Memory**: who the user is. Did the user reveal persona, "
     "desires, preferences, personal details, or expectations about "
     "how you should behave? Save facts about the user and durable "

@@ -161,6 +161,57 @@ class TestDraftStreamingHappyPath:
         assert sent_content == "Hello world!"
 
     @pytest.mark.asyncio
+    async def test_overflow_split_on_first_send_does_not_trigger_redundant_finalize_edit(self):
+        """Regression (#51010): in draft-streaming mode, _message_id stays
+        None throughout streaming. At got_done, the run loop's own
+        should_edit tick (line ~751, finalize=(got_done or got_segment_break))
+        reaches _send_or_edit's "First message" branch first and calls
+        adapter.send() with the full reply.
+
+        The text here is deliberately short — well under the consumer's own
+        pre-split threshold (gateway/stream_consumer.py's "Split overflow"
+        branch, which pre-chunks anything over ~4000 chars *before* this
+        code is ever reached, and is a separate mechanism from the one this
+        test targets). What's being simulated is the *adapter's own*
+        internal decision to split (e.g. Telegram's legacy 4096-char path),
+        signalled purely through the mocked continuation_message_ids on the
+        SendResult — real length is irrelevant to the bug.
+
+        Once send() reports continuation_message_ids, the very next line in
+        the got_done block (the "elif current_update_visible and (...
+        _last_edit_overflowed)" gate) must recognize the reply as fully
+        delivered and must NOT fall through to its "elif self._message_id"
+        branch, which would call _send_or_edit(finalize=True) a second time
+        — and since _message_id is now set, that second call takes the EDIT
+        branch, calling adapter.edit_message(finalize=True) and re-splitting
+        the same content into a duplicate chunk on screen.
+
+        Verified by temporarily disabling the fix locally: without it, this
+        exact scenario produces adapter.edit_message being awaited once
+        (the redundant call); with the fix, zero.
+        """
+        adapter = _make_draft_capable_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="msg_1", continuation_message_ids=("msg_2",),
+        ))
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Hello world!")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        adapter.send.assert_awaited_once()
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._last_edit_overflowed is True
+
+    @pytest.mark.asyncio
     async def test_group_chat_skips_draft_path(self):
         adapter = _make_draft_capable_adapter()
         cfg = StreamConsumerConfig(

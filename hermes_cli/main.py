@@ -10782,6 +10782,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).
+        #
+        # We do a TWO-PASS clear: once here (before pip/uv install) to remove
+        # bytecode compiled from the *old* source, and again after the install
+        # completes (below) to catch any .pyc files that pip/uv may have
+        # regenerated during the editable-install build phase.  Between the
+        # two passes we also set PYTHONDONTWRITEBYTECODE=1 in the subprocess
+        # env so the installer itself does not seed fresh .pyc copies that
+        # could lag behind the updated .py source on disk.
         removed = _clear_bytecode_cache(PROJECT_ROOT)
         if removed:
             print(
@@ -10802,6 +10810,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # install via ``_recover_from_interrupted_install``. Cleared only after
         # the install + core-dependency verification completes below.
         _write_update_incomplete_marker()
+
+        # Suppress .pyc writes during the pip/uv install phase so the
+        # editable-install build step does not seed __pycache__ with
+        # bytecode that could lag behind the updated .py source (the
+        # second `_clear_bytecode_cache` pass below catches stragglers).
+        _old_py_dont_write = os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
@@ -10860,6 +10876,54 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breadcrumb now — the remaining steps (lazy refresh, node deps, web
         # UI, desktop rebuild) are non-core and can't brick the venv.
         _clear_update_incomplete_marker()
+
+        # Restore PYTHONDONTWRITEBYTECODE — subsequent npm/node steps
+        # (node deps, web UI, desktop build) are allowed to write .pyc.
+        if _old_py_dont_write is None:
+            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        else:
+            os.environ["PYTHONDONTWRITEBYTECODE"] = _old_py_dont_write
+
+        # Second pass: clear any .pyc files that pip/uv regenerated during
+        # the editable-install build phase.  Even though the installer
+        # compiles from the updated .py files on disk, build-cache copies
+        # can sometimes lag, and deleted-bytecode is always fresher than
+        # recompiled-bytecode on the next launch.  This doubles as a
+        # safety net for the PYTHONDONTWRITEBYTECODE guard above.
+        _removed2 = _clear_bytecode_cache(PROJECT_ROOT)
+        if _removed2:
+            print(
+                f"  ✓ Cleared {_removed2} regenerated __pycache__ director{'y' if _removed2 == 1 else 'ies'}"
+            )
+
+        # Post-update sanity check: verify that a bare subcommand token
+        # (e.g. ``doctor``) is correctly routed through the arg parser
+        # and not consumed as a ``--continue`` session name.  Stale .pyc
+        # from the old code can mask the defensive subparser routing
+        # added for the ``nargs='?'`` argparse bug on Python <3.12 —
+        # the same stale-bytecode scenario this function just guarded
+        # against.  A silent failure here means the next ``hermes doctor``
+        # invocation will confuse users, so surface it now.
+        try:
+            from hermes_cli.main import _BUILTIN_SUBCOMMANDS
+
+            # Verify the subcommand set is non-trivially populated.
+            # A minimal set from a fresh install includes the core
+            # subcommands; ``_BUILTIN_SUBCOMMANDS`` is used by the
+            # plugin-discovery gate that decides whether a bare token
+            # is a built-in subcommand or a chat prompt.  If stale
+            # bytecode was loaded, the set might be empty or missing
+            # expected entries.
+            _core_cmds = {"chat", "doctor", "update", "status"}
+            _missing = _core_cmds - _BUILTIN_SUBCOMMANDS
+            if _missing:
+                print(
+                    f"  ⚠ Parsing may be incomplete — missing subcommands: "
+                    f"{', '.join(sorted(_missing))}. "
+                    f"Run `hermes doctor` to diagnose."
+                )
+        except Exception:
+            pass  # non-fatal; the check is advisory only
 
         _refresh_active_lazy_features()
 

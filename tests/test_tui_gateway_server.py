@@ -2627,6 +2627,104 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_cwd_set_invalidates_cached_system_prompt(monkeypatch, tmp_path):
+    """A mid-session cwd change must invalidate agent._cached_system_prompt.
+
+    Otherwise the agent's "Current working directory" hint in the system
+    prompt remains stale for the rest of the session even though
+    session["cwd"], terminal_tool overrides, and the session.info event
+    all reflect the new directory.
+    """
+    project_a = tmp_path / "project-a"
+    project_a.mkdir()
+    project_b = tmp_path / "project-b"
+    project_b.mkdir()
+
+    # Build an agent stand-in with a pre-populated cached system prompt.
+    agent = types.SimpleNamespace(_cached_system_prompt="old prompt with cwd: A")
+
+    server._sessions["sid"] = _session(
+        agent=agent,
+        cwd=str(project_a),
+        session_key="session-key",
+    )
+
+    # Stub the DB so _set_session_cwd can persist the new cwd without
+    # touching the real hermes_state.sqlite.
+    class _StubDB:
+        def update_session_cwd(self, sid, cwd):
+            self.last = (sid, cwd)
+
+    stub_db = _StubDB()
+    monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+    # Stub terminal_tool.cleanup_vm (called by _set_session_cwd).
+    monkeypatch.setattr(
+        "tools.terminal_tool.cleanup_vm", lambda _sid: None, raising=False
+    )
+    # Stub register_task_env_overrides (also called by _set_session_cwd and
+    # _register_session_cwd) so the test doesn't reach into real tool state.
+    monkeypatch.setattr(
+        "tools.terminal_tool.register_task_env_overrides",
+        lambda *a, **kw: None,
+        raising=False,
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.cwd.set",
+            "params": {"session_id": "sid", "cwd": str(project_b)},
+        }
+    )
+
+    assert "error" not in resp, resp
+    assert resp["result"]["cwd"] == str(project_b)
+    # The cached prompt was cleared so the next turn rebuilds with the new cwd.
+    assert agent._cached_system_prompt is None
+    # The session's own cwd field was updated.
+    assert server._sessions["sid"]["cwd"] == str(project_b)
+    # The DB was told to persist the new cwd.
+    assert stub_db.last == ("session-key", str(project_b))
+
+
+def test_session_cwd_set_skips_invalidation_when_no_agent(monkeypatch, tmp_path):
+    """Lazy / draft sessions without an AIAgent must not crash on invalidation."""
+    project = tmp_path / "project"
+    project.mkdir()
+
+    server._sessions["sid"] = _session(
+        agent=None,
+        cwd=str(project),
+        session_key="session-key",
+    )
+
+    class _StubDB:
+        def update_session_cwd(self, sid, cwd):
+            self.last = (sid, cwd)
+
+    stub_db = _StubDB()
+    monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+    monkeypatch.setattr(
+        "tools.terminal_tool.cleanup_vm", lambda _sid: None, raising=False
+    )
+    monkeypatch.setattr(
+        "tools.terminal_tool.register_task_env_overrides",
+        lambda *a, **kw: None,
+        raising=False,
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.cwd.set",
+            "params": {"session_id": "sid", "cwd": str(project)},
+        }
+    )
+    assert "error" not in resp, resp
+    assert resp["result"]["cwd"] == str(project)
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

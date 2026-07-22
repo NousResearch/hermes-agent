@@ -5,7 +5,28 @@ Feishu adapter: credentials, connection mode, DM policy, and group policy.
 """
 
 import os
+import urllib.error
 from unittest.mock import patch
+
+import pytest
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_calls: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_calls.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +84,51 @@ def _run_setup_feishu(
 
 class TestSetupFeishuQrPath:
     """Tests for the QR scan-to-create happy path."""
+
+    def test_post_registration_bounds_success_response(self, monkeypatch):
+        from plugins.platforms.feishu import adapter as feishu
+
+        monkeypatch.setattr(feishu, "_FEISHU_ONBOARD_JSON_BODY_MAX_BYTES", 8)
+        response = _FakeHTTPResponse(b"x" * 9)
+
+        with patch("plugins.platforms.feishu.adapter.urlopen", return_value=response):
+            with pytest.raises(
+                feishu._FeishuOnboardResponseTooLarge,
+                match="Feishu registration response body exceeded 8 bytes",
+            ):
+                feishu._post_registration("https://accounts.example", {"action": "init"})
+
+        assert response.read_calls == [9]
+
+    def test_post_registration_bounds_http_error_response(self, monkeypatch):
+        from plugins.platforms.feishu import adapter as feishu
+
+        monkeypatch.setattr(feishu, "_FEISHU_ONBOARD_ERROR_BODY_MAX_BYTES", 8)
+        response = _FakeHTTPResponse(b"x" * 9)
+        http_error = urllib.error.HTTPError(
+            url="https://accounts.example/oauth/v1/app/registration",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=response,
+        )
+
+        with patch("plugins.platforms.feishu.adapter.urlopen", side_effect=http_error):
+            with pytest.raises(urllib.error.HTTPError):
+                feishu._post_registration("https://accounts.example", {"action": "poll"})
+
+        assert response.read_calls == [9]
+
+    def test_probe_bot_http_bounds_token_response(self, monkeypatch):
+        from plugins.platforms.feishu import adapter as feishu
+
+        monkeypatch.setattr(feishu, "_FEISHU_ONBOARD_JSON_BODY_MAX_BYTES", 8)
+        response = _FakeHTTPResponse(b"x" * 9)
+
+        with patch("plugins.platforms.feishu.adapter.urlopen", return_value=response):
+            assert feishu._probe_bot_http("cli_test", "secret_test", "feishu") is None
+
+        assert response.read_calls == [9]
 
     def test_qr_success_saves_core_credentials(self):
         env = _run_setup_feishu(

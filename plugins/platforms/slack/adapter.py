@@ -4088,7 +4088,7 @@ class SlackAdapter(BasePlatformAdapter):
                     team_id=team_id,
                     strip_bot_mention=False,
                 )
-                if f"<@{bot_uid}>" in parent_text:
+                if parent_text and f"<@{bot_uid}>" in parent_text:
                     # Remember the thread so later replies skip the fetch.
                     if not self._slack_strict_mention():
                         self._register_mentioned_thread(event_thread_ts)

@@ -435,11 +435,12 @@ function BillingHeader({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
   return (
     <div className="mb-2.5 flex items-center justify-between gap-3 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
       <div className="flex min-w-0 items-center gap-2">
         <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
-        <span>Billing</span>
+        <span>{t.settings.nav.billing}</span>
       </div>
       {import.meta.env.DEV && fixtureName && onFixtureChange ? (
         <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />

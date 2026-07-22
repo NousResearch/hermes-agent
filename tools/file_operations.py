@@ -2287,10 +2287,14 @@ class ShellFileOperations(FileOperations):
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # Fetch extra rows so we can report the true total before slicing.
-        # For context mode, rg emits separator lines ("--") between groups,
-        # so we grab generously and filter in Python.
-        fetch_limit = limit + offset + 200 if context > 0 else limit + offset
+        # Fetch one logical row beyond the requested page as a sentinel. An
+        # exact page is not proof that more results exist. Context output also
+        # contains separator/context rows, so retain the existing raw-row
+        # allowance before filtering those in Python.
+        page_end = offset + limit
+        fetch_limit = page_end + 1
+        if context > 0 and output_mode == "content":
+            fetch_limit += 200
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so rg's exit status propagates through `| head`.
@@ -2326,24 +2330,26 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 files=page,
                 total_count=total,
-                truncated=bool(limit_reason),
+                truncated=total > page_end or bool(limit_reason),
                 limit_reason=limit_reason,
             )
         
         elif output_mode == "count":
-            counts = {}
+            all_counts = {}
             for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
                         try:
-                            counts[parts[0]] = int(parts[1])
+                            all_counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
+            count_items = list(all_counts.items())
+            counts = dict(count_items[offset:page_end])
             return SearchResult(
                 counts=counts,
-                total_count=sum(counts.values()),
-                truncated=bool(limit_reason),
+                total_count=sum(all_counts.values()),
+                truncated=len(all_counts) > page_end or bool(limit_reason),
                 limit_reason=limit_reason,
             )
         
@@ -2386,7 +2392,7 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit or bool(limit_reason),
+                truncated=total > page_end or bool(limit_reason),
                 limit_reason=limit_reason,
             )
     
@@ -2417,8 +2423,13 @@ class ShellFileOperations(FileOperations):
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # Fetch generously so we can compute total before slicing
-        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        # Fetch one logical row beyond the page so exact fits remain
+        # untruncated. Context mode needs extra raw rows for group separators
+        # and surrounding lines that are filtered after the command returns.
+        page_end = offset + limit
+        fetch_limit = page_end + 1
+        if context > 0 and output_mode == "content":
+            fetch_limit += 200
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so grep's exit status propagates through `| head`
@@ -2452,24 +2463,26 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 files=page,
                 total_count=total,
-                truncated=bool(limit_reason),
+                truncated=total > page_end or bool(limit_reason),
                 limit_reason=limit_reason,
             )
         
         elif output_mode == "count":
-            counts = {}
+            all_counts = {}
             for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
                         try:
-                            counts[parts[0]] = int(parts[1])
+                            all_counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
+            count_items = list(all_counts.items())
+            counts = dict(count_items[offset:page_end])
             return SearchResult(
                 counts=counts,
-                total_count=sum(counts.values()),
-                truncated=bool(limit_reason),
+                total_count=sum(all_counts.values()),
+                truncated=len(all_counts) > page_end or bool(limit_reason),
                 limit_reason=limit_reason,
             )
         
@@ -2509,6 +2522,6 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit or bool(limit_reason),
+                truncated=total > page_end or bool(limit_reason),
                 limit_reason=limit_reason,
             )

@@ -73,6 +73,69 @@ def test_rg_count_timeout_returns_partial_counts(ops, monkeypatch):
     assert result.counts == {"src/a.py": 3, "src/b.py": 5}
 
 
+@pytest.mark.parametrize("command", ["rg", "grep"])
+@pytest.mark.parametrize(("row_count", "truncated"), [(50, False), (51, True)])
+def test_content_search_uses_overflow_sentinel(ops, monkeypatch, command, row_count, truncated):
+    lines = [f"src/file_{i}.py:10:foo" for i in range(row_count)]
+    ops.env.execute.side_effect = path_exists_or("\n".join(lines), returncode=0)
+    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == command)
+
+    result = ops.search("foo", path="/big", target="content", limit=50, offset=0)
+
+    assert result.error is None
+    assert len(result.matches) == 50
+    assert result.truncated is truncated
+
+
+@pytest.mark.parametrize("command", ["rg", "grep"])
+@pytest.mark.parametrize(("row_count", "truncated"), [(50, False), (51, True)])
+def test_files_only_search_uses_overflow_sentinel(ops, monkeypatch, command, row_count, truncated):
+    lines = [f"src/file_{i}.py" for i in range(row_count)]
+    ops.env.execute.side_effect = path_exists_or("\n".join(lines), returncode=0)
+    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == command)
+
+    result = ops.search("foo", path="/big", target="content", output_mode="files_only", limit=50, offset=0)
+
+    assert result.error is None
+    assert result.files == lines[:50]
+    assert result.truncated is truncated
+
+
+@pytest.mark.parametrize("command", ["rg", "grep"])
+@pytest.mark.parametrize(("row_count", "truncated"), [(50, False), (51, True)])
+def test_count_search_uses_overflow_sentinel(ops, monkeypatch, command, row_count, truncated):
+    lines = [f"src/file_{i}.py:1" for i in range(row_count)]
+    ops.env.execute.side_effect = path_exists_or("\n".join(lines), returncode=0)
+    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == command)
+
+    result = ops.search("foo", path="/big", target="content", output_mode="count", limit=50, offset=0)
+
+    assert result.error is None
+    assert len(result.counts) == 50
+    assert result.truncated is truncated
+
+
+@pytest.mark.parametrize("command", ["rg", "grep"])
+def test_content_search_sentinel_accounts_for_offset(ops, monkeypatch, command):
+    lines = [f"src/file_{i}.py:10:foo" for i in range(4)]
+    commands = []
+
+    def execute(shell_command, **kwargs):
+        if "test -e" in shell_command:
+            return {"output": "exists", "returncode": 0}
+        commands.append(shell_command)
+        return {"output": "\n".join(lines), "returncode": 0}
+
+    ops.env.execute.side_effect = execute
+    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == command)
+
+    result = ops.search("foo", path="/big", target="content", limit=2, offset=1)
+
+    assert [match.path for match in result.matches] == ["src/file_1.py", "src/file_2.py"]
+    assert result.truncated is True
+    assert "head -n 4" in commands[0]
+
+
 def test_rg_file_timeout_does_not_retry_unsorted(ops, monkeypatch):
     calls = 0
 

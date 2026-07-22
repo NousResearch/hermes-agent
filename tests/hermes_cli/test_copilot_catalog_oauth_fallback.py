@@ -10,9 +10,10 @@ only consulted env vars / ``gh auth token`` and never read the
 credential pool.
 """
 
+import json
 from unittest.mock import patch
 
-from hermes_cli.models import _resolve_copilot_catalog_api_key
+from hermes_cli.models import _resolve_copilot_catalog_api_key, provider_model_ids
 
 
 class TestCopilotCatalogApiKeyResolution:
@@ -117,8 +118,8 @@ class TestCopilotCatalogApiKeyResolution:
             assert _resolve_copilot_catalog_api_key() == "tid_from_second"
             assert attempts == ["gho_unsupported_account", "gho_valid_token"]
 
-    def test_all_pool_entries_fail_exchange_returns_empty(self):
-        """All exchanges fail → return "" so the caller falls back to curated."""
+    def test_all_pool_entries_fail_exchange_returns_raw_catalog_fallback(self):
+        """All exchanges fail → return first valid raw token so /models can try it."""
         with patch(
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={"api_key": ""},
@@ -132,7 +133,50 @@ class TestCopilotCatalogApiKeyResolution:
             "hermes_cli.copilot_auth.exchange_copilot_token",
             side_effect=ValueError("Copilot token exchange failed"),
         ):
-            assert _resolve_copilot_catalog_api_key() == ""
+            assert _resolve_copilot_catalog_api_key() == "gho_expired_a"
+
+    def test_provider_model_ids_uses_raw_pool_token_when_exchange_fails(self):
+        """If token exchange fails but /models accepts the raw token, use the live catalog."""
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "data": [
+                            {"id": "gpt-5.5"},
+                            {"id": "claude-sonnet-4.6"},
+                        ]
+                    }
+                ).encode()
+
+        auth_headers: list[str | None] = []
+
+        def fake_urlopen(req, timeout=0):
+            auth_headers.append(req.get_header("Authorization"))
+            return FakeResponse()
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": ""},
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[{"access_token": "gho_raw_catalog_token"}],
+        ), patch(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            side_effect=ValueError("Copilot token exchange failed: HTTP Error 404"),
+        ), patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            assert provider_model_ids("copilot") == ["gpt-5.5", "claude-sonnet-4.6"]
+
+        assert auth_headers == ["Bearer gho_raw_catalog_token"]
 
     def test_returns_empty_string_when_no_credentials_anywhere(self):
         """No env, no pool → empty string (caller falls back to curated list)."""

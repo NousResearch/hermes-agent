@@ -26,6 +26,72 @@ def _args(**kw):
     return types.SimpleNamespace(**defaults)
 
 
+def _stub_dashboard_startup(main_mod, monkeypatch, *, desktop, registration_error=False):
+    """Stub dashboard startup dependencies and return its observable events."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+    )
+    if desktop:
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+    else:
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+    monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+    monkeypatch.setattr(main_mod, "_build_web_ui", lambda *_a, **_k: True)
+    monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_logging",
+        types.SimpleNamespace(setup_logging=lambda **_k: None),
+    )
+
+    events = []
+    config = {"hooks": {"pre_llm_call": [{"command": "test-hook"}]}}
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(
+            discover_plugins=lambda: events.append("plugin-discovery")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            load_config=lambda: events.append("config-load") or config
+        ),
+    )
+
+    def register_from_config(cfg, *, accept_hooks):
+        events.append(("hook-registration", cfg, accept_hooks))
+        if registration_error:
+            raise RuntimeError("shell-hook registration failed")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=register_from_config),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        lambda **_k: events.append("mcp-discovery"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_maybe_setup_dashboard_auth_interactively",
+        lambda _args: events.append("auth-setup"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.web_server",
+        types.SimpleNamespace(
+            start_server=lambda **_kwargs: events.append("server-start")
+        ),
+    )
+    return events, config
+
+
 class TestUnifiedDashboardRouting:
     def test_profile_launch_attaches_to_running_dashboard(self, main_mod, monkeypatch):
         monkeypatch.setattr(
@@ -232,3 +298,71 @@ class TestUnifiedDashboardRouting:
                 "thread_name": "dashboard-mcp-discovery",
             }
         ]
+
+    def test_ordinary_dashboard_does_not_register_shell_hooks(
+        self, main_mod, monkeypatch
+    ):
+        """The multi-profile browser dashboard must not install profile hooks."""
+        events, _config = _stub_dashboard_startup(
+            main_mod, monkeypatch, desktop=False
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert events == [
+            "plugin-discovery",
+            "mcp-discovery",
+            "auth-setup",
+            "server-start",
+        ]
+
+    def test_desktop_registers_shell_hooks_after_auth_immediately_before_server_start(
+        self, main_mod, monkeypatch
+    ):
+        """Auth may rediscover plugins, so Desktop hooks load after auth setup."""
+        events, config = _stub_dashboard_startup(
+            main_mod, monkeypatch, desktop=True
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert events == [
+            "plugin-discovery",
+            "mcp-discovery",
+            "auth-setup",
+            "config-load",
+            ("hook-registration", config, False),
+            "server-start",
+        ]
+
+    def test_desktop_shell_hook_registration_failure_still_starts_server(
+        self, main_mod, monkeypatch
+    ):
+        events, config = _stub_dashboard_startup(
+            main_mod, monkeypatch, desktop=True, registration_error=True
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert events == [
+            "plugin-discovery",
+            "mcp-discovery",
+            "auth-setup",
+            "config-load",
+            ("hook-registration", config, False),
+            "server-start",
+        ]
+
+    def test_dashboard_lifecycle_actions_do_not_register_shell_hooks(
+        self, main_mod, monkeypatch
+    ):
+        events, _config = _stub_dashboard_startup(
+            main_mod, monkeypatch, desktop=True
+        )
+        monkeypatch.setattr(main_mod, "_report_dashboard_status", lambda: 0)
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args(status=True))
+        monkeypatch.setattr(main_mod, "_find_stale_dashboard_pids", lambda: [])
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args(stop=True))
+        assert events == []

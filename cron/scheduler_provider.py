@@ -173,13 +173,42 @@ class InProcessCronScheduler(CronScheduler):
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
+    def start(
+        self,
+        stop_event,
+        *,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+        profile_homes=None,
+    ):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+
+        # ── Multiplex profiles ────────────────────────────────────────────
+        # When profile_homes is set (multiplex_profiles on), tick EACH profile's
+        # cron store on every tick cycle so secondary-profile jobs actually fire
+        # instead of languishing in a store no ticker owns (#69377). Without this,
+        # only the process-global HERMES_HOME (the default profile) is ticked.
+        # Heartbeats and recovery are also scoped per profile so `hermes cron
+        # status` reflects liveness for every profile independently.
+        if profile_homes:
+            self._start_multiplex(
+                stop_event,
+                profile_homes=profile_homes,
+                adapters=adapters,
+                loop=loop,
+                interval=interval,
+                can_dispatch=can_dispatch,
+            )
+            return
+
+        # ── Single-profile (legacy) path ──────────────────────────────────
         recovered = self.recover_interrupted()
         if recovered:
             logger.warning(
@@ -216,4 +245,70 @@ class InProcessCronScheduler(CronScheduler):
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
+            stop_event.wait(interval)
+
+    def _start_multiplex(
+        self,
+        stop_event,
+        *,
+        profile_homes,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+    ):
+        """Tick every served profile's cron store when multiplex_profiles is on.
+
+        Each profile uses ``use_cron_store()`` to scope its tick, heartbeat,
+        and recovery to that profile's own ``cron/jobs.json`` — mirroring how
+        the multiplexer already scopes config/SOUL/memory per turn.
+        """
+        import logging
+        from cron.scheduler import tick as cron_tick
+        from cron.jobs import record_ticker_heartbeat, use_cron_store
+
+        logger = logging.getLogger("cron.scheduler_provider")
+        logger.info(
+            "Multiplex cron scheduler started for %d profile(s): %s",
+            len(profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+        )
+
+        # Recovery + initial heartbeat for every profile.
+        for entry in profile_homes:
+            home = entry[1] if isinstance(entry, tuple) else entry
+            with use_cron_store(home):
+                recovered = self.recover_interrupted()
+                if recovered:
+                    logger.warning(
+                        "Marked %d interrupted cron execution(s) for profile at %s",
+                        recovered,
+                        home,
+                    )
+                record_ticker_heartbeat()
+
+        while not stop_event.is_set():
+            ok = False
+            try:
+                if can_dispatch is not None and not can_dispatch():
+                    logger.debug("Cron dispatch paused while gateway drains existing work")
+                else:
+                    for entry in profile_homes:
+                        home = entry[1] if isinstance(entry, tuple) else entry
+                        with use_cron_store(home):
+                            cron_tick(
+                                verbose=False,
+                                adapters=adapters,
+                                loop=loop,
+                                sync=False,
+                                can_dispatch=can_dispatch,
+                            )
+                ok = True
+            except BaseException as e:
+                logger.error("Cron tick error: %s", e, exc_info=True)
+            # Record per-profile heartbeat after each tick cycle.
+            for entry in profile_homes:
+                home = entry[1] if isinstance(entry, tuple) else entry
+                with use_cron_store(home):
+                    record_ticker_heartbeat(success=ok)
             stop_event.wait(interval)

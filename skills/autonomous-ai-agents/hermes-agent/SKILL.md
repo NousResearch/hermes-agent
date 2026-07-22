@@ -893,6 +893,60 @@ and logs — avoids shell-escaping backslashes in bash.
 
 ## Troubleshooting
 
+### Hermes self-troubleshooting preflight
+
+When troubleshooting Hermes itself — CLI, gateway, profiles, tools, skills,
+providers, cron, memory, plugins, or platform adapters — check whether the
+problem is already known before deep bespoke debugging or proposing a custom
+patch.
+
+Use local evidence first only long enough to name the symptom and component
+(log line, command failure, platform, OS, config area). Then search the Hermes
+repo for matching issues and PRs:
+
+```bash
+repo="NousResearch/hermes-agent"
+
+gh issue list --repo "$repo" --state all \
+  --search '<component symptom keywords>' \
+  --limit 20 \
+  --json number,title,state,url,labels,updatedAt
+
+gh pr list --repo "$repo" --state all \
+  --search '<component symptom keywords>' \
+  --limit 20 \
+  --json number,title,state,url,labels,updatedAt
+```
+
+If a plausible PR exists, inspect it before inventing a fix:
+
+```bash
+gh pr view <num> --repo "$repo" --json number,title,state,url,body,files
+gh pr diff <num> --repo "$repo"
+```
+
+Treat existing issues and PRs as evidence, not authority. A matching issue may
+validate that the problem is real or recurring; a matching PR may include useful
+diagnostics, reproduction steps, or a partial implementation. Do not assume the
+proposed fix is correct just because it names the same problem.
+
+Report findings separately:
+
+- **Local evidence** — what was observed on this machine.
+- **Known upstream issue** — matching issue(s), if any, and whether they match
+  symptom/platform/logs.
+- **Problem confidence** — how strongly upstream evidence matches the local
+  failure.
+- **Candidate upstream fix** — matching PR(s), if any.
+- **Fix confidence** — whether the PR appears correct, partial, brittle, stale,
+  untested, or architecture-aligned.
+- **Recommended action** — use as-is, use evidence only, adapt the approach,
+  avoid as likely wrong, ask for maintainer input, file a narrower issue, or
+  propose a better fix.
+
+Do not open duplicate issues or PRs. If existing work matches, help move that
+issue/PR forward instead.
+
 ### Voice not working
 1. Check `stt.enabled: true` in config.yaml
 2. Verify provider: `pip install faster-whisper` or set API key

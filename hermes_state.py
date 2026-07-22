@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import asyncio
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -24,14 +25,242 @@ import sqlite3
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
+from state_db_maintenance import (
+    MAINTENANCE_SCHEMA_SQL,
+    acquire_state_db_maintenance,
+    prepare_state_db_maintenance_for_fork,
+    record_fts_maintenance_debt,
+    release_state_db_maintenance,
+    resume_state_db_maintenance_after_fork_parent,
+    reset_state_db_maintenance_after_fork,
+)
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+
+class _ProcessDbWriteGate:
+    """Re-entrant foreground writer gate with maintenance-aware fairness."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._state_changed = threading.Condition(threading.Lock())
+        self._foreground_waiters = 0
+        self._maintenance_reserved = False
+        self._local = threading.local()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        depth = getattr(self._local, "depth", 0)
+        if depth:
+            acquired = self._lock.acquire(blocking, timeout)
+            if acquired:
+                self._local.depth = depth + 1
+            return acquired
+
+        deadline = None if timeout < 0 else time.monotonic() + timeout
+        with self._state_changed:
+            self._foreground_waiters += 1
+        try:
+            with self._state_changed:
+                while self._maintenance_reserved:
+                    if not blocking:
+                        return False
+                    if deadline is None:
+                        self._state_changed.wait()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return False
+                        self._state_changed.wait(remaining)
+
+            if deadline is None:
+                acquired = self._lock.acquire(blocking)
+            else:
+                remaining = max(0.0, deadline - time.monotonic())
+                acquired = self._lock.acquire(blocking, remaining)
+            if acquired:
+                self._local.depth = 1
+            return acquired
+        finally:
+            with self._state_changed:
+                self._foreground_waiters -= 1
+                self._state_changed.notify_all()
+
+    def try_acquire_maintenance(self, *, force: bool = False) -> bool:
+        """Try one maintenance slice, optionally reserving it after aging.
+
+        Ordinary attempts always yield to queued foreground writers. After a
+        coordinator has been deferred for a bounded period, ``force=True``
+        closes admission for *new* writers while writers that were already
+        queued drain. This reserves exactly one short maintenance slice and
+        prevents durable work from starving under sustained load.
+        """
+        with self._state_changed:
+            if force:
+                self._maintenance_reserved = True
+            elif self._foreground_waiters or self._maintenance_reserved:
+                return False
+            return self._lock.acquire(blocking=False)
+
+    def has_foreground_waiters(self) -> bool:
+        """Whether a foreground writer is queued behind maintenance."""
+        with self._state_changed:
+            return self._foreground_waiters > 0
+
+    def release(self) -> None:
+        depth = getattr(self._local, "depth", 0)
+        if depth <= 0:
+            raise RuntimeError("foreground write gate released without acquire")
+        self._local.depth = depth - 1
+        self._lock.release()
+        if depth == 1:
+            with self._state_changed:
+                self._state_changed.notify_all()
+
+    def release_maintenance(self) -> None:
+        """Release a maintenance slice and reopen foreground admission."""
+        self._lock.release()
+        self.cancel_maintenance_reservation()
+
+    def cancel_maintenance_reservation(self) -> None:
+        """Unblock foreground admission if a reserved slice is abandoned."""
+        with self._state_changed:
+            if self._maintenance_reserved:
+                self._maintenance_reserved = False
+                self._state_changed.notify_all()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.release()
+
+
+# SQLite serializes writers per database file, but Hermes historically only
+# serialized per SessionDB instance.  A gateway owns several SessionDB handles
+# (session routing, transcript persistence, mirrors, background delegation), so
+# those handles could repeatedly collide with each other before SQLite ever saw
+# an external process.  Keep independent connections for concurrent readers,
+# while sharing one re-entrant writer coordinator per canonical DB path.
+_PROCESS_DB_WRITE_LOCKS: Dict[str, _ProcessDbWriteGate] = {}
+_PROCESS_DB_WRITER_COUNTS: Dict[str, int] = {}
+_PROCESS_DB_LOCKS_GUARD = threading.Lock()
+_SESSION_DB_INSTANCES = weakref.WeakSet()
+# Strong references kept for the lifetime of a fork child. A weak SessionDB
+# registry alone is insufficient: dropping the inherited instance could run
+# sqlite3.Connection.__del__ in the child while another parent thread was in
+# SQLite at fork time.
+_FORK_RETAINED_CONNECTIONS: List[sqlite3.Connection] = []
+
+
+class _ForkedSessionDBConnection:
+    """Fail fast when a SQLite connection inherited across fork is reused."""
+
+    def __init__(self, owner_pid: int, child_pid: int) -> None:
+        self.owner_pid = owner_pid
+        self.child_pid = child_pid
+
+    def __getattr__(self, _name):
+        raise RuntimeError(
+            "SessionDB instances cannot be reused after fork; "
+            "construct a new SessionDB in the child process"
+        )
+
+
+def _canonical_db_path(db_path: Path) -> str:
+    path = Path(db_path).expanduser()
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def get_process_db_write_lock(db_path: Path):
+    """Return the process-wide writer lock for one physical SQLite file.
+
+    The public helper also lets the two small raw-state writers
+    (async-delegation and delivery-obligation ledgers) join SessionDB's write
+    lane without sharing its connection.
+    """
+    key = _canonical_db_path(db_path)
+    with _PROCESS_DB_LOCKS_GUARD:
+        lock = _PROCESS_DB_WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = _ProcessDbWriteGate()
+            _PROCESS_DB_WRITE_LOCKS[key] = lock
+        return lock
+
+
+def _register_process_db_writer(db_path: Path) -> None:
+    key = _canonical_db_path(db_path)
+    with _PROCESS_DB_LOCKS_GUARD:
+        _PROCESS_DB_WRITER_COUNTS[key] = _PROCESS_DB_WRITER_COUNTS.get(key, 0) + 1
+
+
+def _unregister_process_db_writer(db_path: Path) -> None:
+    key = _canonical_db_path(db_path)
+    with _PROCESS_DB_LOCKS_GUARD:
+        remaining = _PROCESS_DB_WRITER_COUNTS.get(key, 0) - 1
+        if remaining > 0:
+            _PROCESS_DB_WRITER_COUNTS[key] = remaining
+        else:
+            _PROCESS_DB_WRITER_COUNTS.pop(key, None)
+
+
+def _process_db_writer_count(db_path: Path) -> int:
+    key = _canonical_db_path(db_path)
+    with _PROCESS_DB_LOCKS_GUARD:
+        return _PROCESS_DB_WRITER_COUNTS.get(key, 0)
+
+
+def _reset_process_db_locks_after_fork() -> None:
+    """Reset Python locks and invalidate inherited SQLite connections."""
+    global _PROCESS_DB_WRITE_LOCKS, _PROCESS_DB_WRITER_COUNTS, _PROCESS_DB_LOCKS_GUARD
+    reset_state_db_maintenance_after_fork(_FORK_RETAINED_CONNECTIONS)
+    _PROCESS_DB_WRITE_LOCKS = {}
+    _PROCESS_DB_WRITER_COUNTS = {}
+    _PROCESS_DB_LOCKS_GUARD = threading.Lock()
+    child_pid = os.getpid()
+    for db in list(_SESSION_DB_INSTANCES):
+        try:
+            inherited = getattr(db, "_conn", None)
+            if inherited is not None and not isinstance(
+                inherited, _ForkedSessionDBConnection
+            ):
+                # Do not call sqlite3_close() in the post-fork child: the
+                # parent may have forked while another thread was inside
+                # SQLite. Retain every inherited file descriptor until
+                # process exit, including across a nested fork, but make every
+                # attempted reuse fail fast.
+                if isinstance(inherited, sqlite3.Connection):
+                    _FORK_RETAINED_CONNECTIONS.append(inherited)
+                db._conn = _ForkedSessionDBConnection(db._owner_pid, child_pid)
+            # Invalidate the connection before any path resolution/allocation
+            # involved in rebinding locks. A partial handler failure must
+            # never leave a real inherited sqlite connection reachable.
+            db._lock = threading.Lock()
+            db._write_operation_lock = threading.RLock()
+            db._write_lock = get_process_db_write_lock(db.db_path)
+            db._writer_registered = False
+            db._maintenance = None
+        except Exception:
+            # at_fork handlers must never prevent the child from starting.
+            pass
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=prepare_state_db_maintenance_for_fork,
+        after_in_parent=resume_state_db_maintenance_after_fork_parent,
+        after_in_child=_reset_process_db_locks_after_fork,
+    )
 
 
 def _scrub_surrogates(value: Any) -> Any:
@@ -164,6 +393,12 @@ SCHEMA_VERSION = 23
 #   1 = v23 external-content layout (content/tool_name/tool_calls,
 #       tool-row-excluded trigram)
 FTS_STORAGE_VERSION = 1
+
+# Version the shape of the FTS UPDATE triggers separately from the table
+# schema.  ``CREATE TRIGGER IF NOT EXISTS`` cannot replace triggers already
+# installed in a user's state.db, while bumping SCHEMA_VERSION would couple a
+# cheap trigger-only migration to unrelated data migrations.
+FTS_UPDATE_TRIGGER_LAYOUT_VERSION = 1
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -1018,6 +1253,10 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
 
+# Background-maintenance state is additive and declarative like the rest of
+# the core schema, so existing databases acquire it during normal init.
+SCHEMA_SQL += MAINTENANCE_SCHEMA_SQL
+
 # Indexes that reference columns added in later schema versions must be
 # created AFTER _reconcile_columns() has had a chance to ADD them on
 # existing databases. SCHEMA_SQL above is run by sqlite executescript
@@ -1342,7 +1581,13 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_update
+AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+WHEN old.id IS NOT new.id
+  OR old.content IS NOT new.content
+  OR old.tool_name IS NOT new.tool_name
+  OR old.tool_calls IS NOT new.tool_calls
+BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
@@ -1368,7 +1613,13 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON message
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update
+AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+WHEN old.id IS NOT new.id
+  OR old.content IS NOT new.content
+  OR old.tool_name IS NOT new.tool_name
+  OR old.tool_calls IS NOT new.tool_calls
+BEGIN
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
@@ -1398,17 +1649,11 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
+    # Queue a background PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Merge fragmented FTS5 segments every N successful writes. The message
-    # triggers append one segment per insert; left unmaintained these grow
-    # into tens of thousands of segments, so every MATCH must scan them all
-    # and every insert pays a growing automerge cost — which lengthens the
-    # write-lock hold time and starves competing writers (gateway + cron
-    # processes share one state.db), surfacing as "database is locked".
-    # 'optimize' is a no-op once the index is already merged, so an idle DB
-    # pays almost nothing; the cadence is deliberately coarse so the one-off
-    # merge cost is amortised far below the checkpoint cadence.
+    # Admit one bounded background FTS5 merge cycle after this many message
+    # mutation units. Full optimize is intentionally excluded from automatic
+    # maintenance; it remains an explicit maintenance-window operation.
     _OPTIMIZE_EVERY_N_WRITES = 1000
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
@@ -1421,10 +1666,20 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = Path(db_path or DEFAULT_DB_PATH)
         self.read_only = read_only
 
         self._lock = threading.Lock()
+        # Serializes the complete lifecycle of one write operation (including
+        # retry/rebuild) without blocking reads.  It is deliberately re-entrant:
+        # runtime FTS recovery and VACUUM can call another explicit write
+        # operation on the same thread.
+        self._write_operation_lock = threading.RLock()
+        self._write_lock = get_process_db_write_lock(self.db_path)
+        self._writer_registered = False
+        self._maintenance = None
+        self._db_key = _canonical_db_path(self.db_path)
+        self._owner_pid = os.getpid()
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
@@ -1442,6 +1697,7 @@ class SessionDB:
         self._fts_cjk_available = False
         self._fts_unavailable_warned = False
         self._conn = None
+        _SESSION_DB_INSTANCES.add(self)
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -1483,31 +1739,38 @@ class SessionDB:
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
 
-            try:
-                _connect_and_init()
-            except sqlite3.DatabaseError as exc:
-                # The malformed-schema class (e.g. a duplicate sqlite_master
-                # row for messages_fts) fails on the very first statement —
-                # before _init_schema can run — so it can't be caught at the
-                # FTS-rebuild layer. Recover by repairing sqlite_master in
-                # place (backup first; canonical sessions/messages preserved),
-                # then reopen once. This is what lets Desktop/Dashboard
-                # self-heal instead of silently showing "no sessions".
-                if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
-                    raise
-                logger.error(
-                    "state.db schema is malformed (%s) — attempting automatic "
-                    "repair (a backup copy is made first).", exc,
-                )
+            # Schema initialization performs DDL and migration writes. Keep it
+            # in the same process-wide lane as ordinary transactions so two
+            # short-lived SessionDB constructors cannot migrate state.db at
+            # the same time.
+            with self._write_lock:
                 try:
-                    if self._conn is not None:
-                        self._conn.close()
-                except Exception:
-                    pass
-                report = repair_state_db_schema(self.db_path)
-                if not report.get("repaired"):
-                    raise
-                _connect_and_init()
+                    _connect_and_init()
+                except sqlite3.DatabaseError as exc:
+                    # The malformed-schema class (e.g. a duplicate sqlite_master
+                    # row for messages_fts) fails on the very first statement —
+                    # before _init_schema can run — so it can't be caught at the
+                    # FTS-rebuild layer. Recover by repairing sqlite_master in
+                    # place (backup first; canonical sessions/messages preserved),
+                    # then reopen once. This is what lets Desktop/Dashboard
+                    # self-heal instead of silently showing "no sessions".
+                    if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
+                        raise
+                    logger.error(
+                        "state.db schema is malformed (%s) — attempting automatic "
+                        "repair (a backup copy is made first).", exc,
+                    )
+                    try:
+                        if self._conn is not None:
+                            self._conn.close()
+                    except Exception:
+                        pass
+                    report = repair_state_db_schema(self.db_path)
+                    if not report.get("repaired"):
+                        raise
+                    _connect_and_init()
+                _register_process_db_writer(self.db_path)
+                self._writer_registered = True
 
             # NOTE: the v23 FTS optimization is OPT-IN (`hermes db optimize`),
             # never auto-started on open. Legacy installs keep their working
@@ -1516,7 +1779,51 @@ class SessionDB:
             # racing session lifecycle and the surprise disk/latency cost on
             # an unattended open. (An interrupted optimize resumes when the
             # user re-runs the command.)
+            self._maintenance = acquire_state_db_maintenance(
+                db_path=self.db_path,
+                db_key=self._db_key,
+                write_gate=self._write_lock,
+                fts_tables=tuple(
+                    table_name
+                    for table_name, enabled in (
+                        ("messages_fts", self._fts_enabled),
+                        ("messages_fts_trigram", self._trigram_available),
+                    )
+                    if enabled
+                ),
+                merge_interval=self._OPTIMIZE_EVERY_N_WRITES,
+            )
         except Exception as exc:
+            # Construction can fail after the connection and process-writer
+            # registration have succeeded (for example, while waiting for a
+            # previous maintenance worker to finish stopping). Roll back those
+            # side effects here so a failed transient open cannot leak a live
+            # connection or permanently inflate shutdown writer counts.
+            try:
+                if self._maintenance is not None:
+                    release_state_db_maintenance(
+                        db_key=self._db_key,
+                        coordinator=self._maintenance,
+                    )
+                    self._maintenance = None
+            except Exception:
+                logger.debug(
+                    "Failed to release state.db maintenance after init error",
+                    exc_info=True,
+                )
+            failed_connection = self._conn
+            self._conn = None
+            try:
+                if failed_connection is not None:
+                    failed_connection.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close state.db connection after init error",
+                    exc_info=True,
+                )
+            if self._writer_registered:
+                _unregister_process_db_writer(self.db_path)
+                self._writer_registered = False
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
             # not available."  Callers that catch this exception keep their
@@ -1533,6 +1840,45 @@ class SessionDB:
             raise
 
     # ── Core write helper ──
+
+    @contextmanager
+    def _connection_write_locks(self):
+        """Hold the connection lock and process writer gate without a convoy.
+
+        Waiting for either lock while holding the other creates a two-scope
+        availability failure: maintenance may own the process writer gate,
+        while a queued write owns ``self._lock`` and blocks otherwise-safe WAL
+        reads on this handle.  Conversely, taking the writer gate first and
+        blocking on a long connection read stalls independent SessionDB handles.
+
+        The try/handoff loop waits for each contended lock in isolation.  The
+        per-instance operation guard prevents close (or a sibling write on this
+        same connection) from overtaking us while both locks are handed off.
+        Ordinary reads intentionally do not take that guard.
+        """
+        with self._write_operation_lock:
+            while True:
+                self._write_lock.acquire()
+                connection_acquired = False
+                try:
+                    connection_acquired = self._lock.acquire(blocking=False)
+                    if connection_acquired:
+                        break
+                finally:
+                    if not connection_acquired:
+                        self._write_lock.release()
+
+                # Wait for the connection to become available without
+                # occupying the process-wide writer lane, then retry the
+                # atomic try-acquire pair.
+                with self._lock:
+                    pass
+
+            try:
+                yield
+            finally:
+                self._lock.release()
+                self._write_lock.release()
 
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
@@ -1866,9 +2212,163 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
+    def _ensure_fts_update_trigger_layout(
+        self,
+        cursor: sqlite3.Cursor,
+        *,
+        include_trigram: bool,
+    ) -> None:
+        """Install selective FTS UPDATE triggers without rebuilding indexes.
+
+        Older databases have unconditional UPDATE triggers, so metadata-only
+        changes such as ``active=0, compacted=1`` delete and reinsert every FTS
+        row twice (unicode + trigram).  That both amplifies WAL traffic and
+        extends the single-writer lock.  Replace only the two UPDATE triggers;
+        their indexed data remains valid because the searchable columns are
+        unchanged.
+
+        The replacement preserves whichever storage layout the database is
+        already using: legacy inline FTS or the v23 external-content tables.
+        The trigger replacement and version marker share a SAVEPOINT so a
+        crash cannot leave a partially migrated layout marked complete.
+        """
+        legacy_layout = self._db_has_legacy_inline_fts(cursor)
+        if legacy_layout:
+            base_trigger_ddl = """CREATE TRIGGER messages_fts_update
+                   AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+                   WHEN old.id IS NOT new.id
+                     OR old.content IS NOT new.content
+                     OR old.tool_name IS NOT new.tool_name
+                     OR old.tool_calls IS NOT new.tool_calls
+                   BEGIN
+                       DELETE FROM messages_fts WHERE rowid = old.id;
+                       INSERT INTO messages_fts(rowid, content) VALUES (
+                           new.id,
+                           COALESCE(new.content, '') || ' ' ||
+                           COALESCE(new.tool_name, '') || ' ' ||
+                           COALESCE(new.tool_calls, '')
+                       );
+                   END"""
+            trigram_trigger_ddl = """CREATE TRIGGER messages_fts_trigram_update
+                   AFTER UPDATE OF id, content, tool_name, tool_calls ON messages
+                   WHEN old.id IS NOT new.id
+                     OR old.content IS NOT new.content
+                     OR old.tool_name IS NOT new.tool_name
+                     OR old.tool_calls IS NOT new.tool_calls
+                   BEGIN
+                       DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+                       INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                           new.id,
+                           COALESCE(new.content, '') || ' ' ||
+                           COALESCE(new.tool_name, '') || ' ' ||
+                           COALESCE(new.tool_calls, '')
+                       );
+                   END"""
+        else:
+            base_trigger_ddl = """CREATE TRIGGER messages_fts_update
+                   AFTER UPDATE ON messages
+                   WHEN (old.content IS NOT new.content
+                      OR old.tool_name IS NOT new.tool_name
+                      OR old.tool_calls IS NOT new.tool_calls)
+                     AND (old.id > COALESCE((SELECT CAST(value AS INTEGER)
+                                             FROM state_meta
+                                             WHERE key = 'fts_rebuild_high_water'), -1)
+                       OR old.id <= COALESCE((SELECT CAST(value AS INTEGER)
+                                              FROM state_meta
+                                              WHERE key = 'fts_rebuild_progress'), -1))
+                   BEGIN
+                       INSERT INTO messages_fts(
+                           messages_fts, rowid, content, tool_name, tool_calls
+                       ) VALUES (
+                           'delete', old.id, old.content,
+                           old.tool_name, old.tool_calls
+                       );
+                       INSERT INTO messages_fts(
+                           rowid, content, tool_name, tool_calls
+                       ) VALUES (
+                           new.id, new.content, new.tool_name, new.tool_calls
+                       );
+                   END"""
+            trigram_trigger_ddl = """CREATE TRIGGER messages_fts_trigram_update
+                   AFTER UPDATE ON messages
+                   WHEN (old.content IS NOT new.content
+                      OR old.tool_name IS NOT new.tool_name
+                      OR old.tool_calls IS NOT new.tool_calls
+                      OR old.role IS NOT new.role)
+                     AND (old.id > COALESCE((SELECT CAST(value AS INTEGER)
+                                             FROM state_meta
+                                             WHERE key = 'fts_rebuild_high_water'), -1)
+                       OR old.id <= COALESCE((SELECT CAST(value AS INTEGER)
+                                              FROM state_meta
+                                              WHERE key = 'fts_rebuild_progress'), -1))
+                   BEGIN
+                       INSERT INTO messages_fts_trigram(
+                           messages_fts_trigram, rowid, content,
+                           tool_name, tool_calls
+                       )
+                       SELECT 'delete', old.id, old.content,
+                              old.tool_name, old.tool_calls
+                       WHERE old.role <> 'tool';
+                       INSERT INTO messages_fts_trigram(
+                           rowid, content, tool_name, tool_calls
+                       )
+                       SELECT new.id, new.content, new.tool_name, new.tool_calls
+                       WHERE new.role <> 'tool';
+                   END"""
+
+        trigger_specs = [
+            (
+                "fts_update_trigger_layout_version",
+                "messages_fts_update",
+                base_trigger_ddl,
+            )
+        ]
+        if include_trigram:
+            trigger_specs.append(
+                (
+                    "fts_trigram_update_trigger_layout_version",
+                    "messages_fts_trigram_update",
+                    trigram_trigger_ddl,
+                )
+            )
+
+        pending_specs = []
+        for marker_key, trigger_name, trigger_ddl in trigger_specs:
+            row = cursor.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (marker_key,),
+            ).fetchone()
+            try:
+                installed_version = int(row[0]) if row is not None else 0
+            except (TypeError, ValueError):
+                installed_version = 0
+            if installed_version < FTS_UPDATE_TRIGGER_LAYOUT_VERSION:
+                pending_specs.append((marker_key, trigger_name, trigger_ddl))
+        if not pending_specs:
+            return
+
+        cursor.execute("SAVEPOINT fts_update_trigger_layout")
+        try:
+            for marker_key, trigger_name, trigger_ddl in pending_specs:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+                cursor.execute(trigger_ddl)
+                cursor.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (marker_key, str(FTS_UPDATE_TRIGGER_LAYOUT_VERSION)),
+                )
+            cursor.execute("RELEASE SAVEPOINT fts_update_trigger_layout")
+        except BaseException:
+            cursor.execute("ROLLBACK TO SAVEPOINT fts_update_trigger_layout")
+            cursor.execute("RELEASE SAVEPOINT fts_update_trigger_layout")
+            raise
+
     def _execute_write(
         self,
         fn: Callable[[sqlite3.Connection], T],
+        *,
+        write_units: int = 1,
+        fts_dirty: bool = False,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -1882,55 +2382,80 @@ class SessionDB:
         random 20-150ms, and retry — breaking the convoy pattern that
         SQLite's built-in deterministic backoff creates.
 
+        ``write_units`` preserves background checkpoint and FTS admission
+        cadence for batched operations. ``fts_dirty`` records durable message
+        mutation units in the same transaction, so a crash between commit and
+        worker notification cannot lose the merge request.
+
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
-        for attempt in range(self._WRITE_MAX_RETRIES):
-            try:
-                with self._lock:
-                    self._conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        result = fn(self._conn)
-                        self._conn.commit()
-                    except BaseException:
+        normalized_write_units = max(1, int(write_units))
+        effective_fts_dirty = bool(fts_dirty and self._fts_enabled)
+        if self._owner_pid != os.getpid():
+            raise RuntimeError(
+                "SessionDB instances cannot be reused after fork; "
+                "construct a new SessionDB in the child process"
+            )
+        with self._write_operation_lock:
+            for attempt in range(self._WRITE_MAX_RETRIES):
+                try:
+                    with self._connection_write_locks():
+                        self._conn.execute("BEGIN IMMEDIATE")
                         try:
-                            self._conn.rollback()
-                        except Exception:
-                            pass
-                        raise
-                # Success — periodic best-effort checkpoint + FTS merge.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
-                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
-                    self._try_optimize_fts()
-                return result
-            except sqlite3.OperationalError as exc:
-                err_msg = str(exc).lower()
-                if "locked" in err_msg or "busy" in err_msg:
-                    last_err = exc
-                    if attempt < self._WRITE_MAX_RETRIES - 1:
-                        jitter = random.uniform(
-                            self._WRITE_RETRY_MIN_S,
-                            self._WRITE_RETRY_MAX_S,
+                            result = fn(self._conn)
+                            if effective_fts_dirty:
+                                record_fts_maintenance_debt(
+                                    self._conn,
+                                    write_units=normalized_write_units,
+                                )
+                            self._conn.commit()
+                        except BaseException:
+                            try:
+                                self._conn.rollback()
+                            except Exception:
+                                pass
+                            raise
+                    # Success — only update counters and wake the shared worker.
+                    # No checkpoint, FTS merge, or SQLite call is allowed on this
+                    # foreground return path.
+                    with self._lock:
+                        self._write_count += normalized_write_units
+                        maintenance = self._maintenance
+                    if maintenance is not None:
+                        maintenance.notify_commit(
+                            write_units=normalized_write_units,
+                            checkpoint_interval=self._CHECKPOINT_EVERY_N_WRITES,
+                            fts_dirty=effective_fts_dirty,
+                            merge_interval=self._OPTIMIZE_EVERY_N_WRITES,
                         )
-                        time.sleep(jitter)
-                        continue
-                # Non-lock error or retries exhausted — propagate.
-                raise
-            except sqlite3.DatabaseError as exc:
-                # Corrupt FTS shadow tables make every write raise the
-                # malformed/corrupt error class through the FTS sync triggers
-                # while the canonical messages table is intact. The gateway
-                # session store has its own retry queue for transcript
-                # appends (#65637 salvage), but cron and CLI writers call
-                # SessionDB directly — without this, their writes hard-fail
-                # until the next process restart triggers the offline repair.
-                # Rebuild the FTS index in place (once per instance) via
-                # rebuild_fts() and retry the failed write immediately.
-                if not self._try_runtime_fts_rebuild(exc):
+                    return result
+                except sqlite3.OperationalError as exc:
+                    err_msg = str(exc).lower()
+                    if "locked" in err_msg or "busy" in err_msg:
+                        last_err = exc
+                        if attempt < self._WRITE_MAX_RETRIES - 1:
+                            jitter = random.uniform(
+                                self._WRITE_RETRY_MIN_S,
+                                self._WRITE_RETRY_MAX_S,
+                            )
+                            time.sleep(jitter)
+                            continue
+                    # Non-lock error or retries exhausted — propagate.
                     raise
-                continue
+                except sqlite3.DatabaseError as exc:
+                    # Corrupt FTS shadow tables make every write raise the
+                    # malformed/corrupt error class through the FTS sync triggers
+                    # while the canonical messages table is intact. The gateway
+                    # session store has its own retry queue for transcript
+                    # appends (#65637 salvage), but cron and CLI writers call
+                    # SessionDB directly — without this, their writes hard-fail
+                    # until the next process restart triggers the offline repair.
+                    # Rebuild the FTS index in place (once per instance) via
+                    # rebuild_fts() and retry the failed write immediately.
+                    if not self._try_runtime_fts_rebuild(exc):
+                        raise
+                    continue
         # Retries exhausted (shouldn't normally reach here).
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"
@@ -2002,12 +2527,11 @@ class SessionDB:
         return True
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort PASSIVE WAL checkpoint.  Never raises.
+        """Run an explicit best-effort PASSIVE WAL checkpoint. Never raises.
 
-        Flushes committed WAL frames back into the main DB file without
-        requiring an exclusive lock.  PASSIVE is safe for frequent
-        periodic use because it does not block concurrent writers and
-        cannot corrupt B-tree pages under I/O pressure.
+        Automatic cadence is handled on the maintenance worker's independent
+        connection; this compatibility helper remains for explicit callers.
+        PASSIVE flushes committed WAL frames without an exclusive lock.
 
         PASSIVE does not truncate the WAL file — it stays at its
         high-water mark.  WAL truncation happens in :meth:`close`
@@ -2019,7 +2543,7 @@ class SessionDB:
         from checkpointing thousands of frames at once (issue #45383).
         """
         try:
-            with self._lock:
+            with self._connection_write_locks():
                 result = self._conn.execute(
                     "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
@@ -2032,35 +2556,95 @@ class SessionDB:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
     def _try_optimize_fts(self) -> None:
-        """Best-effort FTS5 segment merge. Never raises.
+        """Run an explicit best-effort full FTS5 optimize. Never raises.
 
-        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
-        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
-        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
-        never reach the write path, so this is implicitly skipped for them.
-        Once the index is merged the 'optimize' command is close to free, so
-        the steady-state cost is negligible; the expensive case is only the
-        first merge of a long-neglected index.
+        Automatic maintenance never calls this method: foreground writes
+        enqueue bounded ``merge`` slices on the shared background coordinator.
+        Keep full optimize for explicit maintenance windows only.
         """
         try:
             self.optimize_fts()
         except Exception:
             pass  # Best effort — never fatal.
 
-    def close(self):
+    def close(self, *, checkpoint: bool = True, force_checkpoint: bool = False):
         """Close the database connection.
 
-        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        The final writable SessionDB handle for this path attempts a TRUNCATE
+        checkpoint so shutdown still shrinks the WAL. Short-lived siblings do
+        not checkpoint out from under an active gateway writer. Callers on hot
+        paths may explicitly pass ``checkpoint=False``; coordinated shutdown
+        can use ``force_checkpoint=True`` after workers have drained.
         """
-        with self._lock:
-            if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
-                self._conn.close()
-                self._conn = None
+        if self._owner_pid != os.getpid():
+            # The inherited connection is intentionally retained for process
+            # exit; attempting sqlite3_close() here is unsafe after a
+            # multi-threaded fork.
+            self._conn = None
+            return
+        maintenance_release = "stopped"
+        maintenance_barrier_acquired = False
+        maintenance = self._maintenance
+        self._maintenance = None
+        if maintenance is not None:
+            # release_state_db_maintenance may join the final shared worker.
+            # This must happen before either SQLite lock is acquired below.
+            maintenance_release = release_state_db_maintenance(
+                db_key=self._db_key,
+                coordinator=maintenance,
+            )
+            if maintenance_release == "timeout":
+                logger.warning(
+                    "state.db maintenance did not stop promptly for %s; "
+                    "skipping shutdown checkpoint",
+                    self.db_path,
+                )
+            elif maintenance_release == "shared" and force_checkpoint:
+                maintenance_barrier_acquired = (
+                    maintenance.acquire_sqlite_activity_barrier()
+                )
+                if not maintenance_barrier_acquired:
+                    logger.warning(
+                        "state.db maintenance remained active for %s; "
+                        "skipping forced shutdown checkpoint",
+                        self.db_path,
+                    )
+        try:
+            with self._write_operation_lock:
+                if self._conn:
+                    should_checkpoint = (
+                        checkpoint
+                        and (
+                            maintenance_release == "stopped"
+                            or maintenance_barrier_acquired
+                        )
+                        and not self.read_only
+                        and (
+                            force_checkpoint
+                            or not self._writer_registered
+                            or _process_db_writer_count(self.db_path) <= 1
+                        )
+                    )
+                    if should_checkpoint:
+                        try:
+                            with self._connection_write_locks():
+                                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                                self._conn.close()
+                                self._conn = None
+                        except Exception as exc:
+                            logger.debug(
+                                "WAL checkpoint (TRUNCATE) at close failed: %s", exc
+                            )
+                    if self._conn:
+                        with self._lock:
+                            self._conn.close()
+                            self._conn = None
+        finally:
+            if maintenance_barrier_acquired and maintenance is not None:
+                maintenance.release_sqlite_activity_barrier()
+            if self._writer_registered:
+                _unregister_process_db_writer(self.db_path)
+                self._writer_registered = False
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #
@@ -3132,6 +3716,10 @@ class SessionDB:
                         self._rebuild_legacy_fts_indexes(
                             cursor, include_trigram=trigram_enabled
                         )
+                    self._ensure_fts_update_trigger_layout(
+                        cursor,
+                        include_trigram=trigram_enabled,
+                    )
             else:
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
@@ -3156,6 +3744,10 @@ class SessionDB:
                     # CJK-bigram index (cjk_unicode61). Strictly additive to
                     # the surfaces above and gated on the loadable tokenizer:
                     self._ensure_fts_cjk_schema(cursor)
+                    self._ensure_fts_update_trigger_layout(
+                        cursor,
+                        include_trigram=trigram_enabled,
+                    )
 
         self._conn.commit()
 
@@ -3410,36 +4002,108 @@ class SessionDB:
         self._execute_write(_do)
 
     def replace_gateway_routing_entries(
-        self, entries: Dict[str, str], *, scope: str = ""
-    ) -> None:
+        self,
+        entries: Dict[str, str],
+        *,
+        scope: str = "",
+        generation: Optional[int] = None,
+    ) -> bool:
         """Atomically replace the routing index for *scope* with *entries*.
 
         Mirrors the sessions.json full-rewrite semantics: keys absent from
         *entries* are removed (pruned/reset sessions disappear from the
-        index).  Runs as a single write transaction.  Other scopes are
-        untouched.
+        index). The implementation only writes changed rows, so updating one
+        active session no longer deletes and reinserts every routing key.
+
+        When *generation* is provided, rows and the scoped generation marker
+        commit in the same transaction. Stale generations are ignored. Returns
+        True when the snapshot was applied and False when it was stale.
         """
         now = time.time()
+        valid_entries = {k: v for k, v in entries.items() if k and v}
+        generation_key = f"gateway_routing_generation:{scope}"
+        applied = {"value": True}
 
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
-                conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(scope, k, v, now) for k, v in entries.items() if k and v],
-                )
+            if generation is not None:
+                row = conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (generation_key,),
+                ).fetchone()
+                try:
+                    current_generation = int(row[0]) if row is not None else 0
+                except (TypeError, ValueError):
+                    current_generation = 0
+                if generation <= current_generation:
+                    applied["value"] = False
+                    return
 
-        self._execute_write(_do)
-
-    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
-        """Load routing entries for *scope* as {session_key: entry_json}."""
-        with self._lock:
-            rows = self._conn.execute(
+            existing_rows = conn.execute(
                 "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
                 (scope,),
             ).fetchall()
-        return {r["session_key"]: r["entry_json"] for r in rows}
+            existing = {row[0]: row[1] for row in existing_rows}
+
+            deleted = sorted(set(existing) - set(valid_entries))
+            if deleted:
+                conn.executemany(
+                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                    [(scope, key) for key in deleted],
+                )
+
+            changed = {
+                key: value
+                for key, value in valid_entries.items()
+                if existing.get(key) != value
+            }
+            if changed:
+                conn.executemany(
+                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(scope, session_key) DO UPDATE SET "
+                    "entry_json = excluded.entry_json, "
+                    "updated_at = excluded.updated_at",
+                    [(scope, key, value, now) for key, value in changed.items()],
+                )
+
+            if generation is not None:
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (generation_key, str(generation)),
+                )
+
+        self._execute_write(_do)
+        return applied["value"]
+
+    def load_gateway_routing_state(
+        self, *, scope: str = ""
+    ) -> Tuple[Dict[str, str], int]:
+        """Load one routing snapshot and its atomically committed generation."""
+        generation_key = f"gateway_routing_generation:{scope}"
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                rows = self._conn.execute(
+                    "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
+                    (scope,),
+                ).fetchall()
+                generation_row = self._conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (generation_key,),
+                ).fetchone()
+            finally:
+                self._conn.rollback()
+        try:
+            generation = int(generation_row[0]) if generation_row is not None else 0
+        except (TypeError, ValueError):
+            generation = 0
+        return ({row["session_key"]: row["entry_json"] for row in rows}, generation)
+
+    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
+        """Load routing entries for *scope* as {session_key: entry_json}."""
+        entries, _generation = self.load_gateway_routing_state(scope=scope)
+        return entries
 
     def delete_gateway_routing_entries(
         self, session_keys: List[str], *, scope: str = ""
@@ -4921,6 +5585,7 @@ class SessionDB:
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      AND COALESCE(child.end_reason, '') != 'orphaned_compression'
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -5578,19 +6243,62 @@ class SessionDB:
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        return self._execute_write(_do, fts_dirty=True)
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
-        """Insert *messages* as fresh active rows for *session_id*.
+    def append_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> int:
+        """Append a group of messages in one atomic write transaction.
 
-        Shared by :meth:`replace_messages` (delete-then-insert) and
-        :meth:`archive_and_compact` (soft-archive-then-insert). Runs inside the
-        caller's write transaction (takes the live ``conn``). Returns
-        ``(inserted_count, tool_call_count)``. Does NOT touch sessions.* counters
-        — the caller owns that, since the two flows reconcile counts differently.
+        A normal agent turn can add a user row, an assistant tool request,
+        several tool results, and a final assistant row. Entering SQLite's
+        single-writer lane once per row multiplies contention with concurrent
+        gateway sessions and can leave a durable prefix when a later row fails.
+        This method inserts the complete group and advances session counters in
+        the same transaction, so callers observe either the whole batch or none
+        of it.
+        """
+        if not messages:
+            return 0
+
+        # Freeze and serialize every value before acquiring BEGIN IMMEDIATE.
+        # Large tool results and reasoning payloads must not consume time in
+        # SQLite's single-writer lane, and retries must replay identical input.
+        prepared_rows, tool_calls_total = self._prepare_message_rows(messages)
+
+        def _do(conn):
+            inserted = self._insert_prepared_message_rows(
+                conn, session_id, prepared_rows
+            )
+            conn.execute(
+                """UPDATE sessions
+                   SET message_count = message_count + ?,
+                       tool_call_count = tool_call_count + ?
+                   WHERE id = ?""",
+                (inserted, tool_calls_total, session_id),
+            )
+            return inserted
+
+        return self._execute_write(
+            _do,
+            write_units=len(prepared_rows),
+            fts_dirty=True,
+        )
+
+    def _prepare_message_rows(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[List[tuple[Any, ...]], int]:
+        """Normalize message dictionaries into immutable SQLite parameters.
+
+        This work intentionally happens outside write transactions for the
+        append path. ``replace_messages`` and compaction reuse the same helper
+        to keep row encoding identical across all persistence flows.
         """
         now_ts = time.time()
-        inserted = 0
+        prepared_rows: List[tuple[Any, ...]] = []
         tool_calls_total = 0
         for msg in messages:
             role = msg.get("role", "unknown")
@@ -5604,8 +6312,13 @@ class SessionDB:
                     else:
                         message_timestamp = float(ts_value)
                 except (TypeError, ValueError):
-                    logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
-            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                    logger.debug(
+                        "Ignoring invalid explicit message timestamp: %r",
+                        msg.get("timestamp"),
+                    )
+            reasoning_details = (
+                msg.get("reasoning_details") if role == "assistant" else None
+            )
             codex_reasoning_items = (
                 msg.get("codex_reasoning_items") if role == "assistant" else None
             )
@@ -5631,22 +6344,13 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-            # Accept either `platform_message_id` (new explicit name) or
-            # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
                 msg.get("platform_message_id") or msg.get("message_id")
             )
-
             api_content = msg.get("api_content")
 
-            conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            prepared_rows.append(
                 (
-                    session_id,
                     role,
                     self._encode_content(msg.get("content")),
                     msg.get("tool_call_id"),
@@ -5656,23 +6360,67 @@ class SessionDB:
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    _scrub_surrogates(msg.get("reasoning")) if role == "assistant" else None,
-                    _scrub_surrogates(msg.get("reasoning_content")) if role == "assistant" else None,
+                    (
+                        _scrub_surrogates(msg.get("reasoning"))
+                        if role == "assistant"
+                        else None
+                    ),
+                    (
+                        _scrub_surrogates(msg.get("reasoning_content"))
+                        if role == "assistant"
+                        else None
+                    ),
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                ),
+                    (
+                        _scrub_surrogates(api_content)
+                        if isinstance(api_content, str)
+                        else None
+                    ),
+                )
             )
-            inserted += 1
             if tool_calls is not None:
                 tool_calls_total += (
                     len(tool_calls) if isinstance(tool_calls, list) else 1
                 )
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
+        return prepared_rows, tool_calls_total
+
+    @staticmethod
+    def _insert_prepared_message_rows(
+        conn: sqlite3.Connection,
+        session_id: str,
+        prepared_rows: List[tuple[Any, ...]],
+    ) -> int:
+        """Insert pre-normalized rows while holding the caller's transaction."""
+        for row in prepared_rows:
+            conn.execute(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                   codex_message_items, platform_message_id, observed, active, api_content)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, *row),
+            )
+        return len(prepared_rows)
+
+    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+        """Insert *messages* as fresh active rows for *session_id*.
+
+        Shared by :meth:`replace_messages` (delete-then-insert) and
+        :meth:`archive_and_compact` (soft-archive-then-insert). Runs inside the
+        caller's write transaction (takes the live ``conn``). Returns
+        ``(inserted_count, tool_call_count)``. Does NOT touch sessions.* counters
+        — the caller owns that, since the two flows reconcile counts differently.
+        """
+        prepared_rows, tool_calls_total = self._prepare_message_rows(messages)
+        inserted = self._insert_prepared_message_rows(
+            conn, session_id, prepared_rows
+        )
         return inserted, tool_calls_total
 
     def replace_messages(
@@ -5721,7 +6469,11 @@ class SessionDB:
                 (total_messages, total_tool_calls, session_id),
             )
 
-        self._execute_write(_do)
+        self._execute_write(
+            _do,
+            write_units=max(1, len(messages)),
+            fts_dirty=True,
+        )
 
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.
@@ -5787,7 +6539,11 @@ class SessionDB:
             )
             return inserted
 
-        return self._execute_write(_do)
+        return self._execute_write(
+            _do,
+            write_units=max(1, len(compacted_messages)),
+            fts_dirty=bool(compacted_messages),
+        )
 
     def set_latest_user_api_content(
         self, session_id: str, content: Any, api_content: str
@@ -8095,7 +8851,11 @@ class SessionDB:
                 "errors": [],
             }
 
-        return self._execute_write(_do)
+        return self._execute_write(
+            _do,
+            write_units=max(1, total_messages),
+            fts_dirty=bool(total_messages),
+        )
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
@@ -8107,7 +8867,7 @@ class SessionDB:
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
-        self._execute_write(_do)
+        self._execute_write(_do, fts_dirty=True)
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
@@ -8170,7 +8930,7 @@ class SessionDB:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
 
-        deleted = self._execute_write(_do)
+        deleted = self._execute_write(_do, fts_dirty=True)
         if deleted:
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
@@ -8295,7 +9055,7 @@ class SessionDB:
             removed_ids.extend(existing)
             return len(existing)
 
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, fts_dirty=True)
         for sid in removed_delegate_ids:
             self._remove_session_files(sessions_dir, sid)
         for sid in removed_ids:
@@ -8389,7 +9149,7 @@ class SessionDB:
                 removed_ids.append(sid)
             return len(session_ids)
 
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, fts_dirty=True)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -8635,7 +9395,7 @@ class SessionDB:
                 removed_ids.append(sid)
             return len(session_ids)
 
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, fts_dirty=True)
         # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
@@ -9086,6 +9846,53 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def rebind_telegram_topic_if_current(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        expected_session_id: str,
+        new_session_id: str,
+        user_id: str,
+        session_key: str,
+    ) -> bool:
+        """CAS a topic binding from one session to its compression child.
+
+        Compression route publication and Telegram topic persistence cannot be
+        one transaction because SessionStore owns the former.  Guarding this
+        write with the parent session id ensures a concurrent /new or /resume
+        binding always wins instead of being overwritten by a stale worker.
+        The method intentionally never creates a missing binding.
+        """
+        now = time.time()
+
+        def _do(conn):
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE telegram_dm_topic_bindings
+                    SET user_id = ?, session_key = ?, session_id = ?,
+                        updated_at = ?
+                    WHERE chat_id = ? AND thread_id = ? AND session_id = ?
+                    """,
+                    (
+                        str(user_id),
+                        str(session_key),
+                        str(new_session_id),
+                        now,
+                        str(chat_id),
+                        str(thread_id),
+                        str(expected_session_id),
+                    ),
+                )
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    return 0
+                raise
+            return cursor.rowcount or 0
+
+        return bool(self._execute_write(_do))
+
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
         """Return True if a Hermes session is already bound to any Telegram DM topic.
 
@@ -9223,10 +10030,12 @@ class SessionDB:
         disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
         it is safe to call unconditionally.
 
-        Returns the number of FTS indexes that were optimized.
+        This full rewrite can be expensive on a neglected large database and
+        is therefore reserved for explicit maintenance windows. Returns the
+        number of FTS indexes that were optimized.
         """
         optimized = 0
-        with self._lock:
+        with self._connection_write_locks():
             for tbl in self._FTS_TABLES:
                 if not self._fts_table_exists(tbl):
                     continue
@@ -9257,7 +10066,7 @@ class SessionDB:
         Returns the number of FTS indexes that were rebuilt.
         """
         rebuilt = 0
-        with self._lock:
+        with self._connection_write_locks():
             for tbl in self._FTS_TABLES:
                 if not self._fts_table_exists(tbl):
                     continue
@@ -9303,7 +10112,7 @@ class SessionDB:
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
-        with self._lock:
+        with self._connection_write_locks():
             # Best-effort WAL checkpoint first, then VACUUM.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

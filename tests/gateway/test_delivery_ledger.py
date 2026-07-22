@@ -9,6 +9,7 @@ id stability, and the startup redelivery sweep's contract:
 - poison rows abandon at the attempts cap / stale cutoff
 """
 
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -255,6 +256,26 @@ class TestGatewayRedeliverySweep:
 
         assert n == 0
         assert _row("ob-1")["state"] == "failed"
+
+    @pytest.mark.parametrize("success", [True, False])
+    @pytest.mark.asyncio
+    async def test_delivery_state_update_runs_off_event_loop(self, success):
+        _record()
+        _orphan("ob-1")
+        runner = self._runner(self._adapter(success=success))
+        loop_thread = threading.get_ident()
+        update_threads = []
+
+        def record_update(*_args, **_kwargs):
+            update_threads.append(threading.get_ident())
+
+        with patch(
+            "gateway.delivery_ledger.mark_delivered", side_effect=record_update
+        ), patch("gateway.delivery_ledger.mark_failed", side_effect=record_update):
+            await runner._redeliver_pending_obligations()
+
+        assert update_threads
+        assert all(thread_id != loop_thread for thread_id in update_threads)
 
     @pytest.mark.asyncio
     async def test_missing_adapter_leaves_row_recoverable(self):

@@ -594,6 +594,7 @@ class TestPreloadResumedSession:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "reopen_session", "title": None}
         mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.resolve_resume_session_id.return_value = "reopen_session"
         mock_conn = MagicMock()
         mock_db._conn = mock_conn
         cli._session_db = mock_db
@@ -602,11 +603,11 @@ class TestPreloadResumedSession:
         cli.console.file = buf
         cli._preload_resumed_session()
 
-        # Should have executed UPDATE to clear ended_at
-        mock_conn.execute.assert_called_once()
-        call_args = mock_conn.execute.call_args
-        assert "ended_at = NULL" in call_args[0][0]
-        mock_conn.commit.assert_called_once()
+        # Reopening must go through SessionDB's coordinated write path rather
+        # than bypassing it through the raw sqlite connection.
+        mock_db.reopen_session.assert_called_once_with("reopen_session")
+        mock_conn.execute.assert_not_called()
+        mock_conn.commit.assert_not_called()
 
     def test_singular_user_message_grammar(self):
         """1 user message should say 'message' not 'messages'."""

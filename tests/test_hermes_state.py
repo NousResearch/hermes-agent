@@ -699,6 +699,12 @@ class TestSessionLifecycle:
             # that lacks the fts5 module — both init paths must degrade.
             assert db._fts_table_exists("messages_fts") is False
             assert db._fts_table_exists("messages_fts_trigram") is False
+            assert db._maintenance.wait_idle(timeout_s=10)
+            requested_before = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            db._OPTIMIZE_EVERY_N_WRITES = 1
 
             db.create_session(session_id="s1", source="cli")
             db.append_message("s1", role="user", content="hello from sqlite without fts")
@@ -707,6 +713,12 @@ class TestSessionLifecycle:
             assert len(messages) == 1
             assert messages[0]["content"] == "hello from sqlite without fts"
             assert db.search_messages("hello") == []
+            requested_after = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            assert requested_after == requested_before
+            assert db._maintenance.wait_idle(timeout_s=2)
         finally:
             db.close()
 
@@ -734,6 +746,12 @@ class TestSessionLifecycle:
             assert db._fts_enabled is False
             assert db.get_session("s1") is not None
             assert len(db.get_messages("s1")) == 1
+            assert db._maintenance.wait_idle(timeout_s=10)
+            requested_before = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            db._OPTIMIZE_EVERY_N_WRITES = 1
 
             # Existing FTS triggers must be disabled too; otherwise this write
             # would try to insert into an unusable FTS virtual table.
@@ -741,6 +759,12 @@ class TestSessionLifecycle:
             messages = db.get_messages("s1")
             assert len(messages) == 2
             assert messages[1]["content"] == "after runtime change"
+            requested_after = db._conn.execute(
+                "SELECT requested_seq FROM state_maintenance_jobs "
+                "WHERE job_name = 'fts_merge'"
+            ).fetchone()[0]
+            assert requested_after == requested_before
+            assert db._maintenance.wait_idle(timeout_s=2)
         finally:
             db.close()
 
@@ -5240,38 +5264,49 @@ class TestOptimizeFts:
         # Search still works after repeated optimization.
         assert len(db.search_messages("repeat")) == 1
 
-    def test_write_path_optimizes_fts_on_cadence(self, db, monkeypatch):
-        """Writes periodically merge FTS segments so they never accumulate
-        into the tens-of-thousands that lengthen the write-lock hold and
-        starve competing writers ("database is locked")."""
-        db._OPTIMIZE_EVERY_N_WRITES = 5
+    def test_write_path_queues_bounded_merge_without_full_optimize(
+        self, db, monkeypatch
+    ):
+        """Message writes drain durable merge debt without full optimize."""
+        assert db._maintenance.wait_idle(timeout_s=10)
+        db._OPTIMIZE_EVERY_N_WRITES = 1
+        before = db._conn.execute(
+            "SELECT requested_seq FROM state_maintenance_jobs "
+            "WHERE job_name = 'fts_merge'"
+        ).fetchone()[0]
         calls = {"n": 0}
-        real_optimize = db.optimize_fts
 
         def _counting_optimize():
             calls["n"] += 1
-            return real_optimize()
+            return 0
 
         monkeypatch.setattr(db, "optimize_fts", _counting_optimize)
-        # create_session is write #1; appends are #2.. -> #5 and #10 trigger.
         db.create_session(session_id="s1", source="cli")
         for i in range(9):
             db.append_message(session_id="s1", role="user", content=f"needle {i}")
-        assert calls["n"] == 2
-        # The auto-merge is layout-only: search is unaffected.
+        assert db._maintenance.wait_idle(timeout_s=10)
+        job = db._conn.execute(
+            "SELECT requested_seq, completed_seq, state "
+            "FROM state_maintenance_jobs WHERE job_name = 'fts_merge'"
+        ).fetchone()
+        assert tuple(job) == (before + 9, before + 9, "idle")
+        assert calls["n"] == 0
         assert len(db.search_messages("needle")) == 9
 
     def test_write_path_optimize_failure_never_breaks_write(self, db, monkeypatch):
-        """A failing periodic optimize must not fail the surrounding write."""
-        db._OPTIMIZE_EVERY_N_WRITES = 2
+        """The foreground path never invokes the manual full optimize API."""
+        called = False
 
         def _boom():
+            nonlocal called
+            called = True
             raise sqlite3.OperationalError("simulated optimize failure")
 
         monkeypatch.setattr(db, "optimize_fts", _boom)
-        db.create_session(session_id="s1", source="cli")  # write #1
-        # write #2 trips the cadence; the swallowed failure must not propagate.
+        db.create_session(session_id="s1", source="cli")
         db.append_message(session_id="s1", role="user", content="still persists")
+        assert db._maintenance.wait_idle(timeout_s=10)
+        assert called is False
         assert len(db.get_messages("s1")) == 1
 
 
@@ -5517,6 +5552,268 @@ class TestFTS5ToolCallIndexing:
 
         assert db.search_messages("ORIGINALTOOL") == []
         assert len(db.search_messages("RENAMEDTOOL")) == 1
+
+    def test_metadata_only_archive_does_not_reindex_fts(self, db):
+        """Archiving history must not rewrite unchanged full-text entries."""
+        db.create_session(session_id="s1", source="cli")
+        for index in range(5):
+            db.append_message(
+                "s1",
+                role="user",
+                content=f"archive_probe_{index}",
+            )
+
+        before = db._conn.total_changes
+        db.archive_and_compact("s1", [])
+
+        # Five canonical metadata updates plus one session-counter update.
+        # Any larger delta means the unchanged content was rewritten through
+        # one or both FTS indexes.
+        assert db._conn.total_changes - before == 6
+        assert db.get_messages("s1") == []
+        assert len(db.get_messages("s1", include_inactive=True)) == 5
+        for index in range(5):
+            assert len(db.search_messages(f"archive_probe_{index}")) == 1
+
+    def test_reopen_upgrades_legacy_unconditional_fts_update_triggers(
+        self, tmp_path, monkeypatch
+    ):
+        """Existing databases must receive selective triggers without rebuild."""
+        db_path = tmp_path / "legacy-update-trigger.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            for index in range(3):
+                seeded.append_message(
+                    "s1",
+                    role="user",
+                    content=f"legacy_archive_probe_{index}",
+                )
+            seeded._conn.executescript(
+                """
+                DROP TRIGGER IF EXISTS messages_fts_update;
+                CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid = old.id;
+                    INSERT INTO messages_fts(rowid, content) VALUES (
+                        new.id,
+                        COALESCE(new.content, '') || ' ' ||
+                        COALESCE(new.tool_name, '') || ' ' ||
+                        COALESCE(new.tool_calls, '')
+                    );
+                END;
+                DROP TRIGGER IF EXISTS messages_fts_trigram_update;
+                CREATE TRIGGER messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+                    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+                    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+                        new.id,
+                        COALESCE(new.content, '') || ' ' ||
+                        COALESCE(new.tool_name, '') || ' ' ||
+                        COALESCE(new.tool_calls, '')
+                    );
+                END;
+                DELETE FROM state_meta
+                WHERE key IN (
+                    'fts_update_trigger_layout_version',
+                    'fts_trigram_update_trigger_layout_version'
+                );
+                """
+            )
+            seeded._conn.commit()
+        finally:
+            seeded.close()
+
+        # Simulate one startup on a SQLite runtime that has base FTS5 but no
+        # trigram tokenizer. It may mark the base trigger complete, but must
+        # leave the legacy trigram trigger eligible for a later upgrade.
+        original_ensure_fts_schema = SessionDB._ensure_fts_schema
+
+        def _without_trigram(self, cursor, table_name, ddl):
+            if table_name == "messages_fts_trigram":
+                return False
+            return original_ensure_fts_schema(self, cursor, table_name, ddl)
+
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                SessionDB,
+                "_ensure_fts_schema",
+                _without_trigram,
+            )
+            base_only = SessionDB(db_path=db_path)
+            base_only.close()
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            before = reopened._conn.total_changes
+            reopened.archive_and_compact("s1", [])
+            assert reopened._conn.total_changes - before == 4
+            for index in range(3):
+                assert len(
+                    reopened.search_messages(f"legacy_archive_probe_{index}")
+                ) == 1
+
+            def _update_indexed_content(conn):
+                conn.execute(
+                    "UPDATE messages SET content = ? "
+                    "WHERE session_id = ? AND content = ?",
+                    ("MIGRATEDNEWTOKEN", "s1", "legacy_archive_probe_0"),
+                )
+
+            reopened._execute_write(_update_indexed_content)
+            assert reopened.search_messages("legacy_archive_probe_0") == []
+            assert len(reopened.search_messages("MIGRATEDNEWTOKEN")) == 1
+        finally:
+            reopened.close()
+
+
+class TestBatchMessageAppend:
+    def test_append_messages_commits_one_batch_and_updates_counters(self, db):
+        db.create_session(session_id="batch", source="gateway")
+        inserted = db.append_messages(
+            "batch",
+            [
+                {"role": "user", "content": "question"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "function": {"name": "one", "arguments": "{}"}},
+                        {"id": "c2", "function": {"name": "two", "arguments": "{}"}},
+                    ],
+                },
+                {"role": "tool", "content": "first", "tool_call_id": "c1"},
+                {"role": "tool", "content": "second", "tool_call_id": "c2"},
+            ],
+        )
+
+        assert inserted == 4
+        assert [row["content"] for row in db.get_messages("batch")] == [
+            "question",
+            "",
+            "first",
+            "second",
+        ]
+        session = db.get_session("batch")
+        assert session["message_count"] == 4
+        assert session["tool_call_count"] == 2
+
+    def test_append_messages_rolls_back_rows_and_counters_together(self, db):
+        db.create_session(session_id="batch", source="gateway")
+        db._conn.executescript(
+            """
+            CREATE TRIGGER reject_batch_message
+            BEFORE INSERT ON messages
+            WHEN new.content = 'reject'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject batch');
+            END;
+            """
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="reject batch"):
+            db.append_messages(
+                "batch",
+                [
+                    {"role": "user", "content": "committed prefix"},
+                    {"role": "assistant", "content": "reject"},
+                    {"role": "assistant", "content": "unreached tail"},
+                ],
+            )
+
+        assert db.get_messages("batch") == []
+        session = db.get_session("batch")
+        assert session["message_count"] == 0
+        assert session["tool_call_count"] == 0
+
+    def test_append_messages_records_row_weighted_durable_merge_debt(
+        self, db, monkeypatch
+    ):
+        db.create_session(session_id="batch", source="gateway")
+        assert db._maintenance.wait_idle(timeout_s=10)
+        db._OPTIMIZE_EVERY_N_WRITES = 4
+        before = db._conn.execute(
+            "SELECT requested_seq FROM state_maintenance_jobs "
+            "WHERE job_name = 'fts_merge'"
+        ).fetchone()[0]
+        db._write_count = 0
+        db._CHECKPOINT_EVERY_N_WRITES = 3
+        checkpoints = []
+        optimizations = []
+        monkeypatch.setattr(
+            db, "_try_wal_checkpoint", lambda: checkpoints.append(True)
+        )
+        monkeypatch.setattr(
+            db, "_try_optimize_fts", lambda: optimizations.append(True)
+        )
+
+        db.append_messages(
+            "batch",
+            [
+                {"role": "user", "content": f"message-{index}"}
+                for index in range(5)
+            ],
+        )
+
+        assert db._write_count == 5
+        assert db._maintenance.wait_idle(timeout_s=10)
+        job = db._conn.execute(
+            "SELECT requested_seq, completed_seq FROM state_maintenance_jobs "
+            "WHERE job_name = 'fts_merge'"
+        ).fetchone()
+        assert tuple(job) == (before + 5, before + 5)
+        assert checkpoints == []
+        assert optimizations == []
+
+    def test_append_messages_round_trips_all_message_fields(self, db):
+        db.create_session(session_id="batch", source="gateway")
+        tool_calls = [
+            {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+        ]
+        reasoning_details = [{"type": "reasoning.text", "text": "detail"}]
+        codex_reasoning_items = [{"type": "reasoning", "id": "r1"}]
+        codex_message_items = [{"type": "message", "phase": "final"}]
+
+        db.append_messages(
+            "batch",
+            [
+                {
+                    "role": "assistant",
+                    "content": "clean content",
+                    "tool_name": "terminal",
+                    "tool_calls": tool_calls,
+                    "tool_call_id": "c1",
+                    "token_count": 42,
+                    "finish_reason": "tool_calls",
+                    "reasoning": "reasoning",
+                    "reasoning_content": "reasoning content",
+                    "reasoning_details": reasoning_details,
+                    "codex_reasoning_items": codex_reasoning_items,
+                    "codex_message_items": codex_message_items,
+                    "platform_message_id": "platform-123",
+                    "observed": True,
+                    "effect_disposition": "unknown",
+                    "timestamp": 1234.5,
+                    "api_content": "wire content",
+                }
+            ],
+        )
+
+        row = db.get_messages("batch")[0]
+        assert row["content"] == "clean content"
+        assert row["tool_name"] == "terminal"
+        assert row["tool_calls"] == tool_calls
+        assert row["tool_call_id"] == "c1"
+        assert row["token_count"] == 42
+        assert row["finish_reason"] == "tool_calls"
+        assert row["reasoning"] == "reasoning"
+        assert row["reasoning_content"] == "reasoning content"
+        assert json.loads(row["reasoning_details"]) == reasoning_details
+        assert json.loads(row["codex_reasoning_items"]) == codex_reasoning_items
+        assert json.loads(row["codex_message_items"]) == codex_message_items
+        assert row["platform_message_id"] == "platform-123"
+        assert row["observed"] == 1
+        assert row["effect_disposition"] == "unknown"
+        assert row["timestamp"] == 1234.5
+        assert row["api_content"] == "wire content"
 
 
 class TestFTS5ToolCallMigration:
@@ -7103,4 +7400,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

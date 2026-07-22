@@ -131,6 +131,13 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+
+
+def _new_prompt_run_thread(*args, **kwargs):
+    """Construct a prompt worker through a server-local test seam."""
+    return threading.Thread(*args, **kwargs)
+
+
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -9708,7 +9715,7 @@ def _(rid, params: dict) -> dict:
                 return
         _run_prompt_submit(rid, sid, session, text)
 
-    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+    run_thread = _new_prompt_run_thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
     # `running` flag (a turn that died without clearing it) and recover the latter.
     session["_run_thread"] = run_thread
@@ -10688,7 +10695,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 file=sys.stderr,
             )
 
-    run_thread = threading.Thread(target=run, daemon=True)
+    run_thread = _new_prompt_run_thread(target=run, daemon=True)
     session["_run_thread"] = run_thread
     run_thread.start()
 

@@ -1980,6 +1980,25 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _close_session_databases_for_shutdown(*databases) -> None:
+    """Close unique gateway DB handles and force one final WAL checkpoint."""
+    unique = []
+    for db in databases:
+        if db is None or not hasattr(db, "close"):
+            continue
+        if all(db is not existing for existing in unique):
+            unique.append(db)
+    for index, db in enumerate(unique):
+        try:
+            # Other process-level caches may still own writable SessionDB
+            # handles. Force exactly one final checkpoint after gateway work
+            # has drained so a leaked/cache handle cannot leave a multi-GB WAL
+            # across a graceful restart.
+            db.close(force_checkpoint=index == len(unique) - 1)
+        except Exception as exc:
+            logger.debug("SessionDB close error: %s", exc)
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -3231,8 +3250,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._control_executor_lock = threading.Lock()
+        self._control_executor: Optional[
+            concurrent.futures.ThreadPoolExecutor
+        ] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect
-        # the pool during a real shutdown.
+        # either pool during a real shutdown.
         self._executor_closing = False
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
@@ -4073,6 +4096,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug(
                 "telegram topic binding refresh failed (%s)", reason, exc_info=True,
             )
+
+    def _sync_compression_topic_binding(
+        self,
+        source: SessionSource,
+        *,
+        session_key: str,
+        expected_session_id: str,
+        new_session_id: str,
+        reason: str,
+    ) -> bool:
+        """Conditionally move a topic binding to a compression child.
+
+        A concurrent /new may update the binding after the SessionStore route
+        CAS but before this SQLite write. Match the parent id in the UPDATE so
+        that newer binding remains authoritative.
+        """
+        if not self._is_telegram_topic_lane(source):
+            return True
+        session_db = getattr(self, "_session_db", None)
+        session_db = getattr(session_db, "_db", session_db)
+        rebind = getattr(session_db, "rebind_telegram_topic_if_current", None)
+        if not callable(rebind):
+            logger.debug(
+                "telegram compression topic binding refresh unavailable (%s)",
+                reason,
+            )
+            return False
+        try:
+            updated = rebind(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                user_id=str(source.user_id or ""),
+                session_key=session_key,
+                expected_session_id=expected_session_id,
+                new_session_id=new_session_id,
+            )
+        except Exception:
+            logger.debug(
+                "telegram compression topic binding refresh failed (%s)",
+                reason,
+                exc_info=True,
+            )
+            return False
+        if not updated:
+            logger.info(
+                "Skipped stale Telegram compression topic binding refresh for "
+                "%s/%s (%s)",
+                source.chat_id,
+                source.thread_id,
+                reason,
+            )
+        return bool(updated)
 
     def _recover_telegram_topic_thread_id(
         self,
@@ -7215,7 +7290,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    mark_delivered(row["obligation_id"])
+                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
@@ -7224,7 +7299,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    mark_failed(
+                    await asyncio.to_thread(
+                        mark_failed,
                         row["obligation_id"],
                         str(getattr(result, "error", "") or "send failed"),
                     )
@@ -9330,13 +9406,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
             _self_db = getattr(self, "_session_db", None)
             _self_db = getattr(_self_db, "_db", _self_db)
-            for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
-                if _db is None or not hasattr(_db, "close"):
-                    continue
-                try:
-                    _db.close()
-                except Exception as _e:
-                    logger.debug("SessionDB close error: %s", _e)
+            _close_session_databases_for_shutdown(
+                _self_db,
+                getattr(getattr(self, "session_store", None), "_db", None),
+            )
             GatewayRunner._shutdown_executor(self)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
@@ -12805,74 +12878,204 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                             if len(_hyg_msgs) >= 4:
                                 _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
-                                _hyg_agent = AIAgent(
-                                    **_hyg_runtime,
-                                    model=_hyg_model,
-                                    max_iterations=4,
-                                    quiet_mode=True,
-                                    skip_memory=True,
-                                    enabled_toolsets=["memory"],
-                                    session_id=session_entry.session_id,
-                                    session_db=_hyg_session_db,
-                                )
-                                try:
-                                    # Gateway hygiene runs before the user turn
-                                    # starts and already owns the session binding.
-                                    # Prefer in-place compaction here: it archives
-                                    # old rows under the same session id instead of
-                                    # minting a continuation child that then has to
-                                    # be published back to SessionStore/topic
-                                    # bindings.  If no SessionDB is available,
-                                    # compress_context leaves this flag false and
-                                    # the guard below preserves the transcript.
-                                    _hyg_agent.compression_in_place = True
-                                    _bind_hyg_state = getattr(
-                                        getattr(_hyg_agent, "context_compressor", None),
-                                        "bind_session_state",
-                                        None,
-                                    )
-                                    if callable(_bind_hyg_state):
-                                        _bind_hyg_state(
-                                            _hyg_session_db,
-                                            session_entry.session_id,
+                                _hyg_original_sid = session_entry.session_id
+                                _hyg_snapshot = concurrent.futures.Future()
+
+                                def _run_hygiene_compression_sync():
+                                    # AIAgent construction binds compression
+                                    # state and synchronously reads SessionDB
+                                    # cooldown/fallback state. Keep the entire
+                                    # constructor -> bind -> compression chain
+                                    # on one dedicated control worker. This keeps
+                                    # SQLite contention off Discord's asyncio
+                                    # heartbeat loop and avoids queuing hygiene
+                                    # behind the gateway's finite agent-run pool.
+                                    agent = None
+                                    compression_handoff_committed = False
+                                    compression_error = None
+                                    try:
+                                        agent = AIAgent(
+                                            **_hyg_runtime,
+                                            model=_hyg_model,
+                                            max_iterations=4,
+                                            quiet_mode=True,
+                                            skip_memory=True,
+                                            enabled_toolsets=["memory"],
+                                            session_id=_hyg_original_sid,
+                                            session_db=_hyg_session_db,
                                         )
-                                    # It must never finalize on close() — close()
-                                    # would end the live gateway session row.
-                                    _hyg_agent._end_session_on_close = False
-                                    _hyg_agent._print_fn = lambda *a, **kw: None
-
-                                    loop = asyncio.get_running_loop()
-                                    _compressed, _ = await loop.run_in_executor(
-                                        None,
-                                        lambda: _hyg_agent._compress_context(
-                                            _hyg_msgs, "",
+                                        # It must never finalize on close() —
+                                        # close() would end the live gateway
+                                        # session row. Set this before binding
+                                        # so cleanup is safe even if binding or
+                                        # compression raises.
+                                        agent._end_session_on_close = False
+                                        # Gateway hygiene runs before the user
+                                        # turn starts and already owns the
+                                        # session binding. Prefer in-place
+                                        # compaction here.
+                                        agent.compression_in_place = True
+                                        bind_hyg_state = getattr(
+                                            getattr(agent, "context_compressor", None),
+                                            "bind_session_state",
+                                            None,
+                                        )
+                                        if callable(bind_hyg_state):
+                                            bind_hyg_state(
+                                                _hyg_session_db,
+                                                _hyg_original_sid,
+                                            )
+                                        agent._print_fn = lambda *a, **kw: None
+                                        compressed, _ = agent._compress_context(
+                                            _hyg_msgs,
+                                            "",
                                             approx_tokens=_approx_tokens,
-                                        ),
-                                    )
+                                        )
+                                        compressor = getattr(
+                                            agent, "context_compressor", None
+                                        )
+                                        new_session_id = agent.session_id
+                                        rotated = (
+                                            new_session_id != _hyg_original_sid
+                                        )
+                                        in_place = bool(
+                                            getattr(
+                                                agent,
+                                                "_last_compaction_in_place",
+                                                False,
+                                            )
+                                        )
+                                        # Compression can durably rotate or
+                                        # compact the SessionDB before the
+                                        # coroutine observes cancellation.
+                                        # Commit every dependent route/token
+                                        # update on this same dedicated worker
+                                        # before publishing the handoff. No
+                                        # default-executor slot is needed.
+                                        if rotated:
+                                            if not self.session_store.rewrite_transcript(
+                                                new_session_id, compressed
+                                            ):
+                                                raise RuntimeError(
+                                                    "failed to persist hygiene "
+                                                    "compression transcript for "
+                                                    f"session {new_session_id}"
+                                                )
+                                        if rotated or in_place:
+                                            committed_entry = self.session_store.commit_compression_handoff(
+                                                session_entry.session_key,
+                                                expected_session_id=(
+                                                    _hyg_original_sid
+                                                ),
+                                                new_session_id=new_session_id,
+                                            )
+                                            if committed_entry is None:
+                                                raise RuntimeError(
+                                                    "live session route changed "
+                                                    "during hygiene compression"
+                                                )
+                                            compression_handoff_committed = True
+                                        if rotated:
+                                            self._sync_compression_topic_binding(
+                                                source,
+                                                session_key=(
+                                                    session_entry.session_key
+                                                ),
+                                                expected_session_id=(
+                                                    _hyg_original_sid
+                                                ),
+                                                new_session_id=new_session_id,
+                                                reason="hygiene-compression",
+                                            )
+                                        # Publish only plain value snapshots.
+                                        # The worker remains the sole owner of
+                                        # the temporary agent, so coroutine
+                                        # cancellation cannot leak it.
+                                        result = {
+                                            "compressed": compressed,
+                                            "session_id": new_session_id,
+                                            "in_place": in_place,
+                                            "compress_aborted": bool(
+                                                getattr(
+                                                    compressor,
+                                                    "_last_compress_aborted",
+                                                    False,
+                                                )
+                                            ),
+                                            "summary_error": getattr(
+                                                compressor,
+                                                "_last_summary_error",
+                                                None,
+                                            ),
+                                            "aux_failure_model": getattr(
+                                                compressor,
+                                                "_last_aux_model_failure_model",
+                                                None,
+                                            ),
+                                            "aux_failure_error": getattr(
+                                                compressor,
+                                                "_last_aux_model_failure_error",
+                                                None,
+                                            ),
+                                        }
+                                    except BaseException as exc:
+                                        compression_error = exc
+                                    finally:
+                                        if agent is not None:
+                                            abandoned_session_id = getattr(
+                                                agent,
+                                                "session_id",
+                                                _hyg_original_sid,
+                                            )
+                                            if (
+                                                not compression_handoff_committed
+                                                and abandoned_session_id
+                                                != _hyg_original_sid
+                                            ):
+                                                self._retire_abandoned_compression_session(
+                                                    abandoned_session_id
+                                                )
+                                        if not _hyg_snapshot.done():
+                                            # Retire any losing continuation
+                                            # before the coroutine can observe
+                                            # failure. Cleanup remains after the
+                                            # snapshot so provider teardown cannot
+                                            # delay the triggering turn.
+                                            if compression_error is not None:
+                                                _hyg_snapshot.set_exception(
+                                                    compression_error
+                                                )
+                                            else:
+                                                _hyg_snapshot.set_result(result)
+                                        if agent is not None:
+                                            self._cleanup_agent_resources(agent)
 
+                                _hyg_cancellation = None
+                                try:
+                                    self._submit_owned_worker(
+                                        _run_hygiene_compression_sync,
+                                        snapshot=_hyg_snapshot,
+                                    )
+                                    _hyg_result, _hyg_cancellation = (
+                                        await self._await_owned_worker_snapshot(
+                                            _hyg_snapshot
+                                        )
+                                    )
+                                    _compressed = _hyg_result["compressed"]
                                     # _compress_context ends the old session and creates
                                     # a new session_id.  Write compressed messages into
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
-                                    _hyg_new_sid = _hyg_agent.session_id
-                                    _hyg_rotated = _hyg_new_sid != session_entry.session_id
-                                    _hyg_in_place = bool(
-                                        getattr(_hyg_agent, "_last_compaction_in_place", False)
-                                    )
+                                    _hyg_new_sid = _hyg_result["session_id"]
+                                    _hyg_rotated = _hyg_new_sid != _hyg_original_sid
+                                    _hyg_in_place = _hyg_result["in_place"]
                                     if _hyg_rotated:
-                                        session_entry.session_id = _hyg_new_sid
                                         # The held turn lease follows the
                                         # rotation so an alias key resolving
                                         # the fresh child still serializes
                                         # against this turn (#64934).
                                         self._rebind_turn_lease(
                                             _quick_key, run_generation, _hyg_new_sid
-                                        )
-                                        await self.async_session_store._save()
-                                        await asyncio.to_thread(
-                                            self._sync_telegram_topic_binding,
-                                            source, session_entry,
-                                            reason="hygiene-compression",
                                         )
 
                                     # Only rewrite the transcript when rotation produced
@@ -12896,10 +13099,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # messages and replace them with only the compressed
                                     # summary (permanent data loss, #21301).
                                     if _hyg_rotated:
-                                        await self.async_session_store.rewrite_transcript(
-                                            session_entry.session_id, _compressed
-                                        )
-                                        # Reset stored token count — transcript rewritten
+                                        # The control worker already rewrote
+                                        # the child transcript and durably
+                                        # repointed the route before handoff.
                                         session_entry.last_prompt_tokens = 0
                                         history = _compressed
                                         _new_count = len(_compressed)
@@ -12954,9 +13156,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # is "frozen" at the current size and can
                                     # /compress to retry or /reset to start
                                     # fresh.
-                                    _comp = getattr(_hyg_agent, "context_compressor", None)
-                                    if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
-                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
+                                    if _hyg_result["compress_aborted"]:
+                                        _err = _hyg_result["summary_error"] or "unknown error"
                                         # Force-redact: provider exception text
                                         # may contain credentials; this message
                                         # reaches gateway users directly.
@@ -12985,9 +13186,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # misconfigured auxiliary.compression.model
                                     # is something only they can fix, and
                                     # silent recovery would hide it.
-                                    elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
-                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                    elif _hyg_result["aux_failure_model"]:
+                                        _aux_model = _hyg_result["aux_failure_model"]
+                                        _aux_err = _hyg_result["aux_failure_error"] or "unknown error"
                                         _aux_msg = (
                                             f"ℹ️ Configured compression model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
@@ -13008,14 +13209,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # rebuilds its system prompt from current
                                     # SOUL.md, memory, and skills.
                                     self._evict_cached_agent(session_key)
-                                    await self._cleanup_agent_resources_off_loop(
-                                        _hyg_agent, context="session hygiene"
-                                    )
+                                    if _hyg_cancellation is not None:
+                                        # Compression may already have rotated
+                                        # or compacted durable session state.
+                                        # Propagate cancellation only after the
+                                        # route/transcript metadata above has
+                                        # been brought into agreement.
+                                        raise _hyg_cancellation
 
                     except Exception as e:
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e
                         )
+
+        # /new and /stop intentionally bypass the pending-agent sentinel. They
+        # can invalidate this turn while it is awaiting SessionDB reads or
+        # hygiene compression, before a real AIAgent exists to interrupt. Never
+        # continue preprocessing or launch a model for that stale generation.
+        if not self._is_session_run_current(_quick_key, run_generation):
+            logger.info(
+                "Discarding stale pre-agent turn for %s — generation %d is "
+                "no longer current",
+                _quick_key or "?",
+                run_generation,
+            )
+            return
 
         # First-message onboarding -- only on the very first interaction ever.
         # Delivered on the current user message (sidecar), NOT the ephemeral
@@ -13184,21 +13402,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
 
-        # Stage the collected must-deliver notes for this turn's agent run
-        # (one-shot; consumed in run_sync).  Staged AFTER the message_text
-        # early-out above so an aborted turn cannot leak its notes into the
-        # next turn's user message.
-        if turn_sidecar_notes and session_key:
-            self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
-
-        # Bind this gateway run generation to the adapter's active-session
-        # event so deferred post-delivery callbacks can be released by the
-        # same run that registered them.
-        self._bind_adapter_run_generation(
-            self._adapter_for_source(source),
-            session_key,
-            run_generation,
-        )
+        # Preprocessing above can await vision/profile work. A concurrent /new
+        # may invalidate this turn while that work is suspended, so check again
+        # before publishing any one-shot sidecars or lifecycle hooks.
+        if not self._is_session_run_current(_quick_key, run_generation):
+            logger.info(
+                "Discarding stale pre-launch turn for %s — generation %d is "
+                "no longer current",
+                _quick_key or "?",
+                run_generation,
+            )
+            return
 
         try:
             # Emit agent:start hook
@@ -13212,6 +13426,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)
+
+            # Hooks are asynchronous and can overlap a /new or /stop. This is
+            # the event-loop-side admission boundary: do not stage notes, bind
+            # callbacks, or submit a model worker after the turn went stale.
+            if not self._is_session_run_current(_quick_key, run_generation):
+                logger.info(
+                    "Discarding stale hooked turn for %s — generation %d is "
+                    "no longer current",
+                    _quick_key or "?",
+                    run_generation,
+                )
+                return
+
+            # Stage the collected must-deliver notes for this turn's agent run
+            # (one-shot; consumed in run_sync). Staging after every pre-launch
+            # await prevents an invalidated turn from leaking notes into the
+            # fresh session's first message.
+            if turn_sidecar_notes and session_key:
+                self._set_pending_turn_sidecar_notes(
+                    session_key, turn_sidecar_notes
+                )
+
+            # Bind this gateway run generation to the adapter's active-session
+            # event so deferred post-delivery callbacks can be released by the
+            # same run that registered them.
+            self._bind_adapter_run_generation(
+                self._adapter_for_source(source),
+                session_key,
+                run_generation,
+            )
 
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
@@ -16710,6 +16954,96 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             *args,
         )
 
+    def _submit_owned_worker(
+        self,
+        func,
+        *args,
+        snapshot: Optional[concurrent.futures.Future] = None,
+    ) -> asyncio.Future:
+        """Submit and retain control work that owns live resources."""
+        # Submit synchronously before the caller awaits anything. A separately
+        # scheduled asyncio.to_thread Task could itself be cancelled before it
+        # ever reaches the executor, leaving its result snapshot unresolved.
+        # Use a dedicated pool so 64 concurrent model calls cannot starve
+        # agent construction, transcript handoff, compression, or cleanup.
+        loop = asyncio.get_running_loop()
+        ctx = copy_context()
+        worker_future = loop.run_in_executor(
+            self._get_control_executor(),
+            ctx.run,
+            func,
+            *args,
+        )
+        # Keep this set separate from _background_tasks: gateway shutdown
+        # cancels that set. This Future is deliberately awaited only through a
+        # separate thread-safe snapshot, so caller cancellation cannot cancel
+        # already-submitted resource-owning work.
+        worker_tasks = getattr(self, "_owned_worker_tasks", None)
+        if not isinstance(worker_tasks, set):
+            worker_tasks = set()
+            self._owned_worker_tasks = worker_tasks
+        worker_tasks.add(worker_future)
+
+        def _complete_abandoned_snapshot(future) -> None:
+            if snapshot is None or snapshot.done():
+                return
+            if future.cancelled():
+                snapshot.set_exception(
+                    RuntimeError(
+                        "owned worker was cancelled before publishing state"
+                    )
+                )
+                return
+            try:
+                failure = future.exception()
+            except BaseException as exc:
+                failure = exc
+            snapshot.set_exception(
+                failure
+                or RuntimeError(
+                    "owned worker exited before publishing state"
+                )
+            )
+
+        worker_future.add_done_callback(_complete_abandoned_snapshot)
+        worker_future.add_done_callback(worker_tasks.discard)
+        worker_future.add_done_callback(consume_detached_task_result)
+        return worker_future
+
+    async def _await_owned_worker_snapshot(
+        self,
+        snapshot: concurrent.futures.Future,
+    ) -> tuple[Any, Optional[asyncio.CancelledError]]:
+        """Delay cancellation until an owned worker publishes safe state.
+
+        Executor cancellation cannot stop an already-running function. For a
+        worker that mutates session state, immediately unwinding would release
+        the turn lease while that mutation is still running. Shield the
+        thread-safe result future and, on cancellation, keep the coroutine
+        alive until the worker has either published its snapshot or reported
+        its failure. Worker-owned cleanup may continue independently after
+        that publication.
+        """
+        waiter = asyncio.wrap_future(snapshot)
+        try:
+            return await asyncio.shield(waiter), None
+        except asyncio.CancelledError as cancellation:
+            while not waiter.done():
+                try:
+                    await asyncio.shield(waiter)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            if waiter.done():
+                try:
+                    return waiter.result(), cancellation
+                except BaseException:
+                    # Cancellation wins when the owned operation itself also
+                    # failed before it could publish durable handoff state.
+                    raise cancellation
+            raise cancellation
+
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
         lock = getattr(self, "_executor_lock", None)
@@ -16729,24 +17063,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._executor = executor
             return executor
 
-    def _shutdown_executor(self) -> None:
-        """Stop the gateway-owned executor without touching the loop default."""
-        lock = getattr(self, "_executor_lock", None)
+    def _get_control_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the pool reserved for short, lifecycle-critical work."""
+        lock = getattr(self, "_control_executor_lock", None)
         if lock is None:
-            return
+            lock = threading.Lock()
+            self._control_executor_lock = lock
 
         with lock:
+            if getattr(self, "_executor_closing", False):
+                raise RuntimeError(
+                    "Gateway is shutting down; control executor unavailable"
+                )
+            executor = getattr(self, "_control_executor", None)
+            if executor is None or getattr(executor, "_shutdown", False):
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=8,
+                    thread_name_prefix="hermes-gateway-control",
+                )
+                self._control_executor = executor
+            return executor
+
+    def _shutdown_executor(self) -> None:
+        """Stop gateway-owned executors without touching the loop default."""
+        lock = getattr(self, "_executor_lock", None)
+        control_lock = getattr(self, "_control_executor_lock", None)
+
+        if lock is not None:
+            with lock:
+                self._executor_closing = True
+                executor = getattr(self, "_executor", None)
+                self._executor = None
+        else:
             self._executor_closing = True
-            executor = getattr(self, "_executor", None)
-            self._executor = None
+            executor = None
 
-        if executor is None:
-            return
+        if control_lock is not None:
+            with control_lock:
+                control_executor = getattr(self, "_control_executor", None)
+                self._control_executor = None
+        else:
+            control_executor = None
 
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
+        for owned_executor in (executor, control_executor):
+            if owned_executor is None:
+                continue
+            try:
+                owned_executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                owned_executor.shutdown(wait=False)
 
     def _decide_image_input_mode(
         self,
@@ -19323,7 +19688,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        def _run_still_current() -> bool:
+            if run_generation is None or not session_key:
+                return True
+            return self._is_session_run_current(session_key, run_generation)
+
+        def _stale_run_result() -> Dict[str, Any]:
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "history_offset": len(history),
+                "session_id": session_id,
+                "response_previewed": False,
+                "stale_run": True,
+            }
+
         # ---- Proxy mode: delegate to remote API server ----
+        if not _run_still_current():
+            return _stale_run_result()
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message,
@@ -19339,11 +19723,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from run_agent import AIAgent
         import queue
 
-        def _run_still_current() -> bool:
-            if run_generation is None or not session_key:
-                return True
-            return self._is_session_run_current(session_key, run_generation)
-        
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
@@ -20332,6 +20711,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
+            # The model executor can be saturated for minutes. A /new or /stop
+            # may invalidate this generation while the work item is queued, so
+            # re-check on the worker before any agent construction or API work.
+            if not _run_still_current():
+                logger.info(
+                    "Skipping stale queued agent run for %s — generation %s is "
+                    "no longer current",
+                    session_key or "?",
+                    run_generation,
+                )
+                return _stale_run_result()
+
             # session_key is propagated via contextvars in _set_session_env()
             # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
             # below — both concurrency-safe and inherited by tool worker threads.
@@ -20527,6 +20918,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             agent = None
             reused_cached_agent = False
+            created_fresh_agent = False
+            fresh_agent_cached = False
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
@@ -20760,17 +21153,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                created_fresh_agent = True
+                # Construction synchronously reads session/compression state and
+                # can block on SQLite. If a lifecycle command won during that
+                # wait, this worker owns an unusable agent: clean it up without
+                # publishing it into the cache or issuing a model request.
+                if not _run_still_current():
+                    logger.info(
+                        "Discarding stale constructed agent for %s — generation "
+                        "%s is no longer current",
+                        session_key or "?",
+                        run_generation,
+                    )
+                    try:
+                        agent._end_session_on_close = False
+                    except Exception:
+                        pass
+                    self._cleanup_agent_resources(agent)
+                    return _stale_run_result()
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
-                        # Record the session_id the snapshot was taken for
-                        # alongside the message_count, so the cross-process
-                        # guard can skip the (meaningless) count comparison
-                        # when the active session_id later switches under
-                        # the same session_key (#54947).
-                        _cache[session_key] = (
-                            agent, _sig, _current_msg_count, session_id,
-                        )
-                        self._enforce_agent_cache_cap()
+                        if _run_still_current():
+                            # Record the session_id the snapshot was taken for
+                            # alongside the message_count, so the cross-process
+                            # guard can skip the (meaningless) count comparison
+                            # when the active session_id later switches under
+                            # the same session_key (#54947).
+                            _cache[session_key] = (
+                                agent, _sig, _current_msg_count, session_id,
+                            )
+                            self._enforce_agent_cache_cap()
+                            fresh_agent_cached = True
+                    if not fresh_agent_cached:
+                        try:
+                            agent._end_session_on_close = False
+                        except Exception:
+                            pass
+                        self._cleanup_agent_resources(agent)
+                        return _stale_run_result()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             # Per-message state — callbacks and reasoning config change every
@@ -21287,6 +21707,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     ),
                 )
 
+            def _abort_stale_before_model(stage: str) -> Dict[str, Any]:
+                logger.info(
+                    "Discarding stale agent before model %s for %s — generation "
+                    "%s is no longer current",
+                    stage,
+                    session_key or "?",
+                    run_generation,
+                )
+                if created_fresh_agent:
+                    owns_cleanup = not fresh_agent_cached
+                    if fresh_agent_cached and _cache_lock and _cache is not None:
+                        with _cache_lock:
+                            cached = _cache.get(session_key)
+                            cached_agent = (
+                                cached[0]
+                                if isinstance(cached, tuple) and cached
+                                else cached
+                            )
+                            if cached_agent is agent:
+                                _cache.pop(session_key, None)
+                                owns_cleanup = True
+                    # If a lifecycle evictor already popped the cached agent,
+                    # it owns resource cleanup. Never close the same provider
+                    # concurrently from this stale worker.
+                    if owns_cleanup:
+                        try:
+                            agent._end_session_on_close = False
+                        except Exception:
+                            pass
+                        self._cleanup_agent_resources(agent)
+                return _stale_run_result()
+
+            if not _run_still_current():
+                return _abort_stale_before_model("setup")
+
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
@@ -21338,6 +21793,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                # Final worker-side admission check. Lifecycle invalidation can
+                # happen after event-loop submission or during synchronous
+                # agent/session setup; no stale turn may cross the provider API
+                # boundary even if its executor work item was already running.
+                if not _run_still_current():
+                    return _abort_stale_before_model("call")
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)

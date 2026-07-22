@@ -8,9 +8,11 @@ updates ``session_entry.session_id`` in memory AND must call
 Without ``_save()``, the next turn loads the OLD session's transcript and
 re-triggers compression forever.
 
-Three sites in ``gateway/run.py`` mutate ``session_entry.session_id`` after
-a compression-induced session split. All three MUST be followed by a
-``_save()`` call. This test pins that invariant.
+The agent-result propagation site in ``gateway/run.py`` mutates
+``session_entry.session_id`` after a compression-induced session split and
+MUST be followed by a ``_save()`` call. Worker-driven manual and hygiene
+compression use ``commit_compression_handoff()`` instead; their atomic CAS and
+durability contracts are covered by the SessionStore regression suite.
 
 ``TestCompressionSessionPropagation`` adds behavioral tests that exercise the
 actual propagation path inline, verifying that the mock session_entry update
@@ -21,8 +23,7 @@ from __future__ import annotations
 
 import ast
 import inspect
-import textwrap
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from gateway import run as gateway_run
 from gateway.session_context import set_current_session_id, get_session_env
@@ -35,59 +36,44 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
     next 5 statements (covers normal control flow without false-flagging
     cleanup that lives 200 lines away).
     """
-    tree = ast.parse(textwrap.dedent(source))
+    tree = ast.parse(source)
     results: list[tuple[int, bool]] = []
 
-    class _Visitor(ast.NodeVisitor):
-        def _is_session_id_assign(self, node: ast.AST) -> bool:
-            if not isinstance(node, ast.Assign):
-                return False
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Attribute)
-                    and target.attr == "session_id"
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "session_entry"
-                ):
-                    return True
-            return False
+    # Map every statement to the exact lexical statement list containing it.
+    # The previous hand-written recursion skipped assignments nested beneath
+    # async ``with``/``try`` combinations, making this guard fail open when the
+    # production control flow grew another nesting level.
+    positions: dict[int, tuple[list[ast.stmt], int]] = {}
+    for parent in ast.walk(tree):
+        for _field, value in ast.iter_fields(parent):
+            if not isinstance(value, list):
+                continue
+            for index, child in enumerate(value):
+                if isinstance(child, ast.stmt):
+                    positions[id(child)] = (value, index)
 
-        def _block_has_save_after(self, body: list[ast.stmt], idx: int) -> bool:
-            for stmt in body[idx : idx + 6]:
-                for sub in ast.walk(stmt):
-                    if (
-                        isinstance(sub, ast.Call)
-                        and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "_save"
-                    ):
-                        return True
-            return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        is_session_id_assignment = any(
+            isinstance(target, ast.Attribute)
+            and target.attr == "session_id"
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "session_entry"
+            for target in node.targets
+        )
+        if not is_session_id_assignment:
+            continue
+        body, index = positions[id(node)]
+        saved = any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "_save"
+            for stmt in body[index : index + 6]
+            for sub in ast.walk(stmt)
+        )
+        results.append((node.lineno, saved))
 
-        def _walk_body(self, body: list[ast.stmt]) -> None:
-            for i, stmt in enumerate(body):
-                if self._is_session_id_assign(stmt):
-                    results.append((stmt.lineno, self._block_has_save_after(body, i)))
-                for child in ast.iter_child_nodes(stmt):
-                    if isinstance(child, (ast.If, ast.For, ast.While, ast.With,
-                                          ast.Try, ast.AsyncWith, ast.AsyncFor)):
-                        self._walk_node(child)
-
-        def _walk_node(self, node: ast.AST) -> None:
-            for attr in ("body", "orelse", "finalbody"):
-                inner = getattr(node, attr, None)
-                if isinstance(inner, list):
-                    self._walk_body(inner)
-            if hasattr(node, "handlers"):
-                for handler in node.handlers:
-                    self._walk_body(handler.body)
-
-        def visit(self, node: ast.AST) -> None:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._walk_body(node.body)
-            for child in ast.iter_child_nodes(node):
-                self.visit(child)
-
-    _Visitor().visit(tree)
     return results
 
 
@@ -96,8 +82,8 @@ def test_every_post_compression_session_id_assignment_persists():
     followed by a ``session_store._save()`` call within the same block.
 
     Regression for #29335 — the assignment at the end of
-    ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
-    sites (hygiene rewrite, manual /compress) already persisted. The agent
+    ``_handle_message_with_agent`` used to skip ``_save()`` while the other
+    compression paths already persisted. The agent
     would compress correctly, the gateway would update its in-memory
     session_id, then drop it on next gateway restart.
     """

@@ -1907,6 +1907,9 @@ class AIAgent:
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
             }
+            pending_rows = []
+            pending_messages = []
+            pending_message_ids = set()
 
             for _msg_idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
@@ -1923,6 +1926,12 @@ class AIAgent:
                 if _is_ephemeral_scaffolding(msg):
                     continue
                 if msg.get(_DB_PERSISTED_MARKER):
+                    continue
+                # Preserve the old identity-dedup behavior within this flush.
+                # Markers are intentionally delayed until the atomic batch
+                # commits, so a turn-local id set prevents the same live dict
+                # object from being staged twice in the meantime.
+                if id(msg) in pending_message_ids:
                     continue
                 # Already-durable messages: either carried over from the loaded
                 # history copy, or seeded by a caller. Stamp them so future
@@ -2025,30 +2034,62 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
-                    session_id=self.session_id,
-                    role=role,
-                    content=content,
-                    tool_name=msg.get("tool_name"),
-                    tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    timestamp=_row_timestamp,
-                    api_content=_row_api_content,
+                pending_rows.append(
+                    {
+                        "role": role,
+                        "content": content,
+                        "tool_name": msg.get("tool_name"),
+                        "tool_calls": tool_calls_data,
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "token_count": msg.get("token_count"),
+                        "finish_reason": msg.get("finish_reason"),
+                        "reasoning": msg.get("reasoning") if role == "assistant" else None,
+                        "reasoning_content": (
+                            msg.get("reasoning_content") if role == "assistant" else None
+                        ),
+                        "reasoning_details": (
+                            msg.get("reasoning_details") if role == "assistant" else None
+                        ),
+                        "codex_reasoning_items": (
+                            msg.get("codex_reasoning_items") if role == "assistant" else None
+                        ),
+                        "codex_message_items": (
+                            msg.get("codex_message_items") if role == "assistant" else None
+                        ),
+                        "platform_message_id": (
+                            msg.get("platform_message_id") or msg.get("message_id")
+                        ),
+                        "observed": bool(msg.get("observed")),
+                        "effect_disposition": msg.get("effect_disposition"),
+                        "timestamp": _row_timestamp,
+                        "api_content": _row_api_content,
+                    }
                 )
-                msg[_DB_PERSISTED_MARKER] = True
+                pending_messages.append(msg)
+                pending_message_ids.add(id(msg))
+
+            if pending_rows:
+                self._session_db.append_messages(
+                    self.session_id,
+                    pending_rows,
+                )
+                # Mark only after the transaction commits. A rollback leaves
+                # every candidate eligible for the next flush, preventing a
+                # durable prefix from masquerading as a completed turn.
+                for msg in pending_messages:
+                    msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+            logger.warning("Session DB append_messages failed: %s", e)
+        finally:
+            # The seed is deliberately one-shot even when row preparation or
+            # the batch transaction fails. Retaining raw id() values across
+            # turns risks aliasing a newly allocated message after GC.
+            self._flushed_db_message_ids = set()
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

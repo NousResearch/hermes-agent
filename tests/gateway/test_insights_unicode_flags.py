@@ -3,8 +3,14 @@
 Telegram on iOS auto-converts -- to em/en dashes. The /insights handler
 normalizes these before parsing --days and --source flags.
 """
+import asyncio
 import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
+
+from gateway.slash_commands import GatewaySlashCommandsMixin
 
 
 # The regex from gateway/run.py insights handler
@@ -52,3 +58,22 @@ class TestInsightsUnicodeDashFlags:
         """Input with no flags passes through as-is."""
         assert _normalize_insights_args("") == ""
         assert _normalize_insights_args("30") == "30"
+
+
+def test_insights_handler_uses_read_only_session_db():
+    event = SimpleNamespace(get_command_args=lambda: "--days 7")
+    db = MagicMock()
+    engine = MagicMock()
+    engine.generate.return_value = {"sessions": 1}
+    engine.format_gateway.return_value = "insights"
+
+    with patch("hermes_state.SessionDB", return_value=db) as session_db, patch(
+        "agent.insights.InsightsEngine", return_value=engine
+    ):
+        result = asyncio.run(
+            GatewaySlashCommandsMixin._handle_insights_command(object(), event)
+        )
+
+    assert result == "insights"
+    session_db.assert_called_once_with(read_only=True)
+    db.close.assert_called_once_with()

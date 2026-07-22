@@ -55,9 +55,11 @@ def _make_adapter():
     adapter = _StubAdapter(config, Platform.TELEGRAM)
     adapter._busy_text_mode = ""
     adapter.sent_responses = []
+    adapter.response_sent = asyncio.Event()
 
     async def _mock_send_retry(chat_id, content, **kwargs):
         adapter.sent_responses.append(content)
+        adapter.response_sent.set()
 
     adapter._send_with_retry = _mock_send_retry
     return adapter
@@ -260,9 +262,10 @@ class TestStaleSessionLockSelfHeal:
         # An ordinary message should heal the stale lock, then fall through
         # to normal dispatch.  User gets a reply instead of a busy ack.
         await adapter.handle_message(_make_event("hello"))
-        # Drain any spawned background tasks.
-        for _ in range(5):
-            await asyncio.sleep(0)
+        # Delivery-ledger persistence runs in a worker thread, so wait for the
+        # observable send instead of assuming five event-loop yields are
+        # enough to schedule and finish the background task.
+        await asyncio.wait_for(adapter.response_sent.wait(), timeout=1.0)
 
         assert any("handled:text" in r for r in adapter.sent_responses), (
             "stale lock trapped a normal message — split-brain not healed"

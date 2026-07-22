@@ -1,6 +1,9 @@
 """Tests for gateway /compress user-facing messaging."""
 
+import asyncio
 from datetime import datetime
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -54,6 +57,20 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+
+    def _commit_handoff(
+        key, *, expected_session_id, new_session_id
+    ):
+        if key != session_entry.session_key or session_entry.session_id not in {
+            expected_session_id,
+            new_session_id,
+        }:
+            return None
+        session_entry.session_id = new_session_id
+        session_entry.last_prompt_tokens = 0
+        return session_entry
+
+    runner.session_store.commit_compression_handoff.side_effect = _commit_handoff
     runner._session_db = None
     return runner
 
@@ -62,14 +79,29 @@ def _make_runner(history: list[dict[str, str]]):
 async def test_compress_command_reports_noop_without_success_banner():
     history = _make_history()
     runner = _make_runner(history)
+    event_loop_thread = threading.get_ident()
+    constructor_threads = []
+    compression_threads = []
+    cleanup_threads = []
     agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock(
+        side_effect=lambda: cleanup_threads.append(threading.get_ident())
+    )
+    agent_instance.close = MagicMock(
+        side_effect=lambda: cleanup_threads.append(threading.get_ident())
+    )
     agent_instance._cached_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compress_context.side_effect = lambda *_args, **_kwargs: (
+        compression_threads.append(threading.get_ident()) or list(history),
+        "",
+    )
+
+    def _build_agent(**_kwargs):
+        constructor_threads.append(threading.get_ident())
+        return agent_instance
 
     def _estimate(messages, **_kwargs):
         assert messages == history
@@ -78,7 +110,7 @@ async def test_compress_command_reports_noop_without_success_banner():
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("run_agent.AIAgent", side_effect=_build_agent),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
@@ -86,6 +118,132 @@ async def test_compress_command_reports_noop_without_success_banner():
     assert "No changes from compression" in result
     assert "Compressed:" not in result
     assert "Approx request size: ~100 tokens (unchanged)" in result
+    assert constructor_threads and constructor_threads[0] != event_loop_thread
+    assert compression_threads and compression_threads[0] != event_loop_thread
+    assert cleanup_threads and all(
+        thread_id != event_loop_thread for thread_id in cleanup_threads
+    )
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_state", ["constructor", "compression"])
+async def test_compress_cancellation_waits_for_owned_worker_before_cleanup(
+    worker_state,
+):
+    """Cancellation cannot leak an agent or race close with compression."""
+    history = _make_history()
+    runner = _make_runner(history)
+    runner._sync_compression_topic_binding = MagicMock()
+    constructor_started = threading.Event()
+    allow_constructor = threading.Event()
+    compression_started = threading.Event()
+    allow_compression = threading.Event()
+    cleanup_finished = threading.Event()
+    lifecycle = []
+    persistence_threads = []
+
+    def _record_persistence(*_args, **_kwargs):
+        persistence_threads.append(threading.current_thread().name)
+        return True
+
+    runner.session_store.rewrite_transcript.side_effect = _record_persistence
+    runner.session_store._save.side_effect = _record_persistence
+    runner.session_store.update_session.side_effect = _record_persistence
+    def _record_commit(key, *, expected_session_id, new_session_id):
+        persistence_threads.append(threading.current_thread().name)
+        session_entry = runner.session_store.get_or_create_session.return_value
+        if session_entry.session_id not in {expected_session_id, new_session_id}:
+            return None
+        session_entry.session_id = new_session_id
+        session_entry.last_prompt_tokens = 0
+        return session_entry
+
+    runner.session_store.commit_compression_handoff.side_effect = _record_commit
+    runner._sync_compression_topic_binding.side_effect = _record_persistence
+
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock(
+        side_effect=lambda: (
+            lifecycle.append("cleanup"),
+            cleanup_finished.set(),
+        )
+    )
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+
+    def _build_agent(**_kwargs):
+        constructor_started.set()
+        if worker_state == "constructor":
+            assert allow_constructor.wait(timeout=5.0)
+        return agent_instance
+
+    def _compress(*_args, **_kwargs):
+        compression_started.set()
+        if worker_state == "compression":
+            assert allow_compression.wait(timeout=5.0)
+        # Model legacy compression rotation completing just as cancellation
+        # arrives. The live route must still advance to this durable child.
+        agent_instance.session_id = "sess-2"
+        lifecycle.append("compression_exit")
+        return list(history), ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    with (
+        patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", side_effect=_build_agent),
+        patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=100,
+        ),
+    ):
+        command_task = asyncio.create_task(
+            runner._handle_compress_command(_make_event())
+        )
+        blocking_event = (
+            constructor_started
+            if worker_state == "constructor"
+            else compression_started
+        )
+        assert await asyncio.to_thread(blocking_event.wait, 2.0)
+        command_task.cancel()
+        await asyncio.sleep(0)
+        assert not command_task.done()
+        if worker_state == "constructor":
+            allow_constructor.set()
+        else:
+            allow_compression.set()
+        with pytest.raises(asyncio.CancelledError):
+            await command_task
+
+    assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+    assert lifecycle.index("compression_exit") < lifecycle.index("cleanup")
+    session_entry = runner.session_store.get_or_create_session.return_value
+    assert session_entry.session_id == "sess-2"
+    runner.session_store.rewrite_transcript.assert_called_once_with(
+        "sess-2", history
+    )
+    runner.session_store._save.assert_not_called()
+    runner.session_store.commit_compression_handoff.assert_called_once_with(
+        session_entry.session_key,
+        expected_session_id="sess-1",
+        new_session_id="sess-2",
+    )
+    runner.session_store.update_session.assert_not_called()
+    assert persistence_threads
+    assert all(
+        name.startswith("hermes-gateway-control")
+        for name in persistence_threads
+    )
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -296,15 +454,76 @@ async def test_compress_command_passes_session_db_and_persists_rotated_session()
     assert "Compressed:" in result
     mock_agent_cls.assert_called_once()
     assert mock_agent_cls.call_args.kwargs["session_db"] is runner._session_db
-    runner.session_store._save.assert_called_once()
+    runner.session_store._save.assert_not_called()
     runner.session_store.rewrite_transcript.assert_called_once_with(
         "sess-2", compressed
     )
-    runner.session_store.update_session.assert_called_once_with(
-        build_session_key(_make_source()), last_prompt_tokens=0
+    runner.session_store.commit_compression_handoff.assert_called_once_with(
+        build_session_key(_make_source()),
+        expected_session_id="sess-1",
+        new_session_id="sess-2",
     )
+    runner.session_store.update_session.assert_not_called()
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_retires_rotated_child_when_route_cas_loses():
+    """A losing compression child must be closed before failure is returned."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    session_db = MagicMock()
+    runner._session_db = SimpleNamespace(_db=session_db)
+    runner._sync_compression_topic_binding = MagicMock()
+    session_entry = runner.session_store.get_or_create_session.return_value
+
+    def _lose_route_cas(*_args, **_kwargs):
+        session_entry.session_id = "fresh-session"
+        session_entry.last_prompt_tokens = 77
+        return None
+
+    runner.session_store.commit_compression_handoff.side_effect = _lose_route_cas
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+
+    def _compress(*_args, **_kwargs):
+        agent_instance.session_id = "sess-2"
+        return compressed, ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    with (
+        patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "***"},
+        ),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=100,
+        ),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "failed" in result.lower()
+    assert session_entry.session_id == "fresh-session"
+    assert session_entry.last_prompt_tokens == 77
+    session_db.end_session.assert_called_once_with(
+        "sess-2", "orphaned_compression"
+    )
+    runner._sync_compression_topic_binding.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -326,7 +545,7 @@ async def test_compress_command_does_not_repoint_session_when_transcript_write_f
     # Simulate the canonical DB write failing (lock contention, ENOSPC, ...).
     runner.session_store.rewrite_transcript = MagicMock(return_value=False)
     # Telegram topic re-binding must never run on the failure path.
-    runner._sync_telegram_topic_binding = MagicMock()
+    runner._sync_compression_topic_binding = MagicMock()
 
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
@@ -362,7 +581,7 @@ async def test_compress_command_does_not_repoint_session_when_transcript_write_f
     # original conversation stays reachable.
     assert session_entry.session_id == "sess-1"
     runner.session_store._save.assert_not_called()
-    runner._sync_telegram_topic_binding.assert_not_called()
+    runner._sync_compression_topic_binding.assert_not_called()
     # Resources are still cleaned up even though the command errored.
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()

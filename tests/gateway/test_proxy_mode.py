@@ -187,6 +187,7 @@ class TestRunAgentProxyDispatch:
         }
 
         runner._run_agent_via_proxy = AsyncMock(return_value=expected_result)
+        runner._session_run_generation["test-key"] = 7
 
         result = await runner._run_agent(
             message="hi",

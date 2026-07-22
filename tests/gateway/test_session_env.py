@@ -1,5 +1,7 @@
 import asyncio
+import concurrent.futures
 import os
+import threading
 
 import pytest
 
@@ -375,6 +377,27 @@ async def test_run_in_executor_with_context_survives_default_executor_shutdown()
 
 
 @pytest.mark.asyncio
+async def test_owned_worker_uses_dedicated_control_executor():
+    """Lifecycle handoff must not queue behind long-running model workers."""
+    runner = object.__new__(GatewayRunner)
+    snapshot = concurrent.futures.Future()
+
+    def publish_thread_name():
+        snapshot.set_result(threading.current_thread().name)
+
+    try:
+        runner._submit_owned_worker(publish_thread_name, snapshot=snapshot)
+        thread_name, cancellation = await runner._await_owned_worker_snapshot(
+            snapshot
+        )
+    finally:
+        runner._shutdown_executor()
+
+    assert cancellation is None
+    assert thread_name.startswith("hermes-gateway-control")
+
+
+@pytest.mark.asyncio
 async def test_gateway_executor_refuses_resurrection_after_shutdown():
     """A real gateway shutdown must NOT be resurrected by the recreate path.
 
@@ -391,6 +414,10 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
 
         with pytest.raises(RuntimeError, match="shutting down"):
             await runner._run_in_executor_with_context(lambda: "second")
+        with pytest.raises(RuntimeError, match="shutting down"):
+            runner._submit_owned_worker(
+                lambda: None,
+                snapshot=concurrent.futures.Future(),
+            )
     finally:
         runner._shutdown_executor()
-

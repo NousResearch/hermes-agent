@@ -5248,8 +5248,9 @@ class BasePlatformAdapter(ABC):
                     # response BEFORE the send attempt so a gateway crash
                     # between finalize and platform ACK can redeliver it on
                     # the next boot instead of silently losing the turn's
-                    # output (#58818). Best-effort at every step — ledger
-                    # trouble must never block or delay the actual send.
+                    # output (#58818). Best-effort at every step: ledger I/O
+                    # runs off-loop with a short busy timeout so trouble never
+                    # stalls the watchdog or materially delays the send.
                     # Slash-command and ephemeral replies are cheap to
                     # regenerate and are not recorded.
                     _obligation_id = None
@@ -5270,7 +5271,8 @@ class BasePlatformAdapter(ABC):
                                     str(getattr(event, "message_id", "") or ""),
                                     text_content,
                                 )
-                                record_obligation(
+                                await asyncio.to_thread(
+                                    record_obligation,
                                     obligation_id=_obligation_id,
                                     session_key=session_key,
                                     platform=str(
@@ -5281,7 +5283,7 @@ class BasePlatformAdapter(ABC):
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
                                 )
-                                mark_attempting(_obligation_id)
+                                await asyncio.to_thread(mark_attempting, _obligation_id)
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
@@ -5300,9 +5302,10 @@ class BasePlatformAdapter(ABC):
                             )
 
                             if getattr(result, "success", False):
-                                mark_delivered(_obligation_id)
+                                await asyncio.to_thread(mark_delivered, _obligation_id)
                             else:
-                                mark_failed(
+                                await asyncio.to_thread(
+                                    mark_failed,
                                     _obligation_id,
                                     str(getattr(result, "error", "") or ""),
                                 )

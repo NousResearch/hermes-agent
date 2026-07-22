@@ -84,8 +84,8 @@ def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
     agent._flush_messages_to_session_db(messages, conversation_history=[])
 
     persisted = [
-        kwargs.get("content")
-        for _args, kwargs in agent._session_db.append_message.call_args_list
+        row.get("content")
+        for row in agent._session_db.append_messages.call_args.args[1]
     ]
     assert "hi" in persisted
     assert "verified and clean" in persisted

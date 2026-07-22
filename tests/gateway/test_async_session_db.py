@@ -142,9 +142,19 @@ _OFFLOADED_SYNC_HELPERS = frozenset({
     "_normalize_source_for_session_key",
     "_record_telegram_topic_binding",
     "_sync_telegram_topic_binding",
+    "_sync_compression_topic_binding",
     "_telegram_topic_new_header",
     "_schedule_telegram_topic_title_rename",
     "_apply_topic_recovery",
+})
+
+# Named closures submitted to the dedicated gateway control executor. Bare
+# helper calls below these lexical ancestors execute on worker threads just as
+# calls nested beneath the generic ``run_sync`` closure do.
+_OFFLOADED_SYNC_WORKERS = frozenset({
+    "run_sync",
+    "_run_manual_compression_sync",
+    "_run_hygiene_compression_sync",
 })
 
 
@@ -359,7 +369,7 @@ def test_offloaded_helpers_never_called_bare_on_loop():
     other bare call means a helper whose body the guard exempts is being invoked
     on the loop anyway — re-freezing the loop through the exemption.
     """
-    off_loop_ok = _OFFLOADED_SYNC_HELPERS | {"run_sync"}
+    off_loop_ok = _OFFLOADED_SYNC_HELPERS | _OFFLOADED_SYNC_WORKERS
     violations = []
     for rel in _GATEWAY_FILES:
         v = _scan(rel)

@@ -14,6 +14,7 @@ import logging
 import os
 import json
 import threading
+import time
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -1037,6 +1038,8 @@ class SessionStore:
     Uses SQLite (via SessionDB) for session metadata and message transcripts.
     Falls back to legacy JSONL files if SQLite is unavailable.
     """
+
+    _JSON_MIRROR_MIN_INTERVAL_SECONDS = 5.0
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
                  has_active_processes_fn=None):
@@ -1051,6 +1054,7 @@ class SessionStore:
         self._save_lock = threading.Lock()
         self._routing_generation = 0
         self._persisted_routing_generation = 0
+        self._last_sessions_json_write_at = 0.0
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
         self._transcript_retry_lock = threading.Lock()
@@ -1071,7 +1075,9 @@ class SessionStore:
             from hermes_state import SessionDB
             self._db = SessionDB()
         except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            logger.warning(
+                "SQLite session store unavailable, falling back to JSONL: %s", e
+            )
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Return whether a session has active work, failing closed on registry errors."""
@@ -1109,82 +1115,111 @@ class SessionStore:
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index. Must be called with self._lock held.
 
-        Read order (#9006 follow-up): the ``gateway_routing`` table in
-        state.db is the primary source; sessions.json is the legacy import
-        path for pre-migration installs (its entries are folded in for keys
-        the DB doesn't have, then persisted to the DB on the next _save).
+        DB and JSON snapshots carry monotonically increasing generations. The
+        newer complete snapshot wins, including the absence of deleted keys.
+        Legacy generation-zero snapshots retain the original DB-first merge
+        behavior for pre-migration installs.
         """
         if self._loaded:
             return
 
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        # Some gateway recovery paths can install a live routing entry before
+        # the lazy durable load runs.  Durable DB/JSON generations decide only
+        # between those two persisted snapshots; they must not discard newer
+        # process-local routing state that is already serving messages.
+        preloaded_entries = dict(self._entries)
 
-        # Primary: state.db gateway_routing table. getattr: some tests build
-        # partially-initialized stores without __init__ (same pattern as
-        # _prune_stale_sessions_locked).
-        db_had_entries = False
+        def _decode_entries(raw_entries, *, label):
+            decoded = {}
+            for key, raw_entry in raw_entries.items():
+                try:
+                    entry_data = json.loads(raw_entry) if isinstance(raw_entry, str) else raw_entry
+                    if not isinstance(entry_data, dict):
+                        raise TypeError(
+                            f"expected dict, got {type(entry_data).__name__}"
+                        )
+                    decoded[key] = SessionEntry.from_dict(entry_data)
+                except (ValueError, KeyError, TypeError) as exc:
+                    logger.warning("Skipping invalid %s entry %r: %s", label, key, exc)
+            return decoded
+
+        # Primary: state.db gateway_routing table. getattr keeps compatibility
+        # with tests and third-party stores that expose only the legacy loader.
+        db_entries = {}
+        db_generation = 0
         _db = getattr(self, "_db", None)
         if _db:
-            loader = getattr(_db, "load_gateway_routing_entries", None)
-            if callable(loader):
+            state_loader = getattr(_db, "load_gateway_routing_state", None)
+            legacy_loader = getattr(_db, "load_gateway_routing_entries", None)
+            if callable(state_loader) or callable(legacy_loader):
                 try:
-                    for key, entry_json in loader(scope=self._routing_scope()).items():
-                        try:
-                            entry_data = json.loads(entry_json)
-                            if isinstance(entry_data, dict):
-                                self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError, TypeError) as e:
-                            logger.warning(
-                                "Skipping invalid routing entry %r: %s", key, e
-                            )
-                    db_had_entries = bool(self._entries)
-                except Exception as e:
+                    if callable(state_loader):
+                        raw_db_entries, db_generation = state_loader(
+                            scope=self._routing_scope()
+                        )
+                    else:
+                        raw_db_entries = legacy_loader(scope=self._routing_scope())
+                    db_entries = _decode_entries(raw_db_entries, label="routing")
+                except Exception as exc:
                     logger.warning(
-                        "gateway.session: state.db routing load failed: %s", e
+                        "gateway.session: state.db routing load failed: %s", exc
                     )
 
-        # Legacy import: sessions.json (pre-migration installs, or entries
-        # written by an older gateway after a downgrade). Only fills keys the
-        # DB didn't provide — DB entries win.
+        json_entries = {}
+        json_generation = 0
         sessions_file = self.sessions_dir / "sessions.json"
         if sessions_file.exists():
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                try:
+                    json_generation = max(0, int(data.get("_ROUTING_GENERATION", 0)))
+                except (TypeError, ValueError):
+                    json_generation = 0
+                json_entries = _decode_entries(
+                    {key: value for key, value in data.items() if not key.startswith("_")},
+                    label="session",
+                )
+            except Exception as exc:
+                logger.warning("Failed to load sessions: %s", exc)
+
+        if json_generation > db_generation:
+            # A DB write exhausted its retry budget but the fail-open JSON
+            # snapshot committed. Treat it as a complete snapshot: merging in
+            # DB-only keys would resurrect failed deletions.
+            self._entries = dict(json_entries)
+            logger.warning(
+                "gateway.session: recovering newer routing snapshot from "
+                "sessions.json (generation %d > state.db %d)",
+                json_generation,
+                db_generation,
+            )
+        else:
+            self._entries = dict(db_entries)
+            if db_generation == 0 and json_generation == 0:
                 imported = 0
-                for key, entry_data in data.items():
-                    # Keys starting with "_" are documentation/metadata sentinels
-                    # (e.g. the "_README" note written by _save), not session
-                    # entries. Skip them so they never reach SessionEntry.from_dict.
-                    if key.startswith("_"):
-                        continue
-                    if key in self._entries:
-                        continue
-                    # Skip non-dict entries (corrupted sessions.json, e.g. a
-                    # bare bool or string where a dict is expected). Without
-                    # this, from_dict raises TypeError on `"origin" in data`
-                    # which escapes the inner except (ValueError, KeyError) and
-                    # aborts loading ALL remaining sessions (#46994).
-                    if not isinstance(entry_data, dict):
-                        logger.warning(
-                            "Skipping invalid session entry %r: "
-                            "expected dict, got %s",
-                            key, type(entry_data).__name__,
-                        )
-                        continue
-                    try:
-                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                for key, entry in json_entries.items():
+                    if key not in self._entries:
+                        self._entries[key] = entry
                         imported += 1
-                    except (ValueError, KeyError, TypeError) as e:
-                        logger.warning("Skipping invalid session entry %r: %s", key, e)
-                if imported and db_had_entries:
+                if imported and db_entries:
                     logger.info(
                         "gateway.session: imported %d legacy sessions.json "
                         "entr%s missing from state.db routing table",
-                        imported, "y" if imported == 1 else "ies",
+                        imported,
+                        "y" if imported == 1 else "ies",
                     )
-            except Exception as e:
-                print(f"[gateway] Warning: Failed to load sessions: {e}")
+
+        self._entries.update(preloaded_entries)
+
+        durable_generation = max(db_generation, json_generation)
+        self._routing_generation = max(
+            getattr(self, "_routing_generation", 0), durable_generation
+        )
+        self._persisted_routing_generation = max(
+            getattr(self, "_persisted_routing_generation", 0), durable_generation
+        )
 
         self._loaded = True
 
@@ -1290,7 +1325,10 @@ class SessionStore:
 
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
-        self._routing_generation = getattr(self, "_routing_generation", 0) + 1
+        # Wall-clock nanoseconds make generations monotonic across gateway
+        # restarts and effectively unique across competing process writers.
+        previous = getattr(self, "_routing_generation", 0)
+        self._routing_generation = max(previous + 1, time.time_ns())
         return (
             {key: entry.to_dict() for key, entry in self._entries.items()},
             self._routing_generation,
@@ -1311,20 +1349,52 @@ class SessionStore:
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
                 if callable(replacer):
                     try:
-                        replacer(
+                        applied = replacer(
                             {k: json.dumps(v) for k, v in data.items()},
                             scope=self._routing_scope(),
+                            generation=generation,
                         )
+                        if applied is False:
+                            # A newer process already committed this scope. Do
+                            # not let this stale writer overwrite its JSON mirror.
+                            self._persisted_routing_generation = max(
+                                getattr(self, "_persisted_routing_generation", 0),
+                                generation,
+                            )
+                            return
                         db_saved = True
                     except Exception as exc:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
-            if getattr(self, "_write_sessions_json", True) or not db_saved:
-                self._save_sessions_json(data)
-            self._persisted_routing_generation = generation
+            json_saved = False
+            mirror_enabled = getattr(self, "_write_sessions_json", True)
+            last_mirror_write = getattr(self, "_last_sessions_json_write_at", 0.0)
+            mirror_due = (
+                last_mirror_write <= 0
+                or time.monotonic() - last_mirror_write
+                >= self._JSON_MIRROR_MIN_INTERVAL_SECONDS
+            )
+            # state.db is primary. Coalesce the backward-compatibility mirror
+            # so high-frequency metadata updates do not serialize every
+            # gateway worker behind a full JSON rewrite + fsync. If the DB
+            # write fails, persist the fallback immediately regardless of the
+            # mirror setting or debounce window.
+            if not db_saved or (mirror_enabled and mirror_due):
+                try:
+                    self._save_sessions_json(data, generation)
+                    json_saved = True
+                    self._last_sessions_json_write_at = time.monotonic()
+                except Exception as exc:
+                    # state.db is primary. A mirror/fsync failure must never
+                    # escape into inbound message processing.
+                    logger.warning(
+                        "gateway.session: sessions.json routing save failed: %s", exc
+                    )
+            if db_saved or json_saved:
+                self._persisted_routing_generation = generation
 
-    def _save_sessions_json(self, data: Dict[str, Any]) -> None:
+    def _save_sessions_json(self, data: Dict[str, Any], generation: int) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
         import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -1346,6 +1416,7 @@ class SessionStore:
                 "Disable this file with `gateway.write_sessions_json: false` "
                 "in config.yaml."
             ),
+            "_ROUTING_GENERATION": generation,
             **data,
         }
         fd, tmp_path = tempfile.mkstemp(
@@ -2137,7 +2208,7 @@ class SessionStore:
                     display_name=entry.display_name,
                 )
             except Exception as e:
-                print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+                logger.warning("Failed to create SQLite session: %s", e)
 
         return entry
 
@@ -2147,6 +2218,7 @@ class SessionStore:
         last_prompt_tokens: int = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
+        needs_save = False
         with self._lock:
             self._ensure_loaded_locked()
 
@@ -2155,13 +2227,14 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
-                self._save()
-                self._record_gateway_session_peer(
-                    entry.session_id,
-                    session_key,
-                    entry.origin,
-                    display_name=entry.display_name,
-                )
+                needs_save = True
+
+        if needs_save:
+            # Full snapshot capture + SQLite/JSON I/O stay outside _lock.
+            # Peer origin fields are immutable during an ordinary turn and
+            # were already recorded at create/recovery time, so a second
+            # sessions UPDATE here only lengthens write-lock occupancy.
+            self._save_entries()
 
     def get_session_metadata(
         self,
@@ -2196,8 +2269,47 @@ class SessionStore:
                 return False
             entry.metadata[key] = value
             entry.updated_at = _now()
-            self._save()
-            return True
+            data, generation = self._snapshot_routing_locked()
+
+        self._persist_routing_data(data, generation)
+        return True
+
+    def commit_compression_handoff(
+        self,
+        session_key: str,
+        *,
+        expected_session_id: str,
+        new_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Atomically persist a compression-driven live-route rotation.
+
+        Compression creates and populates the continuation transcript before
+        calling this method. Compare against the route observed at compression
+        start so a stale worker can never overwrite a newer /new, /resume, or
+        concurrent recovery decision. The token counter is reset in the same
+        routing write, avoiding a second state.db transaction on this hot path.
+        The immutable routing snapshot is captured under ``_lock`` while all
+        SQLite/JSON I/O happens after releasing it, so a contended durable write
+        cannot serialize unrelated session lookups and lifecycle transitions.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            # A concurrent read-side compression-tip heal may already have
+            # advanced this exact route to the same child. Treat that as an
+            # idempotent win; rejecting it would retire the live child as an
+            # orphan even though no competing lifecycle transition occurred.
+            if entry.session_id not in {expected_session_id, new_session_id}:
+                return None
+            entry.session_id = new_session_id
+            entry.last_prompt_tokens = 0
+            entry.updated_at = _now()
+            data, generation = self._snapshot_routing_locked()
+
+        self._persist_routing_data(data, generation)
+        return entry
 
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]
@@ -2484,8 +2596,10 @@ class SessionStore:
             ):
                 return None
             entry.updated_at = _now()
-            self._save()
-            return entry
+            data, generation = self._snapshot_routing_locked()
+
+        self._persist_routing_data(data, generation)
+        return entry
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.

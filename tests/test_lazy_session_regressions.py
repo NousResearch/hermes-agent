@@ -178,7 +178,7 @@ class TestSyncSessionKeyAfterAutoCompress:
                 self._target()
 
         server._sessions["test-sid"] = session
-        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_new_prompt_run_thread", _ImmediateThread)
 
         try:
             server.handle_request({
@@ -246,7 +246,7 @@ class TestPendingTitleValueError:
                 self._target()
 
         server._sessions["sid"] = session
-        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_new_prompt_run_thread", _ImmediateThread)
 
         try:
             server.handle_request({
@@ -300,7 +300,7 @@ class TestPendingTitleValueError:
                 self._target()
 
         server._sessions["sid"] = session
-        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_new_prompt_run_thread", _ImmediateThread)
 
         try:
             server.handle_request({

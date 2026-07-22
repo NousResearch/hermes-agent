@@ -3712,11 +3712,13 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 
 def save_config_value(key_path: str, value: any) -> bool:
     """
-    Save a value to the active config file at the specified key path.
-    
-    Respects the same lookup order as load_cli_config():
-    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
-    2. ./cli-config.yaml (project config - fallback)
+    Save a value to the user config file at the specified key path.
+
+    Persistent CLI settings always belong in ``~/.hermes/config.yaml`` so the
+    rest of Hermes (gateway, doctor, subcommands) can see the same source of
+    truth. If the CLI is currently reading a project-local ``cli-config.yaml``
+    fallback because the user config does not exist yet, bootstrap the new user
+    config from that fallback before applying the update.
     
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
@@ -3725,14 +3727,16 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
     user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
+    config_path = user_config_path
     
     try:
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not config_path.exists() and project_config_path.exists():
+            shutil.copyfile(project_config_path, config_path)
         
         # Save back atomically while preserving comments, ordering, quotes, and
         # readable Unicode in user-edited config.yaml.
@@ -3747,7 +3751,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         
         return True
     except Exception as e:
-        logger.error("Failed to save config: %s", e)
+        logger.error("Failed to save config to %s: %s", config_path, e)
         return False
 
 

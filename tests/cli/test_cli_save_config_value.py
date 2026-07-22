@@ -132,3 +132,39 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+    def test_bootstraps_user_config_from_project_fallback(self, tmp_path, monkeypatch):
+        """First-run writes must create ~/.hermes/config.yaml, not mutate cli-config.yaml."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        project_config = repo_dir / "cli-config.yaml"
+        project_config.write_text(
+            "model:\n"
+            "  provider: openrouter\n"
+            "display:\n"
+            "  skin: default\n",
+            encoding="utf-8",
+        )
+
+        import cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "_hermes_home", hermes_home)
+        monkeypatch.setattr(cli_mod, "__file__", str(repo_dir / "cli.py"))
+
+        assert not (hermes_home / "config.yaml").exists()
+
+        result = cli_mod.save_config_value("display.skin", "mono")
+
+        user_config = hermes_home / "config.yaml"
+        assert result is True
+        assert user_config.exists()
+        assert yaml.safe_load(user_config.read_text(encoding="utf-8")) == {
+            "model": {"provider": "openrouter"},
+            "display": {"skin": "mono"},
+        }
+        assert yaml.safe_load(project_config.read_text(encoding="utf-8")) == {
+            "model": {"provider": "openrouter"},
+            "display": {"skin": "default"},
+        }

@@ -392,11 +392,28 @@ def check_compression_model_feasibility(agent: Any) -> None:
         _raw_aux_key = getattr(client, "api_key", "")
         aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
 
+        aux_config_context = getattr(agent, "_aux_compression_context_length_config", None)
+        # When auxiliary.compression is left on auto (provider auto / no model),
+        # it intentionally inherits the live main chat model.  In that case the
+        # compression model's context window is already known: it is the active
+        # context compressor's main-model window.  Reuse it instead of probing
+        # the endpoint again.  Custom OpenAI-compatible proxies often report a
+        # conservative /models default (commonly 256K) even when the active model
+        # was explicitly configured with a larger context_length; probing here
+        # would incorrectly auto-lower the compression threshold and make users
+        # hand-edit auxiliary.compression on every model switch.
+        if (
+            (_aux_cfg_provider in {"", "auto", None})
+            and aux_config_context is None
+            and str(aux_model or "") == str(getattr(agent, "model", "") or "")
+        ):
+            aux_config_context = getattr(agent.context_compressor, "context_length", None)
+
         aux_context = get_model_context_length(
             aux_model,
             base_url=aux_base_url,
             api_key=aux_api_key,
-            config_context_length=getattr(agent, "_aux_compression_context_length_config", None),
+            config_context_length=aux_config_context,
             # Each model must be resolved with its own provider so that
             # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
             # are invoked for the correct client, not inherited from the main model.

@@ -207,6 +207,39 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     )
 
 
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_auto_compression_inherits_main_context_length(mock_get_client, mock_ctx_len):
+    """provider:auto + empty model should inherit the live main model context.
+
+    This prevents custom endpoints from being re-probed as a smaller /models
+    default (for example 256K) after the main model was explicitly configured
+    with a larger context window.
+    """
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.75)
+    agent.model = "gpt-5.5"
+    agent.provider = "custom"
+    agent.base_url = "http://localhost:8317/v1"
+    agent.api_key = "sk-main"
+    agent._aux_compression_context_length_config = None
+    mock_client = MagicMock()
+    mock_client.base_url = "http://localhost:8317/v1"
+    mock_client.api_key = "sk-main"
+    mock_get_client.return_value = (mock_client, "gpt-5.5")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once_with(
+        "gpt-5.5",
+        base_url="http://localhost:8317/v1",
+        api_key="sk-main",
+        config_context_length=1_000_000,
+        provider="custom",
+        custom_providers=[],
+    )
+
+
 @patch("agent.model_metadata.get_model_context_length", return_value=128_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):

@@ -32,6 +32,15 @@ _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
 
 
+def _format_token_count(n: int) -> str:
+    """Human-readable token count: 85.6K, 1.0M, 325."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
 def _home_relative_cwd(cwd: str) -> str:
     """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
     if not cwd:
@@ -110,7 +119,14 @@ def format_runtime_footer(
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                parts.append(f"上下文 {pct}%")
+        elif field == "token_usage":
+            if context_tokens >= 0 and context_length and context_length > 0:
+                parts.append(f"token {_format_token_count(context_tokens)} / {_format_token_count(context_length)}")
+        elif field == "remaining_pct":
+            if context_length and context_length > 0 and context_tokens >= 0:
+                remaining = max(0, 100 - round((context_tokens / context_length) * 100))
+                parts.append(f"{remaining}%")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:

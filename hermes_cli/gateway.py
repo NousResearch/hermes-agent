@@ -3979,22 +3979,33 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
+    # Build ProgramArguments array. Prefer the stable readable wrapper when it
+    # exists so macOS Background Items shows `hermes-gateway[-profile]` instead
+    # of a generic `python` entry. Fall back to the raw Python invocation for
+    # installs that have not created the wrapper yet.
+    from hermes_constants import get_default_hermes_root
+
+    suffix = _profile_suffix()
+    wrapper_name = f"hermes-gateway-{suffix}" if suffix else "hermes-gateway"
+    wrapper_path = get_default_hermes_root() / "bin" / wrapper_name
+    if wrapper_path.exists():
+        prog_args = [f"<string>{wrapper_path}</string>"]
+    else:
+        prog_args = [
+            f"<string>{python_path}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
         ]
-    )
+        if profile_arg:
+            for part in profile_arg.split():
+                prog_args.append(f"<string>{part}</string>")
+        prog_args.extend(
+            [
+                "<string>gateway</string>",
+                "<string>run</string>",
+                "<string>--replace</string>",
+            ]
+        )
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>

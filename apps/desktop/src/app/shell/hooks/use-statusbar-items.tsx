@@ -322,6 +322,13 @@ export function useStatusbarItems({
     () => [
       ...(connectionItem ? [connectionItem] : []),
       {
+        detail: activeGatewayProfile ?? 'default',
+        icon: <Codicon name="account" size="0.75rem" />,
+        id: 'active-profile',
+        title: `Profile: ${activeGatewayProfile ?? 'default'}`,
+        variant: 'text'
+      },
+      {
         className: `w-7 justify-center px-0${commandCenterOpen ? ' bg-accent/55 text-foreground' : ''}`,
         icon: <Command className="size-3.5" />,
         id: 'command-center',
@@ -414,6 +421,7 @@ export function useStatusbarItems({
       }
     ],
     [
+      activeGatewayProfile,
       agentsOpen,
       commandCenterOpen,
       connectionItem,

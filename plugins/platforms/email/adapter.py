@@ -932,7 +932,12 @@ class EmailAdapter(BasePlatformAdapter):
         # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        
+        # If body starts with "Cronjob Response: " or "Cronjob Response：", use the task name as subject
+        cron_match = re.match(r'^Cronjob Response[：:]\s*(.+?)\n', body)
+        if cron_match:
+            subject = cron_match.group(1).strip()
+        elif not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
@@ -1046,7 +1051,12 @@ class EmailAdapter(BasePlatformAdapter):
 
         ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+
+        # If body starts with "Cronjob Response: ", use the task name as subject
+        cron_match = re.match(r'^Cronjob Response:\s*(.+?)\n', body)
+        if cron_match:
+            subject = cron_match.group(1).strip()
+        elif not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
@@ -1126,7 +1136,12 @@ class EmailAdapter(BasePlatformAdapter):
 
         ctx = self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+
+        # If body starts with "Cronjob Response: ", use the task name as subject
+        cron_match = re.match(r'^Cronjob Response:\s*(.+?)\n', body)
+        if cron_match:
+            subject = cron_match.group(1).strip()
+        elif not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
@@ -1219,7 +1234,12 @@ async def _standalone_send(
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        # Use cron job name as subject when the message starts with "Cronjob Response:"
+        subject = "Hermes Agent"
+        cron_match = re.match(r'^Cronjob Response[：:]\s*(.+?)\n', message)
+        if cron_match:
+            subject = cron_match.group(1).strip()
+        msg["Subject"] = subject
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)

@@ -205,6 +205,15 @@ class TestAdapterCapabilityFlag:
 
         assert APIServerAdapter.supports_async_delivery is False
 
+    def test_webhook_false(self):
+        """A webhook delivery is one-shot: ``on_processing_complete`` ends the
+        per-delivery session the moment the run finishes, so a late background
+        delegation completion has no live parent to wake (#69145). The adapter
+        must therefore declare async delivery unsupported, like the API server."""
+        from gateway.platforms.webhook import WebhookAdapter
+
+        assert WebhookAdapter.supports_async_delivery is False
+
     def test_api_server_bind_chokepoint_hardwires_no_delivery(self):
         """Every API-server agent-entry path binds through
         _bind_api_server_session, which hardwires async_delivery=False — a new
@@ -240,6 +249,65 @@ class TestAdapterCapabilityFlag:
             session_key="shared-key",
             async_delivery=True,
         )
+        try:
+            assert async_delivery_supported() is True
+        finally:
+            clear_session_vars(tokens)
+
+
+# ---------------------------------------------------------------------------
+# Gateway binding: the webhook adapter's flag reaches the per-turn contextvar
+# ---------------------------------------------------------------------------
+
+class TestWebhookSessionBindsStateless:
+    """End-to-end wiring: ``GatewayRunner._set_session_env`` must propagate the
+    webhook adapter's ``supports_async_delivery=False`` into the session
+    contextvar so ``delegate_task`` background=True falls back to sync (#69145).
+
+    Without the adapter flag, the webhook path bound ``async_delivery=True``
+    (base default), background delegations dispatched detached, and their
+    completions were dropped after ``on_processing_complete`` ended the session.
+    """
+
+    def _runner_with(self, adapters):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = adapters
+        return runner
+
+    def _context(self, platform):
+        from gateway.session import SessionContext, SessionSource
+
+        source = SessionSource(platform=platform, chat_id="delivery-1")
+        return SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    def test_webhook_binds_no_async_delivery(self):
+        from gateway.config import Platform
+        from gateway.platforms.webhook import WebhookAdapter
+
+        # object.__new__ avoids the adapter's heavy __init__; the capability is
+        # a class attribute, so the real flag is what flows through.
+        adapter = object.__new__(WebhookAdapter)
+        runner = self._runner_with({Platform.WEBHOOK: adapter})
+        tokens = runner._set_session_env(self._context(Platform.WEBHOOK))
+        try:
+            assert async_delivery_supported() is False
+        finally:
+            clear_session_vars(tokens)
+
+    def test_delivering_platform_still_binds_async_delivery(self):
+        """Control: a platform whose adapter keeps the base default stays
+        supported — the fix must not disable delivery for real channels."""
+        from gateway.config import Platform
+
+        # A delivering adapter keeps the base default (True); the getattr in
+        # _set_session_env must read it and bind async_delivery=True.
+        class _DeliveringAdapter:
+            supports_async_delivery = True
+
+        runner = self._runner_with({Platform.TELEGRAM: _DeliveringAdapter()})
+        tokens = runner._set_session_env(self._context(Platform.TELEGRAM))
         try:
             assert async_delivery_supported() is True
         finally:

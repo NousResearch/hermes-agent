@@ -147,6 +147,20 @@ def check_webhook_requirements() -> bool:
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
+    # A webhook delivery is one-shot: the ``delivery_id`` is baked into the
+    # session key and ``on_processing_complete`` ends the session the moment the
+    # run finishes, so the per-delivery session can never receive a second turn.
+    # That means a background delegation whose result arrives after the turn ends
+    # has no live parent session to wake — the completion re-injection is dropped
+    # by the #55578 fail-closed guard and the subagent's work is stranded (the
+    # exact symptom #53027/#63142 described, on the gateway/webhook surface —
+    # #69145).  Declaring the channel stateless makes ``delegate_task``
+    # background=True fall back to synchronous inline execution so the result
+    # returns within the turn, mirroring what #66617 did for ``hermes -z``
+    # one-shot and cron (which also set ``async_delivery=False``).  The API
+    # server adapter sets this same flag for the same reason.
+    supports_async_delivery: bool = False
+
     # No human is present to answer a "session restored — what next?" prompt:
     # webhook runs are event-triggered.  The startup auto-resume turn must
     # instruct the model to FINISH the interrupted work instead of emitting an

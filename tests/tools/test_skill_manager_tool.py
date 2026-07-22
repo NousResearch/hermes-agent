@@ -953,8 +953,14 @@ class TestExternalSkillMutations:
             set_current_write_origin,
         )
 
+        from tools import skill_usage
+
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
+            # Ownership is a positive claim: without the agent-created marker
+            # the ownership guard refuses first and this says nothing about
+            # the pin guard.
+            skill_usage.mark_agent_created("my-skill")
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
                 from tools.skill_manager_tool import mark_background_review_skill_read
@@ -1274,6 +1280,20 @@ def _skill_content(name: str) -> str:
     )
 
 
+def _create_owned_skill(name: str, content: str) -> None:
+    """Create a skill and claim agent ownership, as the dispatcher does.
+
+    Autonomous curation only touches skills whose usage record says
+    ``created_by: "agent"``. ``_create_skill`` is the internal writer and never
+    sets that marker — ``skill_manage`` does, on a background-review create. A
+    curator-pass test that skips it gets refused by the ownership guard before
+    the guard under test can fire.
+    """
+    from tools import skill_usage
+    _create_skill(name, content)
+    skill_usage.mark_agent_created(name)
+
+
 class TestCuratorConsolidationDeleteGuard:
     """The curator's LLM consolidation pass must fail CLOSED on unverified
     deletes — it may only archive a skill it absorbed into an umbrella.
@@ -1287,7 +1307,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_bare_prune_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_owned_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill", absorbed_into="")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1296,7 +1316,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_omitted_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_owned_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill")  # absorbed_into omitted
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1304,7 +1324,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_whitespace_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_owned_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill", absorbed_into="   ")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1312,8 +1332,8 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_verified_consolidation_archives_recoverably(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("umbrella", _skill_content("umbrella"))
-            _create_skill("narrow", _skill_content("narrow"))
+            _create_owned_skill("umbrella", _skill_content("umbrella"))
+            _create_owned_skill("narrow", _skill_content("narrow"))
             result = _delete_skill("narrow", absorbed_into="umbrella")
         assert result["success"] is True, result
         assert result.get("_archived") is True
@@ -1328,7 +1348,7 @@ class TestCuratorConsolidationDeleteGuard:
         # The pre-existing target-existence check fires before the recoverable
         # archive — a hallucinated umbrella is refused and the skill stays put.
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_owned_skill("narrow", VALID_SKILL_CONTENT)
             result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
         assert result["success"] is False
         assert "does not exist" in result["error"]
@@ -1367,7 +1387,7 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
+            _create_owned_skill("reviewed", _skill_content("reviewed"))
 
             blocked = json.loads(skill_manage(
                 action="patch",
@@ -1397,7 +1417,7 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
+            _create_owned_skill("reviewed", _skill_content("reviewed"))
             ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
             ref.mkdir()
             (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")

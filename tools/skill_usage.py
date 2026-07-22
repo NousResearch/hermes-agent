@@ -563,17 +563,96 @@ def seed_record_if_missing(skill_name: str) -> None:
     archive/stale clock measures non-use FROM THEN — not from epoch. No-op when
     a record already exists or the skill isn't curation-eligible.
     """
-    if not skill_name or not is_curation_eligible(skill_name):
+    if not skill_name:
+        return
+    canonical, aliases = resolve_usage_key(skill_name)
+    if not is_curation_eligible(canonical):
         return
     try:
         with _usage_file_lock():
             data = load_usage()
-            if isinstance(data.get(skill_name), dict):
+            if isinstance(data.get(canonical), dict):
                 return
-            data[skill_name] = _empty_record()
+            # A legacy alias record means this skill IS already seeded — adopt
+            # it rather than anchoring a second inactivity clock at now.
+            if _adopt_legacy_record(data, canonical, aliases) is None:
+                data[canonical] = _empty_record()
             save_usage(data)
     except Exception as e:
         logger.debug("skill_usage.seed_record_if_missing(%s) failed: %s", skill_name, e, exc_info=True)
+
+
+def resolve_usage_key(skill_name: str) -> Tuple[str, List[str]]:
+    """Return ``(canonical_key, legacy_alias_keys)`` for *skill_name*.
+
+    This map is what keeps one skill to one record. ``.usage.json`` is a flat
+    name→record map, so a caller who says ``operations/aio`` where the record
+    is filed under ``aio`` would otherwise create a second entry, and the two
+    then disagree about who owns the skill.
+
+    Resolution is best-effort: if the skill cannot be located on disk (it was
+    just deleted, or the roots are unreadable) the caller's own name is
+    canonical and there are no aliases.
+    """
+    if not skill_name:
+        return skill_name, []
+    try:
+        from tools.skill_manager_tool import _find_skill
+        from tools.skill_provenance import canonical_skill_name, skill_alias_names
+
+        found = _find_skill(skill_name)
+        skill_dir = found["path"] if found else None
+        canonical = canonical_skill_name(skill_name, skill_dir)
+        aliases = [a for a in skill_alias_names(skill_name, skill_dir) if a != canonical]
+        return canonical, aliases
+    except Exception as e:
+        logger.debug("resolve_usage_key(%s) failed: %s", skill_name, e, exc_info=True)
+        return skill_name, []
+
+
+def _adopt_legacy_record(
+    data: Dict[str, Dict[str, Any]], canonical: str, aliases: List[str]
+) -> Optional[Dict[str, Any]]:
+    """Move a record filed under a legacy alias onto the canonical key.
+
+    Without this, canonicalizing a *write* is worse than not canonicalizing at
+    all: a skill whose only record sits under ``operations/aio`` would get a
+    brand-new ``aio`` record seeded with ``created_by: None``, contradicting
+    the legacy one and blocking every later write — the write destroying the
+    permission that allowed it.
+
+    When several aliases carry records, the most restrictive owner wins: an
+    explicit non-agent ``created_by`` is a real ownership claim and is
+    preserved, never laundered into agent ownership. Adopted aliases are
+    removed, so the split does not survive the migration.
+    """
+    candidates = [
+        (alias, data[alias])
+        for alias in aliases
+        if isinstance(data.get(alias), dict)
+    ]
+    if not candidates:
+        return None
+
+    def _explicitly_not_agent(record: Dict[str, Any]) -> bool:
+        owner = record.get("created_by")
+        return bool(owner) and owner != "agent"
+
+    chosen = next(
+        (rec for _, rec in candidates if _explicitly_not_agent(rec)),
+        None,
+    )
+    if chosen is None:
+        chosen = next(
+            (rec for _, rec in candidates if _is_curator_managed_record(rec)),
+            candidates[0][1],
+        )
+
+    adopted = dict(chosen)
+    for alias, _ in candidates:
+        data.pop(alias, None)
+    data[canonical] = adopted
+    return adopted
 
 
 def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False) -> None:
@@ -586,19 +665,24 @@ def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False
     ``require_curation_eligible=True`` so they never write meaningless state
     onto a skill the curator can't manage (e.g. an ``archived`` flag on a
     hub-installed skill).
+
+    Every write is canonicalized. This is the boundary that has to hold: a
+    guard can read as many aliases as it likes, but if a write can still mint
+    a key of its own, the write creates the split the reader trips over.
     """
     if not skill_name:
         return
     try:
-        if require_curation_eligible and not is_curation_eligible(skill_name):
+        canonical, aliases = resolve_usage_key(skill_name)
+        if require_curation_eligible and not is_curation_eligible(canonical):
             return
         with _usage_file_lock():
             data = load_usage()
-            rec = data.get(skill_name)
+            rec = data.get(canonical)
             if not isinstance(rec, dict):
-                rec = _empty_record()
+                rec = _adopt_legacy_record(data, canonical, aliases) or _empty_record()
             mutator(rec)
-            data[skill_name] = rec
+            data[canonical] = rec
             save_usage(data)
     except Exception as e:
         logger.debug("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
@@ -676,14 +760,23 @@ def set_pinned(skill_name: str, pinned: bool) -> None:
 
 
 def forget(skill_name: str) -> None:
-    """Drop a skill's usage entry entirely. Called when the skill is deleted."""
+    """Drop a skill's usage entry entirely. Called when the skill is deleted.
+
+    Drops every spelling: a record left behind under a legacy alias would
+    outlive the skill and contradict whatever is created at that name next.
+    """
     if not skill_name:
         return
+    canonical, aliases = resolve_usage_key(skill_name)
     try:
         with _usage_file_lock():
             data = load_usage()
-            if skill_name in data:
-                del data[skill_name]
+            removed = False
+            for key in [canonical, skill_name, *aliases]:
+                if key in data:
+                    del data[key]
+                    removed = True
+            if removed:
                 save_usage(data)
     except Exception as e:
         logger.debug("skill_usage.forget(%s) failed: %s", skill_name, e, exc_info=True)

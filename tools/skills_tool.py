@@ -1431,7 +1431,11 @@ def skill_view(
                 return json.dumps(
                     {
                         "success": True,
-                        "name": name,
+                        # The resolved skill name, never the caller's spelling:
+                        # the tool wrapper records telemetry against whatever
+                        # this field says, so echoing "operations/aio" back
+                        # filed a second usage record under that string.
+                        "name": resolved_name,
                         "file": file_path,
                         "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
                         "is_binary": True,
@@ -1453,7 +1457,7 @@ def skill_view(
             return json.dumps(
                 {
                     "success": True,
-                    "name": name,
+                    "name": resolved_name,
                     "file": file_path,
                     "content": content,
                     "file_type": target_file.suffix,

@@ -106,6 +106,26 @@ def test_prompt_directs_target_selection_by_writable_metadata(label):
 
 
 @prompt_cases
+def test_prompt_applies_the_writable_check_to_already_loaded_skills(label):
+    """The gap the 11:13 trace exposed.
+
+    Session 20260722_103517_c4b416e4: the fork's very first API call was
+    ``skill_manage(patch, 'fix-pr-review')`` — it never called ``skills_list``,
+    because preference step 1 says to patch a skill already loaded in the
+    conversation. Writability metadata the fork never fetches cannot help it,
+    so the loaded-skill step has to carry the check itself.
+    """
+    prompt = getattr(AIAgent, label)
+    lower = prompt.lower()
+    sentences = [s for s in lower.replace("\n", " ").split(". ")]
+    assert any("loaded" in s and "writable" in s for s in sentences), (
+        f"{label}: the currently-loaded-skill step must require a writability "
+        f"check too — a skill loaded in the parent conversation is the target "
+        f"the fork reaches for first, without ever calling skills_list"
+    )
+
+
+@prompt_cases
 def test_prompt_makes_the_owned_fallback_mandatory(label):
     """A blocked best-target must redirect, never end the pass empty."""
     prompt = getattr(AIAgent, label)

@@ -112,7 +112,10 @@ def review_library(monkeypatch):
 
     expected_blocks = {
         "agent-owned": None,
-        "no-usage-record": None,
+        # No usage record is not a claim of agent authorship. Telemetry
+        # absence must fail closed — see test_background_review_write_sequence
+        # for the read-induced ratchet this prevents.
+        "no-usage-record": "not_agent_created",
         "pinned-skill": "pinned",
         "external-skill": "external",
         "plan": "protected_builtin",

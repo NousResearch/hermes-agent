@@ -6480,6 +6480,27 @@ class SessionDB:
     # Rewind (soft-delete) — see /rewind slash command + issue #21910
     # =========================================================================
 
+    @staticmethod
+    def _active_message_counts(conn, session_id: str) -> Tuple[int, int]:
+        message_count = 0
+        tool_call_count = 0
+        rows = conn.execute(
+            "SELECT tool_calls FROM messages "
+            "WHERE session_id = ? AND active = 1",
+            (session_id,),
+        )
+        for (tool_calls_json,) in rows:
+            message_count += 1
+            if not tool_calls_json:
+                continue
+            try:
+                parsed = json.loads(tool_calls_json)
+            except (ValueError, TypeError):
+                continue
+            if parsed is not None:
+                tool_call_count += len(parsed) if isinstance(parsed, list) else 1
+        return message_count, tool_call_count
+
     def rewind_to_message(
         self, session_id: str, target_message_id: int
     ) -> Dict[str, Any]:
@@ -6507,6 +6528,10 @@ class SessionDB:
         the number of rewind operations performed against the session.
         Idempotent on the ``active`` flag: re-rewinding past the same
         target is a no-op on row state but still bumps the counter.
+
+        Also reconciles ``sessions.message_count`` and
+        ``sessions.tool_call_count`` to the rows that stay active so the
+        denormalized counters keep matching the live transcript.
         """
 
         # 1) Validate target up-front (read-only, outside the write txn).
@@ -6544,10 +6569,23 @@ class SessionDB:
                     f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
                     ids,
                 )
+            # Rebuild the denormalized session counters from the rows that
+            # stay active so they keep tracking the live (active=1) set after
+            # the rewind. message_count is the active-row count and
+            # tool_call_count sums each active row's tool_calls the same way
+            # append_message and _insert_message_rows do (a list's length, or
+            # one for a non-list). Without this the columns stay frozen at
+            # their pre-rewind values and every later message widens the gap,
+            # inflating the session-list counts and hiding the rewind from the
+            # cross-process agent-cache staleness check that keys off
+            # message_count.
+            message_count, tool_call_count = self._active_message_counts(
+                conn, session_id
+            )
             conn.execute(
-                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
-                "WHERE id = ?",
-                (session_id,),
+                "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                "rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                (message_count, tool_call_count, session_id),
             )
             return ids
 
@@ -6571,8 +6609,9 @@ class SessionDB:
         """Mark inactive messages with id >= *since_message_id* active again.
 
         Returns the number of rows flipped back to ``active=1``.
-        Intended for undo-of-rewind and test cleanup; not wired to a
-        slash command in v1.
+        Intended for undo-of-rewind and test cleanup. It is not wired to
+        a slash command in v1. The session counters are rebuilt in the
+        same transaction.
         """
         def _do(conn):
             cursor = conn.execute(
@@ -6587,6 +6626,14 @@ class SessionDB:
                     f"UPDATE messages SET active = 1 WHERE id IN ({placeholders})",
                     ids,
                 )
+            message_count, tool_call_count = self._active_message_counts(
+                conn, session_id
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (message_count, tool_call_count, session_id),
+            )
             return len(ids)
 
         return self._execute_write(_do)
@@ -8464,6 +8511,13 @@ class SessionDB:
         held open by the live agent — is never sniped out from under
         the runtime.
 
+        A session whose ``message_count`` is 0 but which still has message
+        rows on disk is NOT empty. The counter tracks the live (active)
+        set, so a session rewound all the way back
+        (:meth:`rewind_to_message`) reports 0 while its ``active = 0``
+        audit rows remain. The row-existence check keeps those sessions
+        out of the count.
+
         Backs the ``GET /api/sessions/empty/count`` endpoint that lets the
         web dashboard hide its "Delete empty" button when there's nothing
         to clean up, and pre-populate the confirm dialog with the actual
@@ -8474,7 +8528,11 @@ class SessionDB:
                 "SELECT COUNT(*) FROM sessions "
                 "WHERE message_count = 0 "
                 "AND ended_at IS NOT NULL "
-                "AND archived = 0"
+                "AND archived = 0 "
+                "AND NOT EXISTS ("
+                "    SELECT 1 FROM messages"
+                "    WHERE messages.session_id = sessions.id"
+                ")"
             )
             return cursor.fetchone()[0]
 
@@ -8489,6 +8547,12 @@ class SessionDB:
         * Selects candidate IDs first (``message_count = 0`` AND
           ``ended_at IS NOT NULL`` AND ``archived = 0``) so we never
           touch a live session or one the user deliberately archived.
+        * Additionally requires that the session has no message rows at
+          all. ``message_count`` tracks the live (active) set, so a
+          fully-rewound session reports 0 while its ``active = 0`` audit
+          rows are still on disk (:meth:`rewind_to_message`). Deleting it
+          would destroy the rewound history that soft-delete exists to
+          preserve, so it never enters the kill list.
         * Orphans any child whose parent is in the kill list — children
           of an empty parent are kept and re-parented to ``NULL`` rather
           than cascade-deleted, matching ``delete_session`` /
@@ -8514,7 +8578,11 @@ class SessionDB:
                 "SELECT id FROM sessions "
                 "WHERE message_count = 0 "
                 "AND ended_at IS NOT NULL "
-                "AND archived = 0"
+                "AND archived = 0 "
+                "AND NOT EXISTS ("
+                "    SELECT 1 FROM messages"
+                "    WHERE messages.session_id = sessions.id"
+                ")"
             )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
@@ -8529,10 +8597,10 @@ class SessionDB:
             )
 
             for sid in session_ids:
-                # DELETE FROM messages is paranoia — by construction
-                # these rows have ``message_count = 0`` — but if a
-                # bookkeeping bug ever lets the counter drift below the
-                # real row count, we still leave a clean FK state.
+                # DELETE FROM messages is paranoia: the NOT EXISTS in the
+                # candidate SELECT (same transaction) means these sessions
+                # have no message rows at all. If that ever changes, we
+                # still leave a clean FK state.
                 conn.execute(
                     "DELETE FROM messages WHERE session_id = ?", (sid,)
                 )

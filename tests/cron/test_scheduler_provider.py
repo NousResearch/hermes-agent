@@ -20,6 +20,8 @@ import threading
 import time
 from unittest.mock import patch
 
+import pytest
+
 
 def _wait_until(predicate, timeout=10.0, interval=0.005):
     """Block until ``predicate()`` is truthy or ``timeout`` elapses.
@@ -400,6 +402,29 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
 
     assert InProcessCronScheduler().fire_due("gone") is False
     assert ran == []
+
+
+def test_fire_due_legacy_claim_seam_releases_ownerless_claim(monkeypatch):
+    """A legacy one-argument claim seam remains compatible after completion."""
+    import cron.jobs as jobs
+    import cron.executions as executions
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    released = []
+    monkeypatch.setattr(executions, "create_execution", lambda *a, **k: {"id": "exec-legacy"})
+    monkeypatch.setattr(executions, "finish_execution", lambda *a, **k: None)
+
+    def legacy_claim(job_id):
+        return True
+
+    monkeypatch.setattr(jobs, "claim_job_for_fire", legacy_claim)
+    monkeypatch.setattr(jobs, "get_job", lambda job_id: {"id": job_id})
+    monkeypatch.setattr(sched, "run_one_job", lambda *a, **k: True)
+    monkeypatch.setattr(jobs, "release_fire_claim", lambda *a, **k: released.append((a, k)))
+
+    assert InProcessCronScheduler().fire_due("legacy") is True
+    assert released == [(("legacy",), {})]
 
 
 def test_fire_due_finalizes_and_releases_claim_when_claim_raises(monkeypatch):

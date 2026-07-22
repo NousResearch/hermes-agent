@@ -110,6 +110,7 @@ class CronScheduler(ABC):
         execution = create_execution(job_id, source=self.name)
         execution_id = execution["id"]
         dispatched = False
+        claim_has_execution_owner = True
         try:
             try:
                 claimed = claim_job_for_fire(job_id, execution_id=execution_id)
@@ -119,6 +120,7 @@ class CronScheduler(ABC):
                 # always uses the durable execution-aware implementation.
                 if "execution_id" not in str(exc):
                     raise
+                claim_has_execution_owner = False
                 claimed = claim_job_for_fire(job_id)
             if not claimed:
                 finish_execution(execution_id, success=False, error="Fire claim rejected.")
@@ -130,26 +132,38 @@ class CronScheduler(ABC):
                     success=False,
                     error="Job removed between claim and dispatch.",
                 )
-                release_fire_claim(job_id, execution_id=execution_id)
+                if claim_has_execution_owner:
+                    release_fire_claim(job_id, execution_id=execution_id)
+                else:
+                    release_fire_claim(job_id)
                 return False
             job["execution_id"] = execution_id
             _set_runtime_state(job_id, "running")
             dispatched = True
-            return run_one_job(job, adapters=adapters, loop=loop)
+            result = run_one_job(job, adapters=adapters, loop=loop)
+            if not claim_has_execution_owner:
+                release_fire_claim(job_id)
+            return result
         except BaseException as exc:
-            if not dispatched:
-                try:
-                    finish_execution(
-                        execution_id,
-                        success=False,
-                        error=f"Pre-dispatch failure: {exc}",
-                    )
-                except Exception:
-                    logger.exception("Failed to finalize cron execution %s", execution_id)
-                try:
+            try:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error=(
+                        f"Pre-dispatch failure: {exc}"
+                        if not dispatched
+                        else f"Cron provider run aborted: {exc}"
+                    ),
+                )
+            except Exception:
+                logger.exception("Failed to finalize cron execution %s", execution_id)
+            try:
+                if claim_has_execution_owner:
                     release_fire_claim(job_id, execution_id=execution_id)
-                except Exception:
-                    logger.exception("Failed to release cron fire claim for %s", job_id)
+                else:
+                    release_fire_claim(job_id)
+            except Exception:
+                logger.exception("Failed to release cron fire claim for %s", job_id)
             raise
         finally:
             if dispatched:

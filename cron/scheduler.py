@@ -341,6 +341,7 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_execution_ids: dict[str, str] = {}
 _running_lock = threading.Lock()
 _runtime_states: dict[str, str] = {}
 _cron_processes: dict[str, Any] = {}
@@ -467,11 +468,19 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     """
     with _running_lock:
         job_ids = list(_running_job_ids)
+        execution_ids = {
+            job_id: _running_execution_ids.get(job_id) for job_id in job_ids
+        }
         _interrupted_job_ids.update(job_ids)
     marked = []
     for job_id in job_ids:
         try:
-            mark_job_run(job_id, False, reason)
+            mark_job_run(
+                job_id,
+                False,
+                reason,
+                execution_id=execution_ids.get(job_id) or "__unknown__",
+            )
             marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
@@ -4237,6 +4246,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 success=False,
                 error="Dispatch claim rejected; execution was not started.",
             )
+            # External fires persist their execution owner in fire_claim. A
+            # rejected one-shot dispatch must release only this claim so the
+            # same external fire can be retried immediately rather than
+            # waiting for the advisory claim TTL.
+            from cron.jobs import release_fire_claim
+            release_fire_claim(job["id"], execution_id=execution_id)
             return True  # not an error — already handled/removed
 
         # The attempt is claimed durably before executor/provider dispatch and
@@ -4354,16 +4369,32 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if interrupted:
             success = False
             error = error or "Interrupted by gateway shutdown before the run finished."
-        if not interrupted:
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        finish_execution(execution_id, success=success, error=error)
+        try:
+            if not interrupted:
+                mark_job_run(
+                    job["id"], success, error,
+                    delivery_error=delivery_error,
+                    execution_id=execution_id,
+                )
+        except BaseException as mark_error:
+            # The durable execution must reach a terminal state even when the
+            # legacy jobs store fails while recording the user-facing result.
+            logger.error("Failed to record cron job %s result: %s", job["id"], mark_error)
+            success = False
+            error = str(mark_error)
+        finally:
+            finish_execution(execution_id, success=success, error=error)
         return True
 
-    except Exception as e:
+    except BaseException as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], False, str(e))
-        finish_execution(execution_id, success=False, error=str(e))
+        try:
+            if not _consume_interrupted_flag(job["id"]):
+                mark_job_run(job["id"], False, str(e), execution_id=execution_id)
+        except BaseException as mark_error:
+            logger.error("Failed to record cron job %s failure: %s", job["id"], mark_error)
+        finally:
+            finish_execution(execution_id, success=False, error=str(e))
         return False
 
 
@@ -4526,8 +4557,11 @@ def tick(
             except Exception:
                 with _running_lock:
                     _running_job_ids.discard(job_id)
+                    _running_execution_ids.pop(job_id, None)
                     _runtime_states[job_id] = "terminal"
                 raise
+            with _running_lock:
+                _running_execution_ids[job_id] = execution["id"]
             dispatched_job = dict(job, execution_id=execution["id"])
             _ctx = contextvars.copy_context()
 
@@ -4537,6 +4571,7 @@ def tick(
                 finally:
                     with _running_lock:
                         _running_job_ids.discard(j["id"])
+                        _running_execution_ids.pop(j["id"], None)
                         _runtime_states[j["id"]] = "terminal"
 
             try:
@@ -4544,6 +4579,7 @@ def tick(
             except Exception as submit_err:
                 with _running_lock:
                     _running_job_ids.discard(job_id)
+                    _running_execution_ids.pop(job_id, None)
                     _runtime_states[job_id] = "terminal"
                 finish_execution(
                     execution["id"],

@@ -21,6 +21,7 @@ class TestCronjobRunExecutesImmediately:
         """action='run' must claim the job then fire it through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-run-1"}), \
              patch("tools.cronjob_tools.claim_job_for_fire", return_value=True) as m_claim, \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=ran):
@@ -29,7 +30,7 @@ class TestCronjobRunExecutesImmediately:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-run-1")   # at-most-once claim taken
+        m_claim.assert_called_once_with("job-run-1", execution_id="exec-run-1")
         m_run.assert_called_once()                       # fired via the shared body
 
     def test_run_skips_when_claim_lost(self):
@@ -71,6 +72,9 @@ class TestCronjobRunExecutesImmediately:
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-error"}), \
+             patch("cron.executions.finish_execution") as m_finish, \
+             patch("tools.cronjob_tools.release_fire_claim") as m_release, \
              patch("cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
              patch("tools.cronjob_tools.mark_job_run") as m_mark, \
              patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
@@ -78,4 +82,68 @@ class TestCronjobRunExecutesImmediately:
         assert res["claimed"] is True
         assert res["success"] is False
         assert "boom" in res["error"]
+        m_finish.assert_called_once()
+        m_release.assert_called_once_with("job-run-1", execution_id="exec-error")
         m_mark.assert_called_once()
+
+    def test_execute_job_now_finalizes_on_base_exception(self):
+        """SystemExit after claiming still finalizes and releases ownership."""
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("cron.executions.create_execution", return_value={"id": "exec-system-exit"}), \
+             patch("cron.executions.finish_execution") as m_finish, \
+             patch("tools.cronjob_tools.release_fire_claim") as m_release, \
+             patch("cron.scheduler.run_one_job", side_effect=SystemExit("stop")), \
+             patch("tools.cronjob_tools.mark_job_run") as m_mark, \
+             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
+            res = _execute_job_now(dict(_JOB))
+        assert res["claimed"] is True
+        assert res["success"] is False
+        assert "stop" in res["error"]
+        m_finish.assert_called_once()
+        m_release.assert_called_once_with("job-run-1", execution_id="exec-system-exit")
+        m_mark.assert_called_once()
+
+    def test_execute_job_now_finalizes_when_claim_raises(self):
+        """A claim-store exception cannot strand the created execution."""
+        with patch("cron.executions.create_execution", return_value={"id": "exec-claim"}), \
+             patch("tools.cronjob_tools.claim_job_for_fire", side_effect=RuntimeError("claim down")), \
+             patch("cron.executions.finish_execution") as m_finish, \
+             patch("tools.cronjob_tools.release_fire_claim") as m_release, \
+             patch("tools.cronjob_tools.mark_job_run"):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is False
+        assert "claim down" in res["error"]
+        m_finish.assert_called_once()
+        m_release.assert_called_once_with("job-run-1", execution_id="exec-claim")
+
+    def test_execute_job_now_releases_legacy_claim_after_success(self):
+        """Legacy one-argument claim seams are released after completion."""
+        claimed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+        with patch("cron.executions.create_execution", return_value={"id": "exec-legacy"}), \
+             patch(
+                 "tools.cronjob_tools.claim_job_for_fire",
+                 side_effect=[TypeError("unexpected keyword argument execution_id"), True],
+             ), \
+             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job", return_value=claimed), \
+             patch("tools.cronjob_tools.release_fire_claim") as m_release:
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        m_release.assert_called_once_with("job-run-1")
+
+    def test_execute_job_now_releases_legacy_claim_after_base_exception(self):
+        """Legacy claims are released when the shared run raises BaseException."""
+        with patch("cron.executions.create_execution", return_value={"id": "exec-legacy"}), \
+             patch(
+                 "tools.cronjob_tools.claim_job_for_fire",
+                 side_effect=[TypeError("unexpected keyword argument execution_id"), True],
+             ), \
+             patch("cron.scheduler.run_one_job", side_effect=SystemExit("stop")), \
+             patch("tools.cronjob_tools.release_fire_claim") as m_release, \
+             patch("tools.cronjob_tools.mark_job_run"):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is False
+        m_release.assert_called_once_with("job-run-1")

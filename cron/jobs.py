@@ -1513,7 +1513,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 execution_id: Optional[str] = None):
     """
     Mark a job as having been run.
     
@@ -1533,9 +1534,22 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
-                # Clear any external-fire claim so a re-armed recurring job can
-                # be claimed again on its next fire (Phase 4C CAS).
-                job["fire_claim"] = None
+                # Clear an external-fire claim only when it belongs to this
+                # execution. A stale failure must not erase a replacement
+                # claim acquired by another process during cleanup.
+                fire_claim = job.get("fire_claim")
+                claim_owner = (
+                    fire_claim.get("execution_id")
+                    if isinstance(fire_claim, dict)
+                    else None
+                )
+                # Legacy callers without an execution ID may clear an ownerless
+                # claim. Execution-bound callers must prove exact ownership;
+                # ownerless claims are unprovable and remain for TTL recovery.
+                if (execution_id is None and claim_owner is None) or (
+                    execution_id is not None and claim_owner == str(execution_id)
+                ):
+                    job["fire_claim"] = None
                 # Clear the one-shot running-claim (#59229): the run is over, so
                 # a re-armed recurring job or a re-dispatched one-shot recovery
                 # is claimable again. No-op if the job never carried a claim.
@@ -1836,7 +1850,13 @@ def release_fire_claim(job_id: str, *, execution_id: Optional[str] = None) -> bo
             if not claim:
                 return False
             owner = claim.get("execution_id") if isinstance(claim, dict) else None
-            if execution_id is not None and owner is not None and owner != str(execution_id):
+            # Ownerless legacy cleanup is safe only for an ownerless stored
+            # claim. Once ownership is recorded, callers must prove the exact
+            # execution owner; a stale compatibility caller must fail closed.
+            if execution_id is None:
+                if owner is not None:
+                    return False
+            elif owner != str(execution_id):
                 return False
             job["fire_claim"] = None
             save_jobs(jobs)

@@ -145,6 +145,23 @@ def test_recovery_does_not_mark_other_live_owner_unknown(monkeypatch, tmp_path):
     assert executions.latest_execution("other-live")["status"] == "claimed"
 
 
+def test_unknown_remote_owner_liveness_fails_closed(monkeypatch, tmp_path):
+    """A foreign host's PID cannot be probed, so its claim remains protected."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("remote-live", source="builtin")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            "UPDATE executions SET host_id=?, process_id=?, pid=? WHERE id=?",
+            ("remote-host", "remote-process", 1, record["id"]),
+        )
+
+    assert executions.execution_is_live(record["id"]) is True
+    assert executions.recover_interrupted_executions() == 0
+    stored = executions.latest_execution("remote-live")
+    assert stored is not None
+    assert stored["status"] == "claimed"
+
+
 def test_recovery_rejects_recycled_pid(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("recycled", source="builtin")

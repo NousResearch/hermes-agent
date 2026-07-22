@@ -14,6 +14,100 @@ from tools.cronjob_tools import (
 # Cron prompt scanning
 # =========================================================================
 
+
+def test_format_job_prefers_durable_running_execution_across_processes(monkeypatch):
+    """A durable running ledger must not be downgraded to local claimed."""
+    import tools.cronjob_tools as cron_tools
+
+    monkeypatch.setattr(
+        "cron.executions.latest_execution",
+        lambda job_id: {"job_id": job_id, "status": "running"},
+    )
+    monkeypatch.setattr("cron.scheduler.get_runtime_state", lambda job_id: None)
+    result = cron_tools._format_job(
+        {"id": "cross-process", "prompt": "work", "fire_claim": {"at": "now"}}
+    )
+
+    assert result["execution_state"] == "running"
+    assert result["runtime_state"] == "running"
+    assert result["in_flight"] is True
+
+
+def test_format_job_uses_live_fire_claim_owner_over_newer_loser(monkeypatch):
+    """A newer failed claim-loser must not mask the live fire owner."""
+    import tools.cronjob_tools as cron_tools
+
+    monkeypatch.setattr("cron.executions.execution_is_live", lambda execution_id: True)
+    monkeypatch.setattr(
+        "cron.executions.get_execution",
+        lambda execution_id: {"job_id": "claimed", "id": execution_id, "status": "running"},
+    )
+    monkeypatch.setattr(
+        "cron.executions.latest_execution",
+        lambda job_id: {"job_id": job_id, "id": "loser", "status": "failed"},
+    )
+    monkeypatch.setattr("cron.scheduler.get_runtime_state", lambda job_id: None)
+    result = cron_tools._format_job(
+        {
+            "id": "claimed",
+            "prompt": "work",
+            "fire_claim": {"at": "now", "execution_id": "owner-a"},
+        }
+    )
+
+    assert result["execution_state"] == "running"
+    assert result["runtime_state"] == "running"
+    assert result["in_flight"] is True
+
+
+def test_format_job_durable_terminal_state_overrides_local_runtime(monkeypatch):
+    """A terminal ledger entry cannot be shown as locally still in flight."""
+    import tools.cronjob_tools as cron_tools
+
+    monkeypatch.setattr(
+        "cron.executions.latest_execution",
+        lambda job_id: {"job_id": job_id, "status": "completed"},
+    )
+    monkeypatch.setattr("cron.scheduler.get_runtime_state", lambda job_id: "running")
+    result = cron_tools._format_job(
+        {"id": "terminal", "prompt": "work", "fire_claim": {"at": "now"}}
+    )
+
+    assert result["runtime_state"] == "completed"
+    assert result["in_flight"] is False
+
+
+def test_format_job_prefers_local_cancelling_over_durable_running(monkeypatch):
+    """An active local cancellation must not be masked by the ledger."""
+    import tools.cronjob_tools as cron_tools
+
+    monkeypatch.setattr(
+        "cron.executions.latest_execution",
+        lambda job_id: {"job_id": job_id, "status": "running"},
+    )
+    monkeypatch.setattr("cron.scheduler.get_runtime_state", lambda job_id: "cancelling")
+    result = cron_tools._format_job({"id": "cancelling", "prompt": "work"})
+
+    assert result["execution_state"] == "running"
+    assert result["runtime_state"] == "cancelling"
+    assert result["in_flight"] is True
+
+
+def test_format_job_prefers_durable_terminal_over_local_cancelling(monkeypatch):
+    """A terminal ledger entry must not be shown as still cancelling."""
+    import tools.cronjob_tools as cron_tools
+
+    monkeypatch.setattr(
+        "cron.executions.latest_execution",
+        lambda job_id: {"job_id": job_id, "status": "completed"},
+    )
+    monkeypatch.setattr("cron.scheduler.get_runtime_state", lambda job_id: "cancelling")
+    result = cron_tools._format_job({"id": "terminal-cancelling", "prompt": "work"})
+
+    assert result["runtime_state"] == "completed"
+    assert result["in_flight"] is False
+
+
 class TestScanCronPrompt:
     def test_clean_prompt_passes(self):
         assert _scan_cron_prompt("Check if nginx is running on server 10.0.0.1") == ""

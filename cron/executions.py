@@ -7,6 +7,7 @@ proved gone. Terminal states are immutable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -25,6 +26,23 @@ _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+def _host_identity() -> str:
+    """Return a stable opaque identity for the machine owning this ledger."""
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            value = Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+        if value:
+            return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    # A hostname is not an authoritative machine identity: it can collide
+    # across replicas and containers. Unknown identity must fail closed.
+    return ""
+
+
+_HOST_ID = _host_identity()
+
+
 def _connect() -> sqlite3.Connection:
     EXECUTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(EXECUTIONS_FILE, timeout=5)
@@ -37,6 +55,7 @@ def _connect() -> sqlite3.Connection:
              id TEXT PRIMARY KEY,
              job_id TEXT NOT NULL,
              source TEXT NOT NULL,
+             host_id TEXT NOT NULL DEFAULT '',
              process_id TEXT NOT NULL,
              pid INTEGER NOT NULL,
              process_started_at INTEGER,
@@ -48,6 +67,10 @@ def _connect() -> sqlite3.Connection:
              error TEXT
            )"""
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(executions)")}
+    if "host_id" not in columns:
+        # Legacy rows have unknown host ownership and must remain protected.
+        conn.execute("ALTER TABLE executions ADD COLUMN host_id TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"
@@ -71,7 +94,13 @@ def _process_start_time(pid: int) -> Optional[int]:
         return None
 
 
-def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
+def _owner_is_live(
+    pid: int, started_at: Optional[int], owner_host_id: Optional[str] = None,
+) -> bool:
+    # PID and process start time are only meaningful on the host where they
+    # were observed. Unknown identity is deliberately fail-closed too.
+    if not owner_host_id or owner_host_id != _HOST_ID:
+        return True
     try:
         from gateway.status import _pid_exists
         if not _pid_exists(pid):
@@ -104,10 +133,10 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
     with _lock, _connect() as conn:
         conn.execute(
             """INSERT INTO executions
-               (id, job_id, source, process_id, pid, process_started_at,
+               (id, job_id, source, host_id, process_id, pid, process_started_at,
                 status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
-            (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+            (execution_id, str(job_id), str(source), _HOST_ID, _PROCESS_ID, pid,
              _process_start_time(pid), now),
         )
         row = conn.execute(
@@ -159,13 +188,15 @@ def recover_interrupted_executions() -> int:
     changed = 0
     with _lock, _connect() as conn:
         rows = conn.execute(
-            """SELECT id, process_id, pid, process_started_at FROM executions
+            """SELECT id, process_id, host_id, pid, process_started_at FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
         for row in rows:
             if row["process_id"] == _PROCESS_ID:
                 continue
-            if _owner_is_live(int(row["pid"]), row["process_started_at"]):
+            if _owner_is_live(
+                int(row["pid"]), row["process_started_at"], row["host_id"]
+            ):
                 continue
             cur = conn.execute(
                 """UPDATE executions SET status='unknown', finished_at=?, error=?
@@ -210,16 +241,27 @@ def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
+def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
+    """Return one durable execution by its ownership ID."""
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM executions WHERE id=?", (str(execution_id),)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def execution_is_live(execution_id: str) -> bool:
     """Return whether an execution still has a provably live owner."""
     with _lock, _connect() as conn:
         row = conn.execute(
-            "SELECT status, pid, process_started_at FROM executions WHERE id=?",
+            "SELECT status, host_id, pid, process_started_at FROM executions WHERE id=?",
             (str(execution_id),),
         ).fetchone()
     if row is None or row["status"] not in ("claimed", "running"):
         return False
-    return _owner_is_live(int(row["pid"]), row["process_started_at"])
+    return _owner_is_live(
+        int(row["pid"]), row["process_started_at"], row["host_id"]
+    )
 
 
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:

@@ -256,3 +256,62 @@ The fallback regression now forces boundary unavailability, uses a short-lived d
 - PASS: root `AGENTS.md` contains the Base-ADR/OpenSpec pre-flight pointer required by ADR 0006, and no runtime source changes were introduced by this governance repair.
 
 **Result: PASS — fresh Terra review completed.**
+
+## Round 18 — external-fire cleanup and cross-process status repair
+
+**Validation commands and outcomes:**
+
+- `scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_scheduler_provider.py tests/tools/test_cronjob_tools.py tests/tools/test_cronjob_run_immediate.py tests/cron/test_claim_job_for_fire.py -q`: PASS (5 files, 153 tests passed, 0 failed).
+- `python3 -m compileall -q cron/scheduler_provider.py cron/jobs.py tools/cronjob_tools.py tests/cron/test_scheduler_provider.py tests/tools/test_cronjob_tools.py tests/tools/test_cronjob_run_immediate.py tests/cron/test_claim_job_for_fire.py`: PASS.
+- `git diff --check`: PASS.
+
+- Durable pre-dispatch failures finalize the execution ledger and release only the matching external-fire claim; missing-job cleanup and legacy one-argument claim seams remain covered.
+- Job formatting prefers the durable execution ledger over process-local runtime state, so a cross-process running execution is reported as `running`, not merely `claimed`.
+
+**Result: PASS — focused repair and behavioral regressions verified locally; independent review follows.**
+
+## Round 19 — final independent ownership/status review
+
+**Reviewer lane:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Session:** `019f88e5-9237-7bb2-a8cb-14a1d964ce01`
+
+- PASS: complete dirty-tree review confirmed strict execution-owner matching, explicit legacy one-argument claim compatibility, scheduler and immediate-run pre-dispatch finalization/release, and durable-state precedence with intentional local `cancelling` precedence.
+- PASS: reviewer confirmed the modified behavioral tests and the exact five-file, 153-test command recorded above.
+- PASS: reviewer confirmed ADR 0006/OpenSpec evidence and no unrequested edits, commits, or network use.
+
+**Result: PASS — final independent review completed.**
+
+## Round 20 — compatibility cleanup and final independent review
+
+**Validation commands and outcomes:**
+
+- `scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_scheduler_provider.py tests/tools/test_cronjob_tools.py tests/tools/test_cronjob_run_immediate.py tests/cron/test_claim_job_for_fire.py tests/cron/test_scheduler.py tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py -q`: PASS (9 files, 416 tests passed, 0 failed).
+- `npx --yes @fission-ai/openspec@1.6.0 validate --all --strict`: PASS (`No items found to validate.`).
+- `git diff --check`: PASS.
+- `python3 -m compileall -q` over all modified runtime and test modules: PASS.
+
+**Reviewer lane:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+**Session:** `019f88fb-84a7-7552-a049-21bbb89001a4`
+
+- PASS: provider and immediate-run legacy one-argument claim seams release ownerless claims on success, missing-job, and exception paths; execution-owned cleanup remains exact-owner only.
+- PASS: dispatch rejection finalizes the durable execution and releases only the matching claim; status formatting prefers a live claim owner over newer failed history.
+- PASS: no material findings remained in the complete dirty tree, tests, or archived governance evidence.
+
+**Result: PASS — final independent review completed after compatibility repairs.**
+
+## Round 21 — current-diff independent convergence review
+
+**Validation commands and outcomes:**
+
+- `scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_scheduler_provider.py tests/tools/test_cronjob_tools.py tests/tools/test_cronjob_run_immediate.py tests/cron/test_claim_job_for_fire.py tests/cron/test_scheduler.py tests/cron/test_process_isolation.py tests/cron/test_terminal_cwd_lock.py tests/cron/test_ticker_stall_60703.py -q`: PASS (9 files, 418 tests passed, 0 failed).
+- `npx --yes @fission-ai/openspec@1.6.0 validate --all --strict`: PASS (`No items found to validate.`).
+- `python3 -m compileall -q` over all modified runtime and test modules: PASS.
+- `git diff --check`: PASS.
+
+**Reviewer lane:** Codex CLI 0.144.1, `gpt-5.6-terra`, read-only sandbox, ephemeral session.
+
+- PASS: independent review covered `origin/main...HEAD`, the complete current dirty diff, OpenSpec artifacts, cron runtime paths, focused tests, root governance, and ADR 0006.
+- PASS: no blocking correctness, containment, lifecycle, durable-ownership, compatibility, cleanup, status, test-scope, or OpenSpec/ADR governance findings.
+- PASS: current checkout is safe to ship through the repository-native PR loop.
+
+**Result: PASS — fresh current-diff review and local gates completed.**

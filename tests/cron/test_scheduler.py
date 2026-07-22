@@ -5,7 +5,7 @@ import itertools
 import json
 import logging
 import os
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import ANY, AsyncMock, patch, MagicMock
 
 import pytest
 
@@ -2700,6 +2700,7 @@ class TestSilentDelivery:
             False,
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
+            execution_id=ANY,
         )
 
 
@@ -2732,6 +2733,7 @@ class TestOneShotDispatchClaim:
     def test_refused_claim_skips_run_job(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._oneshot()]), \
              patch("cron.scheduler.claim_dispatch", return_value=False), \
+             patch("cron.jobs.release_fire_claim") as release_mock, \
              patch("cron.scheduler.run_job") as run_mock, \
              patch("cron.scheduler.save_job_output"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
@@ -2741,6 +2743,8 @@ class TestOneShotDispatchClaim:
         run_mock.assert_not_called()
         deliver_mock.assert_not_called()
         mark_mock.assert_not_called()
+        release_mock.assert_called_once()
+        assert release_mock.call_args.kwargs["execution_id"]
 
 
 class TestBuildJobPromptSilentHint:

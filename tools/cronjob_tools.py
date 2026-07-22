@@ -35,6 +35,12 @@ from cron.jobs import (
 )
 
 
+def release_fire_claim(*args, **kwargs):
+    """Resolve the claim release function dynamically for test seams."""
+    from cron.jobs import release_fire_claim as _release_fire_claim
+    return _release_fire_claim(*args, **kwargs)
+
+
 def _notify_provider_jobs_changed_safe() -> None:
     """Tell the active cron scheduler provider the job set changed (no-op for
     the built-in). Best-effort — never lets a provider error break the tool."""
@@ -570,8 +576,19 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = str(job.get("id") or "unknown")
     name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
     try:
-        from cron.executions import latest_execution
-        durable_execution = job.get("latest_execution") or latest_execution(job_id)
+        from cron.executions import execution_is_live, get_execution, latest_execution
+        fire_claim = job.get("fire_claim")
+        claim_execution_id = (
+            fire_claim.get("execution_id")
+            if isinstance(fire_claim, dict)
+            else None
+        )
+        durable_execution = None
+        if claim_execution_id and execution_is_live(claim_execution_id):
+            durable_execution = get_execution(claim_execution_id)
+        durable_execution = (
+            durable_execution or job.get("latest_execution") or latest_execution(job_id)
+        )
     except Exception:
         durable_execution = job.get("latest_execution")
     durable_state = (
@@ -585,9 +602,13 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         runtime_state = None
     claimed = bool(job.get("run_claim") or job.get("fire_claim"))
-    # The execution ledger is profile-shared and authoritative across
-    # processes; local runtime state is only a fallback.
-    if durable_state in {"claimed", "running", "completed", "failed", "unknown"}:
+    # A local cancellation is the active process's strongest signal: it must
+    # remain visible while shutdown/timeout cleanup races with the durable
+    # ledger update. Otherwise, the profile-shared ledger is authoritative
+    # across processes and local runtime state is only a fallback.
+    if runtime_state == "cancelling" and durable_state not in {"completed", "failed", "unknown"}:
+        effective_runtime_state = runtime_state
+    elif durable_state in {"claimed", "running", "completed", "failed", "unknown"}:
         effective_runtime_state = durable_state
     elif runtime_state in {"running", "cancelling"}:
         effective_runtime_state = runtime_state
@@ -649,6 +670,9 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    execution_id = None
+    claim_has_execution_owner = True
+
     try:
         from cron.scheduler import run_one_job
 
@@ -660,7 +684,16 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
         execution = create_execution(job_id, source="direct")
         execution_id = execution["id"]
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id, execution_id=execution_id):
+        try:
+            claimed = claim_job_for_fire(job_id, execution_id=execution_id)
+        except TypeError as exc:
+            # Preserve narrow legacy test/plugin seams that still expose the
+            # pre-ownership one-argument callable.
+            if "execution_id" not in str(exc):
+                raise
+            claim_has_execution_owner = False
+            claimed = claim_job_for_fire(job_id)
+        if not claimed:
             finish_execution(execution_id, success=False, error="Fire claim rejected.")
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
@@ -675,10 +708,14 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                 reason = "Job is already being fired by the scheduler; not run again."
             return {"claimed": False, "success": False, "error": reason}
 
-        job = dict(job, execution_id=execution_id)
+        job["execution_id"] = execution_id
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
         processed = run_one_job(job)
+        if not claim_has_execution_owner:
+            # Execution-aware completion cannot clear an ownerless legacy
+            # claim, so release it only after the run returns.
+            release_fire_claim(job_id)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
@@ -687,10 +724,27 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             "error": refreshed.get("last_error"),
         }
 
-    except Exception as e:
+    except BaseException as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
+        if execution_id is not None:
+            try:
+                from cron.executions import finish_execution
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error=f"Pre-dispatch failure: {e}",
+                )
+            except Exception:
+                logger.exception("Failed to finalize cron execution %s", execution_id)
+            try:
+                if claim_has_execution_owner:
+                    release_fire_claim(job_id, execution_id=execution_id)
+                else:
+                    release_fire_claim(job_id)
+            except Exception:
+                logger.exception("Failed to release cron fire claim for %s", job_id)
         try:
-            mark_job_run(job_id, False, str(e))
+            mark_job_run(job_id, False, str(e), execution_id=execution_id)
         except Exception:
             pass
         return {"claimed": True, "success": False, "error": str(e)}

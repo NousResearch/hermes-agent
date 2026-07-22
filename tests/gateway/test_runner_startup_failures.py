@@ -1,5 +1,7 @@
-import pytest
+import json
 from unittest.mock import AsyncMock
+
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
@@ -295,6 +297,91 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     assert calls == [(42, False), (42, True)]
     assert removed_pid is False
     assert released_locks is False
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_preserves_other_profile_same_home(
+    monkeypatch, tmp_path
+):
+    """Regression for #60269: never replace a bare sibling profile gateway."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "beta")
+    record = {
+        "pid": 4242,
+        "kind": "hermes-gateway",
+        "argv": ["hermes", "gateway", "run", "--replace"],
+        "start_time": 123,
+        "hermes_home": str(tmp_path),
+        "hermes_profile": "alpha",
+    }
+    pid_path = tmp_path / "gateway.pid"
+    lock_path = tmp_path / "gateway.lock"
+    pid_path.write_text(json.dumps(record))
+    lock_path.write_text(json.dumps(record))
+
+    alive = True
+    terminate_calls = []
+
+    def _terminate_pid(pid, force=False):
+        nonlocal alive
+        terminate_calls.append((pid, force))
+        alive = False
+
+    class _RunnerShouldNotStart:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+
+        async def start(self):
+            raise AssertionError("profile-colliding gateway must not start")
+
+    class _NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    class _NotMainThread:
+        name = "test-non-main-thread"
+
+    monkeypatch.setattr(
+        "gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: True
+    )
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: alive)
+    monkeypatch.setattr("gateway.status._get_process_start_time", lambda pid: 123)
+    monkeypatch.setattr(
+        "gateway.status._read_process_cmdline",
+        lambda pid: "hermes gateway run --replace",
+    )
+    monkeypatch.setattr("gateway.status.terminate_pid", _terminate_pid)
+    monkeypatch.setattr("gateway.status._snapshot_gateway_children", lambda pid: [])
+    monkeypatch.setattr("gateway.status.release_all_scoped_locks", lambda **kwargs: 0)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: False)
+    monkeypatch.setattr("gateway.code_skew.record_boot_fingerprint", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr(
+        "hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
+    )
+    monkeypatch.setattr(
+        "hermes_cli.security_audit_startup.log_startup_security_warnings",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerShouldNotStart)
+    monkeypatch.setattr("gateway.run.threading.Thread", _NoopThread)
+    monkeypatch.setattr(
+        "gateway.run.threading.current_thread", lambda: _NotMainThread()
+    )
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is False
+    assert terminate_calls == []
+    assert pid_path.exists()
+    assert lock_path.exists()
 
 
 @pytest.mark.asyncio

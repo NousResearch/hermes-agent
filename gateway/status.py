@@ -45,7 +45,10 @@ _gateway_lock_handle = None
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
-_gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+_gateway_running_pid_cache: dict[
+    tuple[str, bool, bool, Optional[str]],
+    tuple[float, tuple[Any, ...], Optional[int]],
+] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +155,29 @@ def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
     return os.path.normcase(str(_canonical_hermes_home(left))) == os.path.normcase(
         str(_canonical_hermes_home(right))
     )
+
+
+def _get_process_profile_identity() -> Optional[str]:
+    """Return the explicit profile identity exported by the launcher."""
+    value = os.environ.get("HERMES_PROFILE", "").strip()
+    return value or None
+
+
+def _recorded_profile_matches(
+    record: dict[str, Any], expected_profile: Optional[str]
+) -> Optional[bool]:
+    """Compare persisted profile identity, or return ``None`` for legacy data."""
+    if "hermes_profile" not in record:
+        return None
+
+    recorded_profile = record.get("hermes_profile")
+    if recorded_profile is None:
+        normalized_profile = None
+    elif isinstance(recorded_profile, str):
+        normalized_profile = recorded_profile.strip() or None
+    else:
+        return False
+    return normalized_profile == expected_profile
 
 
 def _get_pid_path() -> Path:
@@ -534,6 +560,7 @@ def _record_matches_live_gateway_pid(
     pid: int,
     *,
     expected_home: Optional[Path] = None,
+    expected_profile: Any = _UNSET,
 ) -> bool:
     """Return True when a live PID still identifies as this gateway record.
 
@@ -542,26 +569,32 @@ def _record_matches_live_gateway_pid(
     PID occupied by an s6 supervisor/log process, the stale record's argv should
     not make that unrelated process count as a running gateway.
 
-    When ``expected_home`` is provided (the dashboard enumerating a specific
-    profile's state file), the readable live command line must additionally
-    belong to *that* profile — otherwise a PID recycled onto a different
-    profile's live gateway would make the dead profile look alive.  When the
-    live command line cannot be read (Windows/permission), fall back to the
-    persisted record so cross-platform behavior is preserved.
+    ``expected_home`` and ``expected_profile`` scope the record to the owning
+    gateway. The profile field disambiguates bare Studio child commands that
+    share one HERMES_HOME; records written before that field existed keep the
+    command-line/home fallback. When the live command line cannot be read
+    (Windows/permission), fall back to the persisted record so cross-platform
+    behavior is preserved.
     """
     recorded_home_matches: Optional[bool] = None
     if expected_home is not None:
         recorded_home = record.get("hermes_home")
         if isinstance(recorded_home, str) and recorded_home.strip():
             try:
-                recorded_home_matches = (
-                    Path(recorded_home).expanduser().resolve()
-                    == expected_home.expanduser().resolve()
+                recorded_home_matches = _same_hermes_home(
+                    recorded_home, expected_home
                 )
             except OSError:
                 recorded_home_matches = False
             if not recorded_home_matches:
                 return False
+
+    if expected_profile is not _UNSET:
+        recorded_profile_matches = _recorded_profile_matches(
+            record, expected_profile
+        )
+        if recorded_profile_matches is False:
+            return False
 
     live_cmdline = _read_process_cmdline(pid)
     if live_cmdline:
@@ -588,6 +621,7 @@ def _build_pid_record() -> dict:
         # explicit cross-profile --replace can place its planned-takeover
         # marker where the target process will actually read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "hermes_profile": _get_process_profile_identity(),
     }
 
 
@@ -1009,6 +1043,8 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["hermes_home"] = current_record["hermes_home"]
+    payload["hermes_profile"] = current_record["hermes_profile"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:
@@ -1158,6 +1194,7 @@ def get_runtime_status_running_pid(
     runtime: Optional[dict[str, Any]] = None,
     *,
     expected_home: Optional[Path] = None,
+    expected_profile: Any = _UNSET,
 ) -> Optional[int]:
     """Return a live gateway PID from the runtime status record, if valid.
 
@@ -1193,7 +1230,12 @@ def get_runtime_status_running_pid(
     ):
         return None
 
-    if _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
+    if _record_matches_live_gateway_pid(
+        payload,
+        pid,
+        expected_home=expected_home,
+        expected_profile=expected_profile,
+    ):
         return pid
     return None
 
@@ -2032,10 +2074,16 @@ def get_running_pid(
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     expected_home = resolved_pid_path.parent
+    expected_profile = (
+        _get_process_profile_identity() if pid_path is None else _UNSET
+    )
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
         if pid_path is None:
-            runtime_pid = get_runtime_status_running_pid(expected_home=expected_home)
+            runtime_pid = get_runtime_status_running_pid(
+                expected_home=expected_home,
+                expected_profile=expected_profile,
+            )
             if runtime_pid is not None:
                 return runtime_pid
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
@@ -2058,7 +2106,12 @@ def get_running_pid(
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue
 
-        if _record_matches_live_gateway_pid(record, pid, expected_home=expected_home):
+        if _record_matches_live_gateway_pid(
+            record,
+            pid,
+            expected_home=expected_home,
+            expected_profile=expected_profile,
+        ):
             return pid
         if _record_matches_live_gateway_pid(record, pid):
             saw_live_gateway_for_other_profile = True
@@ -2069,7 +2122,10 @@ def get_running_pid(
         return None
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     if pid_path is None:
-        runtime_pid = get_runtime_status_running_pid(expected_home=expected_home)
+        runtime_pid = get_runtime_status_running_pid(
+            expected_home=expected_home,
+            expected_profile=expected_profile,
+        )
         if runtime_pid is not None:
             return runtime_pid
     return None
@@ -2095,11 +2151,17 @@ def get_running_pid_cached(
 
     resolved_pid_path = pid_path or _get_pid_path()
     include_runtime_status = pid_path is None
+    cache_profile = _get_process_profile_identity() if pid_path is None else None
     signature = _running_pid_cache_signature(
         resolved_pid_path,
         include_runtime_status=include_runtime_status,
     )
-    key = (str(resolved_pid_path), bool(cleanup_stale), include_runtime_status)
+    key = (
+        str(resolved_pid_path),
+        bool(cleanup_stale),
+        include_runtime_status,
+        cache_profile,
+    )
     now = time.monotonic()
 
     with _gateway_running_pid_cache_lock:

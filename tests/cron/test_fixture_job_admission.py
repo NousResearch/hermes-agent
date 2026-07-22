@@ -13,8 +13,10 @@ from cron.executions import latest_execution
 from cron.jobs import (
     context_free_fixture_reason,
     create_job,
+    get_due_jobs,
     get_job,
     remove_job,
+    trigger_job,
     update_job,
     use_cron_store,
 )
@@ -315,6 +317,9 @@ def test_deleted_persisted_snapshot_is_rejected_before_agent_path():
     job = _mark_historical_fixture(
         create_job(name="claim job", schedule="0 7 * * *", prompt="x")
     )
+    assert trigger_job(job["id"]) is not None
+    snapshot = next(item for item in get_due_jobs() if item["id"] == job["id"])
+    assert snapshot["_persisted_due_snapshot"] is True
     assert remove_job(job["id"]) is True
 
     with (
@@ -323,7 +328,13 @@ def test_deleted_persisted_snapshot_is_rejected_before_agent_path():
         ) as run_mock,
         patch.object(scheduler, "mark_job_run") as mark_mock,
     ):
-        assert run_one_job(job, require_persisted=True) is True
+        assert (
+            run_one_job(
+                snapshot,
+                require_persisted=bool(snapshot["_persisted_due_snapshot"]),
+            )
+            is True
+        )
 
     run_mock.assert_not_called()
     mark_mock.assert_not_called()

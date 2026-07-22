@@ -8256,11 +8256,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         from gateway.session import build_session_key
         self._apply_topic_recovery(event)
+        # event.source.profile isn't stamped yet at this point in the receive
+        # pipeline (that only happens inside handle_message, called later) —
+        # use self.profile_name, which is known synchronously on this adapter.
+        # getattr(..., None): some tests construct adapters via
+        # object.__new__() and skip __init__, so profile_name may not be set.
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+            profile=getattr(self, "profile_name", None),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -8353,10 +8358,15 @@ class TelegramAdapter(BasePlatformAdapter):
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
         """Return a batching key for Telegram photos/albums."""
         from gateway.session import build_session_key
+        # event.source.profile isn't stamped yet this early in the receive
+        # pipeline — use self.profile_name instead (see _text_batch_key).
+        # getattr(..., None): some tests construct adapters via
+        # object.__new__() and skip __init__, so profile_name may not be set.
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=getattr(self, "profile_name", None),
         )
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

@@ -399,15 +399,24 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                from toolsets import bundle_non_core_tools, get_toolset
-                if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
+                try:
+                    from toolsets import bundle_non_core_tools, get_toolset
+                except Exception:
+                    bundle_non_core_tools = None  # type: ignore[assignment]
+                    get_toolset = None  # type: ignore[assignment]
+                if toolset_name.startswith("hermes-") or ((get_toolset(toolset_name) or {}).get("posture") if get_toolset else False):
                     # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, and
                     # posture toolsets (`posture: True`, e.g. `coding`) re-list
                     # those same core tools without owning them, so subtracting
                     # the whole toolset would strip core tools shared by other
                     # enabled toolsets and empty the tool list (#33924, #57315).
                     # Subtract only the non-core delta; keep core.
-                    to_remove = bundle_non_core_tools(toolset_name)
+                    to_remove = set()
+                    if bundle_non_core_tools is not None:
+                        try:
+                            to_remove = bundle_non_core_tools(toolset_name)
+                        except Exception:
+                            to_remove = set()
                     tools_to_include.difference_update(to_remove)
                     resolved = sorted(to_remove)
                     if (not quiet_mode and toolset_name.startswith("hermes-")

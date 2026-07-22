@@ -420,6 +420,9 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
+For a deeper walkthrough of progress grouping, per-platform overrides, and caveats for no-edit transports, see:
+- [Tool Progress Grouping](/user-guide/features/tool-progress-grouping)
+
 ## Background Sessions
 
 Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:

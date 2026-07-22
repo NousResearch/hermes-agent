@@ -468,4 +468,56 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
     return parser
 
 
-__all__ = ["cmd_send", "register_send_subparser"]
+__all__ = [
+    "cmd_send",
+    "register_send_subparser",
+    "send_command",
+]
+
+def send_command(payload_json: str) -> str:
+    """Execute a send-message command from a JSON payload and return a result.
+
+    This is intended for programmatic callers that do not have an argparse
+    namespace. It normalizes the expected JSON shape into the minimal args
+    namespace that ``cmd_send`` requires, then funnels through the existing
+    CLI send path so channel-directory loading, env bridging, and
+    ``_emit_result`` behavior stay identical.
+    """
+    try:
+        payload = json.loads(payload_json) if payload_json else {}
+    except json.JSONDecodeError:
+        return json.dumps({"error": "invalid JSON payload for send_command"})
+
+    class _Args:
+        pass
+
+    args = _Args()
+    args.to = payload.get("target")
+    args.message = payload.get("message")
+    args.file = None
+    args.subject = payload.get("subject")
+    args.list_targets = bool(payload.get("list_targets"))
+    args.json = bool(payload.get("json"))
+    args.quiet = bool(payload.get("quiet"))
+
+    if not args.to and not args.list_targets:
+        return json.dumps({"error": "target is required for send_command"})
+
+    old_argv = sys.argv[:]
+    try:
+        sys.argv = ["hermes", "send", "--to", args.to or "", *(args.message or [])]
+        try:
+            cmd_send(args)
+        except SystemExit as exc:
+            try:
+                payload = json.loads(payload_json) if payload_json else {}
+            except json.JSONDecodeError:
+                payload = {}
+            if exc.code:
+                return json.dumps(
+                    {"success": False, "error": payload.get("message", "send failed"), "exit_code": int(exc.code)}
+                )
+            return json.dumps({"success": True})
+    finally:
+        sys.argv = old_argv
+    return json.dumps({"success": True})

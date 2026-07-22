@@ -43,19 +43,20 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 VENV=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
+  if [ -f "$candidate/bin/activate" ] || [ -f "$candidate/Scripts/python.exe" ]; then
     VENV="$candidate"
     break
   fi
 done
 
 if [ -n "$VENV" ]; then
-  PYTHON="$VENV/bin/python"
+  if [ -f "$VENV/bin/python" ]; then
+    PYTHON="$VENV/bin/python"
+  else
+    PYTHON="$VENV/Scripts/python.exe"
+  fi
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
     && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
-  # than the devShell hook.
   PYTHON="$HERMES_PYTHON"
   echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
 else

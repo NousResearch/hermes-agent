@@ -444,7 +444,7 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `code_execution` | Sandboxed Python execution |
 | `vision` | Image analysis |
 | `image_gen` | AI image generation and image-to-image editing |
-| `video` | Video analysis (`video_analyze`) and generation |
+| `video` / `video_gen` | Video analysis (`video_analyze`) and generation (`video_generate`); both are opt-in and not in `hermes-cli` by default. |
 | `x_search` | First-class X (Twitter) search (X OAuth or API key) |
 | `tts` | Text-to-speech |
 | `skills` | Skill browsing and management |

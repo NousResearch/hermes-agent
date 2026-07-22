@@ -269,6 +269,25 @@ global `details_mode`. To reshape the layout:
 Anything set explicitly in `display.sections` wins over the defaults, so
 existing configs keep working unchanged.
 
+**Tool stream density**
+
+Tool stream verbosity in the TUI is controlled by `/verbose` and
+`display.tool_progress`, independently from the section visibility above.
+TUI panels can comfortably display tool arguments and previews, so the
+recommended default inside the TUI is `all` or `verbose` rather than `new`
+or `off`:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  interface: tui
+  tool_progress: all
+  final_response_markdown: render
+```
+
+Use `new` when you want a tighter transcript; switch to `verbose` when
+debugging a long tool chain.
+
 ## Sessions
 
 Sessions are shared between the TUI and the classic CLI — both write to the same `~/.hermes/state.db`. You can start a session in one, resume in the other. The session picker surfaces sessions from both sources, with a source tag.

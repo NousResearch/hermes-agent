@@ -4,8 +4,8 @@ Todo Tool Module - Planning & Task Management
 
 Provides an in-memory task list the agent uses to decompose complex tasks,
 track progress, and maintain focus across long conversations. The state
-lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+lives on the AIAgent instance (one per session) and is re-injected into the
+conversation after context compression events.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -15,8 +15,12 @@ Design:
 """
 
 import json
+import os
 from typing import Dict, Any, List, Optional
 
+from pydantic import BaseModel
+
+from tools.validation_helper import Success
 
 # Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
@@ -36,6 +40,18 @@ MAX_TODO_ITEMS = 256
 # before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
+
+
+# Core path is always registered with the legacy schema; when validated is
+# enabled, an additional registration uses Pydantic v2 + zodern:relay-style
+# envelopes so consumers can opt into strict input/output validation without
+# changing installs or breaking existing behavior.
+_VALIDATED_TODO_ENABLED = os.getenv("HERMES_VALIDATED_TODO", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class TodoStore:
@@ -328,3 +344,21 @@ registry.register(
     check_fn=check_todo_requirements,
     emoji="📋",
 )
+
+
+# Validated todo path is opt-in to keep core behavior unchanged by default.
+# Import lazily below registration so this remains a side-effect module at
+# import time with no extra runtime cost unless HERMES_VALIDATED_TODO is set.
+
+def _register_validated_todo() -> None:
+    from tools.validated_todo_tool import build_validated_todo_tool
+    registry.register(
+        name="todo_validated",
+        toolset="todo",
+        **build_validated_todo_tool(),
+        emoji="✅",
+        override=False,
+    )
+
+if os.getenv("HERMES_VALIDATED_TODO", "").lower() in {"1", "true", "yes", "on"}:
+    _register_validated_todo()

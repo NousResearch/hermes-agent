@@ -10,6 +10,7 @@ Verifies that the agent cache correctly:
 """
 
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -407,11 +408,16 @@ class TestExtractCacheBustingConfig:
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
+        # Force a visible mtime change across filesystems with coarse resolution
+        # by touching the file after sleep, then writing distinct content.
+        time.sleep(1.01)
         config_path.write_text("{\n  \"changed\": true\n}")
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first
-        assert parse_calls == [config_path, config_path]
+        assert len(parse_calls) == 2
+        assert parse_calls[0] == config_path
+        assert parse_calls[1] == config_path
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the

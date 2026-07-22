@@ -55,7 +55,7 @@ Or in-session:
 | `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | Core browser automation. Includes `web_search` as a fallback for quick lookups. `browser_cdp` and `browser_dialog` are gated at runtime — registered only when a CDP endpoint is reachable at session start (via `/browser connect`, `browser.cdp_url` config, Browserbase, or Camofox). `browser_dialog` works together with the `pending_dialogs` and `frame_tree` fields that `browser_snapshot` adds when a CDP supervisor is attached. |
 | `clarify` | `clarify` | Ask the user a question when the agent needs clarification. |
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
-| `coding` | composite (`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision`) | Coding-focused bundle for software work: file editing, terminal, search, web docs, skills, browser, delegate, and code execution. |
+| `coding` | composite (`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision` + `repo_health` + `test_health` + `docker_health` + `cron_health`) | Coding-focused bundle for software work: file editing, terminal, search, web docs, skills, browser, delegate, code execution, and local repo/test/docker/cron observability. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
@@ -80,9 +80,12 @@ Or in-session:
 | `terminal` | `process`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |
-| `vision` | `vision_analyze` | Image analysis via vision-capable models. |
-| `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
-| `web` | `web_extract`, `web_search` | Web search and page content extraction. |
+|| `vision` | `vision_analyze` | Image analysis via vision-capable models. |
+|| `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
+|| `video_gen` | `video_generate` | Video generation via plugin-registered backends (xAI Grok-Imagine, FAL.ai Veo 3.1 / Pixverse v6 / Kling O3). Opt-in; add via `--toolsets video_gen` or enable in `hermes tools`. |
+|| `ops` | `repo_health`, `test_health`, `docker_health`, `cron_health` | Operations observability tools. All are gated by runtime checks: `repo_health` needs `git` and a current git repo, `test_health` needs `pytest`, `docker_health` needs the Docker CLI/daemon, and `cron_health` needs the local cron state file. |
+|| `repo` | `repo_health` | Compact helper for git repo-state snapshots. Shortcut into a single tool; use `ops` for the full observability bundle. |
+|| `web` | `web_extract`, `web_search` | Web search and page content extraction. |
 | `x_search` | `x_search` | Search X (Twitter) posts and threads via xAI's built-in `x_search` Responses tool. Off by default; opt in via `hermes tools`. Schema only registered when xAI credentials (SuperGrok OAuth or `XAI_API_KEY`) are configured. |
 | `yuanbao` | `yb_query_group_info`, `yb_query_group_members`, `yb_search_sticker`, `yb_send_dm`, `yb_send_sticker` | Yuanbao DM/group actions and sticker search. Registered only on `hermes-yuanbao`. |
 

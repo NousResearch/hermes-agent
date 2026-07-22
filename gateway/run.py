@@ -27,16 +27,16 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
-import inspect
 import json
+import inspect
 import logging
 import os
+import random
 import re
 import shlex
 import site
 import sys
 import signal
-import tempfile
 import threading
 import time
 import sqlite3
@@ -44,7 +44,9 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
+from typing import Awaitable, Callable, Dict, List, Optional, Any, Union
+
+from agent.telemetry import RequestContext, generate_request_id, generate_trace_id, unavailable_request_id, unavailable_trace_id
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -12096,11 +12098,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
-        logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
-        )
+        _event_metadata = getattr(event, "metadata", None) or {}
+        _request_id = _event_metadata.get("request_id")
+        _trace_id = _event_metadata.get("trace_id")
+        if not _request_id:
+            _request_id = generate_request_id()
+        if not _trace_id:
+            _trace_id = generate_trace_id()
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
@@ -13156,6 +13160,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
+            logger.info(
+                "telemetry_event: timestamp_local=%s request_id=%s trace_id=%s session_id=%s component=%s event=%s status=%s duration_ms=%.1f provider=%s api_calls=%d response_length=%d",
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                _request_id or "unavailable", _trace_id or "unavailable",
+                session_entry.session_id if session_entry else "unavailable",
+                "gateway", "RESPONSE_SERIALIZED", "completed", _response_time * 1000,
+                _platform_name, _api_calls, _resp_len,
+            )
+            if response == "(empty)" and not _intentional_silence:
+                logger.warning(
+                    "telemetry_event: timestamp_local=%s request_id=%s trace_id=%s session_id=%s component=%s event=%s status=%s response_length=%d",
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                    _request_id or "unavailable", _trace_id or "unavailable",
+                    session_entry.session_id if session_entry else "unavailable",
+                    "gateway", "MODEL_RESPONSE_EMPTY", "detected", _resp_len,
+                )
 
             # NOTE: the cross-process cache-coherence re-baseline
             # (_refresh_agent_cache_message_count) is intentionally deferred

@@ -1,0 +1,13 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+[variables]
+HERMES_HOME = "/app/.hermes"
+NODE_ENV = "production"
+PORT = "3006"
+HOST = "0.0.0.0"

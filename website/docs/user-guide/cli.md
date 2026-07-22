@@ -313,6 +313,36 @@ The CLI shows animated feedback as the agent works:
 
 Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/user-guide/configuration#display-settings).
 
+### Framed tool results
+When `tool_progress` is `new`, `all`, or `verbose`, completed tool calls render as framed status blocks in the classic CLI: success lines use a green frame with `✓`, failures use a red frame with `✗`, and each line includes duration. These frames make it easier to scan long tool histories in scrollback, while still degrading to plain status lines in `off` mode.
+
+### Rich final responses
+`final_response_markdown` controls how Hermes renders the agent's closing
+message in terminal-based interfaces:
+
+- `render` — keep full markdown in the reply (headings, bold, code fences).
+  Best on wide terminals, the TUI, and the desktop app.
+- `strip` — remove the noisiest markdown decorators so the response reads as
+  plain prose; code blocks and lists are preserved. Safer on narrow terminals
+  and for messaging where markdown can leak extra symbols.
+- `raw` — pass markdown through unchanged; only useful if you pipe output to
+  another renderer.
+
+**Switching modes**
+
+- In the CLI, use `/verbose` to toggle `final_response_markdown` at runtime
+  alongside `tool_progress`.
+- To make it persistent, edit `~/.hermes/config.yaml` under `display:`:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  final_response_markdown: render
+```
+
+Use `render` for wide terminals / TUI / desktop; use `strip` for SMS / narrow
+terminals unless you specifically want full markdown in those surfaces.
+
 ### Tool Preview Length
 
 The `display.tool_preview_length` config key controls the maximum number of characters shown in tool call preview lines (e.g. file paths, terminal commands). The default is `0`, which means no limit — full paths and commands are shown.

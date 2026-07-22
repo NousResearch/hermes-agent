@@ -45,7 +45,14 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
 def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
-    return json.loads(cronjob_tool(**kwargs))
+    payload = cronjob_tool(**kwargs)
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        data = {"raw": payload}
+    if not isinstance(data, dict):
+        data = {"raw": data}
+    return data
 
 
 def _active_cron_provider_name() -> str:
@@ -123,10 +130,15 @@ def cron_list(show_all: bool = False):
         # `repeat` may be present-but-null in the job record (e.g. a one-shot
         # job persisted with "repeat": null), so coalesce to {} rather than
         # relying on the dict-default, which only applies to a missing key.
-        repeat_info = job.get("repeat") or {}
-        repeat_times = repeat_info.get("times")
-        repeat_completed = repeat_info.get("completed", 0)
-        repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
+        repeat_val = job.get("repeat")
+        if isinstance(repeat_val, dict):
+            repeat_times = repeat_val.get("times")
+            repeat_completed = repeat_val.get("completed", 0)
+            repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
+        else:
+            repeat_times = None
+            repeat_completed = 0
+            repeat_str = "∞"
 
         # `deliver` may be present-but-null in the job record (same pitfall as
         # `repeat` above), so coalesce to the default rather than relying on the

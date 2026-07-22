@@ -346,8 +346,11 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
-    times = (job.get("repeat") or {}).get("times")
-    completed = (job.get("repeat") or {}).get("completed", 0)
+    repeat = job.get("repeat")
+    if not isinstance(repeat, dict):
+        repeat = {}
+    times = repeat.get("times")
+    completed = repeat.get("completed", 0)
     if times is None:
         return "forever"
     if times == 1:

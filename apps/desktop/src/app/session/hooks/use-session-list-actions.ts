@@ -35,6 +35,10 @@ import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/sessio
 // keeps "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
 const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+
+const isSidebarRecent = (session: SessionInfo) =>
+  !SIDEBAR_EXCLUDED_SOURCES.includes(normalizeSessionSource(session.source) ?? '')
+
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -185,7 +189,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // identity, or every sidebar memo keyed on $sessions recomputes and the
         // whole list re-renders once per turn/broadcast for nothing.
         setSessions(prev => {
-          const next = mergeSessionPage(prev, recents.sessions, sessionsToKeep())
+          const next = mergeSessionPage(
+            prev.filter(isSidebarRecent),
+            recents.sessions.filter(isSidebarRecent),
+            sessionsToKeep()
+          )
 
           return sameCronSignature(prev, next) ? prev : next
         })
@@ -242,7 +250,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     setSessions(prev => [
       ...prev.filter(s => !inKey(s)),
-      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
+      ...mergeSessionPage(
+        prev.filter(s => inKey(s) && isSidebarRecent(s)),
+        result.sessions.filter(isSidebarRecent),
+        keep
+      )
     ])
 
     const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length

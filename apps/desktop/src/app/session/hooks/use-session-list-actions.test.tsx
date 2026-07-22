@@ -9,6 +9,7 @@ import {
   $sessionsLoading,
   setCronSessions,
   setMessagingSessions,
+  setSelectedStoredSessionId,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -68,6 +69,7 @@ beforeEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setSelectedStoredSessionId(null)
   setSessionsLoading(false)
 })
 
@@ -75,6 +77,7 @@ afterEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setSelectedStoredSessionId(null)
   setSessionsLoading(false)
 })
 
@@ -163,6 +166,26 @@ describe('refreshSessions identity + loading hygiene', () => {
 })
 
 describe('refreshSessions batches slices into one request', () => {
+  it('does not preserve an active LINE session in local recents', async () => {
+    const local = row('local')
+    const line = row('line', { source: 'line', title: 'LINE chat' })
+
+    setSessions([local, line])
+    setSelectedStoredSessionId(line.id)
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: [local], total: 1, profile_totals: { default: 1 } }, [], [line])
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['local'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['line'])
+  })
+
   it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
     const recents = [row('a'), row('b')]
     const cron = [row('c1', { source: 'cron', title: 'nightly' })]

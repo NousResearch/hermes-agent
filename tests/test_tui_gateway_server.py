@@ -11473,10 +11473,13 @@ def test_spawn_tree_save_marks_session_and_does_not_overwrite_same_second(tmp_pa
              "subagents": [{"id": "b"}]},
         )
 
+        assert "result" in first, first
+        assert "result" in second, second
         first_path = Path(first["result"]["path"])
         second_path = Path(second["result"]["path"])
         assert first_path != second_path
-        assert (first_path.parent / ".hermes-managed").read_text() == "spawn-trees\n"
+        marker = (first_path.parent / ".hermes-managed").read_text().strip()
+        assert marker.startswith("spawn-trees:")
         assert json.loads(first_path.read_text())["subagents"][0]["id"] == "a"
         assert json.loads(second_path.read_text())["subagents"][0]["id"] == "b"
     finally:
@@ -11488,7 +11491,11 @@ def test_spawn_tree_refuses_foreign_session_directory(tmp_path):
     home = tmp_path / ".hermes"
     token = set_hermes_home_override(home)
     try:
-        foreign = home / "spawn-trees" / "foreign-session"
+        foreign = (
+            home
+            / "spawn-trees"
+            / f"s-{server._spawn_tree_session_digest('foreign-session')}"
+        )
         foreign.mkdir(parents=True)
         human = foreign / "human.json"
         human.write_text('{"private": true}')
@@ -11522,5 +11529,113 @@ def test_spawn_tree_load_rejects_unowned_snapshot(tmp_path):
 
         assert "error" in loaded
         assert human.read_text() == '{"private": true}'
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_session_ids_do_not_collide_after_sanitization(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        save = server._methods["spawn_tree.save"]
+        first = save("r1", {"session_id": "alpha:beta", "subagents": [{"id": "a"}]})
+        second = save("r2", {"session_id": "alpha_beta", "subagents": [{"id": "b"}]})
+
+        first_path = Path(first["result"]["path"])
+        second_path = Path(second["result"]["path"])
+        assert first_path.parent != second_path.parent
+        assert server._methods["spawn_tree.list"](
+            "r3", {"session_id": "alpha_beta"}
+        )["result"]["entries"][0]["session_id"] == "alpha_beta"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_list_rejects_index_path_outside_owned_session(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        session_dir = Path(saved["result"]["path"]).parent
+        outside = tmp_path / "human.json"
+        outside.write_text('{"private": true}')
+        (session_dir / server._SPAWN_TREE_INDEX).write_text(
+            json.dumps({
+                "path": str(outside),
+                "session_id": "session-1",
+                "finished_at": 1,
+            }) + "\n"
+        )
+
+        listed = server._methods["spawn_tree.list"](
+            "r2", {"session_id": "session-1"}
+        )
+
+        assert listed["result"]["entries"] == []
+        assert outside.read_text() == '{"private": true}'
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_save_never_appends_through_index_symlink(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        first = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        session_dir = Path(first["result"]["path"]).parent
+        index = session_dir / server._SPAWN_TREE_INDEX
+        index.unlink()
+        outside = tmp_path / "human.txt"
+        outside.write_text("keep")
+        try:
+            index.symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f"symlink unavailable on this host: {exc}")
+
+        second = server._methods["spawn_tree.save"](
+            "r2", {"session_id": "session-1", "subagents": [{"id": "b"}]}
+        )
+
+        assert "result" in second
+        assert outside.read_text() == "keep"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_load_rejects_snapshot_replaced_during_open(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        snapshot = Path(saved["result"]["path"])
+        outside = tmp_path / "human.json"
+        outside.write_text('{"private": true}')
+        original_open = server.os.open
+        swapped = False
+
+        def replace_before_open(path, flags, *args):
+            nonlocal swapped
+            if Path(path) == snapshot and not swapped:
+                swapped = True
+                snapshot.unlink()
+                try:
+                    snapshot.symlink_to(outside)
+                except OSError as exc:
+                    pytest.skip(f"symlink unavailable on this host: {exc}")
+            return original_open(path, flags, *args)
+
+        monkeypatch.setattr(server.os, "open", replace_before_open)
+        loaded = server._methods["spawn_tree.load"]("r2", {"path": str(snapshot)})
+
+        assert "error" in loaded
+        assert outside.read_text() == '{"private": true}'
     finally:
         reset_hermes_home_override(token)

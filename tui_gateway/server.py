@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import queue
+import re
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -9349,13 +9351,11 @@ def _(rid, params: dict) -> dict:
 # from the event stream).  On turn-complete it posts the final tree here;
 # /replay and /replay-diff fetch past snapshots by session_id + filename.
 #
-# Layout:  $HERMES_HOME/spawn-trees/<session_id>/<timestamp>.json
+# Layout:  $HERMES_HOME/spawn-trees/s-<96-bit session hash>/<timestamp>.json
 # Each file contains { session_id, started_at, finished_at, subagents: [...] }.
 
 
 def _spawn_trees_root():
-    from hermes_constants import get_hermes_home
-
     root = get_hermes_home() / "spawn-trees"
     try:
         root.mkdir(parents=True, exist_ok=False)
@@ -9365,50 +9365,61 @@ def _spawn_trees_root():
     return root
 
 
-def _is_owned_spawn_tree_dir(path: Path) -> bool:
+def _spawn_tree_session_digest(session_id: str) -> str:
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
+
+
+def _is_owned_spawn_tree_dir(path: Path, *, session_id: str | None = None) -> bool:
     marker = path / ".hermes-managed"
     try:
+        path_attrs = int(getattr(path.lstat(), "st_file_attributes", 0))
+        marker_attrs = int(getattr(marker.lstat(), "st_file_attributes", 0))
+        value = marker.read_text(encoding="utf-8").strip()
+        prefix = "spawn-trees:"
+        digest = value.removeprefix(prefix)
         return (
             path.is_dir()
             and not path.is_symlink()
+            and not (path_attrs & 0x400)
             and marker.is_file()
             and not marker.is_symlink()
-            and marker.read_text(encoding="utf-8").strip() == "spawn-trees"
+            and not (marker_attrs & 0x400)
+            and value.startswith(prefix)
+            and len(digest) == 24
+            and all(char in "0123456789abcdef" for char in digest)
+            and path.name == f"s-{digest}"
+            and (session_id is None or digest == _spawn_tree_session_digest(session_id))
         )
     except (OSError, UnicodeError):
         return False
 
 
 def _spawn_tree_session_dir(session_id: str, *, create: bool = True):
-    safe = (
-        "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
-    )
-    d = _spawn_trees_root() / safe
+    digest = _spawn_tree_session_digest(session_id)
+    d = _spawn_trees_root() / f"s-{digest}"
     if not create:
-        return d if _is_owned_spawn_tree_dir(d) else None
+        return d if _is_owned_spawn_tree_dir(d, session_id=session_id) else None
     created = False
     try:
         d.mkdir(parents=True, exist_ok=False)
         created = True
     except FileExistsError:
-        if not _is_owned_spawn_tree_dir(d):
+        if not _is_owned_spawn_tree_dir(d, session_id=session_id):
             raise OSError(f"spawn-tree directory is not exclusively Hermes-owned: {d}")
         return d
     marker = d / ".hermes-managed"
     try:
         with marker.open("x", encoding="utf-8") as marker_file:
-            marker_file.write("spawn-trees\n")
+            marker_file.write(f"spawn-trees:{digest}\n")
     except (FileExistsError, OSError):
         if created:
             try:
-                marker.unlink(missing_ok=True)
                 d.rmdir()
             except OSError:
                 pass
         raise
-    if not _is_owned_spawn_tree_dir(d):
+    if not _is_owned_spawn_tree_dir(d, session_id=session_id):
         try:
-            marker.unlink(missing_ok=True)
             d.rmdir()
         except OSError:
             pass
@@ -9420,11 +9431,85 @@ def _spawn_tree_session_dir(session_id: str, *, create: bool = True):
 # `spawn_tree.list` so scanning doesn't require reading every full snapshot
 # file (Copilot review on #14045).  One JSON object per line.
 _SPAWN_TREE_INDEX = "_index.jsonl"
+_SPAWN_TREE_SNAPSHOT_RE = re.compile(r"^\d{8}T\d{12}-[0-9a-f]{8}\.json$")
+
+
+def _open_owned_spawn_tree_index(session_dir: Path, *, append: bool):
+    """Open the fixed index without following a replacement symlink."""
+    index_path = session_dir / _SPAWN_TREE_INDEX
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT if append else os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(index_path, flags, 0o600)
+    try:
+        path_stat = index_path.lstat()
+        fd_stat = os.fstat(fd)
+        if (
+            index_path.is_symlink()
+            or not stat_module.S_ISREG(path_stat.st_mode)
+            or not stat_module.S_ISREG(fd_stat.st_mode)
+            or not os.path.samestat(path_stat, fd_stat)
+        ):
+            raise OSError("spawn-tree index is not an owned regular file")
+        return os.fdopen(fd, "a" if append else "r", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _owned_spawn_tree_snapshot(path: Path, session_dir: Path) -> Path | None:
+    """Return the canonical generated snapshot path, or fail closed."""
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
+        if (
+            path.is_symlink()
+            or attributes & 0x400
+            or not path.is_file()
+            or _SPAWN_TREE_SNAPSHOT_RE.fullmatch(path.name) is None
+        ):
+            return None
+        resolved = path.resolve()
+        return resolved if resolved.parent == session_dir.resolve() else None
+    except OSError:
+        return None
+
+
+@contextlib.contextmanager
+def _open_owned_spawn_tree_snapshot(path: Path, session_dir: Path):
+    """Open an exact generated snapshot without following a replacement."""
+    snapshot = _owned_spawn_tree_snapshot(path, session_dir)
+    if snapshot is None:
+        raise OSError("spawn-tree snapshot is not an owned regular file")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(snapshot, flags)
+    stream = None
+    try:
+        path_stat = snapshot.lstat()
+        fd_stat = os.fstat(fd)
+        attributes = int(getattr(path_stat, "st_file_attributes", 0))
+        if (
+            snapshot.is_symlink()
+            or attributes & 0x400
+            or not stat_module.S_ISREG(path_stat.st_mode)
+            or not stat_module.S_ISREG(fd_stat.st_mode)
+            or not os.path.samestat(path_stat, fd_stat)
+        ):
+            raise OSError("spawn-tree snapshot identity changed while opening")
+        stream = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1
+        yield snapshot, fd_stat, stream
+    finally:
+        if stream is not None:
+            stream.close()
+        elif fd >= 0:
+            os.close(fd)
 
 
 def _append_spawn_tree_index(session_dir, entry: dict) -> None:
     try:
-        with (session_dir / _SPAWN_TREE_INDEX).open("a", encoding="utf-8") as f:
+        with _open_owned_spawn_tree_index(session_dir, append=True) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as exc:
         # Index is a cache — losing a line just means list() falls back
@@ -9438,7 +9523,7 @@ def _read_spawn_tree_index(session_dir) -> list[dict]:
         return []
     out: list[dict] = []
     try:
-        with index_path.open("r", encoding="utf-8") as f:
+        with _open_owned_spawn_tree_index(session_dir, append=False) as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -9523,35 +9608,50 @@ def _(rid, params: dict) -> dict:
     for d in roots:
         indexed = _read_spawn_tree_index(d)
         if indexed:
-            # Skip index entries whose snapshot file was manually deleted.
-            entries.extend(
-                e for e in indexed if (p := e.get("path")) and Path(p).exists()
-            )
+            for entry in indexed:
+                raw_entry_path = entry.get("path")
+                entry_session = entry.get("session_id")
+                if not isinstance(raw_entry_path, str) or not isinstance(
+                    entry_session, str
+                ):
+                    continue
+                snapshot = _owned_spawn_tree_snapshot(Path(raw_entry_path), d)
+                if snapshot is None or not _is_owned_spawn_tree_dir(
+                    d, session_id=entry_session or "default"
+                ):
+                    continue
+                validated = dict(entry)
+                validated["path"] = str(snapshot)
+                entries.append(validated)
             continue
 
         # Fallback for legacy (pre-index) sessions: full scan.  O(N) reads
         # but only runs once per session until the next save writes the index.
         for p in d.glob("*.json"):
-            if p.name == _SPAWN_TREE_INDEX:
-                continue
             try:
-                stat = p.stat()
-                try:
-                    raw = json.loads(p.read_text(encoding="utf-8"))
-                except Exception:
-                    raw = {}
+                with _open_owned_spawn_tree_snapshot(p, d) as (
+                    snapshot,
+                    snapshot_stat,
+                    stream,
+                ):
+                    raw = json.load(stream)
+                raw_session = raw.get("session_id")
+                if not isinstance(raw_session, str) or not _is_owned_spawn_tree_dir(
+                    d, session_id=raw_session or "default"
+                ):
+                    continue
                 subagents = raw.get("subagents") or []
                 entries.append(
                     {
-                        "path": str(p),
-                        "session_id": raw.get("session_id") or d.name,
-                        "finished_at": raw.get("finished_at") or stat.st_mtime,
+                        "path": str(snapshot),
+                        "session_id": raw_session,
+                        "finished_at": raw.get("finished_at") or snapshot_stat.st_mtime,
                         "started_at": raw.get("started_at"),
                         "label": raw.get("label") or "",
                         "count": len(subagents) if isinstance(subagents, list) else 0,
                     }
                 )
-            except OSError:
+            except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
 
     entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
@@ -9568,24 +9668,35 @@ def _(rid, params: dict) -> dict:
 
     # Reject paths escaping the spawn-trees root.
     root = _spawn_trees_root().resolve()
+    candidate = Path(raw_path)
     try:
-        resolved = Path(raw_path).resolve()
+        resolved = candidate.resolve()
         resolved.relative_to(root)
     except (ValueError, OSError) as exc:
         return _err(rid, 4030, f"path outside spawn-trees root: {exc}")
+    snapshot = _owned_spawn_tree_snapshot(candidate, resolved.parent)
     if (
         resolved.parent.parent != root
         or not _is_owned_spawn_tree_dir(resolved.parent)
-        or resolved.is_symlink()
-        or not resolved.is_file()
+        or snapshot is None
     ):
         return _err(rid, 4030, "path is not an owned spawn-tree snapshot")
 
     try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        with _open_owned_spawn_tree_snapshot(snapshot, snapshot.parent) as (
+            snapshot,
+            _snapshot_stat,
+            stream,
+        ):
+            payload = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return _err(rid, 5000, f"spawn_tree.load failed: {exc}")
 
+    payload_session = payload.get("session_id") if isinstance(payload, dict) else None
+    if not isinstance(payload_session, str) or not _is_owned_spawn_tree_dir(
+        snapshot.parent, session_id=payload_session or "default"
+    ):
+        return _err(rid, 4030, "snapshot session does not match its owned directory")
     return _ok(rid, payload)
 
 

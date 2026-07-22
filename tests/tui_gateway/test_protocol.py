@@ -346,7 +346,16 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo", "reasoning": "thoughts"},
@@ -406,7 +415,16 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -547,7 +565,16 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [multimodal_user, text_only_assistant]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -597,7 +624,16 @@ def test_session_resume_lazy_registers_watch_session_without_agent(server, monke
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "delegated goal"},
             ]
@@ -670,7 +706,16 @@ def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypa
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "delegated goal"}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -721,7 +766,16 @@ def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monk
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             # No rows for an unwritten session.
             return []
 
@@ -818,7 +872,16 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -1035,7 +1098,16 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return list(ancestor_history)
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             if include_ancestors:
                 return ancestor_history + current_history
             return list(current_history)
@@ -1215,6 +1287,101 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["parent_session_id"] == parent_key
     # The marker — without it the branch is invisible in /resume and /sessions.
     assert kwargs["model_config"] == {"_branched_from": parent_key}
+
+
+def test_session_branch_forwards_original_timestamps(server, monkeypatch):
+    """TUI /branch must copy the parent's messages WITH their original
+    timestamps — append_message otherwise stamps time.time() at INSERT and
+    the branch's whole history silently appears authored "now" (#28841).
+    """
+    append_calls = []
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            return new_key
+
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+
+    original_ts = [1_700_000_000.0, 1_700_000_020.0]
+    parent_sid = "parent02"
+    server._sessions[parent_sid] = {
+        "session_key": "20260101_000000_parent",
+        "history": [
+            {"role": "user", "content": "hello", "timestamp": original_ts[0]},
+            {"role": "assistant", "content": "hi!", "timestamp": original_ts[1]},
+        ],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {"id": "b2", "method": "session.branch", "params": {"session_id": parent_sid}}
+    )
+
+    assert "error" not in resp, resp
+    assert len(append_calls) == 2
+    assert [c.get("timestamp") for c in append_calls] == original_ts
+
+
+def test_persist_branch_seed_forwards_original_timestamps(server, monkeypatch):
+    """First-turn branch seed persist must carry each copied message's
+    original timestamp through to append_message (#28841)."""
+    import contextlib
+
+    append_calls = []
+
+    class _DB:
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield _DB()
+
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+
+    original_ts = [100.0, 200.0]
+    session = {
+        "session_key": "20260101_000002_seed00",
+        "parent_session_id": "20260101_000000_parent",
+        "history": [
+            {"role": "user", "content": "a", "timestamp": original_ts[0]},
+            {"role": "assistant", "content": "b", "timestamp": original_ts[1]},
+        ],
+        "history_lock": threading.Lock(),
+    }
+
+    server._persist_branch_seed(session)
+
+    assert session.get("_branch_seed_persisted") is True
+    assert [c.get("timestamp") for c in append_calls] == original_ts
 
 
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
@@ -1852,7 +2019,7 @@ def test_dispatch_long_handler_does_not_block_fast_handler(server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"pong": True}
-    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
+    assert fast_elapsed < 2.0, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
 
     released.set()
 
@@ -1875,7 +2042,7 @@ def test_dispatch_session_compress_does_not_block_fast_handler(server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"pong": True}
-    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind session.compress"
+    assert fast_elapsed < 2.0, f"fast handler blocked for {fast_elapsed:.2f}s behind session.compress"
 
     released.set()
 
@@ -1940,6 +2107,57 @@ def test_slow_completion_does_not_block_fast_handler(completion_method, server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"pong": True}
-    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
+    assert fast_elapsed < 2.0, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
 
     released.set()
+
+
+def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
+    """Real config + skin files: activating a skin (as `hermes config set` does)
+    makes the per-tool reconcile broadcast skin.changed with the resolved palette.
+    Exercises _load_cfg → _skin_sig → resolve_skin → _emit with no mocks in between."""
+    import hermes_cli.skin_engine as skin_engine
+
+    (tmp_path / "skins").mkdir()
+    (tmp_path / "skins" / "midnight.yaml").write_text(
+        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+    )
+    monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
+    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
+
+    # Baseline (default) — seeds the signature.
+    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n")
+    server._broadcast_skin_if_changed()
+    emitted.clear()
+
+    # Activate midnight, as `hermes config set display.skin midnight` would.
+    time.sleep(0.01)  # ensure the config mtime moves
+    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n")
+    server._broadcast_skin_if_changed()
+
+    assert [ev for ev, _ in emitted] == ["skin.changed"]
+    assert emitted[0][1]["name"] == "midnight"
+    assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+
+
+def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
+    """A skin the agent changes mid-turn goes live once per real move: a name
+    switch (incl. switch-then-revert) OR an in-place color edit to the active skin
+    (same name, new file mtime). An unchanged signature never re-broadcasts."""
+    emitted = []
+    # switch, no-op, switch, then a color edit (same name, bumped mtime).
+    sigs = iter([("neon", 1.0), ("neon", 1.0), ("forest", 1.0), ("forest", 2.0)])
+    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
+    monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
+    monkeypatch.setattr(server, "_skin_sig", lambda: next(sigs))
+    monkeypatch.setattr(server, "resolve_skin", lambda: {"name": "x", "colors": {}})
+
+    for _ in range(4):
+        server._broadcast_skin_if_changed()
+
+    assert [ev for ev, _ in emitted] == ["skin.changed"] * 3

@@ -10,10 +10,12 @@ Uses discord.py library for:
 """
 
 import asyncio
+import datetime as dt
 import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import struct
@@ -24,6 +26,10 @@ import time
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
+
+from agent.async_utils import (
+    consume_detached_task_result as _consume_background_task_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,7 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
+
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -131,6 +138,25 @@ from tools.url_safety import is_safe_url
 def _truncate_discord_component_text(text: str, limit: int) -> str:
     """Return text within Discord's UTF-16 component field budget."""
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
+
+
+def _abort_discord_websocket_transport(websocket: Any) -> bool:
+    """Abort the active aiohttp transport after a bounded close times out."""
+    socket = getattr(websocket, "socket", None)
+    response = getattr(socket, "_response", None)
+    connection = getattr(socket, "_conn", None)
+    if connection is None:
+        connection = getattr(response, "connection", None)
+    protocol = getattr(connection, "protocol", None)
+    writer = getattr(socket, "_writer", None)
+    transport = getattr(writer, "transport", None)
+    if transport is None:
+        transport = getattr(protocol, "transport", None)
+    abort = getattr(transport, "abort", None)
+    if not callable(abort):
+        return False
+    abort()
+    return True
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -858,27 +884,41 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
-        # REST-level liveness probe.  discord.py's WS reconnect handles clean
-        # drops, but a dead proxy / NAT can wedge the socket without delivering
-        # a RST — sends time out forever and ``client.start()`` never exits, so
-        # the bot-task done callback never fires.  See #26656.  An out-of-band
-        # ``fetch_user`` exercises the same REST path as message delivery and
-        # lets us detect the zombie state, close the wedged client, and trip the
-        # existing retryable-fatal reconnect path.  Knobs are surfaced in
-        # config.yaml as ``discord.liveness_interval_seconds`` /
-        # ``discord.liveness_failure_threshold`` (bridged to these env vars by
-        # ``_apply_yaml_config``); set either to 0 to disable.
-        self._liveness_interval_seconds = env_float(
-            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", 60.0
+        # WebSocket-level liveness probe. Discord REST and Gateway are distinct
+        # transports: a REST 200 cannot prove that this client is still receiving
+        # Gateway events. Sample the current Discord WebSocket's ready/open/ACK
+        # state and heartbeat latency instead; after consecutive unhealthy samples
+        # use the existing retryable-fatal path so GatewayRunner rebuilds a fresh
+        # adapter. The values are compatibility inputs from config; zero disables
+        # the probe without changing the rest of the adapter lifecycle.
+        self._liveness_interval_seconds = self._finite_positive_config_float(
+            "websocket_liveness_interval_seconds",
+            15.0,
+            env_key="HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
         )
-        self._liveness_failure_threshold = env_int(
-            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", 3
+        self._liveness_failure_threshold = self._config_int(
+            "websocket_liveness_failure_threshold",
+            2,
+            env_key="HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        )
+        self._heartbeat_ack_max_age_seconds = self._finite_positive_config_float(
+            "websocket_heartbeat_ack_max_age_seconds",
+            60.0,
+        )
+        self._max_latency_seconds = self._finite_positive_config_float(
+            "websocket_max_latency_seconds",
+            30.0,
         )
         self._liveness_task: Optional[asyncio.Task] = None
+        self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
         self._disconnecting = False
+        self._missed_message_backfill_task: Optional[asyncio.Task] = None
+        from hermes_constants import get_hermes_home
+        from plugins.platforms.discord.recovery import DiscordRecoveryStore
+        self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -901,6 +941,38 @@ class DiscordAdapter(BasePlatformAdapter):
         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+
+    def _config_value(
+        self, key: str, default: Any, *, env_key: Optional[str] = None
+    ) -> Any:
+        """Resolve a liveness value from profile config, legacy env, or default."""
+        extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
+        value = extra.get(key)
+        if value is None and env_key:
+            value = os.getenv(env_key)
+        return default if value is None or value == "" else value
+
+    def _finite_positive_config_float(
+        self, key: str, default: float, *, env_key: Optional[str] = None
+    ) -> float:
+        """Resolve a finite positive liveness duration; invalid values disable it."""
+        try:
+            value = float(self._config_value(key, default, env_key=env_key))
+        except (TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) and value > 0 else 0.0
+
+    def _config_int(
+        self, key: str, default: int, *, env_key: Optional[str] = None
+    ) -> int:
+        """Resolve a positive liveness count; invalid values disable it."""
+        value = self._config_value(key, default, env_key=env_key)
+        if isinstance(value, bool):
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -965,6 +1037,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
+            self._set_fatal_error("missing_dependency", "discord.py not installed", retryable=False)
             return False
 
         # Load opus codec for voice channel support
@@ -1001,6 +1074,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
+            self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
 
         try:
@@ -1094,116 +1168,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
+                if adapter_self._missed_message_backfill_enabled():
+                    adapter_self._ensure_missed_message_backfill_task()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
-                # Block until _resolve_allowed_usernames has swapped
-                # any raw usernames in DISCORD_ALLOWED_USERS for numeric
-                # IDs (otherwise on_message's author.id lookup can miss).
-                if not adapter_self._ready_event.is_set():
-                    try:
-                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
-                    except asyncio.TimeoutError:
-                        pass
-
-                # Dedup: Discord RESUME replays events after reconnects (#4777)
-                if adapter_self._dedup.is_duplicate(str(message.id)):
-                    return
-
-                # Always ignore our own messages
-                if message.author == self._client.user:
-                    return
-
-                # Ignore Discord system messages (thread renames, pins, member joins, etc.)
-                # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    return
-
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
-                #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
-                #   "all"      — accept all bot messages
-                # Must run BEFORE the user allowlist check so that bots
-                # permitted by DISCORD_ALLOW_BOTS are not rejected for
-                # not being in DISCORD_ALLOWED_USERS (fixes #4466).
-                _role_authorized = False
-                if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._self_is_explicitly_mentioned(message):
-                            return
-                    if (
-                        self._discord_bots_require_inline_mention()
-                        and not self._self_is_raw_mentioned(message)
-                    ):
-                        return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
-                else:
-                    # Non-bot: enforce the configured user/role allowlists.
-                    # Pass guild + is_dm so role checks are scoped to the
-                    # originating guild (prevents cross-guild DM bypass, see
-                    # _is_allowed_user docstring).
-                    _msg_guild = getattr(message, "guild", None)
-                    _is_dm = isinstance(message.channel, discord.DMChannel) or _msg_guild is None
-                    _msg_channel_ids = None
-                    if not _is_dm:
-                        _msg_channel_ids = {str(message.channel.id)}
-                        _parent_id = adapter_self._get_parent_channel_id(message.channel)
-                        if _parent_id:
-                            _msg_channel_ids.add(_parent_id)
-                    if not self._is_allowed_user(
-                        str(message.author.id),
-                        message.author,
-                        guild=_msg_guild,
-                        is_dm=_is_dm,
-                        channel_ids=_msg_channel_ids,
-                    ):
-                        self._warn_if_fail_closed_default()
-                        return
-                    _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
-                
-                # Multi-agent filtering: if the message mentions specific bots
-                # but NOT this bot, the sender is talking to another agent —
-                # stay silent.  Messages with no bot mentions (general chat)
-                # still fall through to _handle_message for the existing
-                # DISCORD_REQUIRE_MENTION check.
-                #
-                # This replaces the older DISCORD_IGNORE_NO_MENTION logic
-                # with bot-aware filtering that works correctly when multiple
-                # agents share a channel.
-                _raw_self_mention = self._self_is_explicitly_mentioned(message)
-                if not isinstance(message.channel, discord.DMChannel) and (
-                    message.mentions or _raw_self_mention
-                ):
-                    _self_mentioned = _raw_self_mention
-                    _other_bots_mentioned = any(
-                        m.bot and m != self._client.user
-                        for m in message.mentions
-                    )
-                    # If other bots are mentioned but we're not → not for us
-                    if _other_bots_mentioned and not _self_mentioned:
-                        return
-                    # If humans are mentioned but we're not → not for us
-                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
-                    # EXCEPT in free-response channels where the bot should
-                    # answer regardless of who is mentioned.
-                    _ignore_no_mention = os.getenv(
-                        "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
-                            return
-
-                await self._handle_message(message, role_authorized=_role_authorized)
+                await adapter_self._dispatch_discord_message(message)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -1278,6 +1248,96 @@ class DiscordAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return False
 
+    def _discord_message_admission(
+        self,
+        message: Any,
+        *,
+        claim: bool,
+    ) -> tuple[bool, bool]:
+        """Return ``(admitted, role_authorized)`` for one Discord event."""
+        message_id = str(getattr(message, "id", ""))
+        if claim:
+            if self._dedup.is_duplicate(message_id):
+                return False, False
+        elif self._dedup.contains(message_id):
+            return False, False
+        if message.author == self._client.user:
+            return False, False
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+            return False, False
+
+        role_authorized = False
+        if getattr(message.author, "bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots == "none":
+                return False, False
+            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+                return False, False
+            if (
+                self._discord_bots_require_inline_mention()
+                and not self._self_is_raw_mentioned(message)
+            ):
+                return False, False
+        else:
+            msg_guild = getattr(message, "guild", None)
+            is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
+            msg_channel_ids = None
+            if not is_dm:
+                msg_channel_ids = {str(message.channel.id)}
+                parent_id = self._get_parent_channel_id(message.channel)
+                if parent_id:
+                    msg_channel_ids.add(parent_id)
+            if not self._is_allowed_user(
+                str(message.author.id),
+                message.author,
+                guild=msg_guild,
+                is_dm=is_dm,
+                channel_ids=msg_channel_ids,
+            ):
+                self._warn_if_fail_closed_default()
+                return False, False
+            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+
+        raw_self_mention = self._self_is_explicitly_mentioned(message)
+        if not isinstance(message.channel, discord.DMChannel) and (
+            message.mentions or raw_self_mention
+        ):
+            other_bots_mentioned = any(
+                mentioned.bot and mentioned != self._client.user
+                for mentioned in message.mentions
+            )
+            if other_bots_mentioned and not raw_self_mention:
+                return False, False
+            ignore_no_mention = os.getenv(
+                "DISCORD_IGNORE_NO_MENTION", "true"
+            ).lower() in {"true", "1", "yes"}
+            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
+                parent_id = None
+                if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                    parent_id = str(message.channel.parent_id)
+                free_channels = self._discord_free_response_channels()
+                channel_keys = self._discord_channel_keys(message, parent_id)
+                if "*" not in free_channels and not (channel_keys & free_channels):
+                    return False, False
+
+        return True, role_authorized
+
+    async def _dispatch_discord_message(self, message: Any) -> bool:
+        """Apply Discord ingress policy and dispatch one live event."""
+        if not self._ready_event.is_set():
+            try:
+                await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                pass
+        admitted, role_authorized = self._discord_message_admission(
+            message, claim=True,
+        )
+        if not admitted:
+            return False
+        return await self._handle_message(
+            message, role_authorized=role_authorized,
+        )
+
     async def _cancel_bot_task(self) -> None:
         """Cancel and await the background client.start() task, if running."""
         if self._bot_task and not self._bot_task.done():
@@ -1289,90 +1349,189 @@ class DiscordAdapter(BasePlatformAdapter):
         self._bot_task = None
 
     def _start_liveness_probe(self) -> None:
-        """Start the periodic REST liveness probe if configured.
+        """Start the periodic Discord Gateway WebSocket health probe.
 
-        Idempotent: if a task is already running we leave it alone so a
-        re-entrant ``connect()`` cannot fork two probes against the same client.
+        REST success does not prove Gateway event delivery. Sample the active
+        Gateway WebSocket's ready/open/ACK state instead.
         """
-        if self._liveness_interval_seconds <= 0 or self._liveness_failure_threshold <= 0:
+        if (
+            self._liveness_interval_seconds <= 0
+            or self._liveness_failure_threshold <= 0
+            or self._heartbeat_ack_max_age_seconds <= 0
+            or self._max_latency_seconds <= 0
+        ):
             return
         if self._liveness_task and not self._liveness_task.done():
             return
         self._liveness_task = asyncio.create_task(self._liveness_loop())
 
-    async def _liveness_loop(self) -> None:
-        """Probe Discord REST periodically and force a reconnect on persistent failure.
+    def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
+        """Return current Discord Gateway health without making a REST request."""
+        try:
+            ready = bool(client.is_ready())
+        except Exception:
+            return False, "not_ready"
+        if not ready:
+            return False, "not_ready"
 
-        See #26656.  ``client.start()`` reconnects internally on clean WS drops,
-        but when the underlying socket is wedged behind a dead proxy the WS never
-        sees a RST and the adapter sits in a silent zombie state — process alive,
-        ``client.start()`` spinning, sends timing out forever, and the bot-task
-        done callback never fires because the task never completes.  An
-        out-of-band ``fetch_user`` exercises the same REST path as message
-        delivery and lets us detect the wedge.  After ``threshold`` consecutive
-        failures we close the client, set a retryable fatal error, and hand
-        control back to the gateway's platform reconnect watcher.
-        """
+        try:
+            if client.is_closed():
+                return False, "client_closed"
+        except Exception:
+            return False, "client_closed"
+
+        websocket = getattr(client, "ws", None)
+        try:
+            socket_open = bool(
+                websocket is not None and getattr(websocket, "open", False)
+            )
+        except Exception:
+            # A transport object that cannot report its open state is not a
+            # usable event stream. Treat it as unhealthy rather than letting
+            # the periodic liveness task crash silently.
+            return False, "socket_state_unavailable"
+        if not socket_open:
+            return False, "socket_closed"
+
+        keep_alive = getattr(websocket, "_keep_alive", None)
+        last_ack = getattr(keep_alive, "_last_ack", None)
+        if not isinstance(last_ack, (int, float)):
+            return False, "ack_unavailable"
+        ack_age = time.perf_counter() - last_ack
+        if not math.isfinite(ack_age) or ack_age > self._heartbeat_ack_max_age_seconds:
+            return False, "ack_stale"
+
+        latency = getattr(client, "latency", None)
+        if not isinstance(latency, (int, float)) or not math.isfinite(latency):
+            return False, "latency_non_finite"
+        if latency > self._max_latency_seconds:
+            return False, "latency_exceeded"
+        return True, "healthy"
+
+    async def _liveness_loop(self) -> None:
+        """Force a reconnect after repeated unhealthy Discord Gateway samples."""
         interval = self._liveness_interval_seconds
         threshold = self._liveness_failure_threshold
-        fails = 0
+        failures = 0
         while self._running:
             try:
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 return
             client = self._client
-            if not self._running or client is None or getattr(self, "_disconnecting", False):
+            if not self._running or client is None or self._disconnecting:
                 return
-            if hasattr(client, "is_closed") and client.is_closed():
-                return
-            user = getattr(client, "user", None)
-            if user is None:
-                continue
             try:
-                await client.fetch_user(user.id)
-                fails = 0
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                fails += 1
-                logger.warning(
-                    "[%s] Discord liveness probe failed (%d/%d): %s",
-                    self.name, fails, threshold, exc,
-                )
-                if fails < threshold:
-                    continue
-                logger.error(
-                    "[%s] Discord client appears dead, forcing reconnect", self.name,
-                )
+                healthy, reason = self._read_websocket_health(client)
+            except Exception:
+                # Health sampling must fail closed: an unexpected discord.py
+                # attribute change cannot be allowed to kill this watchdog
+                # task and leave an apparently-running adapter unrecovered.
+                healthy = False
+                reason = "health_check_error"
+            if healthy:
+                failures = 0
+                continue
+
+            failures += 1
+            logger.warning(
+                "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)",
+                self.name,
+                reason,
+                failures,
+                threshold,
+            )
+            if failures < threshold:
+                continue
+            # Mark intentional recovery before closing the client. Closing a
+            # healthy-looking but stale transport can complete Bot.start(); its
+            # done callback must not overwrite this more specific fatal reason.
+            self._disconnecting = True
+            logger.error(
+                "[%s] Discord Gateway WebSocket remained unhealthy (%s); forcing reconnect",
+                self.name,
+                reason,
+            )
+            self._set_fatal_error(
+                "discord_websocket_health_stale",
+                f"Discord Gateway WebSocket health check failed: {reason}",
+                retryable=True,
+            )
+            self._liveness_notification_task = asyncio.create_task(
+                self._notify_liveness_fatal_error(client)
+            )
+            return
+
+    async def _notify_liveness_fatal_error(self, client: Any) -> None:
+        """Close the failed client, then notify the runner outside the sampler.
+
+        The sampler must not await itself through ``disconnect()``. Running the
+        close and fatal callback in this sibling task also means the runner owns
+        the bounded full teardown before it creates a replacement adapter.
+        """
+        failed_websocket = getattr(client, "ws", None)
+        try:
+            close_task = asyncio.create_task(client.close())
+            try:
+                done, _pending = await asyncio.wait({close_task}, timeout=1.0)
+                if close_task not in done:
+                    raise asyncio.TimeoutError
+                await close_task
+            except asyncio.TimeoutError:
+                logger.warning("[%s] Timed out closing unhealthy Discord client", self.name)
+                close_task.cancel()
+                close_task.add_done_callback(_consume_background_task_result)
+                closing_task = getattr(client, "_closing_task", None)
+                if isinstance(closing_task, asyncio.Task):
+                    closing_task.cancel()
+                    closing_task.add_done_callback(_consume_background_task_result)
+                    # discord.Client.close() caches this task. Clear the cache
+                    # before the runner's bounded disconnect makes another
+                    # cleanup attempt; the stale task remains owned by its
+                    # done callback until it actually exits.
+                    client._closing_task = None
                 try:
-                    await client.close()
+                    if _abort_discord_websocket_transport(failed_websocket):
+                        logger.warning(
+                            "[%s] Aborted unresponsive Discord WebSocket transport",
+                            self.name,
+                        )
                 except Exception:
                     logger.debug(
-                        "[%s] Error closing wedged Discord client", self.name, exc_info=True,
+                        "[%s] Error aborting unhealthy Discord WebSocket transport",
+                        self.name,
+                        exc_info=True,
                     )
-                self._set_fatal_error(
-                    "liveness_probe_failed",
-                    f"Discord REST liveness probe failed {fails} times in a row",
-                    retryable=True,
-                )
-                try:
-                    await self._notify_fatal_error()
-                except Exception:
-                    logger.debug(
-                        "[%s] Fatal-error handler raised", self.name, exc_info=True,
-                    )
-                return
+            except Exception:
+                logger.debug("[%s] Error closing unhealthy Discord client", self.name, exc_info=True)
+            # The runner's bounded teardown can execute ``disconnect()`` inside
+            # a timeout wrapper, which is a different task from this notifier.
+            # Drop the self-reference before notifying so disconnect() cannot
+            # cancel this in-flight fatal callback as though it were unrelated.
+            if self._liveness_notification_task is asyncio.current_task():
+                self._liveness_notification_task = None
+            await self._notify_fatal_error()
+        except Exception:
+            logger.debug("[%s] Fatal-error handler raised", self.name, exc_info=True)
 
     async def _cancel_liveness_task(self) -> None:
-        """Cancel and await the liveness probe task, if running."""
-        if self._liveness_task and not self._liveness_task.done():
-            self._liveness_task.cancel()
+        """Cancel and await liveness tasks without awaiting the current task."""
+        current = asyncio.current_task()
+        for task_name in ("_liveness_task", "_liveness_notification_task"):
+            task = getattr(self, task_name, None)
+            if task is None:
+                continue
+            if task is current:
+                continue
+            if not task.done():
+                task.cancel()
             try:
-                await self._liveness_task
+                await task
             except asyncio.CancelledError:
                 pass
-        self._liveness_task = None
+            except Exception:
+                logger.debug("[%s] Liveness task shutdown failed", self.name, exc_info=True)
+            setattr(self, task_name, None)
 
     async def cancel_background_tasks(self) -> None:
         """Cancel background tasks, but first flush any pending text-batch sends.
@@ -1471,12 +1630,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._post_connect_task
             except asyncio.CancelledError:
                 pass
+        if self._missed_message_backfill_task and not self._missed_message_backfill_task.done():
+            self._missed_message_backfill_task.cancel()
+            try:
+                await self._missed_message_backfill_task
+            except asyncio.CancelledError:
+                pass
 
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
         self._liveness_task = None
+        self._missed_message_backfill_task = None
 
         self._release_platform_lock()
 
@@ -1744,6 +1910,661 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
+    def _missed_message_backfill_enabled(self) -> bool:
+        """Whether to reconcile Discord messages missed while the gateway was down."""
+        configured = self.config.extra.get("missed_message_backfill")
+        if isinstance(configured, dict) and "enabled" in configured:
+            value = configured["enabled"]
+            if isinstance(value, str):
+                return value.strip().lower() in ("true", "1", "yes", "on")
+            return bool(value)
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
+        return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+    def _missed_message_backfill_channels(self) -> set[str]:
+        """Channels to scan for missed messages after Discord reconnects.
+
+        Defaults to the union of allowed and free-response channels so both
+        mention-gated requests and mention-free work can be recovered.
+        Operators can set ``channels: "*"`` to scan every reachable text
+        channel, but the safe default is scoped.
+        """
+        configured = self.config.extra.get("missed_message_backfill")
+        if isinstance(configured, dict) and "channels" in configured:
+            raw = configured.get("channels")
+            if isinstance(raw, list):
+                return {str(item).strip() for item in raw if str(item).strip()}
+            raw = str(raw or "")
+            if raw.strip():
+                return {item.strip() for item in raw.split(",") if item.strip()}
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
+        if not raw.strip():
+            allowed = {
+                item.strip()
+                for item in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
+                if item.strip()
+            }
+            return allowed | self._discord_free_response_channels()
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def _missed_message_backfill_window_seconds(self) -> float:
+        configured = self.config.extra.get("missed_message_backfill")
+        raw = (
+            configured.get("window_seconds", 21600)
+            if isinstance(configured, dict)
+            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS", "21600")
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 21600.0
+        return max(60.0, value)
+
+    def _missed_message_backfill_limit(self) -> int:
+        configured = self.config.extra.get("missed_message_backfill")
+        raw = (
+            configured.get("limit", 100)
+            if isinstance(configured, dict)
+            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT", "100")
+        )
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 100
+        return max(1, min(value, 500))
+
+    def _missed_message_backfill_max_dispatches(self) -> int:
+        configured = self.config.extra.get("missed_message_backfill")
+        raw = (
+            configured.get("max_dispatches", 10)
+            if isinstance(configured, dict)
+            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", "10")
+        )
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 10
+        return max(1, min(value, 100))
+
+    def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
+        """Return the active recovery task, or start one when none is running."""
+        task = self._missed_message_backfill_task
+        if task is not None and not task.done():
+            return task
+        task = asyncio.create_task(self._run_missed_message_backfill())
+        self._missed_message_backfill_task = task
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None and getattr(runner, "_startup_restore_in_progress", False):
+            tasks = getattr(runner, "_startup_restore_tasks", None)
+            if tasks is None:
+                tasks = []
+                runner._startup_restore_tasks = tasks
+            tasks.append(task)
+        return task
+
+    async def _run_missed_message_backfill(self) -> None:
+        """Find and enqueue recent Discord messages missed while the bot was down.
+
+        Discord gateway events are not replayed for messages sent while the bot
+        is offline. Normal startup resume only handles sessions already marked
+        resume_pending; this pass scans recent channel/thread history, records
+        what it saw durably, and reuses the normal message handler for messages
+        that lack a substantive non-outage Hermes response. Emoji-only acks are
+        deliberately not sufficient completion evidence.
+        """
+        if not self._client:
+            return
+        channels = self._missed_message_backfill_channels()
+        ledger_ok = await self._with_discord_recovery_db_async(
+            lambda conn: conn.execute("SELECT 1").fetchone() is not None,
+            False,
+        )
+        if not ledger_ok:
+            logger.error(
+                "[%s] Missed-message recovery aborted: durable ledger unavailable",
+                self.name,
+            )
+            return
+        scan_id = await asyncio.to_thread(
+            self._record_recovery_scan_start,
+            channels,
+        )
+        if not channels:
+            logger.info("[%s] Missed-message backfill enabled but no channels configured", self.name)
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="skipped",
+                scanned=0,
+                missed=0,
+                dispatched=0,
+            )
+            return
+
+        max_dispatches = self._missed_message_backfill_max_dispatches()
+        dispatched = 0
+        scanned = 0
+        missed = 0
+        try:
+            async for message in self._iter_missed_message_backfill_candidates(channels):
+                scanned += 1
+                message_id = str(getattr(message, "id", ""))
+                self._record_discord_message_seen(message, status="discovered")
+                # A live gateway event may race this REST scan. Check without
+                # claiming the ID; the shared ingress helper owns the dedup
+                # write immediately before normal auth/filter dispatch.
+                if self._dedup.contains(message_id):
+                    continue
+                if not await self._should_backfill_discord_message(message):
+                    continue
+                missed += 1
+                logger.info(
+                    "[%s] Backfilling missed Discord message %s in channel %s",
+                    self.name,
+                    getattr(message, "id", "unknown"),
+                    getattr(getattr(message, "channel", None), "id", "unknown"),
+                )
+                self._record_recovery_attempt(message, status="queued")
+                try:
+                    admitted = await self._dispatch_recovered_message(message)
+                    if admitted:
+                        dispatched += 1
+                except asyncio.CancelledError:
+                    self._dedup.discard(message_id)
+                    self._record_recovery_attempt(message, status="cancelled")
+                    raise
+                except Exception as exc:
+                    self._dedup.discard(message_id)
+                    self._record_recovery_attempt(message, status="failed", error=str(exc))
+                    raise
+                if dispatched >= max_dispatches:
+                    break
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="success",
+                scanned=scanned,
+                missed=missed,
+                dispatched=dispatched,
+            )
+            logger.info(
+                "[%s] Missed-message backfill complete: scanned=%d missed=%d dispatched=%d",
+                self.name,
+                scanned,
+                missed,
+                dispatched,
+            )
+        except asyncio.CancelledError:
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="cancelled",
+                scanned=scanned,
+                missed=missed,
+                dispatched=dispatched,
+            )
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            await asyncio.to_thread(
+                self._record_recovery_scan_complete,
+                scan_id,
+                status="failed",
+                scanned=scanned,
+                missed=missed,
+                dispatched=dispatched,
+                error=str(exc),
+            )
+            logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
+
+    async def _dispatch_recovered_message(self, message: Any) -> bool:
+        """Run one recovered message through the live Discord ingress gates."""
+        if not isinstance(message.channel, discord.DMChannel):
+            parent_id = self._get_parent_channel_id(message.channel)
+            channel_keys = self._discord_channel_keys(message, parent_id)
+            free_channels = self._discord_free_response_channels()
+            in_bot_thread = (
+                isinstance(message.channel, discord.Thread)
+                and str(message.channel.id) in self._threads
+                and not self._discord_thread_require_mention()
+            )
+            if (
+                self._discord_require_mention()
+                and "*" not in free_channels
+                and not (channel_keys & free_channels)
+                and not in_bot_thread
+                and not self._self_is_explicitly_mentioned(message)
+            ):
+                return False
+        admitted, role_authorized = self._discord_message_admission(
+            message, claim=False,
+        )
+        if not admitted:
+            return False
+        return await self._handle_message(
+            message,
+            role_authorized=role_authorized,
+            recovered=True,
+        )
+
+    async def _iter_missed_message_backfill_candidates(self, channel_ids: set[str]):
+        if not self._client:
+            return
+        after = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+            seconds=self._missed_message_backfill_window_seconds()
+        )
+        limit = self._missed_message_backfill_limit()
+        seen: set[str] = set()
+
+        candidate_channels = []
+        if "*" in channel_ids:
+            for guild in getattr(self._client, "guilds", []) or []:
+                candidate_channels.extend(getattr(guild, "text_channels", []) or [])
+        else:
+            for channel_id in sorted(channel_ids):
+                channel = None
+                try:
+                    channel = self._client.get_channel(int(channel_id))
+                except Exception:
+                    channel = None
+                if channel is None:
+                    try:
+                        channel = await self._client.fetch_channel(int(channel_id))
+                    except Exception as exc:
+                        logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
+                        continue
+                candidate_channels.append(channel)
+
+        iterators = [
+            self._iter_channel_and_thread_messages(
+                channel,
+                limit=limit,
+                after=after,
+                seen_channels=seen,
+            ).__aiter__()
+            for channel in candidate_channels
+        ]
+        yielded = 0
+        while iterators and yielded < limit:
+            next_round = []
+            for iterator in iterators:
+                try:
+                    item = await iterator.__anext__()
+                except StopAsyncIteration:
+                    continue
+                yield item
+                yielded += 1
+                next_round.append(iterator)
+                if yielded >= limit:
+                    return
+            iterators = next_round
+
+    async def _iter_channel_and_thread_messages(self, channel: Any, *, limit: int, after: Any, seen_channels: set[str]):
+        """Yield history from a channel plus active/recent archived child threads."""
+        channel_key = str(getattr(channel, "id", ""))
+        if not channel_key or channel_key in seen_channels:
+            return
+        seen_channels.add(channel_key)
+
+        cursor = self._discord_recovery_cursor(channel_key)
+        if cursor:
+            with suppress(ValueError, TypeError):
+                after = discord.Object(id=int(cursor))
+        history = getattr(channel, "history", None)
+        if callable(history):
+            try:
+                # Fetch the latest N messages in the window, then restore
+                # chronological dispatch order. With oldest_first=True the API
+                # returns the earliest N and can permanently starve newer work.
+                history_iter = history(
+                    limit=limit,
+                    after=after,
+                    oldest_first=False,
+                )
+                messages = []
+                async for message in history_iter:  # type: ignore[attr-defined]
+                    messages.append(message)
+                for message in reversed(messages):
+                    yield message
+            except Exception as exc:
+                logger.debug("[%s] Cannot read history for %s: %s", self.name, channel_key, exc)
+
+        child_threads = list(getattr(channel, "threads", []) or [])
+        archived_threads = getattr(channel, "archived_threads", None)
+        if callable(archived_threads):
+            try:
+                async for thread in archived_threads(limit=limit):
+                    child_threads.append(thread)
+            except Exception as exc:
+                logger.debug("[%s] Cannot list archived threads for %s: %s", self.name, channel_key, exc)
+
+        for thread in child_threads:
+            thread_key = str(getattr(thread, "id", ""))
+            if not thread_key or thread_key in seen_channels:
+                continue
+            async for message in self._iter_channel_and_thread_messages(thread, limit=limit, after=after, seen_channels=seen_channels):
+                yield message
+
+    def _discord_recovery_cursor(self, channel_id: str) -> Optional[str]:
+        if not channel_id:
+            return None
+
+        def _op(conn):
+            row = conn.execute(
+                "SELECT last_message_id FROM discord_recovery_cursors WHERE channel_id=?",
+                (channel_id,),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+        return self._with_discord_recovery_db(_op)
+
+    def _advance_discord_recovery_cursor(self, channel_id: str, message_id: str) -> None:
+        if not channel_id or not message_id:
+            return
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                """
+                INSERT INTO discord_recovery_cursors (channel_id, last_message_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    last_message_id=excluded.last_message_id,
+                    updated_at=excluded.updated_at
+                """,
+                (channel_id, message_id, now),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    async def _should_backfill_discord_message(self, message: Any) -> bool:
+        """Return True when a recent Discord message still needs Hermes work."""
+        if not self._client or not getattr(self._client, "user", None):
+            return False
+        if getattr(getattr(message, "author", None), "id", None) == getattr(self._client.user, "id", None):
+            return False
+        if self._discord_message_is_persistently_complete(str(getattr(message, "id", ""))):
+            return False
+        if self._discord_message_has_active_claim(str(getattr(message, "id", ""))):
+            return False
+        # A success reaction alone is only an acknowledgement.  It is not
+        # enough evidence that the substantive response/action completed.
+        if await self._message_has_non_down_bot_response(message):
+            return False
+        return True
+
+    def _is_down_notice_content(self, content: str) -> bool:
+        """Recognize only explicit Hermes/gateway outage notices."""
+        text = (content or "").lower()
+        subject = r"(?:hermes|the agent|agent|the gateway|gateway|bmo)"
+        state = r"(?:is|was|appears to be|is currently|was currently)"
+        condition = r"(?:down|offline|unavailable|not running)"
+        return re.search(rf"\b{subject}\s+{state}\s+{condition}\b", text) is not None
+
+    async def _message_has_non_down_bot_response(self, message: Any) -> bool:
+        """Detect an already-addressed message without trusting down notices."""
+        bot_user = getattr(self._client, "user", None) if self._client else None
+        bot_id = getattr(bot_user, "id", None)
+        if bot_id is None:
+            return False
+
+        async def _scan_history(channel: Any) -> bool:
+            history = getattr(channel, "history", None)
+            if not callable(history):
+                return False
+            try:
+                async for candidate in history(limit=25, after=getattr(message, "created_at", None), oldest_first=True):
+                    author = getattr(candidate, "author", None)
+                    if getattr(author, "id", None) != bot_id:
+                        continue
+                    if self._is_down_notice_content(getattr(candidate, "content", "")):
+                        continue
+                    reference = getattr(candidate, "reference", None)
+                    ref_id = str(getattr(reference, "message_id", "") or "")
+                    if ref_id == str(getattr(message, "id", "")):
+                        return True
+            except Exception:
+                return False
+            return False
+
+        message_channel = getattr(message, "channel", None)
+        # Only an explicit reply reference proves which input a bot response
+        # completed. An arbitrary later bot post can otherwise mask multiple
+        # unanswered requests in the same parent channel or thread.
+        if await _scan_history(message_channel):
+            return True
+
+        thread = getattr(message, "thread", None)
+        if thread is not None and await _scan_history(thread):
+            return True
+        return False
+
+    def _discord_recovery_db_path(self) -> _Path:
+        return self._discord_recovery_store.path()
+
+    def _with_discord_recovery_db(self, fn, default=None):
+        return self._discord_recovery_store.call(fn, default)
+
+    async def _with_discord_recovery_db_async(self, fn, default=None):
+        return await asyncio.to_thread(
+            self._discord_recovery_store.call,
+            fn,
+            default,
+        )
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        import datetime as _dt
+        return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    def _message_channel_ids(self, message: Any) -> tuple[str, Optional[str], Optional[str]]:
+        channel = getattr(message, "channel", None)
+        channel_id = str(getattr(channel, "id", "") or "")
+        parent_id = str(getattr(channel, "parent_id", "") or "") or None
+        thread_id = channel_id if parent_id else None
+        return channel_id, thread_id, parent_id
+
+    def _record_discord_message_seen(self, message: Any, *, status: str) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message_id = str(getattr(message, "id", "") or "")
+        if not message_id:
+            return
+        channel_id, thread_id, parent_id = self._message_channel_ids(message)
+        author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
+        created_at = getattr(message, "created_at", None)
+        created_text = created_at.isoformat() if hasattr(created_at, "isoformat") else None
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            existing = conn.execute("SELECT status FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
+            final_status = existing[0] if existing and existing[0] == "responded" else status
+            conn.execute(
+                """
+                INSERT INTO discord_messages (message_id, channel_id, thread_id, parent_channel_id, author_id, created_at, status, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    thread_id=excluded.thread_id,
+                    parent_channel_id=excluded.parent_channel_id,
+                    author_id=excluded.author_id,
+                    created_at=COALESCE(discord_messages.created_at, excluded.created_at),
+                    status=?,
+                    updated_at=excluded.updated_at
+                """,
+                (message_id, channel_id, thread_id, parent_id, author_id, created_text, final_status, now, final_status),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_recovery_attempt(self, message: Any, *, status: str, error: Optional[str] = None) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        self._record_discord_message_seen(message, status=status)
+        message_id = str(getattr(message, "id", "") or "")
+        if not message_id:
+            return
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                """
+                UPDATE discord_messages
+                   SET status=?, attempts=attempts+1, last_attempt_at=?, last_error=?, updated_at=?
+                 WHERE message_id=?
+                """,
+                (status, now, error, now, message_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message = event.raw_message
+        self._record_discord_message_seen(message, status="processing")
+        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
+        if not message_id:
+            return
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
+                (1 if emoji_ack else 0, now, message_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
+        if not message_id:
+            return
+        status = "processed" if outcome == ProcessingOutcome.SUCCESS else ("cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages "
+                "SET status=CASE WHEN status='responded' THEN status ELSE ? END, "
+                "updated_at=? WHERE message_id=?",
+                (status, now, message_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_discord_response(
+        self,
+        *,
+        reply_to: Optional[str],
+        result: SendResult,
+        content: str,
+        final: bool,
+    ) -> None:
+        if not self._missed_message_backfill_enabled() or not reply_to:
+            return
+        now = self._utc_now_iso()
+        completed = bool(final and result.success)
+        status = "responded" if completed else "failed"
+
+        def _op(conn):
+            conn.execute(
+                """
+                INSERT INTO discord_messages (message_id, status, replied, outage_response, response_message_id, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    status=CASE WHEN ? THEN 'responded' ELSE discord_messages.status END,
+                    replied=CASE WHEN ? THEN 1 ELSE discord_messages.replied END,
+                    outage_response=CASE WHEN ? THEN 0 ELSE discord_messages.outage_response END,
+                    response_message_id=COALESCE(?, response_message_id),
+                    updated_at=?
+                """,
+                (
+                    reply_to,
+                    status,
+                    1 if completed else 0,
+                    result.message_id,
+                    now,
+                    1 if completed else 0,
+                    1 if completed else 0,
+                    1 if completed else 0,
+                    result.message_id,
+                    now,
+                ),
+            )
+
+        self._with_discord_recovery_db(_op)
+        if completed:
+            def _channel_for_message(conn):
+                row = conn.execute(
+                    "SELECT COALESCE(thread_id, channel_id) FROM discord_messages "
+                    "WHERE message_id=?",
+                    (reply_to,),
+                ).fetchone()
+                return str(row[0]) if row and row[0] else None
+
+            channel_id = self._with_discord_recovery_db(_channel_for_message)
+            if channel_id:
+                self._advance_discord_recovery_cursor(channel_id, reply_to)
+
+    def _discord_message_is_persistently_complete(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+
+        def _op(conn):
+            row = conn.execute("SELECT status, replied, outage_response FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
+            if not row:
+                return False
+            status, replied, outage = row
+            return status == "responded" and bool(replied) and not bool(outage)
+
+        return bool(self._with_discord_recovery_db(_op, default=False))
+
+    def _discord_message_has_active_claim(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+        cutoff = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        ).isoformat()
+
+        def _op(conn):
+            row = conn.execute(
+                "SELECT status, updated_at FROM discord_messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            return bool(
+                row
+                and row[0] in {"queued", "processing"}
+                and row[1] >= cutoff
+            )
+
+        return bool(self._with_discord_recovery_db(_op, default=True))
+
+    def _record_recovery_scan_start(self, channels: set[str]) -> str:
+        scan_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO discord_recovery_scans (scan_id, started_at, status, channels, window_seconds, limit_count) VALUES (?, ?, ?, ?, ?, ?)",
+                (scan_id, now, "running", json.dumps(sorted(channels)), self._missed_message_backfill_window_seconds(), self._missed_message_backfill_limit()),
+            )
+
+        self._with_discord_recovery_db(_op)
+        return scan_id
+
+    def _record_recovery_scan_complete(self, scan_id: str, *, status: str, scanned: int, missed: int, dispatched: int, error: Optional[str] = None) -> None:
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_recovery_scans SET completed_at=?, status=?, scanned=?, missed=?, dispatched=?, error=? WHERE scan_id=?",
+                (now, status, scanned, missed, dispatched, error, scan_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
     def _get_discord_command_sync_policy(self) -> str:
         raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
@@ -1966,15 +2787,24 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction for normal Discord message events."""
-        if not self._reactions_enabled():
-            return
+        """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+        acked = False
+        if self._reactions_enabled() and hasattr(message, "add_reaction"):
+            acked = await self._add_reaction(message, "👀")
+        await asyncio.to_thread(
+            self._record_discord_processing_start,
+            event,
+            emoji_ack=acked,
+        )
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Swap the in-progress reaction for final reaction and durable state."""
+        await asyncio.to_thread(
+            self._record_discord_processing_complete,
+            event,
+            outcome,
+        )
         if not self._reactions_enabled():
             return
         message = event.raw_message
@@ -2009,6 +2839,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
             nonconversational = _metadata_marks_nonconversational(metadata)
+            final_delivery = bool(metadata and metadata.get("notify"))
 
             if thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
@@ -2027,7 +2858,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                return await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, content)
+                await asyncio.to_thread(
+                    self._record_discord_response,
+                    reply_to=reply_to,
+                    result=result,
+                    content=content,
+                    final=final_delivery,
+                )
+                return result
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -2091,15 +2930,31 @@ class DiscordAdapter(BasePlatformAdapter):
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
-            return SendResult(
+            result = SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
+            await asyncio.to_thread(
+                self._record_discord_response,
+                reply_to=reply_to,
+                result=result,
+                content=content,
+                final=final_delivery,
+            )
+            return result
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            result = SendResult(success=False, error=str(e))
+            await asyncio.to_thread(
+                self._record_discord_response,
+                reply_to=reply_to,
+                result=result,
+                content=content,
+                final=bool(metadata and metadata.get("notify")),
+            )
+            return result
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -2224,6 +3079,7 @@ class DiscordAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Discord message.
 
@@ -2303,7 +3159,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._last_overflow_preview[_preview_key] = truncated
                 else:
                     raise
-            return SendResult(success=True, message_id=message_id)
+            result = SendResult(success=True, message_id=message_id)
+            if finalize:
+                await asyncio.to_thread(
+                    self._record_discord_response,
+                    reply_to=(metadata or {}).get("reply_to_message_id"),
+                    result=result,
+                    content=content,
+                    final=True,
+                )
+            return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
@@ -5591,6 +6456,7 @@ class DiscordAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """
@@ -5666,6 +6532,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
                 allow_permanent=allow_permanent,
+                allow_session=allow_session,
                 smart_denied=smart_denied,
             )
 
@@ -6191,8 +7058,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
-    async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
-        """Handle incoming Discord messages."""
+    async def _handle_message(
+        self,
+        message: DiscordMessage,
+        role_authorized: bool = False,
+        *,
+        recovered: bool = False,
+    ) -> bool:
+        """Handle one Discord message and report whether it reached dispatch."""
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
@@ -6248,14 +7121,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return
+                    return False
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
-                return
+                return False
 
             free_channels = self._discord_free_response_channels()
 
@@ -6284,7 +7157,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
-                    return
+                    return False
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -6333,7 +7206,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             self.name,
                             notify_error,
                         )
-                    return
+                    return False
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)
@@ -6630,7 +7503,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
                     getattr(message.channel, "id", "unknown"),
                 )
-                return
+                return False
             event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel
@@ -6667,12 +7540,18 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._threads.mark(thread_id)
 
-        # Only batch plain text messages — commands, media, etc. dispatch
-        # immediately since they won't be split by the Discord client.
-        if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+        # Only live plain text messages use split-message batching. Recovery
+        # candidates are already complete historical messages; coalescing them
+        # would lose constituent IDs and make later restarts replay them.
+        if (
+            not recovered
+            and msg_type == MessageType.TEXT
+            and self._text_batch_delay_seconds > 0
+        ):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
+        return True
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Discord client-side splits)
@@ -6918,6 +7797,7 @@ def _define_discord_view_classes() -> None:
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
             allow_permanent: bool = True,
+            allow_session: bool = True,
             smart_denied: bool = False,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
@@ -6932,7 +7812,7 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
-            if smart_denied:
+            if smart_denied or not allow_session:
                 self.remove_item(self.allow_session)
                 self.remove_item(self.allow_always)
             elif not allow_permanent:
@@ -6990,19 +7870,9 @@ def _define_discord_view_classes() -> None:
 
             self.resolved = True
 
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
-
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.response.edit_message(embed=embed, view=self)
-
-            # Unblock the waiting agent thread via the gateway approval queue
+            # Unblock the waiting agent thread FIRST, then render the outcome.
+            # A click that lands after the approval wait timed out (count == 0)
+            # must not claim "Approved" — the command was already denied.
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
@@ -7012,6 +7882,24 @@ def _define_discord_view_classes() -> None:
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
+                count = 0
+
+            if not count:
+                color = discord.Color.dark_grey()
+                label = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)"
+
+            # Update the embed with the decision
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                footer = f"{label} by {interaction.user.display_name}" if count else label
+                embed.set_footer(text=footer)
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(
@@ -8426,10 +9314,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     env-driven model and merely owns the YAML→env translation here, next to
     the adapter that consumes it.
 
-    Env vars take precedence over YAML — every assignment is guarded by
-    ``not os.getenv(...)`` so explicit env vars survive a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    ``PlatformConfig.extra`` is the per-adapter source of truth for liveness
+    settings, which keeps multiplexed profiles isolated. The legacy env bridge
+    remains only for existing callers that construct adapters without config
+    extras. Returns canonical WebSocket liveness settings to seed that extra.
     """
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
@@ -8468,6 +9356,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    seeded_extra = {}
+    backfill_cfg = discord_cfg.get("missed_message_backfill")
+    if isinstance(backfill_cfg, dict):
+        seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
     if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
@@ -8518,17 +9410,41 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
-    # liveness probe knobs: detect zombie clients behind dead proxies/NATs and
-    # force a reconnect (#26656).  Bridged to the env vars the adapter reads in
-    # __init__; set either to 0 to disable.  config.yaml is the user-facing
-    # surface — these env vars are an internal mechanism only.
-    lis = discord_cfg.get("liveness_interval_seconds")
-    if lis is not None and not os.getenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS"):
-        os.environ["HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS"] = str(lis)
-    lft = discord_cfg.get("liveness_failure_threshold")
-    if lft is not None and not os.getenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"):
-        os.environ["HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"] = str(lft)
-    return None  # all settings flow through env; nothing to merge into extras
+    _websocket_extra_cfg = discord_cfg.get("extra")
+    if not isinstance(_websocket_extra_cfg, dict):
+        _websocket_extra_cfg = {}
+    # Public config keys win over the generic ``extra`` form used by nested
+    # platform configuration.
+    _websocket_liveness_cfg = {
+        **_websocket_extra_cfg,
+        **discord_cfg,
+    }
+    # WebSocket health knobs: REST 200 is deliberately not used as Gateway
+    # health. Accept legacy liveness_* aliases for compatibility during the
+    # migration; the websocket_* spelling is the public config surface.
+    _websocket_liveness_keys = (
+        (
+            "websocket_liveness_interval_seconds",
+            "liveness_interval_seconds",
+            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+        ),
+        (
+            "websocket_liveness_failure_threshold",
+            "liveness_failure_threshold",
+            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        ),
+        ("websocket_heartbeat_ack_max_age_seconds", None, None),
+        ("websocket_max_latency_seconds", None, None),
+    )
+    for primary_key, legacy_key, env_key in _websocket_liveness_keys:
+        value = _websocket_liveness_cfg.get(primary_key)
+        if value is None and legacy_key:
+            value = _websocket_liveness_cfg.get(legacy_key)
+        if value is not None:
+            seeded_extra[primary_key] = value
+            if env_key and not os.getenv(env_key):
+                os.environ[env_key] = str(value)
+    return seeded_extra or None
 
 
 def _is_connected(config) -> bool:

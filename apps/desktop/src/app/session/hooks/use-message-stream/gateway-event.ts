@@ -1,5 +1,6 @@
+import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback, useRef } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -11,6 +12,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { playCompletionSound } from '@/lib/completion-sound'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
@@ -26,13 +28,13 @@ import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -44,7 +46,10 @@ import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent }
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
-import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
+import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
+// Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
+// module graph into the gateway event hot path.
+import { ingestBackendSkin } from '@/themes/backend-sync'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
@@ -53,6 +58,7 @@ import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, 
 
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
+  'message.interim',
   'thinking.delta',
   'reasoning.delta',
   'reasoning.available',
@@ -65,18 +71,21 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
 ])
 
 interface GatewayEventDeps {
+  activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
-  completeAssistantMessage: (sessionId: string, text: string) => void
+  completeAssistantMessage: (sessionId: string, text: string, responsePreviewed?: boolean) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
+  finalizeInterimAssistantMessage: (sessionId: string, text: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -95,6 +104,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
     appendReasoningDelta,
+    activeGatewayProfile,
     activeSessionIdRef,
     compactedTurnRef,
     lastCwdInfoSessionRef,
@@ -102,14 +112,51 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
+    finalizeInterimAssistantMessage,
     queryClient,
     refreshHermesConfig,
     sessionInterrupted,
+    sessionStateByRuntimeIdRef,
     updateSessionState,
     upsertToolCall
   } = deps
 
   const unscopedStreamSessionIdRef = useRef<string | null>(null)
+
+  // session.info arrives in bursts (agent build ready + turn end + title /
+  // MCP / compress edges within the same second). Each used to fire its own
+  // refreshHermesConfig — two REST calls (config + defaults) per event, per
+  // turn, including for BACKGROUND sessions whose values the fetch can't even
+  // apply. Coalesce to one trailing fetch per burst; the caller gates on
+  // `apply` so background traffic doesn't schedule anything.
+  const configRefreshTimerRef = useRef<null | number>(null)
+
+  const scheduleConfigRefresh = useCallback(() => {
+    if (configRefreshTimerRef.current !== null) {
+      return
+    }
+
+    if (typeof window === 'undefined') {
+      void refreshHermesConfig()
+
+      return
+    }
+
+    configRefreshTimerRef.current = window.setTimeout(() => {
+      configRefreshTimerRef.current = null
+      void refreshHermesConfig()
+    }, 300)
+  }, [refreshHermesConfig])
+
+  useEffect(
+    () => () => {
+      if (configRefreshTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(configRefreshTimerRef.current)
+        configRefreshTimerRef.current = null
+      }
+    },
+    []
+  )
 
   return useCallback(
     (event: RpcEvent) => {
@@ -141,6 +188,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       if (event.type === 'gateway.ready') {
+        // Seed the active skin into the desktop theme registry without applying,
+        // so a fresh connect never overrides the user's persisted desktop theme.
+        ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+
+        return
+      } else if (event.type === 'skin.changed') {
+        // A runtime skin switch (Hermes activating an authored skin, or `/skin`
+        // on another surface). Only the active profile's change repaints.
+        const fromActiveProfile =
+          !event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+
+        if (fromActiveProfile) {
+          ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+        }
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
@@ -151,6 +213,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+        // The backend stamps model/provider (as strings) on EVERY session.info,
+        // so the presence flags above are true on every heartbeat/turn edge —
+        // fine for the cheap atom writes below (nanostores skips identical
+        // values), but they also drove queryClient.invalidateQueries, refetching
+        // the model-options provider catalog once or twice per turn for a model
+        // that never changed. Only a genuine VALUE change (vs the session's own
+        // cached runtime state, captured before the state patch below applies;
+        // composer atoms as the fallback for an uncached session) invalidates.
+        const knownState = sessionId ? sessionStateByRuntimeIdRef.current.get(sessionId) : undefined
+        const modelValueChanged = modelChanged && payload!.model !== (knownState?.model ?? $currentModel.get())
+
+        const providerValueChanged =
+          providerChanged && payload!.provider !== (knownState?.provider ?? $currentProvider.get())
 
         // Config is profile-scoped, but session.info also arrives for background
         // sessions. Only an active-session event from the currently active
@@ -167,13 +242,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (apply) {
-          if (modelChanged) {
-            setCurrentModel(payload!.model || '')
-          }
-
-          if (providerChanged) {
-            setCurrentProvider(payload!.provider || '')
-          }
+          // Do not call setCurrentModel / setCurrentProvider here. Composer
+          // model/provider is sticky UI state (localStorage + manual picks).
+          // Periodic session.info heartbeats often carry the profile default
+          // (or a stale session model) and would silently revert the dropdown.
+          // Active-session model/provider still flows through the session state
+          // cache via updateSessionState → syncRuntimeMetadataToView below.
 
           if (typeof payload?.cwd === 'string') {
             // The active session's agent can relocate itself (new repo/worktree
@@ -232,7 +306,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         // The running→busy transition must reach EVERY session, not just the
         // active one. The `apply` gate above correctly scopes view-only side
-        // effects (setCurrentModel, setCurrentCwd, etc.) to the focused chat,
+        // effects (setCurrentCwd, etc.) to the focused chat,
         // but the per-session busy state is what drives the sidebar working
         // indicator — a background session's turn start/finish must update
         // its dot without the user opening it. updateSessionState only
@@ -249,6 +323,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
 
               if (busy) {
+                // Don't re-arm busy from a stale session.info if the user
+                // just clicked Stop (interrupted=true). The backend's
+                // cooperative interrupt may not have propagated yet, so
+                // running is still true in the heartbeat. The turn's
+                // finally block will emit running=false to clear busy.
+                if (state.interrupted) {
+                  return state
+                }
+
                 return {
                   ...state,
                   busy,
@@ -283,13 +366,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)
+          // Config refetch is only meaningful for the foreground context —
+          // everything refreshHermesConfig applies is either active-session
+          // guarded or a composer/global pref. Background sessions' heartbeats
+          // used to trigger it too (two REST calls each, every turn).
+          scheduleConfigRefresh()
         }
 
-        void refreshHermesConfig()
-
-        if (modelChanged || providerChanged) {
+        if (modelValueChanged || providerValueChanged) {
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            queryKey:
+              explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
           })
         }
       } else if (event.type === 'message.start') {
@@ -307,14 +394,28 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           triggerHaptic('streamStart')
         }
 
-        updateSessionState(sessionId, state => ({
-          ...state,
-          busy: true,
-          awaitingResponse: true,
-          sawAssistantPayload: false,
-          interrupted: false,
-          turnStartedAt: Date.now()
-        }))
+        updateSessionState(sessionId, state => {
+          // If the user clicked Stop (cancelRun set interrupted=true), don't
+          // let a stale message.start from a chained turn (goal follow-up,
+          // completion drain) or an in-flight LLM response re-arm busy.
+          // The interrupt is user intent — the backend's cooperative cancel
+          // may not have propagated yet, so its events are stale. The turn's
+          // finally block will emit session.info with running=false to clear
+          // busy for real once the agent loop actually exits.
+          if (state.interrupted) {
+            return state
+          }
+
+          return {
+            ...state,
+            busy: true,
+            awaitingResponse: true,
+            sawAssistantPayload: false,
+            interrupted: false,
+            interimBoundaryPending: false,
+            turnStartedAt: Date.now()
+          }
+        })
 
         if (isActiveEvent) {
           setTurnStartedAt(Date.now())
@@ -322,6 +423,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'message.delta') {
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+        }
+      } else if (event.type === 'message.interim') {
+        // The agent emitted interim assistant commentary (text alongside tool
+        // calls, or the attempted final answer before a verify-on-stop nudge).
+        // Finalize it as its own sealed bubble so message.complete doesn't wipe
+        // it — the text was already streamed via message.delta and is visible.
+        if (sessionId) {
+          flushQueuedDeltas(sessionId)
+          const text = coerceGatewayText(payload?.text)
+
+          if (text) {
+            finalizeInterimAssistantMessage(sessionId, text)
+          }
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -392,10 +506,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
-        playCompletionSound()
+        // Keyed by session so only one window beeps when several are open.
+        playCompletionSound(sessionId)
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -477,7 +592,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // (coding rail, review pane, file tree) to refresh. Event-driven, not
         // polled: fires exactly when the agent touches the tree.
         if (payload && toolMayMutateFiles(payload)) {
-          notifyWorkspaceChanged()
+          notifyWorkspaceChanged(toolChangedPath(payload))
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload && !sessionInterrupted(sessionId)) {
@@ -726,15 +841,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      activeGatewayProfile,
       compactedTurnRef,
       completeAssistantMessage,
       failAssistantMessage,
+      finalizeInterimAssistantMessage,
       flushQueuedDeltas,
       lastCwdInfoSessionRef,
       nativeSubagentSessionsRef,
       queryClient,
-      refreshHermesConfig,
+      scheduleConfigRefresh,
       sessionInterrupted,
+      sessionStateByRuntimeIdRef,
       updateSessionState,
       upsertToolCall
     ]

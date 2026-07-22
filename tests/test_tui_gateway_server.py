@@ -6653,6 +6653,50 @@ def test_input_detect_drop_path_with_spaces_and_remainder(tmp_path):
     assert server._sessions["sid"]["attached_images"][0] == str(img)
 
 
+def test_rollback_list_uses_checkpoint_reason_as_display_message():
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [
+                {
+                    "hash": "aaa111",
+                    "timestamp": "2026-05-08T12:34:56+00:00",
+                    "reason": "before risky edit",
+                },
+                {
+                    "hash": "bbb222",
+                    "timestamp": "2026-05-08T12:30:00+00:00",
+                    "message": "legacy checkpoint label",
+                },
+            ]
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr())
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.clear()
+
+    assert "error" not in resp
+    checkpoints = resp["result"]["checkpoints"]
+    assert checkpoints == [
+        {
+            "hash": "aaa111",
+            "timestamp": "2026-05-08T12:34:56+00:00",
+            "message": "before risky edit",
+        },
+        {
+            "hash": "bbb222",
+            "timestamp": "2026-05-08T12:30:00+00:00",
+            "message": "legacy checkpoint label",
+        },
+    ]
+
+
 def test_rollback_restore_resolves_number_and_file_path():
     calls = {}
 

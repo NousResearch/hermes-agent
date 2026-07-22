@@ -115,7 +115,7 @@ class TestBasePlatformTopicSessions:
             {
                 "chat_id": "-1001",
                 "content": "ack",
-                "reply_to": None,
+                "reply_to": "1",
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
@@ -158,6 +158,58 @@ class TestTelegramAutoTtsCaptionDelivery:
 
         return hold
 
+    @pytest.mark.asyncio
+    async def test_short_telegram_auto_tts_uses_caption_without_followup_text(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="Short reply"))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["caption"] == "Short reply"
+        assert adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_long_telegram_auto_tts_keeps_followup_text_when_caption_would_truncate(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
+        long_reply = "x" * 1025
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=long_reply))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["caption"] is None
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": long_reply,
+                "reply_to": "voice-1",
+                "metadata": {"thread_id": "17585", "notify": True},
+            }
+        ]
+>>>>>>> 06a428ef6 (test(gateway): expect forum topic reply anchors)
 
     @pytest.mark.asyncio
     async def test_long_original_with_short_spoken_script_still_sends_full_reply(self, tmp_path):
@@ -194,8 +246,37 @@ class TestTelegramAutoTtsCaptionDelivery:
             {
                 "chat_id": "-1001",
                 "content": long_reply,
-                "reply_to": None,
+                "reply_to": "voice-1",
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
 
+    @pytest.mark.asyncio
+    async def test_telegram_auto_tts_send_failure_keeps_followup_text(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=False, error="boom"))
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="Short reply"))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["caption"] == "Short reply"
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Short reply",
+                "reply_to": "voice-1",
+                "metadata": {"thread_id": "17585", "notify": True},
+            }
+        ]
+>>>>>>> 06a428ef6 (test(gateway): expect forum topic reply anchors)

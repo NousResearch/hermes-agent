@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -226,13 +228,25 @@ class SpillIfOversizedTests(unittest.TestCase):
         spill.write_text("preserve")
         old_time = os.path.getmtime(spill) - 100
         os.utime(spill, (old_time, old_time))
+        selected = spill.lstat()
 
-        with patch.object(hos.os.path, "samestat", return_value=False):
-            removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+        checks = iter((True, True, True, False))
+        with patch.object(
+            hos.os.path,
+            "samestat",
+            side_effect=lambda _left, _right: next(checks),
+        ):
+            removed = hos._atomic_unlink_spill(spill, selected)
 
-        self.assertEqual(removed, 0)
-        self.assertEqual(spill.read_text(), "preserve")
-        self.assertEqual(list(spill.parent.glob("*.hermes-delete-*")), [])
+        self.assertFalse(removed)
+        self.assertFalse(spill.exists())
+        quarantines = [
+            path
+            for path in spill.parent.iterdir()
+            if hos._DELETE_QUARANTINE_TOKEN in path.name
+        ]
+        self.assertEqual(len(quarantines), 1)
+        self.assertEqual(quarantines[0].read_text(), "preserve")
 
     def test_prune_preserves_replacement_after_retention_selection(self):
         spill = Path(self.tmpdir) / "sess" / "old.txt"
@@ -253,6 +267,90 @@ class SpillIfOversizedTests(unittest.TestCase):
 
         self.assertEqual(removed, 0)
         self.assertEqual(spill.read_text(), "human replacement")
+
+    def test_prune_preserves_replaced_owned_session(self):
+        session = Path(self.tmpdir) / "sess"
+        session.mkdir()
+        (session / ".hermes-managed").write_text("hook_outputs\n")
+        (session / "owned.txt").write_text("owned")
+        displaced = session.with_name("session-selected-before-race")
+        real_owned = hos._is_owned_spill_dir
+        injected = False
+
+        def replace_after_marker(path):
+            nonlocal injected
+            owned = real_owned(path)
+            if path == session and owned and not injected:
+                injected = True
+                path.rename(displaced)
+                path.mkdir()
+                (path / ".hermes-managed").write_text("hook_outputs\n")
+                human = path / "human.txt"
+                human.write_text("keep")
+                old = os.path.getmtime(human) - 100
+                os.utime(human, (old, old))
+            return owned
+
+        with patch.object(hos, "_is_owned_spill_dir", side_effect=replace_after_marker):
+            removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual((session / "human.txt").read_text(), "keep")
+        self.assertEqual((displaced / "owned.txt").read_text(), "owned")
+
+    def test_prune_rejects_windows_reparse_root(self):
+        root = Path(self.tmpdir)
+        human = root / "human.txt"
+        human.write_text("keep")
+        real_lstat = Path.lstat
+
+        def lstat_with_reparse(path):
+            result = real_lstat(path)
+            if path == root:
+                return types.SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_file_attributes=0x400,
+                )
+            return result
+
+        with patch.object(Path, "lstat", lstat_with_reparse):
+            removed = hos.prune_spill_files(root, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(human.read_text(), "keep")
+
+    def test_prune_preserves_replaced_spill_root(self):
+        root = Path(self.tmpdir)
+        original_session = root / "original"
+        original_session.mkdir()
+        (original_session / ".hermes-managed").write_text("hook_outputs\n")
+        displaced = root.with_name(f"{root.name}-selected-before-race")
+        real_iterdir = Path.iterdir
+        injected = False
+
+        def replace_during_root_listing(path):
+            nonlocal injected
+            if path == root and not injected:
+                injected = True
+                path.rename(displaced)
+                replacement = path / "human-session"
+                replacement.mkdir(parents=True)
+                (replacement / ".hermes-managed").write_text("hook_outputs\n")
+                human = replacement / "human.txt"
+                human.write_text("keep")
+                old = os.path.getmtime(human) - 100
+                os.utime(human, (old, old))
+            return real_iterdir(path)
+
+        with patch.object(Path, "iterdir", replace_during_root_listing):
+            removed = hos.prune_spill_files(root, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(
+            (root / "human-session" / "human.txt").read_text(),
+            "keep",
+        )
+        shutil.rmtree(displaced)
 
     def test_atomic_unlink_rejects_non_regular_opened_object(self):
         spill = Path(self.tmpdir) / "sess" / "old.txt"

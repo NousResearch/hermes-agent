@@ -64,6 +64,27 @@ _OWNERSHIP_VALUE = "hook_outputs"
 _DELETE_QUARANTINE_TOKEN = ".hermes-delete-"
 
 
+def _path_is_link_like(path: Path) -> bool:
+    try:
+        path_stat = path.lstat()
+        attributes = int(getattr(path_stat, "st_file_attributes", 0))
+        return path.is_symlink() or bool(attributes & 0x400)
+    except OSError:
+        return True
+
+
+def _same_owned_directory(path: Path, expected: os.stat_result) -> bool:
+    try:
+        current = path.lstat()
+        return (
+            stat.S_ISDIR(current.st_mode)
+            and not _path_is_link_like(path)
+            and os.path.samestat(expected, current)
+        )
+    except OSError:
+        return False
+
+
 def _coerce_positive_int(value: Any, default: int) -> int:
     try:
         iv = int(value)
@@ -285,12 +306,9 @@ def _atomic_unlink_spill(path: Path, expected: os.stat_result) -> bool:
             return False
         os.replace(path, quarantine)
         if not os.path.samestat(opened, quarantine.lstat()):
-            try:
-                if os.path.lexists(path):
-                    raise FileExistsError(str(path))
-                os.replace(quarantine, path)
-            except OSError:
-                pass
+            # The pathname no longer carries safe restoration authority. A
+            # concurrent writer may recreate it at any instant, so preserve
+            # the quarantined object instead of risking an overwrite.
             return False
         try:
             quarantine.unlink()
@@ -322,7 +340,11 @@ def prune_spill_files(
     """
     try:
         root = Path(base_directory)
-        if not root.is_dir() or root.is_symlink():
+        root_identity = root.lstat()
+        if (
+            not stat.S_ISDIR(root_identity.st_mode)
+            or _path_is_link_like(root)
+        ):
             return 0
         retention = max(1, int(retention_seconds))
         maximum = max(1, int(max_files_per_session))
@@ -332,15 +354,25 @@ def prune_spill_files(
     now = time.time()
     removed = 0
     try:
-        session_dirs = sorted(
-            (p for p in root.iterdir() if _is_owned_spill_dir(p)),
-            key=lambda p: p.name,
-        )
+        session_dirs = []
+        for path in root.iterdir():
+            selected = path.lstat()
+            if _is_owned_spill_dir(path) and _same_owned_directory(path, selected):
+                session_dirs.append((path, selected))
+        session_dirs.sort(key=lambda item: item[0].name)
+        if not _same_owned_directory(root, root_identity):
+            return 0
     except OSError:
         return 0
 
-    for session_dir in session_dirs:
+    for session_dir, session_identity in session_dirs:
         try:
+            if (
+                not _same_owned_directory(root, root_identity)
+                or not _same_owned_directory(session_dir, session_identity)
+                or not _is_owned_spill_dir(session_dir)
+            ):
+                continue
             files = []
             for path in session_dir.iterdir():
                 if _DELETE_QUARANTINE_TOKEN in path.name or path.suffix != ".txt":
@@ -361,6 +393,12 @@ def prune_spill_files(
         except OSError:
             continue
         for index, (path, selected) in enumerate(files):
+            if (
+                not _same_owned_directory(root, root_identity)
+                or not _same_owned_directory(session_dir, session_identity)
+                or not _is_owned_spill_dir(session_dir)
+            ):
+                break
             expired = now - selected.st_mtime > retention
             if not expired and index < maximum:
                 continue

@@ -502,6 +502,19 @@ def _identity_matches(path: Path, expected: Dict[str, int]) -> bool:
     return current is not None and current == expected
 
 
+def _same_directory_object(path: Path, expected: os.stat_result) -> bool:
+    """Revalidate a selected non-reparse directory by stable filesystem ID."""
+    try:
+        current = path.lstat()
+        return (
+            stat.S_ISDIR(current.st_mode)
+            and not _is_link_like(path)
+            and os.path.samestat(expected, current)
+        )
+    except OSError:
+        return False
+
+
 def _validated_tracked_item(item: Any):
     """Return validated tracking fields, or ``None`` for untrusted evidence."""
     if not isinstance(item, dict):
@@ -584,13 +597,11 @@ def _remove_path(path: Path) -> Optional[str]:
 
 
 def _restore_quarantined_path(quarantine: Path, original: Path) -> str:
-    try:
-        if os.path.lexists(original):
-            raise FileExistsError(str(original))
-        os.replace(quarantine, original)
-        return f"filesystem identity changed during delete; restored {original}"
-    except OSError:
-        return f"filesystem identity changed during delete; preserved at {quarantine}"
+    """Preserve uncertainty without risking an overwrite at *original*."""
+    return (
+        f"filesystem identity changed during delete; preserved at {quarantine} "
+        f"instead of restoring over {original}"
+    )
 
 
 def _open_delete_candidate(path: Path) -> int:
@@ -699,25 +710,13 @@ def _atomic_rmdir_empty(path: Path, expected: os.stat_result) -> bool:
             or _is_link_like(quarantine)
             or not os.path.samestat(expected, moved)
         ):
-            if not os.path.lexists(path):
-                os.replace(quarantine, path)
             return False
         try:
             quarantine.rmdir()
         except OSError:
-            if not os.path.lexists(path):
-                try:
-                    os.replace(quarantine, path)
-                except OSError:
-                    pass
             return False
         return True
     except OSError:
-        try:
-            if os.path.lexists(quarantine) and not os.path.lexists(path):
-                os.replace(quarantine, path)
-        except OSError:
-            pass
         return False
 
 
@@ -1009,22 +1008,42 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     for root_name, retention_days in _MANAGED_ARTIFACT_RETENTION_DAYS.items():
         artifact_root = hermes_home / root_name
         try:
-            if _is_link_like(artifact_root) or not artifact_root.is_dir():
+            artifact_root_identity = artifact_root.lstat()
+            if (
+                _is_link_like(artifact_root)
+                or not stat.S_ISDIR(artifact_root_identity.st_mode)
+            ):
                 continue
             session_dirs = [
-                p for p in artifact_root.iterdir()
+                (p, p.lstat())
+                for p in artifact_root.iterdir()
                 if p.is_dir() and not _is_link_like(p)
             ]
+            if not _same_directory_object(artifact_root, artifact_root_identity):
+                continue
         except OSError:
             continue
-        for session_dir in session_dirs:
+        for session_dir, session_identity in session_dirs:
             try:
                 if (
-                    not _managed_marker_matches(session_dir, root_name)
+                    not _same_directory_object(
+                        artifact_root, artifact_root_identity
+                    )
+                    or not _same_directory_object(session_dir, session_identity)
+                    or not _managed_marker_matches(session_dir, root_name)
                     or _has_active_maintenance_marker(session_dir)
                 ):
                     continue
                 for artifact in session_dir.iterdir():
+                    if (
+                        not _same_directory_object(
+                            artifact_root, artifact_root_identity
+                        )
+                        or not _same_directory_object(session_dir, session_identity)
+                        or not _managed_marker_matches(session_dir, root_name)
+                        or _has_active_maintenance_marker(session_dir)
+                    ):
+                        break
                     if (
                         artifact.name in _MANAGED_ARTIFACT_SKIP_NAMES
                         or _is_delete_quarantine_path(artifact)

@@ -544,14 +544,22 @@ class TestTrackForgetQuick:
         artifact.parent.mkdir()
         artifact.write_text("tracked")
         assert dg.track(str(artifact), "temp", silent=True)
+        identity = dg._capture_identity(artifact)
+        assert identity is not None
 
         monkeypatch.setattr(dg.os.path, "samestat", lambda _left, _right: False)
 
-        result = dg.quick(paths=[str(artifact)])
+        error = dg._atomic_unlink_regular(artifact, identity)
 
-        assert result["deleted"] == 0
-        assert artifact.read_text() == "tracked"
-        assert not list(artifact.parent.glob("*.hermes-delete-*"))
+        assert error is not None
+        assert not artifact.exists()
+        quarantines = [
+            path
+            for path in artifact.parent.iterdir()
+            if dg._DELETE_QUARANTINE_TOKEN in path.name
+        ]
+        assert len(quarantines) == 1
+        assert quarantines[0].read_text() == "tracked"
 
     def test_quick_commit_preserves_concurrent_tracking_addition(
         self, _isolate_env, monkeypatch
@@ -803,6 +811,75 @@ class TestTrackForgetQuick:
         assert summary["errors"]
         assert stale.read_text() == "human replacement"
 
+    def test_retention_preserves_replaced_managed_session(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-container-race"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        (session_dir / "owned.txt").write_text("owned")
+        displaced = session_dir.with_name("session-selected-before-race")
+        real_marker_matches = dg._managed_marker_matches
+        injected = False
+
+        def replace_after_marker(path, expected):
+            nonlocal injected
+            matched = real_marker_matches(path, expected)
+            if path == session_dir and matched and not injected:
+                injected = True
+                path.rename(displaced)
+                path.mkdir()
+                (path / ".hermes-managed").write_text("hook_outputs\n")
+                human = path / "human.txt"
+                human.write_text("keep")
+                old = time.time() - (15 * 24 * 60 * 60)
+                os.utime(human, (old, old))
+            return matched
+
+        monkeypatch.setattr(dg, "_managed_marker_matches", replace_after_marker)
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 0
+        assert (session_dir / "human.txt").read_text() == "keep"
+        assert (displaced / "owned.txt").read_text() == "owned"
+
+    def test_retention_preserves_replaced_managed_root(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        artifact_root = _isolate_env / "hook_outputs"
+        original_session = artifact_root / "original"
+        original_session.mkdir(parents=True)
+        (original_session / ".hermes-managed").write_text("hook_outputs\n")
+        displaced = artifact_root.with_name("hook_outputs-selected-before-race")
+        real_iterdir = Path.iterdir
+        injected = False
+
+        def replace_during_root_listing(path):
+            nonlocal injected
+            if path == artifact_root and not injected:
+                injected = True
+                path.rename(displaced)
+                replacement = path / "human-session"
+                replacement.mkdir(parents=True)
+                (replacement / ".hermes-managed").write_text("hook_outputs\n")
+                human = replacement / "human.txt"
+                human.write_text("keep")
+                old = time.time() - (15 * 24 * 60 * 60)
+                os.utime(human, (old, old))
+            return real_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", replace_during_root_listing)
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 0
+        assert (
+            artifact_root / "human-session" / "human.txt"
+        ).read_text() == "keep"
+
     def test_failed_retention_unlink_preserves_and_excludes_quarantine(
         self, _isolate_env, monkeypatch
     ):
@@ -922,6 +999,31 @@ class TestTrackForgetQuick:
         assert summary["empty_dirs"] == 0
         assert selected.exists(), "replacement directory must survive"
         assert displaced.exists(), "selected directory must remain recoverable"
+
+    def test_empty_rmdir_preserves_quarantine_on_identity_uncertainty(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        selected = _isolate_env / "scratch" / "empty"
+        selected.mkdir(parents=True)
+        expected = selected.lstat()
+        checks = iter((True, False))
+        monkeypatch.setattr(
+            dg.os.path,
+            "samestat",
+            lambda _left, _right: next(checks),
+        )
+
+        assert not dg._atomic_rmdir_empty(selected, expected)
+
+        assert not selected.exists()
+        quarantines = [
+            path
+            for path in selected.parent.iterdir()
+            if dg._DELETE_QUARANTINE_TOKEN in path.name
+        ]
+        assert len(quarantines) == 1
+        assert quarantines[0].is_dir()
 
     def test_quick_preserves_tracked_path_outside_hermes_home(self, _isolate_env, tmp_path):
         """A stale tracking record cannot authorize deleting an external path."""

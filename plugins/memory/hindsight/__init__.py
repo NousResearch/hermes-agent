@@ -1567,6 +1567,10 @@ class HindsightMemoryProvider(MemoryProvider):
             metadata["thread_id"] = self._thread_id
         if self._agent_identity:
             metadata["agent_identity"] = self._agent_identity
+        # Universal metadata fields
+        metadata["extraction_method"] = "auto"
+        metadata["feedback_score"] = "0"
+
         return metadata
 
     def _build_retain_kwargs(

@@ -275,15 +275,24 @@ def test_apply_empty_command_sets_error(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_provider_command_applies_and_records_source(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def _clean_registry():
+    from agent.secret_sources import registry
+    registry._reset_registry_for_tests()
+    yield
+    registry._reset_registry_for_tests()
+
+
+def test_registry_command_source_applies_and_records_source(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     helper = _write_helper(
         tmp_path, "printf 'CMDTEST_API_KEY=sk-dispatch\\nCMDTEST_TOKEN=tok-dispatch\\n'"
     )
     (tmp_path / "config.yaml").write_text(
         "secrets:\n"
-        "  provider: command\n"
-        f"  command: {helper}\n",
+        "  command:\n"
+        "    enabled: true\n"
+        f"    command: {helper}\n",
         encoding="utf-8",
     )
 
@@ -292,18 +301,18 @@ def test_dispatch_provider_command_applies_and_records_source(tmp_path, monkeypa
     assert os.environ.get("CMDTEST_API_KEY") == "sk-dispatch"
     assert env_loader.get_secret_source("CMDTEST_API_KEY") == "command"
     assert env_loader.get_secret_source("CMDTEST_TOKEN") == "command"
-    # Provenance suffix comes from the existing generic fallback.
     assert (
         env_loader.format_secret_source_suffix("CMDTEST_API_KEY")
-        == " (from command)"
+        == " (from Command helper)"
     )
 
 
-def test_dispatch_status_line_printed_once_per_home(tmp_path, monkeypatch, capsys):
+def test_registry_status_line_printed_once_per_home(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-once\\n'")
     (tmp_path / "config.yaml").write_text(
-        f"secrets:\n  provider: command\n  command: {helper}\n",
+        "secrets:\n  command:\n    enabled: true\n"
+        f"    command: {helper}\n",
         encoding="utf-8",
     )
 
@@ -311,14 +320,15 @@ def test_dispatch_status_line_printed_once_per_home(tmp_path, monkeypatch, capsy
         env_loader._apply_external_secret_sources(tmp_path)
 
     err = capsys.readouterr().err
-    assert err.count("Command secret source: applied 1 secret") == 1
+    assert err.count("Command helper: applied 1 secret") == 1
 
 
-def test_dispatch_provider_env_is_noop(tmp_path, monkeypatch):
+def test_registry_disabled_command_source_is_noop(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-should-not-load\\n'")
     (tmp_path / "config.yaml").write_text(
-        f"secrets:\n  provider: env\n  command: {helper}\n",
+        "secrets:\n  command:\n    enabled: false\n"
+        f"    command: {helper}\n",
         encoding="utf-8",
     )
 
@@ -328,23 +338,10 @@ def test_dispatch_provider_env_is_noop(tmp_path, monkeypatch):
     assert env_loader.get_secret_source("CMDTEST_API_KEY") is None
 
 
-def test_dispatch_unset_provider_without_bitwarden_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-no\\n'")
-    (tmp_path / "config.yaml").write_text(
-        f"secrets:\n  command: {helper}\n",  # no provider key at all
-        encoding="utf-8",
-    )
-
-    env_loader._apply_external_secret_sources(tmp_path)
-
-    assert "CMDTEST_API_KEY" not in os.environ
-
-
-def test_dispatch_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
+def test_registry_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
-        "secrets:\n  provider: command\n  command: exit 9\n",
+        "secrets:\n  command:\n    enabled: true\n    command: exit 9\n",
         encoding="utf-8",
     )
     # Must not raise — config/helper errors never block startup.
@@ -352,62 +349,55 @@ def test_dispatch_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
     assert env_loader.get_secret_source("CMDTEST_API_KEY") is None
 
 
-def test_dispatch_backcompat_bitwarden_enabled_without_provider(tmp_path, monkeypatch):
-    """Existing users with only `secrets.bitwarden.enabled: true` (no
-    `provider` key) must keep routing to bitwarden untouched."""
+def test_registry_command_composes_with_other_sources(tmp_path, monkeypatch):
+    """Multi-source is first-class: the command source and a second bulk
+    source both apply in ONE pass; first claim wins on a contested var."""
+    from agent.secret_sources import registry
+    from agent.secret_sources.base import FetchResult, SecretSource
+
+    class _OtherVault(SecretSource):
+        name = "othervault"
+        label = "Other Vault"
+        shape = "bulk"
+
+        def fetch(self, cfg, home_path):
+            res = FetchResult()
+            res.secrets = {
+                "CMDTEST_OTHER_KEY": "from-other",
+                "CMDTEST_API_KEY": "loser-second-claim",
+            }
+            return res
+
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-cmd\\n'")
     (tmp_path / "config.yaml").write_text(
         "secrets:\n"
-        "  bitwarden:\n"
+        "  sources: [command, othervault]\n"
+        "  command:\n"
         "    enabled: true\n"
-        "    project_id: test-project\n",
+        f"    command: {helper}\n"
+        "  othervault:\n"
+        "    enabled: true\n",
         encoding="utf-8",
     )
-
-    from agent.secret_sources.bitwarden import FetchResult
-    import agent.secret_sources.bitwarden as bw_module
-
-    calls = {"n": 0}
-
-    def _fake_apply(**_kwargs):
-        calls["n"] += 1
-        return FetchResult(
-            secrets={"CMDTEST_API_KEY": "sk-bw"}, applied=["CMDTEST_API_KEY"]
-        )
-
-    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+    registry._ensure_builtin_sources()
+    registry.register_source(_OtherVault())
 
     env_loader._apply_external_secret_sources(tmp_path)
 
-    assert calls["n"] == 1, "back-compat path did not route to bitwarden"
-    assert env_loader.get_secret_source("CMDTEST_API_KEY") == "bitwarden"
-
-
-def test_dispatch_explicit_provider_command_wins_over_bitwarden_block(
-    tmp_path, monkeypatch
-):
-    """When `provider: command` is explicit, the bitwarden block (even if
-    enabled) is not consulted."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-cmd-wins\\n'")
-    (tmp_path / "config.yaml").write_text(
-        "secrets:\n"
-        "  provider: command\n"
-        f"  command: {helper}\n"
-        "  bitwarden:\n"
-        "    enabled: true\n"
-        "    project_id: test-project\n",
-        encoding="utf-8",
-    )
-
-    import agent.secret_sources.bitwarden as bw_module
-
-    def _fail_if_called(**_kwargs):  # pragma: no cover - assertion guard
-        raise AssertionError("bitwarden must not be consulted when provider=command")
-
-    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fail_if_called)
-
-    env_loader._apply_external_secret_sources(tmp_path)
-
-    assert os.environ.get("CMDTEST_API_KEY") == "sk-cmd-wins"
+    assert os.environ.get("CMDTEST_API_KEY") == "sk-cmd"        # command won
+    assert os.environ.get("CMDTEST_OTHER_KEY") == "from-other"  # both ran
     assert env_loader.get_secret_source("CMDTEST_API_KEY") == "command"
+    assert env_loader.get_secret_source("CMDTEST_OTHER_KEY") == "othervault"
+    monkeypatch.delenv("CMDTEST_OTHER_KEY", raising=False)
+
+
+def test_registry_helper_error_prints_remediation(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  command:\n    enabled: true\n    command: ''\n",
+        encoding="utf-8",
+    )
+    env_loader._apply_external_secret_sources(tmp_path)
+    err = capsys.readouterr().err
+    assert "secrets.command.command" in err

@@ -16,12 +16,13 @@ handover, owner-typed asides triggered the busy ack instead of being
 suppressed.
 
 Fix: ``_handle_active_session_busy_message`` now consults
-``pre_gateway_dispatch`` first.  A ``skip`` short-circuits with no ack
-and no queue.  Other return shapes (rewrite/allow/None) and hook
-exceptions fall through to existing behavior — only ``skip`` is
-honored mid-run because the only plugin that emits it (gateway-policy)
-is what we need to support, and rewriting an event we're about to
-interrupt with is racy.
+``pre_gateway_dispatch`` before the authorization gate (same order as
+the idle path).  A ``skip`` short-circuits with no ack and no queue,
+including for unauthorized senders.  Other return shapes
+(rewrite/allow/None) and hook exceptions fall through to auth / existing
+busy behavior — only ``skip`` is honored mid-run because the only plugin
+that emits it (gateway-policy) is what we need to support, and rewriting
+an event we're about to interrupt with is racy.
 
 Style mirrors ``tests/gateway/test_busy_session_ack.py`` which already
 exercises ``_handle_active_session_busy_message`` directly.
@@ -130,7 +131,7 @@ def _wire_running_agent(runner, sk, adapter):
 # ---------------------------------------------------------------------------
 
 class TestBusyPathPreGatewayDispatch:
-    """``_handle_active_session_busy_message`` consults the hook first."""
+    """``_handle_active_session_busy_message`` consults the hook before auth."""
 
     @pytest.mark.asyncio
     async def test_skip_short_circuits_no_ack_no_queue(self):
@@ -164,6 +165,57 @@ class TestBusyPathPreGatewayDispatch:
         assert kwargs["event"] is event
         assert kwargs["gateway"] is runner
         assert kwargs["session_store"] is runner.session_store
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_skip_runs_before_auth_gate(self):
+        """Unauthorized sender + hook skip must short-circuit (idle-path parity).
+
+        Auth still drops unauthorized senders when the hook returns allow /
+        no-action; skip must win first so plugins can ingest without pairing.
+        """
+        runner, _ = _make_runner()
+        runner._is_user_authorized = lambda _source: False
+        adapter = _make_adapter()
+
+        event = _make_event(text="customer message during handover")
+        sk = build_session_key(event.source)
+        agent = _wire_running_agent(runner, sk, adapter)
+        runner.adapters[event.source.platform] = adapter
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"action": "skip", "reason": "handover_active"}],
+        ) as mock_invoke, patch(
+            "gateway.run.merge_pending_message_event"
+        ) as mock_merge:
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        mock_invoke.assert_called_once()
+        assert mock_invoke.call_args.args[0] == "pre_gateway_dispatch"
+        adapter._send_with_retry.assert_not_called()
+        mock_merge.assert_not_called()
+        agent.interrupt.assert_not_called()
+        assert sk not in runner._busy_ack_ts
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_without_skip_still_dropped(self):
+        """Unauthorized + no plugin skip still hits the auth gate (no interrupt)."""
+        runner, _ = _make_runner()
+        runner._is_user_authorized = lambda _source: False
+        adapter = _make_adapter()
+
+        event = _make_event(text="intruder")
+        sk = build_session_key(event.source)
+        agent = _wire_running_agent(runner, sk, adapter)
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_not_called()
+        agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_plugin_results_falls_through_to_existing_behavior(self):
@@ -275,3 +327,30 @@ class TestBusyPathPreGatewayDispatch:
         adapter._send_with_retry.assert_not_called(), (
             "skip must suppress the drain-status ack too"
         )
+
+    @pytest.mark.asyncio
+    async def test_interrupt_uses_text_snapshot_before_pending_queue(self):
+        """Interrupt payload must be the inbound fragment, not post-merge text.
+
+        Pending queue helpers may alias / mutate the same MessageEvent; snapshot
+        ``event.text`` before queueing so interrupt does not see appended text.
+        """
+        runner, _ = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="inbound fragment")
+        sk = build_session_key(event.source)
+        agent = _wire_running_agent(runner, sk, adapter)
+        runner.adapters[event.source.platform] = adapter
+
+        def _queue_mutating(_session_key, queued_event, *_args, **_kwargs):
+            queued_event.text = f"{queued_event.text}\nmerged-followup"
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]), patch.object(
+            runner, "_queue_or_replace_pending_event", side_effect=_queue_mutating
+        ):
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("inbound fragment")
+        assert event.text == "inbound fragment\nmerged-followup"

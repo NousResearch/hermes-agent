@@ -1615,6 +1615,149 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+    def test_commit_compression_handoff_is_compare_and_set(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._persist_routing_data = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="parent",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=85000,
+        )
+        store._entries = {"k1": entry}
+
+        committed = store.commit_compression_handoff(
+            "k1",
+            expected_session_id="parent",
+            new_session_id="child",
+        )
+
+        assert committed is entry
+        assert entry.session_id == "child"
+        assert entry.last_prompt_tokens == 0
+        store._persist_routing_data.assert_called_once()
+
+    def test_commit_compression_handoff_rejects_stale_route(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._persist_routing_data = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="newer-session",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=123,
+        )
+        store._entries = {"k1": entry}
+
+        committed = store.commit_compression_handoff(
+            "k1",
+            expected_session_id="stale-parent",
+            new_session_id="compressed-child",
+        )
+
+        assert committed is None
+        assert entry.session_id == "newer-session"
+        assert entry.last_prompt_tokens == 123
+        store._persist_routing_data.assert_not_called()
+
+    def test_commit_compression_handoff_accepts_already_healed_child(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._persist_routing_data = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="compressed-child",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            last_prompt_tokens=123,
+        )
+        store._entries = {"k1": entry}
+
+        committed = store.commit_compression_handoff(
+            "k1",
+            expected_session_id="parent",
+            new_session_id="compressed-child",
+        )
+
+        assert committed is entry
+        assert entry.session_id == "compressed-child"
+        assert entry.last_prompt_tokens == 0
+        store._persist_routing_data.assert_called_once()
+
+    def test_commit_compression_handoff_releases_lock_before_persist(self, tmp_path):
+        import threading
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="parent",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        persist_started = threading.Event()
+        release_persist = threading.Event()
+
+        def _blocked_persist(_data, _generation):
+            persist_started.set()
+            assert release_persist.wait(timeout=2)
+
+        store._persist_routing_data = _blocked_persist
+        worker = threading.Thread(
+            target=store.commit_compression_handoff,
+            kwargs={
+                "session_key": "k1",
+                "expected_session_id": "parent",
+                "new_session_id": "child",
+            },
+        )
+        worker.start()
+        assert persist_started.wait(timeout=2)
+
+        acquired = store._lock.acquire(timeout=0.5)
+        try:
+            assert acquired, "routing persistence held the global session lock"
+        finally:
+            if acquired:
+                store._lock.release()
+            release_persist.set()
+            worker.join(timeout=2)
+
+        assert not worker.is_alive()
+
 
 class TestSessionMetadata:
     """SessionEntry metadata should persist arbitrary lightweight state."""
@@ -1632,7 +1775,9 @@ class TestSessionMetadata:
         )
 
         restored = SessionEntry.from_dict(entry.to_dict())
-        assert restored.metadata == {"slack_thread_watermark:C123:123.000": "123.456"}
+        assert restored.metadata == {
+            "slack_thread_watermark:C123:123.000": "123.456"
+        }
 
     def test_store_session_metadata_get_set(self, tmp_path):
         """set/get_session_metadata round-trips through the store and
@@ -1647,6 +1792,7 @@ class TestSessionMetadata:
 
         from gateway.session import SessionEntry
         from datetime import datetime
+
         entry = SessionEntry(
             session_key="k1",
             session_id="s1",

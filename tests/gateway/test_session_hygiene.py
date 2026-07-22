@@ -8,8 +8,10 @@ The hygiene system uses the SAME compression config as the agent:
 so CLI and messaging platforms behave identically.
 """
 
+import asyncio
 import importlib
 import sys
+import threading
 import types
 from datetime import datetime
 from types import SimpleNamespace
@@ -20,7 +22,7 @@ import pytest
 from agent.model_metadata import estimate_messages_tokens_rough
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.session import SessionEntry, SessionSource
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -837,8 +839,20 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "worker_state",
+    [
+        "success",
+        "cancel_constructor",
+        "cancel_compression",
+        "invalidated",
+        "invalidated_rotation",
+        "invalidated_preprocessing",
+        "invalidated_hook",
+    ],
+)
 async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, worker_state
 ):
     """Regression for #60947: gateway hygiene should not rely on
     helper-agent session rotation to shrink a live gateway transcript.
@@ -853,31 +867,72 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_db = object()
+    fake_db = MagicMock()
+    event_loop_thread = threading.get_ident()
+    constructor_started = threading.Event()
+    allow_constructor = threading.Event()
+    compression_started = threading.Event()
+    allow_compression = threading.Event()
+    cleanup_finished = threading.Event()
+    persistence_threads = []
+    preprocessing_started = asyncio.Event()
+    allow_preprocessing = asyncio.Event()
+    hook_started = asyncio.Event()
+    allow_hook = asyncio.Event()
 
     class FakeInPlaceCompressAgent:
         last_instance = None
+        constructor_thread = None
+        bind_threads = []
+        compression_thread = None
+        cleanup_thread = None
 
         def __init__(self, **kwargs):
+            type(self).constructor_thread = threading.get_ident()
+            constructor_started.set()
+            if worker_state == "cancel_constructor":
+                assert allow_constructor.wait(timeout=5.0)
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
             self._session_db = kwargs.get("session_db")
             self.compression_in_place = False
             self._last_compaction_in_place = False
             self.context_compressor = SimpleNamespace(
-                bind_session_state=MagicMock(),
+                bind_session_state=MagicMock(
+                    side_effect=lambda *_args: type(self).bind_threads.append(
+                        threading.get_ident()
+                    )
+                ),
                 _last_compress_aborted=False,
                 _last_aux_model_failure_model=None,
             )
             self._print_fn = None
             self.shutdown_memory_provider = MagicMock()
-            self.close = MagicMock()
+            self.close = MagicMock(side_effect=self._record_cleanup)
             type(self).last_instance = self
 
+        def _record_cleanup(self):
+            type(self).cleanup_thread = threading.get_ident()
+            cleanup_finished.set()
+
         def _compress_context(self, messages, *_args, **_kwargs):
+            type(self).compression_thread = threading.get_ident()
+            compression_started.set()
+            if worker_state in {
+                "cancel_compression",
+                "invalidated",
+                "invalidated_rotation",
+            }:
+                assert allow_compression.wait(timeout=5.0)
             assert self.compression_in_place is True
             assert self._session_db is fake_db
-            self._last_compaction_in_place = True
+            if worker_state == "invalidated_rotation":
+                # Compatibility path: a legacy compressor may rotate even when
+                # the gateway requests in-place compaction.
+                self.session_id = "sess-2"
+                self._last_compaction_in_place = False
+            else:
+                self._last_compaction_in_place = True
             return ([{"role": "assistant", "content": "compressed in place"}], None)
 
     fake_run_agent = types.ModuleType("run_agent")
@@ -894,26 +949,69 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     )
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
-    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="private",
+        user_id="12345",
+    )
+    session_key = build_session_key(source)
+
+    async def _emit_hook(*_args, **_kwargs):
+        if worker_state == "invalidated_hook":
+            hook_started.set()
+            await allow_hook.wait()
+
+    runner.hooks = SimpleNamespace(
+        emit=AsyncMock(side_effect=_emit_hook), loaded_hooks=False
+    )
     runner.session_store = MagicMock()
-    runner.session_store.get_or_create_session.return_value = SessionEntry(
-        session_key="agent:main:telegram:private:12345",
+    session_entry = SessionEntry(
+        session_key=session_key,
         session_id="sess-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
+    runner.session_store.get_or_create_session.return_value = session_entry
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=400)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.append_to_transcript = MagicMock()
+
+    def _commit_handoff(
+        key, *, expected_session_id, new_session_id
+    ):
+        persistence_threads.append(threading.current_thread().name)
+        if key != session_key or session_entry.session_id != expected_session_id:
+            return None
+        session_entry.session_id = new_session_id
+        session_entry.last_prompt_tokens = 0
+        return session_entry
+
+    runner.session_store.commit_compression_handoff.side_effect = _commit_handoff
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = SimpleNamespace(_db=fake_db)
+    runner._run_in_executor_with_context = AsyncMock(
+        side_effect=AssertionError(
+            "hygiene must not queue behind the bounded gateway agent executor"
+        )
+    )
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
+
+    async def _prepare_message(**kwargs):
+        if worker_state == "invalidated_preprocessing":
+            preprocessing_started.set()
+            await allow_preprocessing.wait()
+        return kwargs["event"].text
+
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
+        side_effect=_prepare_message
+    )
     runner._run_agent = AsyncMock(
         return_value={
             "final_response": "ok",
@@ -935,25 +1033,128 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
 
     event = MessageEvent(
         text="hello",
-        source=SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="12345",
-            chat_type="private",
-            user_id="12345",
-        ),
+        source=source,
         message_id="1",
     )
 
+    if worker_state in {
+        "invalidated",
+        "invalidated_rotation",
+        "invalidated_preprocessing",
+        "invalidated_hook",
+    }:
+        handler_task = asyncio.create_task(runner._handle_message(event))
+        if worker_state in {"invalidated", "invalidated_rotation"}:
+            assert await asyncio.to_thread(compression_started.wait, 2.0)
+        elif worker_state == "invalidated_preprocessing":
+            await asyncio.wait_for(preprocessing_started.wait(), 2.0)
+        else:
+            await asyncio.wait_for(hook_started.wait(), 2.0)
+
+        # Simulate /new winning at each pre-model await boundary. The old
+        # worker may finish, but it must neither overwrite the fresh route nor
+        # launch a model for the invalidated generation.
+        runner._invalidate_session_run_generation(session_key, reason="test-new")
+        session_entry.session_id = "fresh-session"
+        session_entry.last_prompt_tokens = 77
+        if worker_state in {"invalidated", "invalidated_rotation"}:
+            allow_compression.set()
+        elif worker_state == "invalidated_preprocessing":
+            allow_preprocessing.set()
+        else:
+            allow_hook.set()
+
+        await asyncio.wait_for(handler_task, 2.0)
+        assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+        assert session_entry.session_id == "fresh-session"
+        assert session_entry.last_prompt_tokens == 77
+        runner.session_store.commit_compression_handoff.assert_called_once_with(
+            session_key,
+            expected_session_id="sess-1",
+            new_session_id=(
+                "sess-2" if worker_state == "invalidated_rotation" else "sess-1"
+            ),
+        )
+        if worker_state == "invalidated_rotation":
+            fake_db.end_session.assert_called_once_with(
+                "sess-2", "orphaned_compression"
+            )
+        else:
+            fake_db.end_session.assert_not_called()
+        runner._run_agent.assert_not_awaited()
+        runner._run_in_executor_with_context.assert_not_awaited()
+        return
+
+    if worker_state != "success":
+        handler_task = asyncio.create_task(runner._handle_message(event))
+        blocking_event = (
+            constructor_started
+            if worker_state == "cancel_constructor"
+            else compression_started
+        )
+        assert await asyncio.to_thread(blocking_event.wait, 2.0)
+        handler_task.cancel()
+        # Cancellation must not release the per-session handler/turn lease
+        # while the worker can still mutate compression state.
+        await asyncio.sleep(0)
+        assert not handler_task.done()
+        if worker_state == "cancel_constructor":
+            allow_constructor.set()
+        else:
+            allow_compression.set()
+        with pytest.raises(asyncio.CancelledError):
+            await handler_task
+        assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+
+        agent = FakeInPlaceCompressAgent.last_instance
+        assert agent is not None
+        assert FakeInPlaceCompressAgent.cleanup_thread != event_loop_thread
+        agent.close.assert_called_once()
+        runner.session_store.commit_compression_handoff.assert_called_once_with(
+            session_key,
+            expected_session_id="sess-1",
+            new_session_id="sess-1",
+        )
+        runner.session_store.update_session.assert_not_called()
+        assert persistence_threads
+        assert all(
+            name.startswith("hermes-gateway-control")
+            for name in persistence_threads
+        )
+        runner._run_in_executor_with_context.assert_not_awaited()
+        return
+
     result = await runner._handle_message(event)
+    assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
 
     assert result == "ok"
     agent = FakeInPlaceCompressAgent.last_instance
+    assert FakeInPlaceCompressAgent.constructor_thread != event_loop_thread
+    assert FakeInPlaceCompressAgent.bind_threads
+    assert all(
+        thread_id != event_loop_thread
+        for thread_id in FakeInPlaceCompressAgent.bind_threads
+    )
+    assert FakeInPlaceCompressAgent.compression_thread != event_loop_thread
+    assert FakeInPlaceCompressAgent.cleanup_thread != event_loop_thread
     assert agent is not None
+    agent.close.assert_called_once()
+    runner.session_store.commit_compression_handoff.assert_called_once_with(
+        session_key,
+        expected_session_id="sess-1",
+        new_session_id="sess-1",
+    )
+    runner._run_in_executor_with_context.assert_not_awaited()
     agent.context_compressor.bind_session_state.assert_called_once_with(fake_db, "sess-1")
     # In-place compaction already persisted via archive_and_compact() —
     # rewrite_transcript would replace_messages(active_only=False) and DELETE
     # the just-archived rows (#61145). The hygiene handler must skip it.
     runner.session_store.rewrite_transcript.assert_not_called()
+    assert persistence_threads
+    assert any(
+        name.startswith("hermes-gateway-control")
+        for name in persistence_threads
+    )
     runner._run_agent.assert_awaited_once()
 
 

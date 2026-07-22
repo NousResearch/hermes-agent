@@ -84,13 +84,17 @@ class StateDbMaintenanceCoordinator:
     """One bounded background-maintenance worker per canonical database."""
 
     _LEASE_S = 15.0
-    _MIN_MERGE_PAGES = 8
-    _MAX_MERGE_PAGES = 256
-    _INITIAL_MERGE_PAGES = 64
+    _MIN_MERGE_PAGES = 1
+    _MAX_MERGE_PAGES = 64
+    _INITIAL_MERGE_PAGES = 8
     _MAX_SLICES_PER_BURST = 4
     _MAX_BURST_S = 0.250
+    # FTS5 merge is one sqlite3_step() call, so foreground arrivals preempt it
+    # cooperatively through SQLite's progress handler instead of waiting for a
+    # nominal page slice to finish.
+    _FTS_PROGRESS_OPCODES = 1_000
+    _MAX_RETRY_DELAY_S = 5.0
     _INTER_SLICE_S = 0.010
-    _MAX_GATE_DEFER_S = 1.0
     _WORKER_ERROR_BACKOFF_S = 1.0
 
     def __init__(
@@ -123,7 +127,7 @@ class StateDbMaintenanceCoordinator:
         self._checkpoint_write_count = 0
         self._active = False
         self._merge_pages = self._INITIAL_MERGE_PAGES
-        self._gate_deferred_since: Optional[float] = None
+        self._gate_contention_count = 0
         # Bind the worker implementation to this module.  Several gateway
         # callers replace ``server.threading.Thread`` with a synchronous test
         # double; because ``threading`` is a shared module object, looking up
@@ -364,7 +368,9 @@ class StateDbMaintenanceCoordinator:
                 # Yield to foreground writers between bounded bursts.
                 return self._INTER_SLICE_S
             if last_status == "wait":
-                return min(max(retry_after, 0.025), 1.0)
+                return min(
+                    max(retry_after, 0.025), self._MAX_RETRY_DELAY_S
+                )
             return None
         finally:
             with self._state_lock:
@@ -401,7 +407,7 @@ class StateDbMaintenanceCoordinator:
                     (time.monotonic() - started) * 1000,
                 )
         except sqlite3.OperationalError as exc:
-            if "interrupted" in str(exc).lower():
+            if self._is_interrupted(exc):
                 self._wake.set()
                 return
             if not self._is_busy(exc):
@@ -410,17 +416,25 @@ class StateDbMaintenanceCoordinator:
                 )
             self._wake.set()
 
-    def _run_fts_slice(self, conn: sqlite3.Connection) -> tuple[str, float]:
-        monotonic_now = time.monotonic()
-        if self._gate_deferred_since is None:
-            self._gate_deferred_since = monotonic_now
-        reserve_slice = (
-            monotonic_now - self._gate_deferred_since >= self._MAX_GATE_DEFER_S
-        )
-        if not self._write_gate.try_acquire_maintenance(force=reserve_slice):
-            return "wait", random.uniform(0.025, 0.100)
-        self._gate_deferred_since = None
+    def _run_fts_slice(
+        self,
+        conn: sqlite3.Connection,
+    ) -> tuple[str, float]:
+        # FTS debt is layout maintenance, not unindexed user data.  Never close
+        # foreground admission to force a slice under sustained traffic; debt
+        # stays durable and is retried when the writer lane is genuinely idle.
+        if not self._write_gate.try_acquire_maintenance(force=False):
+            self._gate_contention_count += 1
+            retry_ceiling = min(
+                self._MAX_RETRY_DELAY_S,
+                0.050 * (2 ** min(self._gate_contention_count, 7)),
+            )
+            return "wait", random.uniform(
+                max(0.025, retry_ceiling / 2), retry_ceiling
+            )
+        self._gate_contention_count = 0
         transaction_open = False
+        merge_preempted = False
         try:
             now = time.time()
             conn.execute("BEGIN IMMEDIATE")
@@ -544,17 +558,42 @@ class StateDbMaintenanceCoordinator:
                 transaction_open = False
                 return "progress", 0.0
 
-            signed_pages = (
-                -self._merge_pages
-                if phases[table_index] == "start"
-                else self._merge_pages
-            )
+            # Positive merge performs ordinary incremental work that respects
+            # FTS5's usermerge policy.  A negative first step forcibly assigns
+            # every level to one merge and effectively starts a full optimize;
+            # on a large, continuously-written trigram index that can repeatedly
+            # restart and monopolize the WAL writer.  Explicit optimize_fts()
+            # remains available for controlled maintenance windows.
+            merge_pages = self._merge_pages
             started = time.monotonic()
             before = conn.total_changes
-            conn.execute(
-                f"INSERT INTO {table_name}({table_name}, rank) VALUES('merge', ?)",
-                (signed_pages,),
+
+            def interrupt_slow_merge() -> int:
+                nonlocal merge_preempted
+                if self._stop.is_set():
+                    return 1
+                has_waiters = getattr(
+                    self._write_gate, "has_foreground_waiters", None
+                )
+                if callable(has_waiters) and has_waiters():
+                    merge_preempted = True
+                    return 1
+                return 0
+
+            conn.set_progress_handler(
+                interrupt_slow_merge, self._FTS_PROGRESS_OPCODES
             )
+            try:
+                conn.execute(
+                    f"INSERT INTO {table_name}({table_name}, rank) "
+                    "VALUES('merge', ?)",
+                    (merge_pages,),
+                )
+            finally:
+                # Clear before rollback or job-state SQL.  Leaving an expired
+                # handler installed makes those recovery statements immediately
+                # raise another SQLITE_INTERRUPT on affected SQLite versions.
+                conn.set_progress_handler(None, 0)
             merge_changes = conn.total_changes - before
             duration_s = time.monotonic() - started
             next_phase = "continue" if merge_changes >= 2 else "done"
@@ -579,7 +618,7 @@ class StateDbMaintenanceCoordinator:
                 "state.db FTS merge table=%s pages=%d changes=%d "
                 "duration_ms=%.1f phase=%s",
                 table_name,
-                signed_pages,
+                merge_pages,
                 merge_changes,
                 duration_s * 1000,
                 next_phase,
@@ -594,7 +633,11 @@ class StateDbMaintenanceCoordinator:
             if self._is_busy(exc):
                 logger.debug("state.db FTS merge skipped because SQLite is busy")
                 return "wait", random.uniform(0.050, 0.200)
-            if "interrupted" in str(exc).lower():
+            if self._is_interrupted(exc):
+                if merge_preempted:
+                    logger.debug(
+                        "state.db FTS merge yielded to a foreground writer"
+                    )
                 return "wait", 0.050
             self._defer_after_error(conn, type(exc).__name__)
             logger.warning("state.db background FTS merge failed: %s", exc)
@@ -743,6 +786,14 @@ class StateDbMaintenanceCoordinator:
     def _is_busy(exc: sqlite3.OperationalError) -> bool:
         message = str(exc).lower()
         return "locked" in message or "busy" in message
+
+    @staticmethod
+    def _is_interrupted(exc: sqlite3.OperationalError) -> bool:
+        interrupt_code = getattr(sqlite3, "SQLITE_INTERRUPT", 9)
+        return (
+            getattr(exc, "sqlite_errorcode", None) == interrupt_code
+            or "interrupted" in str(exc).lower()
+        )
 
 
 _COORDINATORS: dict[str, tuple[StateDbMaintenanceCoordinator, int]] = {}

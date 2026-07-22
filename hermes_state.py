@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import asyncio
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -106,6 +107,11 @@ class _ProcessDbWriteGate:
             elif self._foreground_waiters or self._maintenance_reserved:
                 return False
             return self._lock.acquire(blocking=False)
+
+    def has_foreground_waiters(self) -> bool:
+        """Whether a foreground writer is queued behind maintenance."""
+        with self._state_changed:
+            return self._foreground_waiters > 0
 
     def release(self) -> None:
         depth = getattr(self._local, "depth", 0)
@@ -240,6 +246,7 @@ def _reset_process_db_locks_after_fork() -> None:
             # involved in rebinding locks. A partial handler failure must
             # never leave a real inherited sqlite connection reachable.
             db._lock = threading.Lock()
+            db._write_operation_lock = threading.RLock()
             db._write_lock = get_process_db_write_lock(db.db_path)
             db._writer_registered = False
             db._maintenance = None
@@ -1663,6 +1670,11 @@ class SessionDB:
         self.read_only = read_only
 
         self._lock = threading.Lock()
+        # Serializes the complete lifecycle of one write operation (including
+        # retry/rebuild) without blocking reads.  It is deliberately re-entrant:
+        # runtime FTS recovery and VACUUM can call another explicit write
+        # operation on the same thread.
+        self._write_operation_lock = threading.RLock()
         self._write_lock = get_process_db_write_lock(self.db_path)
         self._writer_registered = False
         self._maintenance = None
@@ -1828,6 +1840,45 @@ class SessionDB:
             raise
 
     # ── Core write helper ──
+
+    @contextmanager
+    def _connection_write_locks(self):
+        """Hold the connection lock and process writer gate without a convoy.
+
+        Waiting for either lock while holding the other creates a two-scope
+        availability failure: maintenance may own the process writer gate,
+        while a queued write owns ``self._lock`` and blocks otherwise-safe WAL
+        reads on this handle.  Conversely, taking the writer gate first and
+        blocking on a long connection read stalls independent SessionDB handles.
+
+        The try/handoff loop waits for each contended lock in isolation.  The
+        per-instance operation guard prevents close (or a sibling write on this
+        same connection) from overtaking us while both locks are handed off.
+        Ordinary reads intentionally do not take that guard.
+        """
+        with self._write_operation_lock:
+            while True:
+                self._write_lock.acquire()
+                connection_acquired = False
+                try:
+                    connection_acquired = self._lock.acquire(blocking=False)
+                    if connection_acquired:
+                        break
+                finally:
+                    if not connection_acquired:
+                        self._write_lock.release()
+
+                # Wait for the connection to become available without
+                # occupying the process-wide writer lane, then retry the
+                # atomic try-acquire pair.
+                with self._lock:
+                    pass
+
+            try:
+                yield
+            finally:
+                self._lock.release()
+                self._write_lock.release()
 
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
@@ -2346,12 +2397,10 @@ class SessionDB:
                 "SessionDB instances cannot be reused after fork; "
                 "construct a new SessionDB in the child process"
             )
-        for attempt in range(self._WRITE_MAX_RETRIES):
-            try:
-                # Never occupy the process-wide writer lane while waiting for
-                # a long read on this specific connection.
-                with self._lock:
-                    with self._write_lock:
+        with self._write_operation_lock:
+            for attempt in range(self._WRITE_MAX_RETRIES):
+                try:
+                    with self._connection_write_locks():
                         self._conn.execute("BEGIN IMMEDIATE")
                         try:
                             result = fn(self._conn)
@@ -2367,46 +2416,46 @@ class SessionDB:
                             except Exception:
                                 pass
                             raise
-                # Success — only update counters and wake the shared worker.
-                # No checkpoint, FTS merge, or SQLite call is allowed on this
-                # foreground return path.
-                with self._lock:
-                    self._write_count += normalized_write_units
-                    maintenance = self._maintenance
-                if maintenance is not None:
-                    maintenance.notify_commit(
-                        write_units=normalized_write_units,
-                        checkpoint_interval=self._CHECKPOINT_EVERY_N_WRITES,
-                        fts_dirty=effective_fts_dirty,
-                        merge_interval=self._OPTIMIZE_EVERY_N_WRITES,
-                    )
-                return result
-            except sqlite3.OperationalError as exc:
-                err_msg = str(exc).lower()
-                if "locked" in err_msg or "busy" in err_msg:
-                    last_err = exc
-                    if attempt < self._WRITE_MAX_RETRIES - 1:
-                        jitter = random.uniform(
-                            self._WRITE_RETRY_MIN_S,
-                            self._WRITE_RETRY_MAX_S,
+                    # Success — only update counters and wake the shared worker.
+                    # No checkpoint, FTS merge, or SQLite call is allowed on this
+                    # foreground return path.
+                    with self._lock:
+                        self._write_count += normalized_write_units
+                        maintenance = self._maintenance
+                    if maintenance is not None:
+                        maintenance.notify_commit(
+                            write_units=normalized_write_units,
+                            checkpoint_interval=self._CHECKPOINT_EVERY_N_WRITES,
+                            fts_dirty=effective_fts_dirty,
+                            merge_interval=self._OPTIMIZE_EVERY_N_WRITES,
                         )
-                        time.sleep(jitter)
-                        continue
-                # Non-lock error or retries exhausted — propagate.
-                raise
-            except sqlite3.DatabaseError as exc:
-                # Corrupt FTS shadow tables make every write raise the
-                # malformed/corrupt error class through the FTS sync triggers
-                # while the canonical messages table is intact. The gateway
-                # session store has its own retry queue for transcript
-                # appends (#65637 salvage), but cron and CLI writers call
-                # SessionDB directly — without this, their writes hard-fail
-                # until the next process restart triggers the offline repair.
-                # Rebuild the FTS index in place (once per instance) via
-                # rebuild_fts() and retry the failed write immediately.
-                if not self._try_runtime_fts_rebuild(exc):
+                    return result
+                except sqlite3.OperationalError as exc:
+                    err_msg = str(exc).lower()
+                    if "locked" in err_msg or "busy" in err_msg:
+                        last_err = exc
+                        if attempt < self._WRITE_MAX_RETRIES - 1:
+                            jitter = random.uniform(
+                                self._WRITE_RETRY_MIN_S,
+                                self._WRITE_RETRY_MAX_S,
+                            )
+                            time.sleep(jitter)
+                            continue
+                    # Non-lock error or retries exhausted — propagate.
                     raise
-                continue
+                except sqlite3.DatabaseError as exc:
+                    # Corrupt FTS shadow tables make every write raise the
+                    # malformed/corrupt error class through the FTS sync triggers
+                    # while the canonical messages table is intact. The gateway
+                    # session store has its own retry queue for transcript
+                    # appends (#65637 salvage), but cron and CLI writers call
+                    # SessionDB directly — without this, their writes hard-fail
+                    # until the next process restart triggers the offline repair.
+                    # Rebuild the FTS index in place (once per instance) via
+                    # rebuild_fts() and retry the failed write immediately.
+                    if not self._try_runtime_fts_rebuild(exc):
+                        raise
+                    continue
         # Retries exhausted (shouldn't normally reach here).
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"
@@ -2494,16 +2543,15 @@ class SessionDB:
         from checkpointing thousands of frames at once (issue #45383).
         """
         try:
-            with self._lock:
-                with self._write_lock:
-                    result = self._conn.execute(
-                        "PRAGMA wal_checkpoint(PASSIVE)"
-                    ).fetchone()
-                    if result and result[1] > 0:
-                        logger.debug(
-                            "WAL checkpoint: %d/%d pages checkpointed",
-                            result[2], result[1],
-                        )
+            with self._connection_write_locks():
+                result = self._conn.execute(
+                    "PRAGMA wal_checkpoint(PASSIVE)"
+                ).fetchone()
+                if result and result[1] > 0:
+                    logger.debug(
+                        "WAL checkpoint: %d/%d pages checkpointed",
+                        result[2], result[1],
+                    )
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
@@ -2562,7 +2610,7 @@ class SessionDB:
                         self.db_path,
                     )
         try:
-            with self._lock:
+            with self._write_operation_lock:
                 if self._conn:
                     should_checkpoint = (
                         checkpoint
@@ -2579,14 +2627,18 @@ class SessionDB:
                     )
                     if should_checkpoint:
                         try:
-                            with self._write_lock:
+                            with self._connection_write_locks():
                                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                                self._conn.close()
+                                self._conn = None
                         except Exception as exc:
                             logger.debug(
                                 "WAL checkpoint (TRUNCATE) at close failed: %s", exc
                             )
-                    self._conn.close()
-                    self._conn = None
+                    if self._conn:
+                        with self._lock:
+                            self._conn.close()
+                            self._conn = None
         finally:
             if maintenance_barrier_acquired and maintenance is not None:
                 maintenance.release_sqlite_activity_barrier()
@@ -5533,6 +5585,7 @@ class SessionDB:
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      AND COALESCE(child.end_reason, '') != 'orphaned_compression'
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -9793,6 +9846,53 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def rebind_telegram_topic_if_current(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        expected_session_id: str,
+        new_session_id: str,
+        user_id: str,
+        session_key: str,
+    ) -> bool:
+        """CAS a topic binding from one session to its compression child.
+
+        Compression route publication and Telegram topic persistence cannot be
+        one transaction because SessionStore owns the former.  Guarding this
+        write with the parent session id ensures a concurrent /new or /resume
+        binding always wins instead of being overwritten by a stale worker.
+        The method intentionally never creates a missing binding.
+        """
+        now = time.time()
+
+        def _do(conn):
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE telegram_dm_topic_bindings
+                    SET user_id = ?, session_key = ?, session_id = ?,
+                        updated_at = ?
+                    WHERE chat_id = ? AND thread_id = ? AND session_id = ?
+                    """,
+                    (
+                        str(user_id),
+                        str(session_key),
+                        str(new_session_id),
+                        now,
+                        str(chat_id),
+                        str(thread_id),
+                        str(expected_session_id),
+                    ),
+                )
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    return 0
+                raise
+            return cursor.rowcount or 0
+
+        return bool(self._execute_write(_do))
+
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
         """Return True if a Hermes session is already bound to any Telegram DM topic.
 
@@ -9935,22 +10035,21 @@ class SessionDB:
         number of FTS indexes that were optimized.
         """
         optimized = 0
-        with self._lock:
-            with self._write_lock:
-                for tbl in self._FTS_TABLES:
-                    if not self._fts_table_exists(tbl):
-                        continue
-                    try:
-                        # The column name in the INSERT must match the table name
-                        # for FTS5 special commands.
-                        self._conn.execute(
-                            f"INSERT INTO {tbl}({tbl}) VALUES('optimize')"
-                        )
-                        optimized += 1
-                    except sqlite3.OperationalError as exc:
-                        logger.warning(
-                            "FTS optimize failed for %s: %s", tbl, exc
-                        )
+        with self._connection_write_locks():
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    # The column name in the INSERT must match the table name
+                    # for FTS5 special commands.
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('optimize')"
+                    )
+                    optimized += 1
+                except sqlite3.OperationalError as exc:
+                    logger.warning(
+                        "FTS optimize failed for %s: %s", tbl, exc
+                    )
         return optimized
 
     def rebuild_fts(self) -> int:
@@ -9967,22 +10066,21 @@ class SessionDB:
         Returns the number of FTS indexes that were rebuilt.
         """
         rebuilt = 0
-        with self._lock:
-            with self._write_lock:
-                for tbl in self._FTS_TABLES:
-                    if not self._fts_table_exists(tbl):
-                        continue
-                    try:
-                        self._conn.execute(
-                            f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
-                        )
-                        self._conn.commit()
-                        rebuilt += 1
-                    except sqlite3.OperationalError as exc:
-                        self._conn.rollback()
-                        logger.warning(
-                            "FTS rebuild failed for %s: %s", tbl, exc
-                        )
+        with self._connection_write_locks():
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                    )
+                    self._conn.commit()
+                    rebuilt += 1
+                except sqlite3.OperationalError as exc:
+                    self._conn.rollback()
+                    logger.warning(
+                        "FTS rebuild failed for %s: %s", tbl, exc
+                    )
         return rebuilt
 
     def vacuum(self) -> int:
@@ -10014,14 +10112,13 @@ class SessionDB:
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
-        with self._lock:
-            with self._write_lock:
-                # Best-effort WAL checkpoint first, then VACUUM.
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
-                self._conn.execute("VACUUM")
+        with self._connection_write_locks():
+            # Best-effort WAL checkpoint first, then VACUUM.
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception as exc:
+                logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
+            self._conn.execute("VACUUM")
         return optimized
 
     def maybe_auto_prune_and_vacuum(

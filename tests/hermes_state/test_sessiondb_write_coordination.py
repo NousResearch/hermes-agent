@@ -19,9 +19,11 @@ class _NotifyingLock:
         self.acquire()
         return self
 
-    def acquire(self):
+    def acquire(self, blocking=True, timeout=-1):
         self._attempted.set()
-        return self._lock.acquire()
+        if timeout < 0:
+            return self._lock.acquire(blocking)
+        return self._lock.acquire(blocking, timeout)
 
     def release(self):
         return self._lock.release()
@@ -71,6 +73,69 @@ def test_waiting_on_one_connection_does_not_occupy_global_writer_lane(tmp_path):
         second.close()
 
 
+def test_waiting_for_maintenance_does_not_block_same_handle_reads_or_close(tmp_path):
+    """A queued write must not carry the connection lock into the writer gate.
+
+    Background FTS maintenance owns the process-wide gate.  A foreground write
+    on the gateway's shared SessionDB then queues behind it.  Reads on that same
+    handle (including compression cooldown reads performed during AIAgent
+    construction) must remain available, and close must not overtake the queued
+    write and discard it.
+    """
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session("stable", "test")
+    write_gate_attempted = threading.Event()
+    real_write_gate = db._write_lock
+    db._write_lock = _NotifyingLock(real_write_gate, write_gate_attempted)
+
+    def queued_write():
+        db._execute_write(
+            lambda conn: conn.execute(
+                "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                ("queued", "test", time.time()),
+            )
+        )
+
+    pool = ThreadPoolExecutor(max_workers=3)
+    write = None
+    closing = None
+    real_write_gate.acquire()
+    try:
+        write = pool.submit(queued_write)
+        assert write_gate_attempted.wait(timeout=10)
+
+        # The writer is still waiting for maintenance.  It must not hold this
+        # handle's connection lock while it waits.
+        read = pool.submit(db.get_session, "stable")
+        assert read.result(timeout=0.5)["id"] == "stable"
+
+        closing = pool.submit(db.close, checkpoint=False)
+        time.sleep(0.05)
+        assert not closing.done()
+
+        real_write_gate.release()
+        write.result(timeout=10)
+        closing.result(timeout=10)
+    finally:
+        # RLock ownership belongs to this test thread.  Release only when the
+        # exceptional path left the gate held.
+        if getattr(real_write_gate._local, "depth", 0):
+            real_write_gate.release()
+        if write is not None:
+            write.result(timeout=10)
+        if closing is not None:
+            closing.result(timeout=10)
+        pool.shutdown(wait=True)
+        db.close(checkpoint=False)
+
+    reopened = SessionDB(db_path=db_path)
+    try:
+        assert reopened.get_session("queued") is not None
+    finally:
+        reopened.close()
+
+
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 def test_inherited_sessiondb_fails_fast_and_child_can_reopen(tmp_path):
     db_path = tmp_path / "state.db"
@@ -79,9 +144,10 @@ def test_inherited_sessiondb_fails_fast_and_child_can_reopen(tmp_path):
     release = threading.Event()
 
     def hold_writer_lock():
-        with db._write_lock:
-            lock_held.set()
-            release.wait(timeout=10)
+        with db._write_operation_lock:
+            with db._write_lock:
+                lock_held.set()
+                release.wait(timeout=10)
 
     holder = threading.Thread(target=hold_writer_lock)
     holder.start()
@@ -90,6 +156,9 @@ def test_inherited_sessiondb_fails_fast_and_child_can_reopen(tmp_path):
     child_pid = os.fork()  # windows-footgun: ok - test is skipif-gated above
     if child_pid == 0:  # pragma: no cover - assertions run in child process
         try:
+            if not db._write_operation_lock.acquire(blocking=False):
+                os._exit(11)
+            db._write_operation_lock.release()
             try:
                 db._execute_write(lambda conn: conn.execute("SELECT 1"))
             except RuntimeError as exc:
@@ -274,3 +343,70 @@ def test_same_database_instances_serialize_write_transactions(tmp_path):
         release.set()
         first.close()
         second.close()
+
+
+def test_telegram_compression_binding_cas_cannot_overwrite_newer_route(tmp_path):
+    """A stale compression worker must not undo a concurrent /new binding."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        for session_id in ("parent", "child", "fresh"):
+            db.create_session(session_id=session_id, source="telegram")
+        db.enable_telegram_topic_mode(chat_id="chat", user_id="user")
+        db.bind_telegram_topic(
+            chat_id="chat",
+            thread_id="topic",
+            user_id="user",
+            session_key="route",
+            session_id="parent",
+        )
+
+        assert db.rebind_telegram_topic_if_current(
+            chat_id="chat",
+            thread_id="topic",
+            user_id="user",
+            session_key="route",
+            expected_session_id="parent",
+            new_session_id="child",
+        )
+
+        # /new publishes a newer binding after the compression route CAS.
+        db.bind_telegram_topic(
+            chat_id="chat",
+            thread_id="topic",
+            user_id="user",
+            session_key="route",
+            session_id="fresh",
+        )
+        assert not db.rebind_telegram_topic_if_current(
+            chat_id="chat",
+            thread_id="topic",
+            user_id="user",
+            session_key="route",
+            expected_session_id="parent",
+            new_session_id="child",
+        )
+        binding = db.get_telegram_topic_binding(
+            chat_id="chat", thread_id="topic"
+        )
+        assert binding["session_id"] == "fresh"
+    finally:
+        db.close()
+
+
+def test_compression_tip_excludes_explicitly_orphaned_child(tmp_path):
+    """Read-side healing must never resurrect a CAS-losing continuation."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id="parent", source="gateway")
+        db.end_session("parent", "compression")
+        db.create_session(
+            session_id="orphan",
+            source="gateway",
+            parent_session_id="parent",
+        )
+        db.append_message("orphan", role="assistant", content="summary")
+        db.end_session("orphan", "orphaned_compression")
+
+        assert db.get_compression_tip("parent") == "parent"
+    finally:
+        db.close()

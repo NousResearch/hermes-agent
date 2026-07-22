@@ -1,11 +1,14 @@
 """Tests for topic-aware gateway progress updates."""
 
 import asyncio
+from collections import OrderedDict
 import importlib
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1292,6 +1295,80 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
         ["typing-stopped"] * events.index("callback-start")
     )
     assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_local_run_invalidated_during_agent_construction_never_calls_model(
+    monkeypatch, tmp_path
+):
+    """A queued/constructing stale turn must stop before the provider API."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    constructor_started = threading.Event()
+    allow_constructor = threading.Event()
+    agent_instance = SimpleNamespace(
+        tools=[],
+        run_conversation=MagicMock(
+            side_effect=AssertionError("stale run reached model")
+        ),
+        shutdown_memory_provider=MagicMock(),
+        close=MagicMock(),
+    )
+
+    def _build_agent(**_kwargs):
+        constructor_started.set()
+        assert allow_constructor.wait(timeout=5.0)
+        return agent_instance
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _build_agent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    runner._get_proxy_url = lambda: None
+    runner._agent_cache = OrderedDict()
+    runner._agent_cache_lock = threading.Lock()
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="dm-constructor-race",
+        chat_type="dm",
+    )
+    session_key = "agent:main:discord:dm:dm-constructor-race"
+    generation = runner._begin_session_run_generation(session_key)
+    task = asyncio.create_task(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-constructor-race",
+            session_key=session_key,
+            run_generation=generation,
+        )
+    )
+
+    assert await asyncio.to_thread(constructor_started.wait, 2.0)
+    runner._invalidate_session_run_generation(session_key, reason="test-new")
+    allow_constructor.set()
+    result = await asyncio.wait_for(task, 2.0)
+
+    agent_instance.run_conversation.assert_not_called()
+    assert result["final_response"] == ""
+    assert result["api_calls"] == 0
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
+    assert session_key not in runner._agent_cache
+    assert session_key not in runner._running_agents
+    assert adapter.sent == []
 
 
 @pytest.mark.asyncio

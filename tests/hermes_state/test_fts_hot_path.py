@@ -281,10 +281,15 @@ def test_message_write_runs_bounded_merge_and_never_full_optimize(
         ).fetchone()
         assert tuple(job) == (before + 1, before + 1, "idle")
         for table_name in ("messages_fts", "messages_fts_trigram"):
-            assert any(
-                f"insertinto{table_name}({table_name},rank)values('merge',-"
-                in statement
+            table_merges = [
+                statement
                 for statement in statements
+                if f"insertinto{table_name}({table_name},rank)values('merge',"
+                in statement
+            ]
+            assert table_merges
+            assert not any(
+                "values('merge',-" in statement for statement in table_merges
             )
         assert not any("optimize" in statement for statement in statements)
         assert len(db.search_messages("needle")) == 1
@@ -392,17 +397,18 @@ def test_worker_survives_one_burst_failure_and_drains_debt(tmp_path, monkeypatch
         db.close()
 
 
-def test_maintenance_aging_forces_one_slice_after_sustained_contention(
+def test_maintenance_never_reserves_foreground_lane_under_sustained_contention(
     tmp_path, monkeypatch
 ):
     class AlwaysContendedGate:
         def __init__(self):
             self.attempts = []
             self.acquired = False
+            self.contended = True
 
         def try_acquire_maintenance(self, *, force=False):
             self.attempts.append(force)
-            self.acquired = bool(force)
+            self.acquired = not self.contended
             return self.acquired
 
         def release_maintenance(self):
@@ -420,6 +426,9 @@ def test_maintenance_aging_forces_one_slice_after_sustained_contention(
         "_worker_main",
         dormant_worker,
     )
+    monkeypatch.setattr(
+        maintenance_module.random, "uniform", lambda _low, high: high
+    )
     db = SessionDB(db_path=tmp_path / "state.db")
     manual = sqlite3.connect(str(db.db_path), timeout=0.0, isolation_level=None)
     gate = AlwaysContendedGate()
@@ -434,21 +443,145 @@ def test_maintenance_aging_forces_one_slice_after_sustained_contention(
         )
         db._maintenance._write_gate = gate
 
-        status, _retry_after = db._maintenance._run_fts_slice(manual)
+        status, first_retry_after = db._maintenance._run_fts_slice(manual)
         assert status == "wait"
         assert gate.attempts == [False]
-        assert db._maintenance._gate_deferred_since is not None
 
-        # Model a continuously queued foreground lane without sleeping. Once
-        # the bounded aging window has elapsed, maintenance gets one forced
-        # acquisition instead of starving forever.
-        db._maintenance._gate_deferred_since = time.monotonic() - 86_400
+        # FTS debt is layout maintenance, not unindexed user data. Even after a
+        # long deferral, it must remain durable and wait for a genuinely idle
+        # writer lane instead of closing foreground admission.
+        status, second_retry_after = db._maintenance._run_fts_slice(manual)
+        assert status == "wait"
+        assert gate.attempts == [False, False]
+        assert second_retry_after > first_retry_after
+
+        # Once traffic drains, the same durable debt is still eligible and the
+        # coordinator makes progress without any forced reservation.
+        gate.contended = False
         status, _retry_after = db._maintenance._run_fts_slice(manual)
         assert status == "progress"
-        assert gate.attempts[-1] is True
+        assert gate.attempts == [False, False, False]
     finally:
         db._maintenance._write_gate = real_gate
         manual.close()
+        db.close()
+
+
+def test_real_fts_merge_yields_to_foreground_and_keeps_durable_debt(
+    tmp_path, monkeypatch
+):
+    """A real FTS5 statement is interrupted, rolled back, and later drained."""
+
+    def dormant_worker(coordinator):
+        coordinator._stop.wait()
+
+    class PausedMergeConnection:
+        def __init__(self, conn):
+            self._conn = conn
+            self._progress_handler = None
+            self.progress_handler_cleared_before_rollback = False
+            self.merge_started = threading.Event()
+            self.allow_merge = threading.Event()
+            self.pause_next_merge = True
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def set_progress_handler(self, callback, opcodes):
+            self._progress_handler = callback
+            return self._conn.set_progress_handler(callback, opcodes)
+
+        def execute(self, sql, parameters=()):
+            normalized = "".join(sql.lower().split())
+            if "values('merge',?)" in normalized and self.pause_next_merge:
+                assert parameters[0] > 0, "automatic maintenance must be incremental"
+                self.pause_next_merge = False
+                self.merge_started.set()
+                assert self.allow_merge.wait(timeout=5.0)
+            return self._conn.execute(sql, parameters)
+
+        def rollback(self):
+            self.progress_handler_cleared_before_rollback = (
+                self._progress_handler is None
+            )
+            return self._conn.rollback()
+
+    monkeypatch.setattr(
+        StateDbMaintenanceCoordinator,
+        "_worker_main",
+        dormant_worker,
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    manual_raw = sqlite3.connect(
+        str(db.db_path),
+        timeout=0.0,
+        isolation_level=None,
+        check_same_thread=False,
+    )
+    manual = PausedMergeConnection(manual_raw)
+    try:
+        db._OPTIMIZE_EVERY_N_WRITES = 1
+        # Invoke the real SQLite progress handler promptly enough that this
+        # test is deterministic even when the tiny fixture has no mergeable
+        # segment work left.
+        db._maintenance._FTS_PROGRESS_OPCODES = 1
+        db.create_session("deadline", "test")
+        db.append_message("deadline", "user", "durable merge debt")
+        manual_raw.execute(
+            "UPDATE state_maintenance_jobs SET not_before = 0 "
+            "WHERE job_name = 'fts_merge'"
+        )
+        before = tuple(_fts_job(db))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            merge = pool.submit(db._maintenance._run_fts_slice, manual)
+            assert manual.merge_started.wait(timeout=10)
+
+            foreground_acquired = threading.Event()
+
+            def foreground_write():
+                with db._write_lock:
+                    foreground_acquired.set()
+
+            started = time.monotonic()
+            foreground = pool.submit(foreground_write)
+            waiter_deadline = time.monotonic() + 2.0
+            while (
+                not db._write_lock.has_foreground_waiters()
+                and time.monotonic() < waiter_deadline
+            ):
+                time.sleep(0.001)
+            assert db._write_lock.has_foreground_waiters()
+            manual.allow_merge.set()
+            status, retry_after = merge.result(timeout=2)
+            elapsed = time.monotonic() - started
+            foreground.result(timeout=2)
+
+        assert status == "wait"
+        assert retry_after == 0.050
+        assert elapsed < 1.0
+        assert foreground_acquired.is_set()
+        assert manual.progress_handler_cleared_before_rollback is True
+        assert tuple(_fts_job(db)) == before
+        assert db._write_lock.acquire(blocking=False)
+        db._write_lock.release()
+
+        # The interrupted transaction left both FTS indexes healthy, and the
+        # same durable generation can finish once foreground pressure clears.
+        for table_name in ("messages_fts", "messages_fts_trigram"):
+            manual_raw.execute(
+                f"INSERT INTO {table_name}({table_name}) "
+                "VALUES('integrity-check')"
+            )
+        for _ in range(8):
+            status, _retry_after = db._maintenance._run_fts_slice(manual)
+            assert status in {"progress", "idle"}
+            job = _fts_job(db)
+            if job[2] == "idle":
+                break
+        assert tuple(job[:3]) == (before[0], before[0], "idle")
+    finally:
+        manual_raw.close()
         db.close()
 
 

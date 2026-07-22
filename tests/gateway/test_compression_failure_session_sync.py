@@ -180,13 +180,7 @@ def test_failed_turn_still_syncs_compression_session_split(monkeypatch):
 
 
 def test_stale_run_does_not_overwrite_new_session_after_compression(monkeypatch):
-    """A /stop + /new can invalidate a run while its compression is still unwinding.
-
-    The stale run may still return with a rotated agent.session_id, but it must
-    not publish that old compressed child back into the channel's active session
-    binding. The outer gateway stale-result check will discard the response too;
-    this regression covers the earlier side effect inside _run_agent().
-    """
+    """A generation already invalidated before submission never runs a model."""
     _install_compression_failure_agent(monkeypatch)
 
     session_store = _SessionStore()
@@ -196,9 +190,11 @@ def test_stale_run_does_not_overwrite_new_session_after_compression(monkeypatch)
 
     result = _run_compression_failure_turn(runner, source, run_generation=1)
 
-    assert result["failed"] is True
-    assert result["session_id"] == "session-after-compression"
-    assert result["history_offset"] == 0
+    assert result["final_response"] == ""
+    assert result["api_calls"] == 0
+    assert result["stale_run"] is True
+    assert result["session_id"] == "session-before-compression"
+    assert result["history_offset"] == 1
     assert session_store.entry.session_id == "session-before-compression"
     assert session_store.save_calls == 0
     assert session_store.peer_records == []

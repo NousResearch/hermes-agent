@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import concurrent.futures
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -120,6 +121,58 @@ def auth_adapter():
 
 
 class TestStartRun:
+    def test_session_db_cold_open_is_singleflight_across_control_workers(
+        self, adapter, monkeypatch, tmp_path
+    ):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        constructed = []
+
+        class FakeSessionDB:
+            def __init__(self, *, db_path):
+                constructed.append(db_path)
+                first_started.set()
+                assert release_first.wait(timeout=2)
+
+        monkeypatch.setattr("hermes_state.SessionDB", FakeSessionDB)
+        adapter._session_dbs = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [
+                executor.submit(adapter._open_and_cache_session_db, tmp_path)
+                for _ in range(8)
+            ]
+            assert first_started.wait(timeout=2)
+            time.sleep(0.05)
+            release_first.set()
+            opened = [future.result(timeout=2) for future in futures]
+
+        assert len(constructed) == 1
+        assert len({id(db) for db in opened}) == 1
+
+    def test_control_executor_reopens_after_disconnect(self, adapter):
+        first_executor = adapter._get_control_executor()
+        first_name = first_executor.submit(
+            lambda: threading.current_thread().name
+        ).result(timeout=2)
+
+        adapter._shutdown_control_executor()
+        with pytest.raises(RuntimeError, match="shutting down"):
+            adapter._get_control_executor()
+
+        adapter._reopen_control_executor()
+        second_executor = adapter._get_control_executor()
+        try:
+            second_name = second_executor.submit(
+                lambda: threading.current_thread().name
+            ).result(timeout=2)
+        finally:
+            adapter._shutdown_control_executor()
+
+        assert second_executor is not first_executor
+        assert first_name.startswith("hermes-api-control")
+        assert second_name.startswith("hermes-api-control")
+
     @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
@@ -144,6 +197,36 @@ class TestStartRun:
                 assert status["run_id"] == data["run_id"]
                 assert status["status"] in {"queued", "running", "completed"}
                 assert status["object"] == "hermes.run"
+
+    @pytest.mark.asyncio
+    async def test_agent_construction_runs_off_the_aiohttp_event_loop(self, adapter):
+        app = _create_runs_app(adapter)
+        event_loop_thread = threading.get_ident()
+        constructor_threads = []
+        constructor_thread_names = []
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def _create_agent(**_kwargs):
+            constructor_threads.append(threading.get_ident())
+            constructor_thread_names.append(threading.current_thread().name)
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    if adapter._run_statuses[run_id]["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.025)
+
+        assert constructor_threads
+        assert constructor_threads[0] != event_loop_thread
+        assert constructor_thread_names[0].startswith("hermes-api-control")
 
     @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):
@@ -401,8 +484,8 @@ class TestRunEvents:
                 victim_run = (await victim_resp.json())["run_id"]
                 attacker_run = (await attacker_resp.json())["run_id"]
 
-                victim_ready.wait(timeout=3.0)
-                attacker_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(victim_ready.wait, 3.0)
+                assert await asyncio.to_thread(attacker_ready.wait, 3.0)
                 assert auth_adapter._run_approval_sessions[victim_run] == victim_run
                 assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
                 assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
@@ -494,7 +577,7 @@ class TestRunLifecycleSweep:
                 start_resp = await cli.post("/v1/runs", json={"input": "hello"})
                 assert start_resp.status == 202
                 run_id = (await start_resp.json())["run_id"]
-                assert agent_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(agent_ready.wait, 3.0)
 
                 task = adapter._active_run_tasks[run_id]
                 assert isinstance(task, asyncio.Task)
@@ -551,7 +634,7 @@ class TestRunLifecycleSweep:
 
                 start_resp = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await start_resp.json())["run_id"]
-                assert agent_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(agent_ready.wait, 3.0)
                 expired_queue = adapter._run_streams[run_id]
                 stream_delta = mock_create.call_args.kwargs["stream_delta_callback"]
 
@@ -639,6 +722,322 @@ class TestStopRun:
                 assert adapter._run_statuses[run_id]["status"] == "cancelled"
 
     @pytest.mark.asyncio
+    async def test_stop_during_agent_construction_never_starts_model(self, adapter):
+        """Off-loop construction creates a new cancellable queued window."""
+        app = _create_runs_app(adapter)
+        constructor_started = threading.Event()
+        release_constructor = threading.Event()
+        cleanup_finished = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _create_agent(**_kwargs):
+            constructor_started.set()
+            release_constructor.wait(timeout=5)
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    if constructor_started.is_set():
+                        break
+                    await asyncio.sleep(0.025)
+                assert constructor_started.is_set()
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                release_constructor.set()
+
+                for _ in range(40):
+                    if adapter._run_statuses[run_id]["status"] == "cancelled":
+                        break
+                    await asyncio.sleep(0.025)
+
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+        mock_agent.run_conversation.assert_not_called()
+        mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
+        assert mock_agent._end_session_on_close is False
+
+    @pytest.mark.asyncio
+    async def test_stop_during_failed_construction_remains_cancelled(self, adapter):
+        app = _create_runs_app(adapter)
+        constructor_started = threading.Event()
+        release_constructor = threading.Event()
+
+        def _create_agent(**_kwargs):
+            constructor_started.set()
+            release_constructor.wait(timeout=5)
+            raise RuntimeError("constructor failed after stop")
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(constructor_started.wait, 2.0)
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                release_constructor.set()
+
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.025)
+
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_during_construction_cleans_eventual_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        constructor_started = threading.Event()
+        release_constructor = threading.Event()
+        cleanup_finished = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _create_agent(**_kwargs):
+            constructor_started.set()
+            release_constructor.wait(timeout=5)
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(constructor_started.wait, 2.0)
+
+                run_task = adapter._active_run_tasks[run_id]
+                run_task.cancel()
+                await asyncio.sleep(0)
+                release_constructor.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await run_task
+
+        assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        mock_agent.run_conversation.assert_not_called()
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_model_executor_submission_failure_cleans_unstarted_agent(
+        self, adapter, monkeypatch
+    ):
+        app = _create_runs_app(adapter)
+        loop = asyncio.get_running_loop()
+        real_run_in_executor = loop.run_in_executor
+        cleanup_finished = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _run_in_executor(executor, func, *args):
+            if getattr(func, "__name__", "") in {
+                "_run_sync_owned",
+                "_cleanup_unstarted_agent",
+            }:
+                raise RuntimeError("executor is shutting down")
+            return real_run_in_executor(executor, func, *args)
+
+        monkeypatch.setattr(loop, "run_in_executor", _run_in_executor)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    if adapter._run_statuses[run_id]["status"] == "failed":
+                        break
+                    await asyncio.sleep(0.025)
+
+        assert adapter._run_statuses[run_id]["status"] == "failed"
+        assert await asyncio.to_thread(cleanup_finished.wait, 5.0)
+        mock_agent.run_conversation.assert_not_called()
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_queued_model_worker_transfers_cleanup_ownership(
+        self, adapter, monkeypatch
+    ):
+        app = _create_runs_app(adapter)
+        loop = asyncio.get_running_loop()
+        real_run_in_executor = loop.run_in_executor
+        model_submission_seen = asyncio.Event()
+        queued_model_future = loop.create_future()
+        cleanup_finished = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _run_in_executor(executor, func, *args):
+            if getattr(func, "__name__", "") == "_run_sync_owned":
+                model_submission_seen.set()
+                return queued_model_future
+            return real_run_in_executor(executor, func, *args)
+
+        monkeypatch.setattr(loop, "run_in_executor", _run_in_executor)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await asyncio.wait_for(model_submission_seen.wait(), timeout=2.0)
+
+                run_task = adapter._active_run_tasks[run_id]
+                run_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        assert queued_model_future.cancelled()
+        assert await asyncio.to_thread(cleanup_finished.wait, 5.0)
+        mock_agent.run_conversation.assert_not_called()
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_model_exit_before_delivery_transfers_cleanup(
+        self, adapter, monkeypatch
+    ):
+        """A completed worker cannot retain ownership after delivery loses."""
+        app = _create_runs_app(adapter)
+        loop = asyncio.get_running_loop()
+        real_run_in_executor = loop.run_in_executor
+        model_finished = asyncio.Event()
+        delayed_model_future = loop.create_future()
+        delayed_result = []
+        cleanup_finished = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _run_in_executor(executor, func, *args):
+            if getattr(func, "__name__", "") == "_run_sync_owned":
+                delayed_result.append(func(*args))
+                model_finished.set()
+                return delayed_model_future
+            return real_run_in_executor(executor, func, *args)
+
+        monkeypatch.setattr(loop, "run_in_executor", _run_in_executor)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await asyncio.wait_for(model_finished.wait(), timeout=2.0)
+
+                run_task = adapter._active_run_tasks[run_id]
+                run_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(run_task, timeout=2.0)
+
+        delayed_model_future.set_result(delayed_result[0])
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        assert await asyncio.to_thread(cleanup_finished.wait, 5.0)
+        mock_agent.run_conversation.assert_called_once()
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_interrupts_running_model_before_waiting(
+        self, adapter
+    ):
+        """Shutdown cancellation must wake a cooperative model worker."""
+        app = _create_runs_app(adapter)
+        model_started = threading.Event()
+        interrupted = threading.Event()
+        cleanup_finished = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.interrupt.side_effect = lambda *_args: interrupted.set()
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _run_conversation(*_args, **_kwargs):
+            model_started.set()
+            assert interrupted.wait(timeout=5)
+            return {"final_response": "cancelled"}
+
+        mock_agent.run_conversation.side_effect = _run_conversation
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(model_started.wait, 2.0)
+
+                run_task = adapter._active_run_tasks[run_id]
+                run_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(run_task, timeout=2.0)
+
+        mock_agent.interrupt.assert_called_once_with("API run task cancelled")
+        assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+        mock_agent.shutdown_memory_provider.assert_called_once()
+        mock_agent.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_releases_pending_approval_before_waiting(
+        self, adapter
+    ):
+        """Approval waiters must be signalled before cancellation joins worker."""
+        app = _create_runs_app(adapter)
+        model_started = threading.Event()
+        approval_installed = threading.Event()
+        cleanup_finished = threading.Event()
+        pending_holder = []
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.interrupt.side_effect = lambda *_args: None
+        mock_agent.close.side_effect = cleanup_finished.set
+
+        def _run_conversation(*_args, **_kwargs):
+            model_started.set()
+            assert approval_installed.wait(timeout=5)
+            assert pending_holder[0].event.wait(timeout=5)
+            return {"final_response": "approval released"}
+
+        mock_agent.run_conversation.side_effect = _run_conversation
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(model_started.wait, 2.0)
+
+                pending = approval_mod._ApprovalEntry({
+                    "command": "bash -c wait-for-approval",
+                    "description": "cancellation release regression",
+                    "pattern_keys": ["shell-c"],
+                })
+                pending_holder.append(pending)
+                with approval_mod._lock:
+                    approval_mod._gateway_queues[run_id] = [pending]
+                approval_installed.set()
+
+                run_task = adapter._active_run_tasks[run_id]
+                run_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert pending.event.is_set()
+        with approval_mod._lock:
+            assert run_id not in approval_mod._gateway_queues
+        assert await asyncio.to_thread(cleanup_finished.wait, 2.0)
+        mock_agent.interrupt.assert_called_once_with("API run task cancelled")
+        mock_agent.close.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_stop_keeps_uncooperative_executor_tracked_until_exit(self, adapter):
         """Cancelling an asyncio wrapper must not hide its live executor thread."""
         app = _create_runs_app(adapter)
@@ -664,7 +1063,7 @@ class TestStopRun:
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await resp.json())["run_id"]
-                assert started.wait(timeout=3)
+                assert await asyncio.to_thread(started.wait, 3.0)
 
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
@@ -701,7 +1100,7 @@ class TestStopRun:
                 run_id = data["run_id"]
 
                 # Wait for agent to start running in the thread
-                agent_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(agent_ready.wait, 3.0)
                 await asyncio.sleep(0.1)
 
                 # Verify agent ref is stored
@@ -793,7 +1192,7 @@ class TestStopRun:
                 data = await resp.json()
                 run_id = data["run_id"]
 
-                agent_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(agent_ready.wait, 3.0)
                 await asyncio.sleep(0.1)
 
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
@@ -816,7 +1215,7 @@ class TestStopRun:
                 data = await resp.json()
                 run_id = data["run_id"]
 
-                agent_ready.wait(timeout=3.0)
+                assert await asyncio.to_thread(agent_ready.wait, 3.0)
                 await asyncio.sleep(0.1)
 
                 # Subscribe to events in background

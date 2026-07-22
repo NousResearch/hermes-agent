@@ -16,6 +16,7 @@ call time (run.py fully loaded by then), avoiding an import cycle.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import hashlib
 import inspect
@@ -89,6 +90,30 @@ class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
+
+    def _retire_abandoned_compression_session(self, session_id: str) -> None:
+        """Close a compression child that lost the live-route handoff race.
+
+        Legacy rotation creates the continuation row before the gateway can
+        compare-and-set its live route.  If /new, /resume, or another worker
+        wins first, that child is unreachable and must not remain recoverable
+        as an open session.
+        """
+        if not session_id:
+            return
+        session_db = getattr(self, "_session_db", None)
+        session_db = getattr(session_db, "_db", session_db)
+        end_session = getattr(session_db, "end_session", None)
+        if not callable(end_session):
+            return
+        try:
+            end_session(session_id, "orphaned_compression")
+        except Exception as exc:
+            logger.warning(
+                "Failed to retire abandoned compression session %s: %s",
+                session_id,
+                exc,
+            )
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
@@ -3520,132 +3545,223 @@ class GatewaySlashCommandsMixin:
             if platform_key is not None:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
-            tmp_agent = AIAgent(
-                **runtime_kwargs,
-                model=model,
-                max_iterations=4,
-                quiet_mode=True,
-                skip_memory=True,
-                enabled_toolsets=["memory"],
-                session_id=session_entry.session_id,
-                session_db=getattr(self._session_db, "_db", self._session_db),
-            )
-            try:
-                tmp_agent._print_fn = lambda *a, **kw: None
-                # Prevent close() from ending the newly rotated session —
-                # the gateway session entry now points at the new id and
-                # must remain open for the next user turn.
-                tmp_agent._end_session_on_close = False
+            original_session_id = session_entry.session_id
+            compression_snapshot = concurrent.futures.Future()
 
-                # Estimate with system prompt + tool schemas included so the
-                # figure reflects real request pressure, not a transcript-only
-                # underestimate (#6217). Must be computed after tmp_agent is
-                # built so _cached_system_prompt/tools are populated.
-                _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
-                _tools = getattr(tmp_agent, "tools", None) or None
-                approx_tokens = estimate_request_tokens_rough(
-                    msgs, system_prompt=_sys_prompt, tools=_tools
-                )
-
-                compressor = tmp_agent.context_compressor
-                if not compressor.has_content_to_compress(head):
-                    return t("gateway.compress.nothing_to_do")
-
-                loop = asyncio.get_running_loop()
-                compressed, _ = await loop.run_in_executor(
-                    None,
-                    lambda: tmp_agent._compress_context(
-                        head,
-                        "",
-                        approx_tokens=approx_tokens,
-                        focus_topic=focus_topic,
-                        force=True,
-                        defer_context_engine_notification=True,
+            def _run_manual_compression_sync():
+                # One worker owns the entire temporary-agent lifecycle. This
+                # prevents cancellation from leaking an agent constructed
+                # after the coroutine unwinds, or racing close() against an
+                # in-flight _compress_context call.
+                tmp_agent = None
+                compression_handoff_committed = False
+                compression_error = None
+                try:
+                    tmp_agent = AIAgent(
+                        **runtime_kwargs,
+                        model=model,
+                        max_iterations=4,
+                        quiet_mode=True,
+                        skip_memory=True,
+                        enabled_toolsets=["memory"],
+                        session_id=original_session_id,
+                        session_db=getattr(
+                            self._session_db, "_db", self._session_db
+                        ),
                     )
+                    # Never let cleanup end the live (possibly rotated)
+                    # gateway session. Set this before any later operation
+                    # that may raise.
+                    tmp_agent._end_session_on_close = False
+                    tmp_agent._print_fn = lambda *a, **kw: None
+
+                    # Estimate with system prompt + tool schemas included so
+                    # the figure reflects real request pressure, not a
+                    # transcript-only underestimate (#6217).
+                    sys_prompt = (
+                        getattr(tmp_agent, "_cached_system_prompt", "") or ""
+                    )
+                    tools = getattr(tmp_agent, "tools", None) or None
+                    approx_tokens = estimate_request_tokens_rough(
+                        msgs,
+                        system_prompt=sys_prompt,
+                        tools=tools,
+                    )
+
+                    compressor = tmp_agent.context_compressor
+                    if not compressor.has_content_to_compress(head):
+                        result = {"nothing_to_do": True}
+                    else:
+                        compressed, _ = tmp_agent._compress_context(
+                            head,
+                            "",
+                            approx_tokens=approx_tokens,
+                            focus_topic=focus_topic,
+                            force=True,
+                            defer_context_engine_notification=True,
+                        )
+
+                        # Re-append the verbatim tail after the compressed
+                        # head, guarding the seam against illegal role
+                        # adjacency.
+                        if partial and tail:
+                            compressed = rejoin_compressed_head_and_tail(
+                                compressed, tail
+                            )
+
+                        new_session_id = tmp_agent.session_id
+                        rotated = new_session_id != original_session_id
+                        in_place = bool(
+                            getattr(
+                                tmp_agent,
+                                "_last_compaction_in_place",
+                                False,
+                            )
+                        )
+                        new_tokens = estimate_request_tokens_rough(
+                            compressed,
+                            system_prompt=sys_prompt,
+                            tools=tools,
+                        )
+                        summary = summarize_manual_compression(
+                            msgs,
+                            compressed,
+                            approx_tokens,
+                            new_tokens,
+                            compression_state=compressor,
+                        )
+                        # Commit the transcript, live route, topic binding, and
+                        # token reset before publishing the worker snapshot.
+                        # These are cancellation-critical and must not queue on
+                        # the shared default executor behind long model calls.
+                        if rotated:
+                            if not self.session_store.rewrite_transcript(
+                                new_session_id, compressed
+                            ):
+                                raise RuntimeError(
+                                    "failed to persist compressed transcript "
+                                    f"for session {new_session_id}"
+                                )
+                        committed_entry = (
+                            self.session_store.commit_compression_handoff(
+                                session_entry.session_key,
+                                expected_session_id=original_session_id,
+                                new_session_id=new_session_id,
+                            )
+                        )
+                        if committed_entry is None:
+                            raise RuntimeError(
+                                "live session route changed during compression"
+                            )
+                        compression_handoff_committed = True
+                        if rotated:
+                            self._sync_compression_topic_binding(
+                                source,
+                                session_key=session_entry.session_key,
+                                expected_session_id=original_session_id,
+                                new_session_id=new_session_id,
+                                reason="compress-command",
+                            )
+                        finalize_context_engine_compression_notification(
+                            tmp_agent,
+                            committed=True,
+                        )
+                        result = {
+                            "nothing_to_do": False,
+                            "compressed": compressed,
+                            "new_session_id": new_session_id,
+                            "rotated": rotated,
+                            "in_place": in_place,
+                            "summary": summary,
+                            "summary_aborted": bool(
+                                getattr(
+                                    compressor,
+                                    "_last_compress_aborted",
+                                    False,
+                                )
+                            ),
+                            "summary_error": getattr(
+                                compressor, "_last_summary_error", None
+                            ),
+                            "aux_failure_model": getattr(
+                                compressor,
+                                "_last_aux_model_failure_model",
+                                None,
+                            ),
+                            "aux_failure_error": getattr(
+                                compressor,
+                                "_last_aux_model_failure_error",
+                                None,
+                            ),
+                        }
+                except BaseException as exc:
+                    compression_error = exc
+                finally:
+                    if tmp_agent is not None:
+                        finalize_context_engine_compression_notification(
+                            tmp_agent,
+                            committed=False,
+                        )
+                        abandoned_session_id = getattr(
+                            tmp_agent, "session_id", original_session_id
+                        )
+                        if (
+                            not compression_handoff_committed
+                            and abandoned_session_id != original_session_id
+                        ):
+                            self._retire_abandoned_compression_session(
+                                abandoned_session_id
+                            )
+                    if not compression_snapshot.done():
+                        # Orphan retirement is cancellation-critical durability
+                        # work and must complete before an error is observable.
+                        # Resource cleanup remains post-publication so a wedged
+                        # provider close cannot hold /compress indefinitely.
+                        if compression_error is not None:
+                            compression_snapshot.set_exception(compression_error)
+                        else:
+                            compression_snapshot.set_result(result)
+                    if tmp_agent is not None:
+                        self._cleanup_agent_resources(tmp_agent)
+
+            self._submit_owned_worker(
+                _run_manual_compression_sync,
+                snapshot=compression_snapshot,
+            )
+            compression_cancellation = None
+            try:
+                (
+                    compression_result,
+                    compression_cancellation,
+                ) = await self._await_owned_worker_snapshot(
+                    compression_snapshot,
                 )
-                if partial and tail:
-                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
+                if compression_result["nothing_to_do"]:
+                    return t("gateway.compress.nothing_to_do")
 
                 # _compress_context either rotated (legacy: ended the old
                 # session, created a continuation id — write compressed messages
                 # into the NEW session so the original stays searchable) or
                 # compacted in place (compression.in_place / #38763: same id,
                 # transcript replaced with the compacted set).
-                new_session_id = tmp_agent.session_id
-                rotated = new_session_id != session_entry.session_id
-                _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
+                compressed = compression_result["compressed"]
+                new_session_id = compression_result["new_session_id"]
+                rotated = compression_result["rotated"]
+                _in_place = compression_result["in_place"]
 
-                # Persist the compressed transcript BEFORE repointing the live
-                # session onto the new session_id. Order matters: if we
-                # repointed first and the canonical DB write then failed (lock
-                # contention under concurrent writes, ENOSPC, a disk/IO error),
-                # the session entry would already reference a brand-new, empty
-                # session_id while the handler still reported success — the
-                # user's active conversation would silently vanish from view.
-                # Writing first, and treating a write failure as fatal, keeps
-                # the old history reachable (on rotation the entry still points
-                # at it; in place the original transcript is untouched) and lets
-                # the outer handler surface a "compress failed" banner instead.
-                #
-                # Only rewrite the transcript when rotation produced a NEW
-                # session id.  In-place compaction does NOT need a rewrite:
-                # archive_and_compact() has already soft-archived the previous
-                # active rows and inserted the compacted messages as the new
-                # active set inside _compress_context().  Calling
-                # rewrite_transcript() after in-place compaction would invoke
-                # replace_messages(active_only=False) which DELETEs ALL rows —
-                # including the archived turns that archive_and_compact()
-                # deliberately preserved (silent data loss, #61145).
-                #
-                # The third case: _compress_context could NOT rotate AND was
-                # not in-place (e.g. legacy mode but _session_db unavailable /
-                # the DB split raised) — there session_id is unchanged for a
-                # FAILURE reason, and rewrite_transcript() would DELETE the
-                # original messages and replace them with only the compressed
-                # summary (permanent data loss #44794, #39704).
-                if rotated:
-                    if not await self.async_session_store.rewrite_transcript(
-                        new_session_id, compressed
-                    ):
-                        raise RuntimeError(
-                            f"failed to persist compressed transcript for "
-                            f"session {new_session_id}"
-                        )
-                    session_entry.session_id = new_session_id
-                    await self.async_session_store._save()
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compress-command",
-                    )
-                elif _in_place:
-                    # archive_and_compact() already persisted the compacted
-                    # transcript inside _compress_context — nothing to do.
-                    pass
-                else:
+                # The control worker already committed a rotated transcript
+                # before repointing the live route. In-place compaction was
+                # persisted inside _compress_context. The only remaining case
+                # is a legacy compressor that did neither; preserve the original
+                # transcript rather than overwriting it with a summary.
+                if not rotated and not _in_place:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
                         "(session_id unchanged) and in-place mode is off — "
                         "preserving original transcript instead of overwriting "
                         "it (#44794)."
                     )
-                # Reset stored token count — transcript changed, old value is stale
-                await self.async_session_store.update_session(
-                    session_entry.session_key, last_prompt_tokens=0
-                )
-                finalize_context_engine_compression_notification(
-                    tmp_agent,
-                    committed=True,
-                )
-                new_tokens = estimate_request_tokens_rough(
-                    compressed, system_prompt=_sys_prompt, tools=_tools
-                )
-                summary = summarize_manual_compression(
-                    msgs,
-                    compressed,
-                    approx_tokens,
-                    new_tokens,
-                    compression_state=compressor,
-                )
+                summary = compression_result["summary"]
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
                 # path (otherwise the failure is silently logged).
@@ -3653,8 +3769,8 @@ class GatewaySlashCommandsMixin:
                 # usable summary and the compressor preserved messages
                 # unchanged (no drop, no placeholder).  force=True was
                 # passed above so any active cooldown is bypassed.
-                _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
-                _summary_err = getattr(compressor, "_last_summary_error", None)
+                _summary_aborted = compression_result["summary_aborted"]
+                _summary_err = compression_result["summary_error"]
                 # Force-redact provider exception text at this UI boundary
                 # even when global redaction is disabled.
                 if _summary_err:
@@ -3663,17 +3779,17 @@ class GatewaySlashCommandsMixin:
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.
-                _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
-                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
+                _aux_fail_model = compression_result["aux_failure_model"]
+                _aux_fail_err = compression_result["aux_failure_error"]
             finally:
-                finalize_context_engine_compression_notification(
-                    tmp_agent,
-                    committed=False,
-                )
                 # Evict cached agent so next turn rebuilds system prompt
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
-                self._cleanup_agent_resources(tmp_agent)
+                if compression_cancellation is not None:
+                    # _compress_context may already have rotated/compacted the
+                    # durable session. Commit the live route and token metadata
+                    # above before cancellation leaves this command boundary.
+                    raise compression_cancellation
             lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))

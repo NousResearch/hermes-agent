@@ -2272,6 +2272,43 @@ class SessionStore:
             self._save()
             return True
 
+    def commit_compression_handoff(
+        self,
+        session_key: str,
+        *,
+        expected_session_id: str,
+        new_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Atomically persist a compression-driven live-route rotation.
+
+        Compression creates and populates the continuation transcript before
+        calling this method. Compare against the route observed at compression
+        start so a stale worker can never overwrite a newer /new, /resume, or
+        concurrent recovery decision. The token counter is reset in the same
+        routing write, avoiding a second state.db transaction on this hot path.
+        The immutable routing snapshot is captured under ``_lock`` while all
+        SQLite/JSON I/O happens after releasing it, so a contended durable write
+        cannot serialize unrelated session lookups and lifecycle transitions.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            # A concurrent read-side compression-tip heal may already have
+            # advanced this exact route to the same child. Treat that as an
+            # idempotent win; rejecting it would retire the live child as an
+            # orphan even though no competing lifecycle transition occurred.
+            if entry.session_id not in {expected_session_id, new_session_id}:
+                return None
+            entry.session_id = new_session_id
+            entry.last_prompt_tokens = 0
+            entry.updated_at = _now()
+            data, generation = self._snapshot_routing_locked()
+
+        self._persist_routing_data(data, generation)
+        return entry
+
     def set_model_override(
         self, session_key: str, override: Optional[Dict[str, Any]]
     ) -> None:

@@ -40,6 +40,7 @@ Requires:
 """
 
 import asyncio
+import concurrent.futures
 import errno
 import hashlib
 import hmac
@@ -52,6 +53,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1060,6 +1062,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_db_lock: Optional[asyncio.Lock] = None  # Single-flight for lazy init
+        # _create_agent() also reaches the lazy cache from control-executor
+        # threads. The asyncio lock above only protects async request handlers.
+        self._session_dbs_thread_lock = threading.Lock()
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -1078,6 +1083,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
+        # Keep lifecycle-critical construction and cleanup independent from
+        # long-running model calls in asyncio's default executor. At high
+        # concurrency, those calls can occupy every default worker for minutes.
+        self._control_executor_lock = threading.Lock()
+        self._control_executor: Optional[
+            concurrent.futures.ThreadPoolExecutor
+        ] = None
+        self._control_executor_closing = False
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -1095,6 +1108,53 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         except Exception:
             return 0
+
+    def _get_control_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the pool reserved for short API lifecycle operations."""
+        lock = getattr(self, "_control_executor_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._control_executor_lock = lock
+
+        with lock:
+            if getattr(self, "_control_executor_closing", False):
+                raise RuntimeError("API server control executor is shutting down")
+            executor = getattr(self, "_control_executor", None)
+            if executor is None or getattr(executor, "_shutdown", False):
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=8,
+                    thread_name_prefix="hermes-api-control",
+                )
+                self._control_executor = executor
+            return executor
+
+    def _reopen_control_executor(self) -> None:
+        """Allow a disconnected adapter instance to be connected again."""
+        lock = getattr(self, "_control_executor_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._control_executor_lock = lock
+        with lock:
+            self._control_executor_closing = False
+
+    def _shutdown_control_executor(self) -> None:
+        """Reject new control work and cancel work that never started."""
+        lock = getattr(self, "_control_executor_lock", None)
+        if lock is None:
+            self._control_executor_closing = True
+            return
+
+        with lock:
+            self._control_executor_closing = True
+            executor = getattr(self, "_control_executor", None)
+            self._control_executor = None
+
+        if executor is None:
+            return
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
 
     @staticmethod
     def _gateway_is_draining() -> bool:
@@ -1678,16 +1738,22 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from hermes_state import SessionDB
 
+        lock = getattr(self, "_session_dbs_thread_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._session_dbs_thread_lock = lock
+
         key = str(home)
-        cache = getattr(self, "_session_dbs", None)
-        if cache is None:
-            cache = {}
-            self._session_dbs = cache
-        db = cache.get(key)
-        if db is None:
-            db = SessionDB(db_path=home / "state.db")
-            cache[key] = db
-        return db
+        with lock:
+            cache = getattr(self, "_session_dbs", None)
+            if cache is None:
+                cache = {}
+                self._session_dbs = cache
+            db = cache.get(key)
+            if db is None:
+                db = SessionDB(db_path=home / "state.db")
+                cache[key] = db
+            return db
 
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
@@ -5028,6 +5094,98 @@ class APIServerAdapter(BasePlatformAdapter):
         request_profile = _api_request_profile.get()
 
         async def _run_and_close():
+            agent = None
+            agent_owned_by_run_worker = False
+
+            def _cleanup_unstarted_agent(target) -> None:
+                """Release an agent that never entered run_conversation()."""
+                try:
+                    target._end_session_on_close = False
+                except Exception:
+                    pass
+                try:
+                    shutdown_memory = getattr(
+                        target, "shutdown_memory_provider", None
+                    )
+                    if callable(shutdown_memory):
+                        shutdown_memory()
+                except Exception:
+                    pass
+                try:
+                    close = getattr(target, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    pass
+
+            def _start_fallback_cleanup(target) -> None:
+                """Retain cleanup ownership when the control pool rejects it."""
+                cleanup_threads = getattr(
+                    self, "_owned_agent_cleanup_threads", None
+                )
+                if not isinstance(cleanup_threads, set):
+                    cleanup_threads = set()
+                    self._owned_agent_cleanup_threads = cleanup_threads
+
+                def _fallback_cleanup():
+                    try:
+                        _cleanup_unstarted_agent(target)
+                    finally:
+                        cleanup_threads.discard(threading.current_thread())
+
+                cleanup_thread = threading.Thread(
+                    target=_fallback_cleanup,
+                    name=f"api-run-cleanup-{run_id[:8]}",
+                    daemon=True,
+                )
+                cleanup_threads.add(cleanup_thread)
+                try:
+                    cleanup_thread.start()
+                except Exception:
+                    cleanup_threads.discard(cleanup_thread)
+                    logger.exception(
+                        "[api_server] failed to start fallback cleanup "
+                        "thread for run %s",
+                        run_id,
+                    )
+
+            def _start_owned_cleanup(target) -> None:
+                """Submit cleanup without tying ownership to this API task."""
+                try:
+                    cleanup_future = (
+                        asyncio.get_running_loop().run_in_executor(
+                            self._get_control_executor(),
+                            _cleanup_unstarted_agent,
+                            target,
+                        )
+                    )
+                except Exception:
+                    # The control executor may already be shutting down — the
+                    # exact branch that returned this agent to the API task.
+                    # A retained daemon thread is the last non-blocking owner;
+                    # never run potentially wedged provider cleanup on aiohttp's
+                    # event loop.
+                    _start_fallback_cleanup(target)
+                    return
+                cleanup_futures = getattr(
+                    self, "_owned_agent_cleanup_futures", None
+                )
+                if not isinstance(cleanup_futures, set):
+                    cleanup_futures = set()
+                    self._owned_agent_cleanup_futures = cleanup_futures
+                cleanup_futures.add(cleanup_future)
+
+                def _cleanup_done(future):
+                    cleanup_futures.discard(future)
+                    if future.cancelled():
+                        # shutdown(cancel_futures=True) can reject queued
+                        # cleanup after submission. Preserve exactly one owner.
+                        _start_fallback_cleanup(target)
+                    else:
+                        future.exception()
+
+                cleanup_future.add_done_callback(_cleanup_done)
+
             try:
                 self._set_run_status(run_id, "running")
                 if run_id in self._stopping_run_ids:
@@ -5042,16 +5200,127 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.cancelled",
                     )
                     return
-                with self._profile_scope(request_profile):
-                    agent = self._create_agent(
-                        ephemeral_system_prompt=ephemeral_system_prompt,
-                        session_id=session_id,
-                        stream_delta_callback=_text_cb,
-                        tool_progress_callback=event_cb,
-                        gateway_session_key=gateway_session_key,
-                        route=route,
+
+                def _create_run_agent():
+                    # AIAgent construction synchronously binds SessionDB-backed
+                    # compression state.  Keep it off aiohttp's event loop so a
+                    # contended state.db cannot stall every API request.
+                    with self._profile_scope(request_profile):
+                        return self._create_agent(
+                            ephemeral_system_prompt=ephemeral_system_prompt,
+                            session_id=session_id,
+                            stream_delta_callback=_text_cb,
+                            tool_progress_callback=event_cb,
+                            gateway_session_key=gateway_session_key,
+                            route=route,
+                        )
+
+                construction_snapshot = concurrent.futures.Future()
+                construction_abandoned = threading.Event()
+
+                def _construct_owned_run_agent():
+                    try:
+                        created_agent = _create_run_agent()
+                    except BaseException as exc:
+                        if not construction_snapshot.done():
+                            construction_snapshot.set_exception(exc)
+                        return
+
+                    if construction_abandoned.is_set():
+                        # Publish the ownership decision before cleanup so a
+                        # wedged close cannot pin the cancelled API task.
+                        if not construction_snapshot.done():
+                            construction_snapshot.set_result(None)
+                        _cleanup_unstarted_agent(created_agent)
+                        return
+
+                    if not construction_snapshot.done():
+                        construction_snapshot.set_result(created_agent)
+
+                # Submit immediately. A separately scheduled to_thread Task
+                # could be cancelled before it reaches the executor, leaving
+                # the ownership snapshot unresolved forever.
+                construction_task = (
+                    asyncio.get_running_loop().run_in_executor(
+                        self._get_control_executor(),
+                        _construct_owned_run_agent,
                     )
+                )
+
+                def _consume_construction_task(task):
+                    if construction_snapshot.done():
+                        if not task.cancelled():
+                            task.exception()
+                        return
+                    if task.cancelled():
+                        construction_abandoned.set()
+                        construction_snapshot.set_exception(
+                            RuntimeError(
+                                "agent construction was cancelled before handoff"
+                            )
+                        )
+                        return
+                    try:
+                        failure = task.exception()
+                    except BaseException as exc:
+                        failure = exc
+                    construction_snapshot.set_exception(
+                        failure
+                        or RuntimeError(
+                            "agent constructor exited before publishing state"
+                        )
+                    )
+
+                construction_task.add_done_callback(
+                    _consume_construction_task
+                )
+                construction_waiter = asyncio.wrap_future(
+                    construction_snapshot
+                )
+                try:
+                    agent = await asyncio.shield(construction_waiter)
+                except asyncio.CancelledError as cancellation:
+                    # Tell the worker to retain ownership if construction has
+                    # not finished. If handoff already won the race, retrieve
+                    # and clean that agent here before cancellation propagates.
+                    construction_abandoned.set()
+                    while not construction_waiter.done():
+                        try:
+                            await asyncio.shield(construction_waiter)
+                        except asyncio.CancelledError:
+                            continue
+                        except BaseException:
+                            break
+                    if construction_waiter.done():
+                        try:
+                            cancelled_agent = construction_waiter.result()
+                        except BaseException:
+                            cancelled_agent = None
+                        if cancelled_agent is not None:
+                            _start_owned_cleanup(cancelled_agent)
+                    raise cancellation
                 self._active_run_agents[run_id] = agent
+
+                # /stop can now run while construction is in the worker.  If it
+                # won that race, do not start the model after the constructor
+                # returns; interrupt the freshly-published agent and complete
+                # the run as cancelled.
+                if run_id in self._stopping_run_ids:
+                    try:
+                        agent.interrupt("Stop requested via API")
+                    except Exception:
+                        pass
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                    return
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -5130,7 +5399,115 @@ class APIServerAdapter(BasePlatformAdapter):
                         }
                         return r, u
 
-                result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                run_state_lock = threading.Lock()
+                run_state = {
+                    "started": False,
+                    "finished": False,
+                    "abandoned": False,
+                }
+                run_finished_snapshot = concurrent.futures.Future()
+
+                def _run_sync_owned():
+                    try:
+                        with run_state_lock:
+                            # If cancellation won while this job was queued,
+                            # never touch the agent now owned by outer cleanup.
+                            if run_state["abandoned"]:
+                                return None
+                            run_state["started"] = True
+                        return _run_sync()
+                    finally:
+                        with run_state_lock:
+                            run_state["finished"] = True
+                            cleanup_here = (
+                                run_state["started"]
+                                and run_state["abandoned"]
+                            )
+                        # Cancellation after the model started is cooperative.
+                        # This worker retains ownership until model exit, then
+                        # cleans on the same thread so cleanup cannot race it.
+                        if cleanup_here:
+                            _cleanup_unstarted_agent(agent)
+                        if not run_finished_snapshot.done():
+                            run_finished_snapshot.set_result(None)
+
+                try:
+                    run_future = (
+                        asyncio.get_running_loop().run_in_executor(
+                            None,
+                            _run_sync_owned,
+                        )
+                    )
+                except BaseException:
+                    # Submission failed; the API task still owns the agent and
+                    # its outer finally will clean it up.
+                    raise
+                agent_owned_by_run_worker = True
+
+                def _consume_run_future(future):
+                    if not future.cancelled():
+                        future.exception()
+
+                run_future.add_done_callback(_consume_run_future)
+                try:
+                    run_output = await asyncio.shield(run_future)
+                except asyncio.CancelledError as cancellation:
+                    with run_state_lock:
+                        run_state["abandoned"] = True
+                        run_started = run_state["started"]
+                        run_finished = run_state["finished"]
+
+                    if not run_started:
+                        # The wrapper has not touched the agent. Cancel queued
+                        # executor work and return ownership to outer cleanup;
+                        # no occupied model slot is required to make progress.
+                        agent_owned_by_run_worker = False
+                        run_future.cancel()
+                        raise cancellation
+
+                    if run_finished:
+                        # The worker passed its final cleanup check just before
+                        # cancellation won result delivery. It no longer touches
+                        # the agent, so outer cleanup owns it.
+                        agent_owned_by_run_worker = False
+                        raise cancellation
+
+                    # A running model cannot be force-cancelled safely. Wait on
+                    # its cooperative exit, but first wake both the agent and
+                    # any approval Event it may be blocked on. These operations
+                    # are idempotent with /stop and the outer finally.
+                    try:
+                        agent.interrupt("API run task cancelled")
+                    except Exception:
+                        pass
+                    try:
+                        from tools.approval import unregister_gateway_notify
+
+                        unregister_gateway_notify(approval_session_key)
+                    except Exception:
+                        pass
+
+                    # A running model cannot be force-cancelled safely. Wait on
+                    # the worker-owned completion snapshot (not the asyncio
+                    # wrapper, which executor shutdown may cancel early) until
+                    # same-thread cleanup has completed.
+                    run_finished_waiter = asyncio.wrap_future(
+                        run_finished_snapshot
+                    )
+                    while not run_finished_waiter.done():
+                        try:
+                            await asyncio.shield(run_finished_waiter)
+                        except asyncio.CancelledError:
+                            continue
+                        except BaseException:
+                            break
+                    raise cancellation
+
+                if run_output is None:
+                    # Only possible when an abandoned queued worker observed
+                    # cancellation before entering run_conversation().
+                    raise asyncio.CancelledError()
+                result, usage = run_output
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -5191,23 +5568,43 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 raise
             except Exception as exc:
-                logger.exception("[api_server] run %s failed", run_id)
-                self._set_run_status(
-                    run_id,
-                    "failed",
-                    error=_redact_api_error_text(exc),
-                    last_event="run.failed",
-                )
-                try:
-                    _put_event_if_active({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": _redact_api_error_text(exc),
-                    })
-                except Exception:
-                    pass
+                if run_id in self._stopping_run_ids:
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                    try:
+                        _put_event_if_active({
+                            "event": "run.cancelled",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                        })
+                    except Exception:
+                        pass
+                else:
+                    logger.exception("[api_server] run %s failed", run_id)
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        error=_redact_api_error_text(exc),
+                        last_event="run.failed",
+                    )
+                    try:
+                        _put_event_if_active({
+                            "event": "run.failed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "error": _redact_api_error_text(exc),
+                        })
+                    except Exception:
+                        pass
             finally:
+                if agent is not None and not agent_owned_by_run_worker:
+                    # Construction completed but /stop, an exception, or task
+                    # cancellation won before model execution. Cleanup is
+                    # worker-owned and cannot race run_conversation().
+                    _start_owned_cleanup(agent)
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those
@@ -5508,6 +5905,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""
+        self._reopen_control_executor()
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
@@ -5662,13 +6060,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        if self._site:
-            await self._site.stop()
-            self._site = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._app = None
+        try:
+            if self._site:
+                await self._site.stop()
+                self._site = None
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+        finally:
+            self._app = None
+            self._shutdown_control_executor()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

@@ -914,7 +914,7 @@ multi-source resolution chain (highest priority first):
 
 ## Contributor Quick Reference
 
-For occasional contributors and PR authors. Full developer docs: https://hermes-agent.nousresearch.com/docs/developer-guide/
+For occasional contributors and PR authors. Full developer docs: https://hermes-agent.nousresearch.com/docs/developer-guide/contributing
 
 ### Project Layout
 

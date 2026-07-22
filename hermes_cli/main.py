@@ -1530,6 +1530,110 @@ to avoid false-positive reinstalls on every launch.
 """
 
 
+_NPM_LOCK_DEP_KEYS = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+)
+
+
+def _npm_lock_dep_names(pkg: dict) -> set[str]:
+    """Return dependency package names declared by one package-lock entry."""
+    names: set[str] = set()
+    for key in _NPM_LOCK_DEP_KEYS:
+        deps = pkg.get(key)
+        if isinstance(deps, dict):
+            names.update(str(name) for name in deps if name)
+    return names
+
+
+def _npm_lock_resolve_dep_path(
+    packages: dict,
+    *,
+    declaring_path: str,
+    package_name: str,
+) -> str | None:
+    """Resolve a dependency using npm's local-to-ancestor lookup order."""
+    current = declaring_path.rstrip("/")
+    while True:
+        # Node skips an ancestor that is itself named node_modules; appending
+        # another node_modules there would produce an invalid lookup path.
+        if current != "node_modules" and not current.endswith("/node_modules"):
+            candidate = (
+                f"{current}/node_modules/{package_name}"
+                if current
+                else f"node_modules/{package_name}"
+            )
+            if candidate in packages:
+                return candidate
+
+        if not current:
+            return None
+        current = current.rsplit("/", 1)[0] if "/" in current else ""
+
+
+def _npm_lock_is_installed_package(package_path: str) -> bool:
+    """Return whether a lockfile key represents an installed package."""
+    return package_path.startswith("node_modules/") or "/node_modules/" in package_path
+
+
+def _npm_lock_workspace_subset(
+    packages: dict,
+    *,
+    workspace_path: str | None,
+) -> dict:
+    """Return package-lock entries reachable from one workspace package.
+
+    ``npm install --workspace ui-tui`` actualizes only the selected workspace
+    graph, while the repo root lockfile records every workspace.  Comparing
+    against the whole root lockfile therefore reports sibling workspaces as
+    missing even when the TUI install is fresh.
+    """
+    if not workspace_path:
+        return packages
+    workspace_pkg = packages.get(workspace_path)
+    if not isinstance(workspace_pkg, dict):
+        return packages
+
+    selected: set[str] = set()
+    traversed: set[str] = set()
+    queue: list[str] = [workspace_path]
+    for name, pkg in packages.items():
+        if (
+            isinstance(pkg, dict)
+            and pkg.get("link")
+            and pkg.get("resolved") == workspace_path
+        ):
+            queue.append(name)
+
+    while queue:
+        name = queue.pop()
+        if name in traversed:
+            continue
+        pkg = packages.get(name)
+        if not isinstance(pkg, dict):
+            continue
+        traversed.add(name)
+        if _npm_lock_is_installed_package(name):
+            selected.add(name)
+
+        resolved = pkg.get("resolved")
+        if pkg.get("link") and isinstance(resolved, str) and resolved in packages:
+            queue.append(resolved)
+
+        for dep_name in _npm_lock_dep_names(pkg):
+            dep_path = _npm_lock_resolve_dep_path(
+                packages,
+                declaring_path=name,
+                package_name=dep_name,
+            )
+            if dep_path is not None and dep_path not in selected:
+                queue.append(dep_path)
+
+    return {name: packages[name] for name in selected}
+
+
 def _workspace_root(dir: Path) -> Path:
     """Return the npm workspace root for *dir*.
 
@@ -1636,10 +1740,19 @@ def _tui_need_npm_install(root: Path) -> bool:
     # can bump the root lockfile timestamp even when installed deps already
     # match. Fall back to mtime when either file is unparseable.
     try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
+        wanted_lock = json.loads(lock.read_text(encoding="utf-8"))
+        wanted = wanted_lock.get("packages") or {}
         installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
+
+    workspace_path: str | None = None
+    if ws_root != root:
+        try:
+            workspace_path = root.relative_to(ws_root).as_posix()
+        except ValueError:
+            workspace_path = None
+    wanted = _npm_lock_workspace_subset(wanted, workspace_path=workspace_path)
 
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}

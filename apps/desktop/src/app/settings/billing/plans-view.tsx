@@ -40,7 +40,12 @@ function PlanCard({ tier }: { tier: BillingPlanTierView }) {
         {isCurrent && <Pill tone="primary">Current plan</Pill>}
 
         {tier.state === 'upgrade' && (
-          <Button onClick={() => tier.action && openExternalLink(tier.action.url)} size="sm" type="button" variant="outline">
+          <Button
+            onClick={() => tier.action && openExternalLink(tier.action.url)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
             {tier.action.label}
             <ExternalLink className="size-3.5" />
           </Button>

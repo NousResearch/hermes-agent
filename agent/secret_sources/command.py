@@ -43,6 +43,7 @@ from typing import Dict, Optional
 
 # Reuse the exact result shape the bitwarden source returns so
 # hermes_cli.env_loader can consume both providers identically.
+from agent.secret_sources.base import ErrorKind, SecretSource
 from agent.secret_sources.bitwarden import FetchResult
 
 __all__ = [
@@ -320,32 +321,24 @@ def apply_command_secrets(
     """Run the helper once at startup and set its KEY=VALUE output on
     ``os.environ``.
 
-    This is the function ``load_hermes_dotenv()`` calls after the .env
-    files have loaded.  It is intentionally defensive — any failure
-    degrades to an empty :class:`FetchResult`; it never raises.
-
-    Non-destructive by default: keys already present in the process env
-    (i.e. from the shell or .env) win unless ``override_existing`` is True
-    — the same precedence as the bitwarden source.
-
-    ``home_path`` is accepted for signature symmetry with
-    ``apply_bitwarden_secrets`` (no disk cache is kept for this provider —
-    the helper IS the cache, e.g. a tmpfs env file).
+    LEGACY shim retained for API symmetry with ``apply_bitwarden_secrets``;
+    the startup path goes through :class:`CommandSource` + the registry
+    orchestrator instead (which owns precedence and the environ writes).
     """
     result = FetchResult()
 
     command = (command or "").strip()
     if not command:
         result.error = (
-            "secrets.provider is 'command' but secrets.command is empty.  "
-            "Set the helper command in config.yaml under secrets.command."
+            "secrets.command.enabled is true but secrets.command.command is "
+            "empty.  Set the helper command in config.yaml."
         )
         return result
 
     if _is_windows():
         result.warnings.append(
-            "the 'command' secret provider is POSIX-only (needs /bin/sh); "
-            "skipping on Windows — use the default 'env' provider instead"
+            "the 'command' secret source is POSIX-only (needs /bin/sh); "
+            "skipping on Windows"
         )
         return result
 
@@ -383,3 +376,111 @@ def apply_command_secrets(
         result.applied.append(key)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# SecretSource adapter — the registry-facing wrapper around this module.
+# ---------------------------------------------------------------------------
+
+
+class CommandSource(SecretSource):
+    """User-configured helper command as a registered secret source.
+
+    Composes with the other sources (Bitwarden, 1Password, plugins) through
+    the ``apply_all()`` orchestrator — enable any combination simultaneously;
+    there is deliberately NO single-provider selector.  ``fetch()`` only
+    fetches: precedence, ``override_existing`` semantics, conflict warnings,
+    and the ``os.environ`` writes are the orchestrator's job.
+
+    Bulk shape: the helper enumerates a KEY=VALUE blob in one run.  Config::
+
+        secrets:
+          command:
+            enabled: true
+            command: "cat /run/user/1000/hermes-secrets.env"
+            # or per-vault CLIs: keepassxc-cli / secret-tool / pass / gpg —
+            # anything fast and NON-interactive.
+    """
+
+    name = "command"
+    label = "Command helper"
+    shape = "bulk"
+
+    def config_schema(self) -> dict:
+        return {
+            "enabled": {"description": "Master switch", "default": False},
+            "command": {
+                "description": "Helper run via /bin/sh -c; must print a "
+                               "KEY=VALUE blob on stdout",
+                "default": "",
+            },
+            "helper_timeout_seconds": {
+                "description": "Hard timeout for one helper run",
+                "default": _COMMAND_TIMEOUT_SECONDS,
+            },
+            "override_existing": {
+                "description": "Helper values overwrite .env/shell values",
+                "default": False,
+            },
+        }
+
+    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        cfg = cfg if isinstance(cfg, dict) else {}
+        result = FetchResult()
+
+        command = str(cfg.get("command") or "").strip()
+        if not command:
+            result.error = (
+                "secrets.command.enabled is true but secrets.command.command "
+                "is empty.  Set the helper command in config.yaml."
+            )
+            result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        if _is_windows():
+            result.error = (
+                "the 'command' secret source is POSIX-only (needs /bin/sh); "
+                "skipping on Windows"
+            )
+            result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        try:
+            timeout = float(cfg.get("helper_timeout_seconds",
+                                    _COMMAND_TIMEOUT_SECONDS))
+        except (TypeError, ValueError):
+            timeout = _COMMAND_TIMEOUT_SECONDS
+
+        stdout = _run_helper(command, "", timeout, _MAX_OUTPUT_BYTES)
+        if stdout is None:
+            # _run_helper already logged structured fields to stderr.
+            result.error = (
+                "helper command failed (see structured fields above); "
+                "no secrets applied"
+            )
+            result.error_kind = ErrorKind.INTERNAL
+            return result
+
+        secrets = _parse_dotenv_map(stdout)
+        if not secrets:
+            result.warnings.append(
+                "helper output was not a KEY=VALUE map; nothing to apply"
+            )
+            return result
+
+        result.secrets = secrets
+        return result
+
+    def remediation(self, kind, cfg: dict) -> str:
+        if kind == ErrorKind.NOT_CONFIGURED:
+            return (
+                "Set secrets.command.command in config.yaml to a fast, "
+                "non-interactive helper that prints KEY=VALUE lines."
+            )
+        if kind == ErrorKind.INTERNAL:
+            return (
+                "Run the helper manually in a shell to see its real error — "
+                "Hermes discards helper stderr so diagnostics can't leak "
+                "secret material."
+            )
+        return super().remediation(kind, cfg)

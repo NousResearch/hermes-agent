@@ -232,6 +232,189 @@ class TestOSSBackend:
         assert raw == before
 
 
+class _FakeCollectionInfo:
+    def __init__(self, dims: int):
+        class _Vectors:
+            def __init__(self, size):
+                self.size = size
+        self.config = type("C", (), {"params": type("P", (), {"vectors": _Vectors(dims)})()})()
+
+
+class _FakeQdrantClient:
+    """Fake QdrantClient that tracks calls — no file locks."""
+    def __init__(self, *, existing_dims: int | None = 8, collection_name: str = "mem0"):
+        self._existing_dims = existing_dims
+        self._collection_name = collection_name
+        self.deleted = False
+        self.creations = []
+
+    def collection_exists(self, name: str) -> bool:
+        return self._existing_dims is not None and name == self._collection_name
+
+    def get_collection(self, name: str):
+        return _FakeCollectionInfo(self._existing_dims)
+
+    def delete_collection(self, name: str):
+        self.deleted = True
+
+    def create_collection(self, **kwargs):
+        self.creations.append(kwargs)
+
+
+class _FakeVectorStore:
+    """Fake vector store that wraps a fake QdrantClient."""
+    def __init__(self, client: _FakeQdrantClient, on_disk: bool = False):
+        self.client = client
+        self.on_disk = on_disk
+
+    def create_col(self, vector_size: int, on_disk: bool):
+        pass  # Just validate it's called
+
+
+class TestOSSBackendRecreateQdrantDims:
+    """Verify _recreate_qdrant_if_dims_changed uses Memory's own client."""
+
+    def _make_backend(self, client: _FakeQdrantClient, collection_name: str = "mem0"):
+        backend = OSSBackend.__new__(OSSBackend)
+        vs = _FakeVectorStore(client)
+        memory = type("M", (), {
+            "vector_store": vs,
+            "collection_name": collection_name,
+        })()
+        backend._memory = memory
+        return backend
+
+    def test_dims_match_no_delete(self):
+        """When collection dims match expected, nothing happens."""
+        client = _FakeQdrantClient(existing_dims=384)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(384)
+        assert not client.deleted
+
+    def test_dims_mismatch_recreates_collection(self):
+        """When collection dims differ, collection is deleted AND recreated."""
+        client = _FakeQdrantClient(existing_dims=128)
+        backend = self._make_backend(client)
+        vs = backend._memory.vector_store
+        original_create_col = vs.create_col
+        called = []
+        def tracking_create_col(vector_size, on_disk):
+            called.append((vector_size, on_disk))
+            return original_create_col(vector_size, on_disk)
+        vs.create_col = tracking_create_col
+
+        backend._recreate_qdrant_if_dims_changed(384)
+
+        assert client.deleted, "Collection should be deleted on dim mismatch"
+        assert len(called) == 1, "create_col should be called exactly once"
+        assert called[0] == (384, False), "Should recreate with expected dims"
+
+    def test_missing_collection_noop(self):
+        """When collection doesn't exist, nothing happens."""
+        client = _FakeQdrantClient(existing_dims=None)
+        backend = self._make_backend(client)
+        backend._recreate_qdrant_if_dims_changed(384)
+        assert not client.deleted
+
+    def test_no_vector_store_client_noop(self):
+        """When Memory has no vector_store.client, nothing happens."""
+        backend = OSSBackend.__new__(OSSBackend)
+        backend._memory = type("M", (), {"vector_store": None, "collection_name": "mem0"})()
+        backend._recreate_qdrant_if_dims_changed(384)
+        # Should not raise
+
+    def test_uses_memory_own_client(self):
+        """Verify the method accesses Memory's vector_store.client, not a new QdrantClient."""
+        client = _FakeQdrantClient(existing_dims=128)
+        backend = self._make_backend(client)
+        vs = backend._memory.vector_store
+        called = []
+        original = vs.create_col
+        def tracking_create_col(vector_size, on_disk):
+            called.append((vector_size, on_disk))
+            return original(vector_size, on_disk)
+        vs.create_col = tracking_create_col
+
+        backend._recreate_qdrant_if_dims_changed(384)
+
+        assert called, "create_col was called on Memory's own vector_store"
+        assert client.deleted
+
+
+class TestOSSBackendConstructorNoExtraClient:
+    """Constructor-level: verify __init__ does NOT create a separate QdrantClient."""
+
+    def test_init_does_not_create_extra_qdrant_client(self, monkeypatch):
+        """When dims mismatch, the collection is recreated via Memory's
+        vector_store, not via a temporary QdrantClient."""
+        import sys
+        import types
+
+        # Track QdrantClient constructions
+        qdrant_instances = []
+        class QdrantClient:
+            def __init__(self, **kwargs):
+                qdrant_instances.append(kwargs)
+            def collection_exists(self, name):
+                return True
+            def get_collection(self, name):
+                return _FakeCollectionInfo(128)  # Mismatch!
+            def delete_collection(self, name):
+                pass
+            def create_collection(self, **kwargs):
+                pass
+            def close(self):
+                pass
+
+        qdrant_client_module = types.ModuleType("qdrant_client")
+        qdrant_client_module.QdrantClient = QdrantClient
+
+        class FakeMemoryFromConfig:
+            collection_name = "mem0"
+            vector_store = _FakeVectorStore(_FakeQdrantClient(existing_dims=128))
+
+            @staticmethod
+            def from_config(config):
+                m = FakeMemoryFromConfig()
+                # Set the vector_store properly
+                vs = _FakeVectorStore(_FakeQdrantClient(existing_dims=128))
+                vs.on_disk = config.get("vector_store", {}).get("config", {}).get("on_disk", False)
+                m.vector_store = vs
+                m.collection_name = config.get("vector_store", {}).get("config", {}).get("collection_name", "mem0")
+                return m
+
+        mem0_module = types.ModuleType("mem0")
+        mem0_module.Memory = FakeMemoryFromConfig
+
+        # Also stub qdrant_client in sys.modules so OSSBackend won't try real import
+        monkeypatch.setitem(sys.modules, "qdrant_client", qdrant_client_module)
+        monkeypatch.setitem(sys.modules, "mem0", mem0_module)
+
+        raw = {
+            "llm": {
+                "provider": "openai",
+                "config": {"model": "gpt-4o-mini"},
+            },
+            "embedder": {
+                "provider": "openai",
+                "config": {"model": "text-embedding-3-small", "embedding_dims": 384},
+            },
+            "vector_store": {"provider": "qdrant", "config": {"path": "/tmp/test_qdrant"}},
+        }
+
+        backend = OSSBackend(raw)
+
+        # Should have used the Memory's QdrantClient, not created a new one.
+        assert len(qdrant_instances) == 0, (
+            f"No QdrantClient should be created during __init__. "
+            f"Got {len(qdrant_instances)}: {qdrant_instances}"
+        )
+
+        # Verify the vector store's collection was recreated on the dim mismatch.
+        assert hasattr(backend._memory, "vector_store")
+        assert backend._memory.vector_store.client.deleted
+
+
 httpx = pytest.importorskip("httpx")
 
 

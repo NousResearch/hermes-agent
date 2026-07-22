@@ -1,0 +1,59 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: talamus
+description: Give Hermes durable, cited, local-first project memory with temporal history.
+source: https://github.com/ampres-ai/talamus
+
+# Talamus publishes a standard stdio MCP server on PyPI. uvx keeps the
+# installation isolated and lets Hermes start the server without adding a
+# package to the user's global Python environment.
+transport:
+  type: stdio
+  command: "uvx"
+  # Pinned per catalog dependency policy. 1.0.0 was released 2026-07-03,
+  # beyond the two-week supply-chain cooldown at the time of this submission.
+  args:
+    - "--from"
+    - "talamus[mcp]==1.0.0"
+    - "talamus-mcp"
+  version: "1.0.0"
+
+auth:
+  type: none
+
+# Default to the read-oriented surface. The excluded tools can synthesize
+# answers with a configured LLM, write memory, or apply review decisions.
+# Users can opt into those deliberately with `hermes mcp configure talamus`.
+# `search` stays deterministic as long as its optional `smart` argument is
+# left false (the default).
+tools:
+  default_enabled:
+    - search
+    - read_note
+    - recall
+    - overview
+    - neighbors
+    - history
+    - sources
+    - ontology_status
+    - review_list
+
+post_install: |
+  Talamus resolves its project brain from the directory where Hermes starts.
+  From the project you want Hermes to remember, initialize one once with:
+
+    uvx --from "talamus[mcp]==1.0.0" talamus init
+
+  Then start a new Hermes session from that directory. Notes remain local,
+  human-readable Markdown; derived indexes are local and rebuildable.
+
+  The default tool set is read-oriented. `search` is deterministic while its
+  `smart` argument remains false. Tools such as ask/verify may call the user's
+  configured LLM, and remember/ingest/review tools mutate the brain, so they
+  are disabled until the user opts in with:
+
+    hermes mcp configure talamus
+
+  Re-run the catalog install to update a future pinned Talamus release.

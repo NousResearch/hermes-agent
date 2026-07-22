@@ -78,6 +78,7 @@ from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
 )
+from tools.process_registry import process_registry
 
 logger = logging.getLogger(__name__)
 
@@ -522,14 +523,125 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._connected_session_ids: set[str] = set()
+        self._background_notification_task: asyncio.Task | None = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
+        if self._background_notification_task is not None:
+            self._background_notification_task.cancel()
+        self._background_notification_task = None
+        # Session ownership belongs to one transport connection. A replacement
+        # client must attach or load its own sessions before receiving events.
+        self._connected_session_ids.clear()
         self._conn = conn
         logger.info("ACP client connected")
+        self._ensure_background_notification_task()
 
+    def _ensure_background_notification_task(self) -> None:
+        """Ensure async process notifications have a live dispatcher on this loop."""
+        conn = self._conn
+        task = self._background_notification_task
+        if conn is None or (task is not None and not task.done()):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            coroutine = self._background_notification_loop(conn)
+            created = loop.create_task(coroutine)
+            if not asyncio.isfuture(created):
+                coroutine.close()
+                self._background_notification_task = None
+                return
+            self._background_notification_task = created
+            logger.info("ACP background notification dispatcher started")
+        except RuntimeError:
+            self._background_notification_task = None
+            logger.debug("ACP connection has no running loop for background notifications")
+
+    async def _dispatch_background_notifications_once(self) -> int:
+        """Deliver pending process events owned by sessions on this ACP connection."""
+        conn = self._conn
+        if conn is None or not self._connected_session_ids:
+            return 0
+        pending = process_registry.drain_notifications(
+            event_filter=lambda event: str(event.get("session_key") or "")
+            in self._connected_session_ids,
+        )
+        delivered = 0
+
+        def requeue_from(start_index: int) -> None:
+            for queued_event, _ in pending[start_index:]:
+                process_registry.completion_queue.put(queued_event)
+
+        for index, (event, text) in enumerate(pending):
+            session_id = str(event.get("session_key") or "")
+            try:
+                event_type = str(event.get("type") or "completion")
+                process_status = "running"
+                if event_type == "completion":
+                    process_status = "completed" if event.get("exit_code") == 0 else "failed"
+                process_meta = {
+                    "id": str(event.get("session_id") or ""),
+                    "event": event_type,
+                    "status": process_status,
+                }
+                if event.get("exit_code") is not None:
+                    process_meta["exitCode"] = event.get("exit_code")
+                await conn.session_update(
+                    session_id=session_id,
+                    update=AgentMessageChunk(
+                        session_update="agent_message_chunk",
+                        content=TextContentBlock(type="text", text=text),
+                        field_meta={
+                            "hermes": {
+                                "backgroundNotification": True,
+                                "process": process_meta,
+                            }
+                        },
+                    ),
+                )
+                delivered += 1
+                logger.info(
+                    "ACP background notification delivered session=%s process=%s status=%s",
+                    session_id,
+                    process_meta["id"],
+                    process_meta["status"],
+                )
+            except asyncio.CancelledError:
+                # A replacement connection cancels this task while a drained
+                # event may be in flight. Restore the undelivered suffix before
+                # propagating cancellation to the connection-bound loop.
+                requeue_from(index)
+                raise
+            except Exception:
+                # Preserve this event and every not-yet-attempted owned event.
+                # The transport is no longer usable, so do not repeatedly drain
+                # and retry the same queue entries on this connection.
+                requeue_from(index)
+                if self._conn is conn:
+                    self._conn = None
+                logger.debug(
+                    "Failed to deliver ACP background notification for %s",
+                    session_id,
+                    exc_info=True,
+                )
+                break
+        return delivered
+
+    async def _background_notification_loop(self, conn: acp.Client) -> None:
+        """Poll the shared completion queue while this ACP connection is active."""
+        try:
+            while self._conn is conn:
+                await self._dispatch_background_notifications_once()
+                if self._conn is not conn:
+                    break
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("ACP background notification loop stopped", exc_info=True)
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Return ACP session modes while preserving Zed's separate model picker.
@@ -1117,6 +1229,7 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
@@ -1141,6 +1254,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
@@ -1188,6 +1302,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must
@@ -1236,6 +1351,7 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.fork_session(session_id, cwd=cwd)
         new_id = state.session_id if state else ""
         if state is not None:
+            self._connected_session_ids.add(state.session_id)
             await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, new_id)
         if new_id:
@@ -1306,11 +1422,13 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
+        self._ensure_background_notification_task()
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
 
+        self._connected_session_ids.add(state.session_id)
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)

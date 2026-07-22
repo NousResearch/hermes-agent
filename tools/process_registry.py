@@ -694,6 +694,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        notify_on_complete: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -712,6 +713,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            notify_on_complete=notify_on_complete,
         )
 
         if use_pty:
@@ -833,6 +835,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        notify_on_complete: bool = False,
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -854,6 +857,7 @@ class ProcessRegistry:
             started_at=time.time(),
             env_ref=env,
             pid_scope="sandbox",
+            notify_on_complete=notify_on_complete,
         )
 
         # Run the command in the sandbox with output capture
@@ -1168,6 +1172,7 @@ class ProcessRegistry:
         session_key: str = "",
         owns_event=None,
         *,
+        event_filter=None,
         skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
@@ -1198,6 +1203,11 @@ class ProcessRegistry:
         retain that legacy behavior even when a filter is provided. When a
         filter is provided, ownerless async-delegation events remain
         fail-closed and require positive proof.
+
+        ``event_filter(evt) -> bool`` is a transport-level positive ownership
+        check applied to every notification type before local consumed state is
+        considered. Non-matching events are re-queued so another transport or
+        session can claim them.
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
@@ -1206,6 +1216,14 @@ class ProcessRegistry:
                 evt = self.completion_queue.get_nowait()
             except Exception:
                 break
+            if event_filter is not None:
+                try:
+                    accepted = bool(event_filter(evt))
+                except Exception:
+                    accepted = False
+                if not accepted:
+                    requeue.append(evt)
+                    continue
             # Positive-proof ownership beats bare key equality. Delegation
             # payloads always require proof; ordinary events require it once
             # they carry routing metadata. Ownerless ordinary events preserve

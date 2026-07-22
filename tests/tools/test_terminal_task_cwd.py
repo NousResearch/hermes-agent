@@ -164,6 +164,7 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
         "session_key": task_id,
         "env_vars": {},
         "use_pty": False,
+        "notify_on_complete": False,
     }]
 
 

@@ -32,6 +32,7 @@ import { useGatewayEventHandler } from './gateway-event'
 import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
+  activeGatewayProfile?: string
   activeSessionIdRef: MutableRefObject<string | null>
   hydrateFromStoredSession: (
     attempts?: number,
@@ -55,6 +56,7 @@ interface QueuedStreamDeltas {
 }
 
 export function useMessageStream({
+  activeGatewayProfile = 'default',
   activeSessionIdRef,
   hydrateFromStoredSession,
   queryClient,
@@ -613,6 +615,7 @@ export function useMessageStream({
   )
 
   const handleGatewayEvent = useGatewayEventHandler({
+    activeGatewayProfile,
     appendAssistantDelta,
     appendReasoningDelta,
     activeSessionIdRef,

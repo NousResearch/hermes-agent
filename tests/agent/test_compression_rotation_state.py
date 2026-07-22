@@ -143,6 +143,46 @@ class TestOrphanRollbackOnCreateFailure:
         _ = real_create  # silence unused
 
 
+class TestWorkspaceMetadataFollowsRotation:
+    def test_child_row_inherits_cwd_repo_and_origin_on_rotation(self, tmp_path: Path):
+        """Behavioral #64709/#59527: drive the REAL compression rotation path
+        and assert the child session row carries the parent's workspace and
+        gateway-origin metadata, so the project sidebar entry and the peer
+        routing mapping both survive the compaction boundary."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_CWD_ROT"
+        db.create_session(
+            parent,
+            source="telegram",
+            user_id="u1",
+            session_key="telegram:u1:c1",
+            chat_id="c1",
+            chat_type="private",
+        )
+        db.update_session_cwd(
+            parent, "/work/repo", git_branch="main", git_repo_root="/work/repo"
+        )
+        agent = _build_agent_with_db(db, parent, platform="telegram")
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent  # rotation happened
+
+        row = db.get_session(child)
+        assert row is not None
+        assert row["parent_session_id"] == parent
+        # Workspace metadata (#64709): sidebar grouping keys must survive.
+        assert row["cwd"] == "/work/repo"
+        assert row["git_repo_root"] == "/work/repo"
+        assert row["git_branch"] == "main"
+        # Gateway origin metadata (#59527): routing keys must survive even if
+        # the gateway never gets to re-record the peer (crash window).
+        assert row["session_key"] == "telegram:u1:c1"
+        assert row["chat_id"] == "c1"
+        assert row["chat_type"] == "private"
+        assert row["user_id"] == "u1"
+
+
 class TestPlatformForwardedAtBoundary:
     def test_on_session_start_receives_platform(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")

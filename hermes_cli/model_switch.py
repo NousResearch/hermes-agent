@@ -838,6 +838,9 @@ def resolve_display_context_length(
     model_info: Optional[ModelInfo] = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
+    configured_model: str | None = None,
+    configured_provider: str | None = None,
+    configured_base_url: str | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -856,6 +859,24 @@ def resolve_display_context_length(
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    if config_context_length is not None and (
+        configured_model or configured_provider or configured_base_url
+    ):
+        try:
+            from hermes_cli.route_identity import should_clear_context_pin
+
+            if should_clear_context_pin(
+                configured_model,
+                model,
+                configured_base_url,
+                base_url,
+                configured_provider,
+                provider,
+            ):
+                config_context_length = None
+        except Exception:
+            config_context_length = None
+
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(

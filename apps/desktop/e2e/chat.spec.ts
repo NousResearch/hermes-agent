@@ -8,7 +8,7 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { test } from '@playwright/test'
+import { test } from './test'
 
 import {
   type MockBackendFixture,

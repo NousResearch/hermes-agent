@@ -127,6 +127,32 @@ def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
     ) is default_adapter
 
 
+def test_chat_routed_source_keeps_receiving_shared_adapter(monkeypatch):
+    """A runtime-only profile route must not discard the shared transport.
+
+    ``source.profile`` selects the routed runtime/session namespace, but the
+    adapter that built the source still owns outbound delivery and intake
+    policy when that profile has no credential of its own.
+    """
+    runner, default_adapter, _secondary_adapter = _make_multiplex_runner(
+        monkeypatch
+    )
+    runner._profile_adapters["routed"] = {}
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="dm-chat",
+        user_name="allowed-user",
+        chat_type="dm",
+        profile="routed",
+    )
+    assert runner._adapter_for_source(source) is None
+    source._transport_adapter_ref = lambda: default_adapter
+    assert runner._adapter_for_source(source) is default_adapter
+    assert runner._is_user_authorized(source) is True
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

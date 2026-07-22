@@ -14,14 +14,15 @@ import type {
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
+import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type {
-  GatewayRpc,
-  InputHandlerActions,
-  InputHandlerContext,
-  InputHandlerResult,
-  OverlayState
+import {
+  type GatewayRpc,
+  type InputHandlerActions,
+  type InputHandlerContext,
+  type InputHandlerResult,
+  type OverlayState
 } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
@@ -127,6 +128,8 @@ export function dismissSensitivePrompt(
   }
 }
 
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -217,6 +220,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.journey) {
       return patchOverlayState({ journey: false })
+    }
+
+    if (overlay.widget) {
+      return closeWidget()
     }
   }
 
@@ -398,6 +405,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           })
         }
 
+        return
+      }
+
+      // Widget apps (SDK): the active app owns every key while open. This
+      // supersedes the demo-only handleStackedModalInput routing from #68999
+      // — grid-test/dialog are now widget apps, so the topmost-modal-owns-
+      // input contract is enforced structurally by the single active widget.
+      if (overlay.widget && dispatchWidgetInput({ ch, key })) {
         return
       }
 

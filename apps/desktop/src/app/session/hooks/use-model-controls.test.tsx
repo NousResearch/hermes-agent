@@ -3,6 +3,8 @@ import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
+import { modelOptionsQueryKey } from '@/lib/model-options'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
@@ -79,6 +81,7 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentModelSource('')
@@ -88,6 +91,7 @@ describe('useModelControls', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentModelSource('')
@@ -201,6 +205,26 @@ describe('useModelControls', () => {
     expect(setGlobalModel).not.toHaveBeenCalled()
   })
 
+  it('updates only the active profile new-chat cache', async () => {
+    const queryClient = new QueryClient()
+    $activeGatewayProfile.set('compass')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.selectModel({ model: 'qwen3.6:35b-65k', provider: 'custom:local-ollama' })
+
+    expect(queryClient.getQueryData(modelOptionsQueryKey('compass'))).toMatchObject({
+      model: 'qwen3.6:35b-65k',
+      provider: 'custom:local-ollama'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toBeUndefined()
+  })
+
   it('seeds an empty composer model from global but never clobbers a pick', async () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
 
@@ -232,7 +256,11 @@ describe('useModelControls', () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
 
     const queryClient = new QueryClient()
-    queryClient.setQueryData(['model-options', 'global'], {
+    $activeGatewayProfile.set('compass')
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      providers: [{ models: ['openrouter/owl-alpha'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+    queryClient.setQueryData(modelOptionsQueryKey('compass'), {
       providers: [{ models: ['openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
     })
 
@@ -253,7 +281,7 @@ describe('useModelControls', () => {
     vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
 
     const queryClient = new QueryClient()
-    queryClient.setQueryData(['model-options', 'global'], {
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
       providers: [{ models: ['openrouter/glm-4.7', 'openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
     })
 
@@ -346,16 +374,16 @@ describe('useModelControls', () => {
   })
 
   it('targets an explicit tile sessionId without clobbering the primary model', async () => {
+    const queryClient = new QueryClient()
+    $activeGatewayProfile.set('compass')
     $activeSessionId.set('primary-runtime')
     setCurrentModel('primary/model')
     setCurrentProvider('openai')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'tile-model' }) as never)
-    let controls!: Controls
-
-    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway }))
 
     await expect(
-      controls.selectModel({
+      result.current.selectModel({
         model: 'tile-model',
         provider: 'anthropic',
         sessionId: 'tile-runtime'
@@ -370,5 +398,10 @@ describe('useModelControls', () => {
     // Primary footer untouched — the busy primary must not absorb a tile pick.
     expect($currentModel.get()).toBe('primary/model')
     expect($currentProvider.get()).toBe('openai')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('compass', 'tile-runtime'))).toMatchObject({
+      model: 'tile-model',
+      provider: 'anthropic'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'tile-runtime'))).toBeUndefined()
   })
 })

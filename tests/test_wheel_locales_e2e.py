@@ -55,7 +55,10 @@ def test_installed_wheel_renders_i18n_strings(tmp_path):
     #    same-version no-op.
     venv_dir = tmp_path / "venv"
     venv.create(venv_dir, with_pip=True)
-    vpy = venv_dir / "bin" / "python"
+    if sys.platform == "win32":
+        vpy = venv_dir / "Scripts" / "python.exe"
+    else:
+        vpy = venv_dir / "bin" / "python"
     subprocess.run([str(vpy), "-m", "pip", "install", "-q", "pyyaml"], check=True, timeout=300)
     subprocess.run(
         [str(vpy), "-m", "pip", "install", "-q", "--no-deps", "--force-reinstall", wheel],
@@ -75,7 +78,11 @@ def test_installed_wheel_renders_i18n_strings(tmp_path):
         "and s != 'gateway.status.header') else 1)"
     )
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "HERMES_BUNDLED_LOCALES")}
-    env["PATH"] = f"{venv_dir / 'bin'}:{env['PATH']}"
+    env["PYTHONIOENCODING"] = "utf-8"
+    if sys.platform == "win32":
+        env["PATH"] = f"{venv_dir / 'Scripts'}{os.pathsep}{env['PATH']}"
+    else:
+        env["PATH"] = f"{venv_dir / 'bin'}{os.pathsep}{env['PATH']}"
     env["VIRTUAL_ENV"] = str(venv_dir)
     run = subprocess.run(
         [str(vpy), "-c", probe],
@@ -135,3 +142,54 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     assert any(m.endswith("/locales/en.yaml") for m in catalogs), (
         f"sdist missing locales/en.yaml; shipped: {catalogs[:5]}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(300)
+def test_built_sdist_ships_web_dist(tmp_path):
+    """The sdist must carry hermes_cli/web_dist/ too.
+
+    MANIFEST.in `graft hermes_cli/web_dist` is what puts the frontend assets
+    in the source distribution tarball. This test builds the sdist and asserts
+    that index.html exists inside it.
+    """
+    # Create a dummy index.html in hermes_cli/web_dist if it doesn't exist
+    # so that the sdist build actually has files to bundle.
+    web_dist_dir = REPO_ROOT / "hermes_cli" / "web_dist"
+    dummy_index = web_dist_dir / "index.html"
+    created_dummy = False
+    if not dummy_index.exists():
+        web_dist_dir.mkdir(parents=True, exist_ok=True)
+        with open(dummy_index, "w", encoding="utf-8") as f:
+            f.write("<html><body>Dummy Dashboard</body></html>")
+        created_dummy = True
+
+    try:
+        sdist_dir = tmp_path / "sdist"
+        build = subprocess.run(
+            ["uv", "build", "--sdist", "--out-dir", str(sdist_dir), "."],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert build.returncode == 0, f"uv build --sdist failed:\n{build.stderr}"
+        tarballs = glob.glob(str(sdist_dir / "*.tar.gz"))
+        assert tarballs, "no sdist produced"
+
+        with tarfile.open(tarballs[0]) as tf:
+            names = tf.getnames()
+            web_assets = [m for m in names if "hermes_cli/web_dist/" in m]
+
+        assert any(m.endswith("/hermes_cli/web_dist/index.html") for m in web_assets), (
+            f"sdist missing hermes_cli/web_dist/index.html; shipped files in web_dist: {web_assets}"
+        )
+    finally:
+        if created_dummy and dummy_index.exists():
+            try:
+                dummy_index.unlink()
+                # Clean up directory if it's empty
+                if not any(web_dist_dir.iterdir()):
+                    web_dist_dir.rmdir()
+            except Exception:
+                pass

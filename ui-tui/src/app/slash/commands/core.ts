@@ -11,7 +11,8 @@ import type {
   SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
-  SessionUndoResponse
+  SessionUndoResponse,
+  SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -106,7 +107,9 @@ export const coreCommands: SlashCommand[] = [
               '/details <section> [hidden|collapsed|expanded|reset]',
               'override one section (thinking/tools/subagents/activity)'
             ],
-            ['/fortune [random|daily]', 'show a random or daily local fortune']
+            ['/fortune [random|daily]', 'show a random or daily local fortune'],
+            ['/grid-test [cols]x[rows]', 'open the interactive widget-grid demo'],
+            ['/dialog-test [zone]', 'open a sample dialog overlay with a faked backdrop']
           ],
           title: 'TUI'
         },
@@ -275,19 +278,19 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle compact transcript',
-    name: 'compact',
+    help: 'toggle compact display',
+    name: 'density',
     run: (arg, ctx) => {
       const next = flagFromArg(arg, ctx.ui.compact)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /compact [on|off|toggle]')
+        return ctx.transcript.sys('usage: /density [on|off|toggle]')
       }
 
       patchUiState({ compact: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`compact ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`density ${next ? 'on' : 'off'}`))
     }
   },
 
@@ -576,6 +579,45 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
+    }
+  },
+
+  {
+    help: 'toggle a color-coded battery indicator in the status bar [on|off|status]',
+    name: 'battery',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      // `/battery status` reports the current setting plus a live reading,
+      // matching the CLI surface. Fetch on demand so it works even while the
+      // indicator (and its poller) is off.
+      if (mode === 'status' || mode === 'show') {
+        const state = ctx.ui.battery ? 'on' : 'off'
+
+        ctx.gateway
+          .rpc<SystemBatteryResponse>('system.battery', {})
+          .then(r => {
+            if (r?.available && typeof r.percent === 'number') {
+              ctx.transcript.sys(`battery indicator ${state} — currently ${r.plugged ? '⚡' : '🔋'} ${r.percent}%`)
+            } else {
+              ctx.transcript.sys(`battery indicator ${state} — no battery detected on this machine`)
+            }
+          })
+          .catch(() => ctx.transcript.sys(`battery indicator ${state}`))
+
+        return
+      }
+
+      const next = flagFromArg(arg, ctx.ui.battery)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /battery [on|off|status]')
+      }
+
+      patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`battery indicator ${next ? 'on' : 'off'}`))
     }
   },
 

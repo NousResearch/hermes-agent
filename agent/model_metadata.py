@@ -2666,16 +2666,61 @@ async def get_model_context_length_async(
     )
 
 
+def _is_cjk_token_dense_char(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x1100 <= code <= 0x11FF  # Hangul Jamo
+        or 0x2E80 <= code <= 0x9FFF  # CJK radicals/ideographs
+        or 0xA960 <= code <= 0xA97F  # Hangul Jamo Extended-A
+        or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
+        or 0xF900 <= code <= 0xFAFF  # CJK compatibility ideographs
+        or 0xFF00 <= code <= 0xFFEF  # Fullwidth forms / halfwidth kana
+    )
+
+
+# Same codepoint ranges as _is_cjk_token_dense_char, as a compiled character
+# class so dense-char counting runs in C (``len(text) - len(re.sub(...))``)
+# instead of a per-char Python loop.  MUST stay in sync with
+# _is_cjk_token_dense_char.
+_CJK_DENSE_RE = re.compile(
+    "[\u1100-\u11ff"  # Hangul Jamo
+    "\u2e80-\u9fff"  # CJK radicals/ideographs
+    "\ua960-\ua97f"  # Hangul Jamo Extended-A
+    "\uac00-\ud7af"  # Hangul Syllables
+    "\uf900-\ufaff"  # CJK compatibility ideographs
+    "\uff00-\uffef]"  # Fullwidth forms / halfwidth kana
+)
+
+
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks.
+    """Rough token estimate for pre-flight checks.
 
     Uses ceiling division so short texts (1-3 chars) never estimate as
     0 tokens, which would cause the compressor and pre-flight checks to
     systematically undercount when many short tool results are present.
+    CJK/Hangul/Kana text is much denser than English under common LLM
+    tokenizers, so count those codepoints as roughly one token each instead
+    of applying the English-centric ~4 chars/token rule.
+
+    Perf: this runs on every message in every preflight/compaction walk,
+    including MB-scale tool outputs, so the common all-ASCII case must stay
+    O(1).  ``str.isascii()`` is a flag check on CPython's compact unicode
+    representation (no scan), and the CJK counting itself is a single
+    C-level ``re.findall`` rather than a per-character Python loop.
     """
     if not text:
         return 0
-    return (len(text) + 3) // 4
+    text = str(text)
+    if text.isascii():
+        # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
+        return (len(text) + 3) // 4
+    dense = len(text) - len(_CJK_DENSE_RE.sub("", text))
+    if not dense:
+        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): keep the
+        # classic ~4 chars/token rule.
+        return (len(text) + 3) // 4
+    sparse = len(text) - dense
+    return dense + ((sparse + 3) // 4)
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
@@ -2687,12 +2732,12 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     estimated at ~250K tokens and trigger premature context compression.
     """
     _IMAGE_TOKEN_COST = 1500
-    total_chars = 0
+    text_tokens = 0
     image_tokens = 0
     for msg in messages:
-        total_chars += _estimate_message_chars(msg)
+        text_tokens += _estimate_message_tokens_without_images(msg)
         image_tokens += _count_image_tokens(msg, _IMAGE_TOKEN_COST)
-    return ((total_chars + 3) // 4) + image_tokens
+    return text_tokens + image_tokens
 
 
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
@@ -2754,6 +2799,35 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     return len(str(shadow))
 
 
+def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
+    """Token estimate for a message shadow with image payloads stripped."""
+    if not isinstance(msg, dict):
+        return estimate_tokens_rough(str(msg))
+    shadow: Dict[str, Any] = {}
+    for k, v in msg.items():
+        if k == "_anthropic_content_blocks":
+            continue
+        if k == "content":
+            if isinstance(v, list):
+                cleaned = []
+                for part in v:
+                    if isinstance(part, dict):
+                        if part.get("type") in {"image", "image_url", "input_image"}:
+                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
+                        else:
+                            cleaned.append(part)
+                    else:
+                        cleaned.append(part)
+                shadow[k] = cleaned
+            elif isinstance(v, dict) and v.get("_multimodal"):
+                shadow[k] = v.get("text_summary", "")
+            else:
+                shadow[k] = v
+        else:
+            shadow[k] = v
+    return estimate_tokens_rough(str(shadow))
+
+
 def estimate_request_tokens_rough(
     messages: List[Dict[str, Any]],
     *,
@@ -2770,7 +2844,7 @@ def estimate_request_tokens_rough(
     """
     total = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        total += estimate_tokens_rough(system_prompt)
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:

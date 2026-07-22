@@ -945,7 +945,7 @@ class TestConvertMessages:
             {"role": "tool", "tool_call_id": "tc_1", "content": "search results"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
+        blocks = next(m for m in result if m["role"] == "assistant")["content"]
         assert blocks[0] == {"type": "text", "text": "Let me search."}
         assert blocks[1]["type"] == "tool_use"
         assert blocks[1]["id"] == "tc_1"
@@ -963,8 +963,13 @@ class TestConvertMessages:
             {"role": "tool", "tool_call_id": "tc_1", "content": "result data"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        # tool result is in the second message (user role)
-        user_msg = [m for m in result if m["role"] == "user"][0]
+        # tool result is in the user message following the assistant turn
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
         assert user_msg["content"][0]["type"] == "tool_result"
         assert user_msg["content"][0]["tool_use_id"] == "tc_1"
 
@@ -983,7 +988,12 @@ class TestConvertMessages:
         ]
         _, result = convert_messages_to_anthropic(messages)
         # assistant + merged user (with 2 tool_results)
-        user_msgs = [m for m in result if m["role"] == "user"]
+        user_msgs = [
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        ]
         assert len(user_msgs) == 1
         assert len(user_msgs[0]["content"]) == 2
 
@@ -1041,7 +1051,12 @@ class TestConvertMessages:
             {"role": "tool", "tool_call_id": "tc_orphan", "content": "stale result"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        user_msg = [m for m in result if m["role"] == "user"][0]
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
         tool_results = [
             b for b in user_msg["content"] if b.get("type") == "tool_result"
         ]
@@ -1096,7 +1111,12 @@ class TestConvertMessages:
         _, result = convert_messages_to_anthropic(messages)
         asst = [m for m in result if m["role"] == "assistant"][0]
         assert any(b.get("type") == "tool_use" for b in asst["content"])
-        user = [m for m in result if m["role"] == "user"][0]
+        user = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
         assert any(b.get("type") == "tool_result" for b in user["content"])
 
     def test_system_with_cache_control(self):
@@ -1121,7 +1141,8 @@ class TestConvertMessages:
         ])
 
         _, result = convert_messages_to_anthropic(messages)
-        assistant_blocks = result[0]["content"]
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        assistant_blocks = assistant_msg["content"]
 
         assert assistant_blocks[0]["type"] == "text"
         assert assistant_blocks[0]["text"] == "Hello from assistant"
@@ -1207,7 +1228,12 @@ class TestConvertMessages:
         ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        user_msg = [m for m in result if m["role"] == "user"][0]
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
         tool_block = user_msg["content"][0]
 
         assert tool_block["type"] == "tool_result"
@@ -1355,6 +1381,90 @@ class TestConvertMessages:
         assert result[0]["role"] == "user"
         assert isinstance(result[0]["content"], list)
         assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+
+    def test_leading_assistant_after_compaction_gets_user_turn_prepended(self):
+        """The adapter backstops compactors that emit a leading assistant summary."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "assistant", "content": "[Context compaction summary] earlier work…"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        system, result = convert_messages_to_anthropic(messages)
+
+        assert system == "You are helpful."
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        assert result[1]["role"] == "assistant"
+        assert any(
+            m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
+            for m in result
+        )
+
+    def test_double_compaction_no_system_in_messages_leads_with_user(self):
+        """Exact post-double-compaction shape on the auto path (#52160).
+
+        On the auto path the system prompt is NOT inside messages[] and after
+        the second compaction protect_head has decayed to 0, so the
+        assistant-role summary is messages[0]. The converted payload must
+        still lead with a user turn or Anthropic 400s.
+        """
+        messages = [
+            {"role": "assistant", "content": "[Context compaction summary] earlier work…"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        system, result = convert_messages_to_anthropic(messages)
+
+        assert system is None
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        assert result[1]["role"] == "assistant"
+        assert "Context compaction summary" in str(result[1]["content"])
+
+    def test_leading_user_message_is_not_modified(self):
+        """A normal transcript that already starts with user must be untouched."""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "hello"
+
+    def test_leading_assistant_with_tool_use_after_compaction_is_repaired(self):
+        """Repair the leading role without disturbing adjacent tool pairs."""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "content": "running it",
+                "tool_calls": [
+                    {"id": "toolu_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "ok"},
+            {"role": "user", "content": "next"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result[0]["role"] == "user"
+        asst_idx = next(
+            i for i, m in enumerate(result)
+            if m["role"] == "assistant"
+            and any(b.get("type") == "tool_use" for b in m["content"] if isinstance(b, dict))
+        )
+        nxt = result[asst_idx + 1]
+        assert nxt["role"] == "user"
+        assert any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == "toolu_1"
+            for b in nxt["content"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2076,7 +2186,7 @@ class TestThinkingBlockSignatureManagement:
             },
         ]
         _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
+        blocks = next(m for m in result if m["role"] == "assistant")["content"]
         thinking = [b for b in blocks if b.get("type") == "thinking"]
         assert len(thinking) == 1
         assert thinking[0]["signature"] == "sig_valid"
@@ -2094,7 +2204,7 @@ class TestThinkingBlockSignatureManagement:
             },
         ]
         _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
+        blocks = next(m for m in result if m["role"] == "assistant")["content"]
 
         # No thinking blocks should remain
         assert not any(b.get("type") == "thinking" for b in blocks)
@@ -2114,7 +2224,7 @@ class TestThinkingBlockSignatureManagement:
             },
         ]
         _, result = convert_messages_to_anthropic(messages)
-        blocks = result[0]["content"]
+        blocks = next(m for m in result if m["role"] == "assistant")["content"]
         redacted = [b for b in blocks if b.get("type") == "redacted_thinking"]
         assert len(redacted) == 1
         assert redacted[0]["data"] == "opaque_signature_data"
@@ -2208,7 +2318,7 @@ class TestThinkingBlockSignatureManagement:
         _, result = convert_messages_to_anthropic(messages)
         # First assistant is non-last, so thinking is stripped completely.
         # The original content was empty and thinking was unsigned → placeholder
-        first_assistant = result[0]
+        first_assistant = next(m for m in result if m["role"] == "assistant")
         assert first_assistant["role"] == "assistant"
         assert len(first_assistant["content"]) >= 1
 

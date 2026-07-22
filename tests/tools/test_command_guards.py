@@ -440,6 +440,9 @@ class TestGatewayApprovalAllowPermanent:
         renderer hides "Always allow"."""
         payload = self._capture_gateway_payload("curl https://bit.ly/abc", "gw-no-perm")
         assert payload["allow_permanent"] is False
+        # Session scope stays available — pure-tirith prompts are session-max,
+        # not once-max (salvaged from PR #67312).
+        assert payload["allow_session"] is True
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",

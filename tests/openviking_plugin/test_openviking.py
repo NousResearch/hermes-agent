@@ -106,6 +106,7 @@ def make_prefetch_provider(monkeypatch, responses, **env):
         "OPENVIKING_RECALL_FULL_READ_LIMIT",
         "OPENVIKING_RECALL_PREFER_ABSTRACT",
         "OPENVIKING_RECALL_RESOURCES",
+        "OPENVIKING_PROFILE_TOKEN_BUDGET",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -965,7 +966,7 @@ class TestOpenVikingRead:
 
 class TestOpenVikingAutoRecallPrefetch:
     def test_prefetch_e2e_sends_limit_and_reads_l2_content(self, monkeypatch):
-        records = {"searches": [], "reads": [], "headers": []}
+        records = {"searches": [], "reads": [], "listings": [], "headers": []}
 
         class Handler(BaseHTTPRequestHandler):
             def _send_json(self, payload):
@@ -987,8 +988,40 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
                     uri = query.get("uri", [""])[0]
+                    if uri == "viking://user/memories/profile.md":
+                        self._send_json({"result": "E2E user profile."})
+                        return
                     records["reads"].append(uri)
                     self._send_json({"result": {"content": "E2E full L2 memory content."}})
+                    return
+                if parsed.path == "/api/v1/fs/ls":
+                    query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+                    records["listings"].append(query)
+                    uri = query.get("uri")
+                    if uri == "viking://user/memories/preferences":
+                        self._send_json({
+                            "result": [
+                                {"isDir": True, "rel_path": "owner", "abstract": "ignored"},
+                                {
+                                    "isDir": False,
+                                    "rel_path": "owner/answers.md",
+                                    "abstract": "Prefers source-backed answers.",
+                                },
+                            ]
+                        })
+                        return
+                    if uri == "viking://user/memories/entities":
+                        self._send_json({
+                            "result": [
+                                {
+                                    "isDir": False,
+                                    "rel_path": "people/ada.md",
+                                    "abstract": "Ada is the project owner.",
+                                }
+                            ]
+                        })
+                        return
+                    self.send_error(404)
                     return
                 self.send_error(404)
 
@@ -1029,6 +1062,7 @@ class TestOpenVikingAutoRecallPrefetch:
             "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
             "OPENVIKING_RECALL_PREFER_ABSTRACT",
             "OPENVIKING_RECALL_RESOURCES",
+            "OPENVIKING_PROFILE_TOKEN_BUDGET",
             "OPENVIKING_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -1048,9 +1082,20 @@ class TestOpenVikingAutoRecallPrefetch:
             thread.join(timeout=3.0)
 
         assert block.startswith("## OpenViking Context\n")
+        assert "E2E user profile." in block
+        assert "owner/answers.md — Prefers source-backed answers." in block
+        assert "people/ada.md — Ada is the project owner." in block
         assert "E2E full L2 memory content." in block
         assert "E2E abstract should not be injected." not in block
         assert records["reads"] == ["viking://user/peers/hermes/memories/e2e-full.md"]
+        assert [listing["uri"] for listing in records["listings"]] == [
+            "viking://user/memories/preferences",
+            "viking://user/memories/entities",
+        ]
+        assert all(listing["output"] == "agent" for listing in records["listings"])
+        assert all(listing["recursive"].lower() == "true" for listing in records["listings"])
+        assert all(listing["abs_limit"] == "512" for listing in records["listings"])
+        assert all(listing["node_limit"] == "512" for listing in records["listings"])
         assert len(records["searches"]) == 1
         assert records["searches"][0]["context_type"] == "memory"
         assert records["searches"][0]["session_id"] == "e2e-session"

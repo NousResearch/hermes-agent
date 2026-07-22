@@ -35,37 +35,289 @@ def _spawns(captured, *needles):
     ]
 
 
-def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
-    from tui_gateway import git_probe
+def _is_git_spawn(cmd) -> bool:
+    """True only for a ``git -C <cwd> ...`` spawn.
 
-    captured = []
+    ``bounded_git_probe`` lives in ``hermes_cli._subprocess_compat`` and both
+    probe call sites delegate to it, so these tests patch
+    ``_subprocess_compat.subprocess.Popen`` — which is the shared ``subprocess``
+    module singleton, i.e. a process-wide patch. Any unrelated daemon spawn
+    (e.g. an import-time update-check thread) must stay benign and out of the
+    recorded spawns, mirroring the ``_spawns`` scoping the other tests use.
+    """
+    return bool(cmd) and cmd[:2] == ["git", "-C"]
+
+
+def _make_fake_popen(spawns, *, stdout="ok\n", returncode=0):
+    """Fast-path Popen stand-in: git returns within the budget."""
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            if _is_git_spawn(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = returncode
+
+        def communicate(self, timeout=None):
+            return (stdout, "")
+
+        def kill(self):  # pragma: no cover - never reached on the fast path
+            raise AssertionError("kill() must not run when git returns in time")
+
+    return _FakePopen
+
+
+def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
+    """The normal-path spawn contract survives the run()->Popen rewrite:
+    PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on Windows."""
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
+
+    out = _subprocess_compat.bounded_git_probe(
+        ["git", "-C", "C:/repo", "branch", "--show-current"], timeout=1.5
+    )
+    assert out == "main"
+    assert len(spawns) == 1, spawns
+    cmd, kwargs = spawns[0]
+    assert cmd == ["git", "-C", "C:/repo", "branch", "--show-current"]
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_bounded_git_probe_no_hide_flags_off_windows(monkeypatch):
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == "main"
+    assert len(spawns) == 1, spawns
+    assert "creationflags" not in spawns[0][1]
+
+
+def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        _subprocess_compat.subprocess,
+        "Popen",
+        _make_fake_popen(spawns, stdout="garbage-should-not-leak\n", returncode=1),
+    )
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+
+
+def test_bounded_git_probe_timeout_kills_and_returns_empty(monkeypatch):
+    """A hung git is killed and cleaned up with a *bounded* second
+    communicate(), and the probe returns "" — never subprocess.run()'s
+    unbounded post-kill reader-thread join, which on Windows deadlocks when a
+    suspended descendant git.exe retains the captured handles and blocks Desktop
+    agent initialization behind it (issues #68609 / #66037)."""
+    from hermes_cli import _subprocess_compat
+
+    events = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_git_spawn(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            events.append(f"comm:{timeout}")
+            if timeout != 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")  # bounded post-kill drain succeeds
+
+        def kill(self):
+            if self._probe:
+                events.append("kill")
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _HangingPopen)
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+    assert events == ["comm:1.5", "kill", "comm:1"]
+
+
+def test_bounded_git_probe_timeout_tree_kills_on_windows(monkeypatch):
+    """On Windows the timeout path must escalate past ``proc.kill()`` to
+    ``taskkill /T /F`` so the suspended descendant git.exe holding the pipe
+    writers dies too — otherwise the bounded drain can't reach EOF and the
+    process + reader threads leak per fired timeout (the #68609 leak)."""
+    from hermes_cli import _subprocess_compat
+
+    taskkills = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_git_spawn(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if self._probe and timeout != 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")
+
+        def kill(self):
+            pass
 
     def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="main\n")
+        taskkills.append((cmd, kwargs))
+        return _Completed()
 
-    monkeypatch.setattr(git_probe, "IS_WINDOWS", True)
-    monkeypatch.setattr(git_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(git_probe.subprocess, "run", fake_run)
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _HangingPopen)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "run", fake_run)
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "C:/repo", "status"], timeout=1.5) == ""
+    kills = [c for c, _ in taskkills if c and c[0] == "taskkill"]
+    assert kills == [["taskkill", "/T", "/F", "/PID", "4242"]], taskkills
+    assert taskkills[0][1].get("creationflags") == _CREATE_NO_WINDOW
+
+
+def test_bounded_git_probe_kill_failure_still_fails_open(monkeypatch):
+    """kill() raising (access denied, already-reaped) must not escape — the
+    contract is "" on ANY failure. A raise inside the except handler would
+    otherwise propagate."""
+    from hermes_cli import _subprocess_compat
+
+    class _UnkillablePopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_git_spawn(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if self._probe and timeout != 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")
+
+        def kill(self):
+            if self._probe:
+                raise OSError("access denied")
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _UnkillablePopen)
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+
+
+def test_bounded_git_probe_nontimeout_failure_kills_child(monkeypatch):
+    """A non-timeout communicate() failure (torn-down pipe, decode error) must
+    still terminate the child and fail open, not leave it running."""
+    from hermes_cli import _subprocess_compat
+
+    events = []
+
+    class _BrokenPipePopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_git_spawn(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            if timeout != 1:
+                raise ValueError("I/O operation on closed file")
+            events.append("drain")
+            return ("", "")
+
+        def kill(self):
+            if self._probe:
+                events.append("kill")
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _BrokenPipePopen)
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+    assert events == ["kill", "drain"]
+
+
+def test_bounded_git_probe_cleanup_failure_is_swallowed(monkeypatch):
+    """If the bounded post-kill drain itself still times out (descendant keeps
+    the handles), the probe abandons the pipes and honours the ""-on-failure
+    contract instead of hanging."""
+    from hermes_cli import _subprocess_compat
+
+    class _StuckPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_git_spawn(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if self._probe:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
+            return ("", "")
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _StuckPopen)
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+
+
+def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
+    """A spawn failure (git not on PATH) fails open to ""."""
+    from hermes_cli import _subprocess_compat
+
+    def boom(cmd, **kwargs):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", boom)
+
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
+
+
+def test_tui_gateway_git_probe_delegates_to_bounded_probe(monkeypatch):
+    """run_git wires cwd/args through the shared bounded helper (hidden-window
+    flags reach the spawn on Windows) and preserves its own timeout."""
+    from tui_gateway import git_probe
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
 
     assert git_probe.run_git("C:/repo", "branch", "--show-current") == "main"
+    assert len(spawns) == 1, spawns
+    cmd, kwargs = spawns[0]
+    assert cmd == ["git", "-C", "C:/repo", "branch", "--show-current"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
 
-    git_calls = _spawns(captured, "branch", "--show-current")
-    assert git_calls == [
-        (
-            ["git", "-C", "C:/repo", "branch", "--show-current"],
-            {
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": git_probe._GIT_TIMEOUT,
-                "check": False,
-                "stdin": subprocess.DEVNULL,
-                "creationflags": _CREATE_NO_WINDOW,
-            },
-        )
-    ]
+
+def test_tui_gateway_git_probe_empty_cwd_short_circuits(monkeypatch):
+    """run_git returns "" for a falsy cwd without spawning git."""
+    from tui_gateway import git_probe
+    from hermes_cli import _subprocess_compat
+
+    def boom(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("git must not spawn for an empty cwd")
+
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", boom)
+    assert git_probe.run_git("", "branch", "--show-current") == ""
 
 
 def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):
@@ -94,21 +346,23 @@ def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):
     assert ls_files[0][1].get("creationflags") == _CREATE_NO_WINDOW
 
 
-def test_coding_context_git_hides_git_windows(monkeypatch):
+def test_coding_context_git_delegates_to_bounded_probe(monkeypatch):
+    """_git wires cwd/args through the shared bounded helper (hidden-window flags
+    reach the spawn on Windows), stringifying the Path cwd."""
     from agent import coding_context
+    from hermes_cli import _subprocess_compat
 
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="clean\n")
-
-    monkeypatch.setattr(coding_context, "IS_WINDOWS", True)
-    monkeypatch.setattr(coding_context, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(coding_context.subprocess, "run", fake_run)
+    spawns = []
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="clean\n"))
 
     assert coding_context._git(Path("C:/repo"), "status", "--short") == "clean"
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    assert len(spawns) == 1, spawns
+    cmd, kwargs = spawns[0]
+    assert cmd == ["git", "-C", str(Path("C:/repo")), "status", "--short"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
 
 
 def test_context_reference_git_and_rg_hide_windows(monkeypatch):

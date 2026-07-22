@@ -208,6 +208,14 @@ class TestBraveFreeBackendWiring:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         assert web_tools._get_backend() == "brave-free"
 
+    def test_configured_capability_backend_routes_before_availability_check(self, monkeypatch):
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "plugin-extract"})
+        monkeypatch.setattr(web_tools, "_is_backend_available", lambda _backend: False)
+        monkeypatch.setattr(web_tools, "_get_backend", lambda: "fallback")
+
+        assert web_tools._get_capability_backend("extract") == "plugin-extract"
+
     def test_auto_detect_picks_brave_free_when_only_key_set(self, monkeypatch):
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})

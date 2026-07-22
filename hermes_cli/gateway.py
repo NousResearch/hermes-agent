@@ -2926,6 +2926,50 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
+def _mask_volatile_wsl_interop_path(path_value: str) -> str:
+    """Drop volatile WSL Windows-interop (``/mnt/*``) entries from a PATH value.
+
+    Only the ``/mnt/*`` segments that ``_build_wsl_interop_paths`` harvests from
+    ``os.environ`` vary between the login shell that installs the unit and the
+    (often non-login) shell that later compares it. The deterministic service
+    entries in the same PATH — ``_build_service_path_dirs`` output, the resolved
+    Node directory, user-local bins — are preserved verbatim so a genuine change
+    to any of them still marks the unit stale.
+    """
+    kept = [seg for seg in path_value.split(":") if not seg.startswith("/mnt/")]
+    return ":".join(kept)
+
+
+def _normalize_systemd_unit_for_comparison(text: str) -> str:
+    """Normalize a systemd unit for staleness checks.
+
+    The generated unit's ``Environment="PATH=..."`` is assembled from the
+    invoking shell's PATH. Under WSL that PATH also carries the volatile
+    Windows-interop ``/mnt/*`` entries (e.g. ``.../WindowsApps``,
+    ``.../WindowsPowerShell/v1.0``) that ``_build_wsl_interop_paths`` harvests
+    from ``os.environ`` — those vary between the login shell that installed the
+    unit and the (often non-login) shell that later runs status/restart. Raw
+    text comparison then flags a unit that differs only by those entries as
+    perpetually outdated, so every restart needlessly rewrites the unit and
+    daemon-reloads.
+
+    Strip optional directives (older-systemd churn) and drop *only* the volatile
+    ``/mnt/*`` PATH segments before comparing. Unlike
+    ``_normalize_launchd_plist_for_comparison`` (macOS, no interop churn) this
+    deliberately does NOT mask the whole PATH: the deterministic service entries
+    in that field are load-bearing, so a change to a non-``/mnt`` entry must keep
+    the unit stale and trigger the rewrite/daemon-reload path.
+    """
+    import re
+
+    normalized = _normalize_service_definition(_strip_optional_systemd_directives(text))
+    return re.sub(
+        r'(Environment="PATH=)([^"\n]*)(")',
+        lambda m: m.group(1) + _mask_volatile_wsl_interop_path(m.group(2)) + m.group(3),
+        normalized,
+    )
+
+
 def systemd_unit_is_current(system: bool = False) -> bool:
     # ── HERMES_HOME sync chokepoint ──────────────────────────────────────
     # Every path that compares OR regenerates the unit funnels through here:
@@ -2953,14 +2997,12 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Normalize out directives that older systemd versions silently drop
-    # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
-    # those directives is not perpetually flagged as outdated.
-    norm_installed = _normalize_service_definition(
-        _strip_optional_systemd_directives(installed)
-    )
-    norm_expected = _normalize_service_definition(
-        _strip_optional_systemd_directives(expected)
-    )
+    # (RestartMaxDelaySec, RestartSteps) and the shell-dependent PATH payload
+    # (unstable under WSL Windows-interop) so a unit that differs only by those
+    # is not perpetually flagged as outdated. See
+    # _normalize_systemd_unit_for_comparison.
+    norm_installed = _normalize_systemd_unit_for_comparison(installed)
+    norm_expected = _normalize_systemd_unit_for_comparison(expected)
     return norm_installed == norm_expected
 
 

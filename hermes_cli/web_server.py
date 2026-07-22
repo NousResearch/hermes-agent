@@ -19377,6 +19377,32 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _warm_configured_platform_sdks() -> None:
+    """Eagerly import the SDK modules of every *connected* gateway platform.
+
+    Platform adapter modules import their SDKs at module level (lark_oapi,
+    slack_bolt, discord.py, ...). lark_oapi alone is ~11k generated modules,
+    and on Windows with real-time AV scanning that first import blocks the
+    asyncio event loop for 15-60s. It is otherwise triggered lazily inside
+    the first /api/status request — i.e. AFTER uvicorn has announced
+    HERMES_(BACKEND|DASHBOARD)_READY — so the desktop's 15s readiness fetch
+    times out and kills the backend, looping the boot forever (#50209).
+
+    Called between socket bind and the ready announcement: the desktop's
+    port-announce window is 90s, so paying the import cost here is safe, and
+    afterwards the very first probe answers in milliseconds. Best-effort —
+    any failure is logged and ignored; the lazy import path still works.
+    """
+    try:
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import platform_registry
+
+        for platform in load_gateway_config().get_connected_platforms():
+            platform_registry.get(platform.value)
+    except Exception as exc:  # pragma: no cover - best-effort
+        _log.debug("platform SDK warm-up skipped: %s", exc)
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -19583,6 +19609,10 @@ def start_server(
 
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
+
+            # Pay the cold platform-SDK import cost BEFORE announcing
+            # readiness (#50209) — see _warm_configured_platform_sdks.
+            _warm_configured_platform_sdks()
 
             _write_dashboard_ready_file(actual_port)
             # Port-discovery sentinel parsed by the desktop spawn. `serve` is a

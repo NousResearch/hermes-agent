@@ -879,6 +879,8 @@ _QUICK_STATE_FILES = (
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 _QUICK_DEFAULT_KEEP = 20
 _QUICK_IN_PROGRESS_MAX_AGE_SECONDS = 24 * 60 * 60
+_QUICK_IN_PROGRESS_MARKER = ".in-progress"
+_QUICK_OWNERSHIP_MARKER = ".hermes-managed"
 
 
 def _quick_snapshot_label_segment(label: Optional[str]) -> Optional[str]:
@@ -894,20 +896,14 @@ def _quick_snapshot_label_segment(label: Optional[str]) -> Optional[str]:
 
 
 def _move_owned_snapshot_path(path: Path, expected: os.stat_result) -> Optional[Path]:
-    """Move the exact expected object to a nonce sibling, or preserve it."""
+    """Move the exact expected object to a nonce sibling, or preserve it there."""
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
     try:
         os.replace(path, quarantine)
         if os.path.samestat(expected, quarantine.lstat()):
             return quarantine
-        if not os.path.lexists(path):
-            os.replace(quarantine, path)
     except OSError:
-        try:
-            if os.path.lexists(quarantine) and not os.path.lexists(path):
-                os.replace(quarantine, path)
-        except OSError:
-            pass
+        return None
     return None
 
 
@@ -919,11 +915,6 @@ def _remove_owned_snapshot_file(path: Path, expected: os.stat_result) -> bool:
         quarantine.unlink()
         return True
     except OSError:
-        try:
-            if not os.path.lexists(path):
-                os.replace(quarantine, path)
-        except OSError:
-            pass
         return False
 
 
@@ -935,12 +926,77 @@ def _remove_owned_snapshot_dir(path: Path, expected: os.stat_result) -> bool:
         shutil.rmtree(quarantine)
         return True
     except OSError:
-        try:
-            if not os.path.lexists(path):
-                os.replace(quarantine, path)
-        except OSError:
-            pass
         return False
+
+
+def _snapshot_path_is_link_like(path: Path) -> bool:
+    try:
+        st = path.lstat()
+        reparse = int(getattr(st, "st_file_attributes", 0)) & 0x400
+        return path.is_symlink() or bool(reparse)
+    except OSError:
+        return True
+
+
+def _quick_snapshot_marker_payload(
+    snapshot_dir: Path, marker_name: str
+) -> Optional[Dict[str, Any]]:
+    marker = snapshot_dir / marker_name
+    try:
+        if (
+            _snapshot_path_is_link_like(snapshot_dir)
+            or not snapshot_dir.is_dir()
+            or _snapshot_path_is_link_like(marker)
+            or not marker.is_file()
+        ):
+            return None
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        token = payload.get("owner_token") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != 1
+            or payload.get("snapshot_id") != snapshot_dir.name
+            or not isinstance(payload.get("pid"), int)
+            or not isinstance(token, str)
+            or len(token) != 32
+            or any(char not in "0123456789abcdef" for char in token)
+        ):
+            return None
+        return payload
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def _snapshot_process_is_running(pid: int) -> bool:
+    """Fail closed when an in-progress snapshot owner may still be alive."""
+    if pid <= 0:
+        return True
+    if os.name == "nt":
+        import ctypes
+
+        open_process = ctypes.windll.kernel32.OpenProcess
+        open_process.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        open_process.restype = ctypes.c_void_p
+        handle = open_process(0x00100000, False, pid)
+        if not handle:
+            return ctypes.windll.kernel32.GetLastError() != 87
+        wait_for_single_object = ctypes.windll.kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        wait_for_single_object.restype = ctypes.c_uint32
+        close_handle = ctypes.windll.kernel32.CloseHandle
+        close_handle.argtypes = (ctypes.c_void_p,)
+        close_handle.restype = ctypes.c_int
+        try:
+            return wait_for_single_object(handle, 0) == 258
+        finally:
+            close_handle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (OSError, PermissionError):
+        return True
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
@@ -1011,9 +1067,15 @@ def create_quick_snapshot(
             except FileExistsError:
                 snap_id = f"{base_id}-{suffix}"
                 suffix += 1
-        marker = snap_dir / ".in-progress"
+        marker_payload = {
+            "version": 1,
+            "snapshot_id": snap_id,
+            "pid": os.getpid(),
+            "owner_token": uuid.uuid4().hex,
+        }
+        marker = snap_dir / _QUICK_IN_PROGRESS_MARKER
         marker.write_text(
-            json.dumps({"version": 1, "snapshot_id": snap_id}),
+            json.dumps(marker_payload),
             encoding="utf-8",
         )
         marker_identity = marker.lstat()
@@ -1093,8 +1155,17 @@ def create_quick_snapshot(
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    owned_marker = snap_dir / _QUICK_OWNERSHIP_MARKER
+    try:
+        os.link(marker, owned_marker, follow_symlinks=False)
+        if not os.path.samestat(marker_identity, owned_marker.lstat()):
+            raise OSError("published ownership marker identity mismatch")
+    except OSError as exc:
+        logger.warning("State snapshot publication failed for %s: %s", snap_id, exc)
+        return None
     if not _remove_owned_snapshot_file(marker, marker_identity):
-        logger.warning("State snapshot ownership changed before publication: %s", snap_id)
+        logger.warning("State snapshot retained in-progress marker evidence: %s", snap_id)
+    if os.path.lexists(marker):
         return None
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
@@ -1118,7 +1189,10 @@ def list_quick_snapshots(
 
     results = []
     for d in sorted(root.iterdir(), reverse=True):
-        if not d.is_dir():
+        if (
+            _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER) is None
+            or (d / _QUICK_IN_PROGRESS_MARKER).exists()
+        ):
             continue
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
@@ -1160,7 +1234,10 @@ def restore_quick_snapshot(
         logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
         return False
 
-    if not snap_dir.is_dir():
+    if (
+        _quick_snapshot_marker_payload(snap_dir, _QUICK_OWNERSHIP_MARKER) is None
+        or (snap_dir / _QUICK_IN_PROGRESS_MARKER).exists()
+    ):
         return False
 
     manifest_path = snap_dir / "manifest.json"
@@ -1329,18 +1406,16 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     deleted = 0
     now = time.time()
     for candidate in root.iterdir():
-        marker = candidate / ".in-progress"
+        marker = candidate / _QUICK_IN_PROGRESS_MARKER
         try:
             if (
-                candidate.is_symlink()
-                or not candidate.is_dir()
-                or marker.is_symlink()
-                or not marker.is_file()
-                or now - marker.stat().st_mtime <= _QUICK_IN_PROGRESS_MAX_AGE_SECONDS
+                now - marker.stat().st_mtime <= _QUICK_IN_PROGRESS_MAX_AGE_SECONDS
             ):
                 continue
-            payload = json.loads(marker.read_text(encoding="utf-8"))
-            if payload != {"version": 1, "snapshot_id": candidate.name}:
+            payload = _quick_snapshot_marker_payload(
+                candidate, _QUICK_IN_PROGRESS_MARKER
+            )
+            if payload is None or _snapshot_process_is_running(payload["pid"]):
                 continue
             if _remove_owned_snapshot_dir(candidate, candidate.lstat()):
                 deleted += 1
@@ -1350,7 +1425,9 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     dirs = sorted(
         (
             d for d in root.iterdir()
-            if d.is_dir() and not (d / ".in-progress").exists()
+            if _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER)
+            is not None
+            and not (d / _QUICK_IN_PROGRESS_MARKER).exists()
         ),
         key=lambda d: d.name,
         reverse=True,
@@ -1358,8 +1435,8 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
 
     for d in dirs[keep:]:
         try:
-            shutil.rmtree(d)
-            deleted += 1
+            if _remove_owned_snapshot_dir(d, d.lstat()):
+                deleted += 1
         except OSError as exc:
             logger.warning("Failed to prune snapshot %s: %s", d.name, exc)
 

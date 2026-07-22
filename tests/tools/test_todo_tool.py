@@ -71,6 +71,22 @@ class TestFormatForInjection:
         assert "Working" in text
         assert "context compression" in text.lower()
 
+    def test_restored_active_items_are_reference_only(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Already done", "status": "completed"},
+            {"id": "2", "content": "Possible follow-up", "status": "pending"},
+            {"id": "3", "content": "Abandoned", "status": "cancelled"},
+        ])
+
+        text = store.format_for_injection()
+
+        assert "Possible follow-up" in text
+        assert "Already done" not in text
+        assert "Abandoned" not in text
+        assert "reference-only" in text.lower()
+        assert "does not grant execution authority" in text.lower()
+
 
 class TestMergeMode:
     def test_update_existing_by_id(self):

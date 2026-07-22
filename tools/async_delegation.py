@@ -136,6 +136,14 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
         if key in record
     }
+    # ``parent_turn_id`` is correlation metadata and is normally a string.
+    # Keep durable writes safe for legacy/mock parent agents that expose an
+    # arbitrary attribute instead of a concrete turn id.
+    parent_turn_id = record.get("parent_turn_id", "")
+    if not isinstance(parent_turn_id, str):
+        parent_turn_id = ""
+        record["parent_turn_id"] = parent_turn_id
+    task_payload["parent_turn_id"] = parent_turn_id
     with _DB_LOCK, _connect() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO async_delegations
@@ -244,7 +252,9 @@ def recover_abandoned_delegations() -> int:
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
-                "parent_session_id": parent_id, "goal": task.get("goal", ""),
+                "parent_session_id": parent_id,
+                "parent_turn_id": task.get("parent_turn_id", ""),
+                "goal": task.get("goal", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
@@ -444,6 +454,7 @@ def dispatch_async_delegation(
     model: Optional[str],
     session_key: str,
     parent_session_id: Optional[str] = None,
+    parent_turn_id: str = "",
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -466,6 +477,10 @@ def dispatch_async_delegation(
         the delegation. Carried on the completion event so the gateway can
         pin routing to the spawning session instead of recovering the latest
         ``ended_at IS NULL`` row for the peer tuple (#57498).
+    parent_turn_id
+        Optional stable id of the parent turn that initiated the delegation.
+        Carried on records and completion events for correlation only; it does
+        not contain prompt or task content.
     runner
         Zero-arg callable that builds + runs the child and returns the same
         result dict ``_run_single_child`` produces. Runs on the worker thread.
@@ -495,6 +510,7 @@ def dispatch_async_delegation(
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
         "parent_session_id": parent_session_id,
+        "parent_turn_id": parent_turn_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -615,6 +631,7 @@ def _push_completion_event(
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -651,6 +668,7 @@ def dispatch_async_delegation_batch(
     model: Optional[str],
     session_key: str,
     parent_session_id: Optional[str] = None,
+    parent_turn_id: str = "",
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -695,6 +713,7 @@ def dispatch_async_delegation_batch(
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
         "parent_session_id": parent_session_id,
+        "parent_turn_id": parent_turn_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -795,6 +814,7 @@ def _finalize_batch(
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "parent_turn_id": event_record.get("parent_turn_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),

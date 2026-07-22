@@ -143,6 +143,36 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_single_completion_event_carries_parent_turn_id():
+    """The async completion event remains correlated to its spawning turn."""
+    res = ad.dispatch_async_delegation(
+        goal="compute X", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", parent_turn_id="turn-single-123",
+        runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=3,
+    )
+
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["parent_turn_id"] == "turn-single-123"
+
+
+def test_batch_completion_event_carries_parent_turn_id():
+    """A consolidated async batch event keeps its spawning-turn correlation."""
+    res = ad.dispatch_async_delegation_batch(
+        goals=["compute X"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", parent_turn_id="turn-batch-456",
+        runner=lambda: {"results": [{"status": "completed", "summary": "done"}]},
+        max_async_children=3,
+    )
+
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["parent_turn_id"] == "turn-batch-456"
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -323,6 +353,64 @@ assert ad.mark_completion_delivered({delegation_id!r})
     assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
+def test_real_process_restart_recovers_abandoned_batch_parent_turn_id(tmp_path):
+    """Owner-exit recovery retains the spawning turn on a durable batch event."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import os
+import sys
+import threading
+from tools import async_delegation as ad
+gate = threading.Event()
+r = ad.dispatch_async_delegation_batch(
+    goals=["restart"], context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_turn_id="turn-restart-901",
+    runner=lambda: (gate.wait(60), {"results": []})[1],
+)
+print(r["delegation_id"])
+sys.stdout.flush()
+os._exit(0)
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    delegation_id = first.stdout.strip().splitlines()[-1]
+
+    consumer = r'''
+import json
+import os
+import queue
+import sqlite3
+import sys
+import types
+sys.modules["gateway.status"] = types.SimpleNamespace(
+    _pid_exists=lambda _pid: False,
+    get_process_start_time=lambda _pid: None,
+)
+from tools import async_delegation as ad
+task_json = sqlite3.connect(os.path.join(os.environ["HERMES_HOME"], "state.db")).execute(
+    "SELECT task_json FROM async_delegations"
+).fetchone()[0]
+recovered = queue.Queue()
+assert ad.restore_undelivered_completions(recovered) == 1
+evt = recovered.get_nowait()
+print(json.dumps({"event": evt, "task": json.loads(task_json)}, sort_keys=True))
+'''
+    second = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    payload = json.loads(second.stdout.strip().splitlines()[-1])
+    evt = payload["event"]
+    assert evt["delegation_id"] == delegation_id
+    assert evt["status"] == "unknown"
+    assert (
+        payload["task"].get("parent_turn_id"), evt.get("parent_turn_id")
+    ) == ("turn-restart-901", "turn-restart-901")
+
+
 def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -485,6 +573,38 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
+
+
+def test_delegate_task_background_forwards_parent_turn_id_to_batch_dispatcher(monkeypatch):
+    """Background delegation passes the parent agent's current turn to its dispatcher."""
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent._current_turn_id = "turn-parent-789"
+    parent.session_id = "sess"
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    dispatcher = MagicMock(return_value={
+        "status": "dispatched", "delegation_id": "deleg_parent_turn",
+    })
+
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", dispatcher)
+
+    out = dt.delegate_task(goal="track this turn", background=True, parent_agent=parent)
+
+    assert json.loads(out)["status"] == "dispatched"
+    assert dispatcher.call_args.kwargs["parent_turn_id"] == "turn-parent-789"
 
 
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):

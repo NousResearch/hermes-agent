@@ -215,6 +215,7 @@ from agent.tool_dispatch_helpers import (
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from providers.base import hermes_user_agent
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -4678,7 +4679,7 @@ class AIAgent:
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
-            self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            self._client_kwargs["default_headers"] = {"User-Agent": hermes_user_agent()}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):

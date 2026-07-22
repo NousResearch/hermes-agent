@@ -25,6 +25,7 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from providers.base import hermes_user_agent
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -2065,7 +2066,7 @@ def run_doctor(args):
                 "User-Agent": _HERMES_USER_AGENT,
             }
             if base_url_host_matches(base, "api.kimi.com"):
-                headers["User-Agent"] = "claude-code/0.1.0"
+                headers["User-Agent"] = hermes_user_agent()
             # Google's Generative Language API (generativelanguage.googleapis.com)
             # rejects ``Authorization: Bearer <api-key>`` with 401
             # ``ACCESS_TOKEN_TYPE_UNSUPPORTED`` — that header is reserved for

@@ -3,12 +3,12 @@ default headers when it rebuilds _client_kwargs from scratch.
 
 Without _apply_client_headers_for_base_url() in the rebuild path, a /model
 switch drops OpenRouter attribution headers (HTTP-Referer / X-Title → logs
-show "Unknown") and, worse, functional headers like Kimi's User-Agent
-sentinel (403 without it).
+show "Unknown") and Kimi's real Hermes User-Agent identity.
 """
 
 from unittest.mock import MagicMock, patch
 
+from hermes_cli import __version__
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
@@ -62,9 +62,8 @@ def test_switch_to_openrouter_reapplies_attribution_headers(mock_ctx_len):
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_to_kimi_reapplies_user_agent_sentinel(mock_ctx_len):
-    """Kimi requires a User-Agent sentinel; a switch to api.kimi.com must
-    carry it or every request 403s."""
+def test_switch_to_kimi_reapplies_hermes_user_agent(mock_ctx_len):
+    """A switch to api.kimi.com must preserve Hermes's real identity."""
     agent = _make_agent(provider="openrouter", base_url="https://openrouter.ai/api/v1")
 
     agent.switch_model(
@@ -75,7 +74,7 @@ def test_switch_to_kimi_reapplies_user_agent_sentinel(mock_ctx_len):
     )
 
     headers = agent._client_kwargs.get("default_headers") or {}
-    assert headers.get("User-Agent", "").startswith("claude-code/")
+    assert headers["User-Agent"] == f"hermes-agent/{__version__}"
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)

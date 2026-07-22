@@ -51,6 +51,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
+from providers.base import hermes_user_agent
 from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -1117,7 +1118,7 @@ def init_agent(
                 client_kwargs["default_headers"] = copilot_default_headers()
             elif base_url_host_matches(effective_base, "api.kimi.com"):
                 client_kwargs["default_headers"] = {
-                    "User-Agent": "claude-code/0.1.0",
+                    "User-Agent": hermes_user_agent(),
                 }
             elif base_url_host_matches(effective_base, "portal.qwen.ai"):
                 client_kwargs["default_headers"] = _ra()._qwen_portal_headers()

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesRepoStatus } from '@/global'
+import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 
-import { $repoStatus, $repoStatusLoading, refreshRepoStatus } from './coding-status'
-import { $currentCwd, $selectedStoredSessionId } from './session'
+import { $repoChangeByPath, $repoStatus, $repoStatusLoading, $repoWorktrees, refreshRepoStatus } from './coding-status'
+import { $connection, $currentCwd, $selectedStoredSessionId } from './session'
 
 const sampleStatus: HermesRepoStatus = {
   branch: 'feature/login',
@@ -28,15 +28,19 @@ function stubProbe(impl: (cwd: string) => Promise<HermesRepoStatus | null>) {
 describe('refreshRepoStatus', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    $connection.set(null)
     $repoStatus.set(null)
+    $repoWorktrees.set([])
     $currentCwd.set('')
     $selectedStoredSessionId.set(null)
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
   afterEach(() => {
+    vi.unstubAllGlobals()
     vi.clearAllTimers()
     vi.useRealTimers()
+    $connection.set(null)
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -76,29 +80,125 @@ describe('refreshRepoStatus', () => {
     expect($repoStatus.get()).toBeNull()
   })
 
-  it('never publishes an old worktree status after the active cwd moves', async () => {
-    let resolveOld!: (status: HermesRepoStatus | null) => void
-    stubProbe(
-      () =>
-        new Promise(resolve => {
-          resolveOld = resolve
-        })
-    )
+  it('clears status, worktrees, and changed-path tints immediately when the cwd changes', () => {
+    const status = {
+      ...sampleStatus,
+      branch: 'feature/a',
+      files: [{ conflicted: false, path: 'src/a.ts', staged: false, unstaged: true, untracked: false }]
+    }
+
+    const worktrees: HermesGitWorktree[] = [
+      { branch: 'feature/a', detached: false, isMain: true, locked: false, path: '/repo-a' }
+    ]
 
     $currentCwd.set('/repo-a')
-    vi.advanceTimersByTime(200)
-    await vi.runAllTicks()
+    $repoStatus.set(status)
+    $repoWorktrees.set(worktrees)
 
-    // The first probe is still in flight when the user switches sessions. The
-    // new cwd's probe is intentionally debounced, so this is the exact window
-    // where Ctrl+Shift+B used to see the old branch in the coding rail.
+    expect($repoChangeByPath.get().get('/repo-a/src/a.ts')).toBe('modified')
+
     $currentCwd.set('/repo-b')
-    expect($repoStatus.get()).toBeNull()
-
-    resolveOld(sampleStatus)
-    await vi.runAllTicks()
 
     expect($repoStatus.get()).toBeNull()
+    expect($repoWorktrees.get()).toEqual([])
+    expect($repoChangeByPath.get()).toEqual(new Map())
+  })
+
+  it('drops a status result that resolves after its cwd becomes inactive', async () => {
+    let resolveStatus: (status: HermesRepoStatus | null) => void = () => undefined
+
+    const status = new Promise<HermesRepoStatus | null>(resolve => {
+      resolveStatus = resolve
+    })
+
+    const worktreeList = vi.fn()
+
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      git: { repoStatus: vi.fn(() => status), worktreeList }
+    }
+    $currentCwd.set('/repo-a')
+    const first = refreshRepoStatus('/repo-a')
+    $currentCwd.set('/repo-b')
+
+    resolveStatus({ ...sampleStatus, branch: 'feature/a' })
+    await first
+
+    expect($repoStatus.get()).toBeNull()
+    expect($repoWorktrees.get()).toEqual([])
+    expect(worktreeList).not.toHaveBeenCalled()
+  })
+
+  it('drops a worktree result that resolves after its cwd becomes inactive', async () => {
+    let resolveWorktrees: (worktrees: HermesGitWorktree[]) => void = () => undefined
+
+    const worktrees = new Promise<HermesGitWorktree[]>(resolve => {
+      resolveWorktrees = resolve
+    })
+
+    const worktreeList = vi.fn(() => worktrees)
+
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      git: { repoStatus: vi.fn(async () => ({ ...sampleStatus, branch: 'feature/a' })), worktreeList }
+    }
+    $currentCwd.set('/repo-a')
+    const first = refreshRepoStatus('/repo-a')
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(worktreeList).toHaveBeenCalledWith('/repo-a')
+
+    $currentCwd.set('/repo-b')
+    resolveWorktrees([{ branch: 'feature/a', detached: false, isMain: true, locked: false, path: '/repo-a' }])
+    await first
+    await Promise.resolve()
+
+    expect($repoStatus.get()).toBeNull()
+    expect($repoWorktrees.get()).toEqual([])
+  })
+
+  it('clears immediately when backend identity changes at the same cwd', () => {
+    $currentCwd.set('/workspace')
+    $connection.set({ baseUrl: 'http://profile-a.test', mode: 'local', profile: 'profile-a' } as never)
+    $repoStatus.set({ ...sampleStatus, branch: 'feature/a' })
+    $repoWorktrees.set([{ branch: 'feature/a', detached: false, isMain: true, locked: false, path: '/workspace' }])
+
+    $connection.set({ baseUrl: 'http://profile-b.test', mode: 'local', profile: 'profile-b' } as never)
+
+    expect($repoStatus.get()).toBeNull()
+    expect($repoWorktrees.get()).toEqual([])
+  })
+
+  it('retains a published row during a same-context refresh', async () => {
+    let resolveRefresh: (status: HermesRepoStatus | null) => void = () => undefined
+
+    const refresh = new Promise<HermesRepoStatus | null>(resolve => {
+      resolveRefresh = resolve
+    })
+
+    stubProbe(vi.fn(() => refresh))
+    $currentCwd.set('/repo')
+    $repoStatus.set({ ...sampleStatus, branch: 'feature/a' })
+
+    const next = refreshRepoStatus('/repo')
+
+    expect($repoStatus.get()).toMatchObject({ branch: 'feature/a' })
+
+    resolveRefresh({ ...sampleStatus, branch: 'feature/b' })
+    await next
+
+    expect($repoStatus.get()).toMatchObject({ branch: 'feature/b' })
+  })
+
+  it('clears immediately when the stored session changes at the same cwd', () => {
+    $currentCwd.set('/repo')
+    $selectedStoredSessionId.set('session-a')
+    $repoStatus.set({ ...sampleStatus, branch: 'feature/a' })
+    $repoWorktrees.set([{ branch: 'feature/a', detached: false, isMain: true, locked: false, path: '/repo' }])
+
+    $selectedStoredSessionId.set('session-b')
+
+    expect($repoStatus.get()).toBeNull()
+    expect($repoWorktrees.get()).toEqual([])
   })
 
   it('runs one probe at a time and coalesces overlap into one trailing refresh', async () => {
@@ -124,6 +224,7 @@ describe('refreshRepoStatus', () => {
     const second = refreshRepoStatus('/repo-b')
     const third = refreshRepoStatus('/repo-c')
 
+
     expect(calls).toEqual(['/repo-a'])
     expect(maxActive).toBe(1)
     expect($repoStatusLoading.get()).toBe(true)
@@ -142,6 +243,23 @@ describe('refreshRepoStatus', () => {
     expect(maxActive).toBe(1)
     expect($repoStatus.get()).toEqual(sampleStatus)
     expect($repoStatusLoading.get()).toBe(false)
+  })
+
+  it('ignores an A debounce callback that runs after B takes ownership', async () => {
+    const probe = vi.fn(async cwd => ({ ...sampleStatus, branch: cwd === '/repo-b' ? 'feature/b' : 'feature/a' }))
+
+    stubProbe(probe)
+    vi.clearAllTimers()
+    vi.stubGlobal('clearTimeout', () => undefined)
+
+    $currentCwd.set('/repo-a')
+    $currentCwd.set('/repo-b')
+    vi.advanceTimersByTime(100)
+    await vi.runAllTicks()
+
+    expect(probe).toHaveBeenCalledOnce()
+    expect(probe).toHaveBeenCalledWith('/repo-b')
+    expect($repoStatus.get()).toMatchObject({ branch: 'feature/b' })
   })
 
   it('refreshes when the stored session id changes even if the cwd is unchanged', async () => {

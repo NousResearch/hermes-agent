@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -66,6 +66,40 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [selectedBase, setSelectedBase] = useState('')
+  const repoContextEpoch = useRef(0)
+  const repoPathRef = useRef(repoPath)
+
+  // A repo path change swaps the dialog's Git authority. Close and reset before
+  // the new context can paint; callers may keep the component mounted while
+  // switching workspaces, so late branch/base requests from the old repository
+  // must not survive into the new one.
+  useLayoutEffect(() => {
+    if (repoPathRef.current === repoPath) {
+      return
+    }
+
+    repoPathRef.current = repoPath
+    repoContextEpoch.current += 1
+    setName('')
+    setPending(false)
+    setConvertMode(false)
+    setBranches([])
+    setBranchesLoading(false)
+    setSelectedBase(initialBase ?? '')
+
+    if (open) {
+      onOpenChange(false)
+    }
+  }, [initialBase, onOpenChange, open, repoPath])
+
+  const onBaseValueChange = useCallback(
+    (value: string) => {
+      if (repoPathRef.current === repoPath) {
+        setSelectedBase(value)
+      }
+    },
+    [repoPath]
+  )
 
   // Reset to a fresh state each time the dialog opens, applying any pre-selected
   // base branch from the caller (e.g. "branch off from main" in the coding row's
@@ -84,14 +118,23 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
       return
     }
 
+    const contextEpoch = repoContextEpoch.current
     setBranchesLoading(true)
 
     try {
-      setBranches(await listRepoBranches(repoPath))
+      const list = await listRepoBranches(repoPath)
+
+      if (contextEpoch === repoContextEpoch.current) {
+        setBranches(list)
+      }
     } catch {
-      setBranches([])
+      if (contextEpoch === repoContextEpoch.current) {
+        setBranches([])
+      }
     } finally {
-      setBranchesLoading(false)
+      if (contextEpoch === repoContextEpoch.current) {
+        setBranchesLoading(false)
+      }
     }
   }, [repoPath])
 
@@ -102,20 +145,25 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
       return
     }
 
+    const contextEpoch = repoContextEpoch.current
     setPending(true)
 
     try {
       const result = await startWorkInRepo(repoPath, { base: selectedBase || undefined, branch, name: branch })
 
-      if (result) {
+      if (result && contextEpoch === repoContextEpoch.current) {
         onStarted(result.path)
         onOpenChange(false)
         setName('')
       }
     } catch (err) {
-      notifyError(err, p.startWorkFailed)
+      if (contextEpoch === repoContextEpoch.current) {
+        notifyError(err, p.startWorkFailed)
+      }
     } finally {
-      setPending(false)
+      if (contextEpoch === repoContextEpoch.current) {
+        setPending(false)
+      }
     }
   }
 
@@ -124,6 +172,7 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
       return
     }
 
+    const contextEpoch = repoContextEpoch.current
     setPending(true)
 
     try {
@@ -138,14 +187,18 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
         result = await startWorkInRepo(repoPath, { existingBranch: branch.name })
       }
 
-      if (result) {
+      if (result && contextEpoch === repoContextEpoch.current) {
         onStarted(result.path)
         onOpenChange(false)
       }
     } catch (err) {
-      notifyError(err, p.startWorkFailed)
+      if (contextEpoch === repoContextEpoch.current) {
+        notifyError(err, p.startWorkFailed)
+      }
     } finally {
-      setPending(false)
+      if (contextEpoch === repoContextEpoch.current) {
+        setPending(false)
+      }
     }
   }
 
@@ -208,7 +261,7 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
             />
             <BaseBranchPicker
               disabled={pending}
-              onValueChange={setSelectedBase}
+              onValueChange={onBaseValueChange}
               repoPath={repoPath}
               value={selectedBase}
             />

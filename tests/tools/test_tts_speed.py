@@ -238,3 +238,112 @@ class TestMinimaxTtsLegacyTextToSpeech:
         _, output = self._run({}, tmp_path, monkeypatch)
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs TTS speed (voice_settings.speed)
+# ---------------------------------------------------------------------------
+
+
+class TestElevenLabsTtsSpeed:
+    """Confirms `tts.elevenlabs.speed` is wired through `voice_settings.speed`
+    on the request body, with the documented 0.7-1.2 clamp."""
+
+    def _run(self, tts_config, tmp_path, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+
+        # Fake the streaming generator the real client returns.
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = iter([b"\x00\x01\x02\x03"])
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_elevenlabs", return_value=mock_cls):
+            from tools.tts_tool import _generate_elevenlabs
+            out = _generate_elevenlabs("Hello", str(tmp_path / "out.mp3"), tts_config)
+        return mock_client.text_to_speech.convert, out
+
+    def test_default_no_voice_settings_kwarg(self, tmp_path, monkeypatch):
+        """No speed configured => no voice_settings kwarg => current behavior."""
+        convert, _ = self._run({}, tmp_path, monkeypatch)
+        kwargs = convert.call_args.kwargs
+        assert "voice_settings" not in kwargs
+
+    def test_speed_one_does_not_send_voice_settings(self, tmp_path, monkeypatch):
+        """Explicit speed=1.0 still suppresses voice_settings — keeps payload
+        byte-identical to the pre-patch path for the new default value."""
+        convert, _ = self._run({"elevenlabs": {"speed": 1.0}}, tmp_path, monkeypatch)
+        kwargs = convert.call_args.kwargs
+        assert "voice_settings" not in kwargs
+
+    def test_per_provider_speed_applied(self, tmp_path, monkeypatch):
+        """tts.elevenlabs.speed lands on voice_settings.speed."""
+        convert, _ = self._run({"elevenlabs": {"speed": 1.2}}, tmp_path, monkeypatch)
+        vs = convert.call_args.kwargs["voice_settings"]
+        assert _get_voice_settings_field(vs, "speed") == pytest.approx(1.2)
+
+    def test_global_speed_used_as_fallback(self, tmp_path, monkeypatch):
+        """tts.speed (top-level) feeds ElevenLabs when no provider override."""
+        convert, _ = self._run({"speed": 0.8}, tmp_path, monkeypatch)
+        vs = convert.call_args.kwargs["voice_settings"]
+        assert _get_voice_settings_field(vs, "speed") == pytest.approx(0.8)
+
+    def test_provider_speed_overrides_global(self, tmp_path, monkeypatch):
+        """Provider-scoped speed wins over global tts.speed."""
+        convert, _ = self._run(
+            {"speed": 0.8, "elevenlabs": {"speed": 1.2}},
+            tmp_path, monkeypatch,
+        )
+        vs = convert.call_args.kwargs["voice_settings"]
+        assert _get_voice_settings_field(vs, "speed") == pytest.approx(1.2)
+
+    def test_speed_clamped_high(self, tmp_path, monkeypatch):
+        """Above 1.2 clamps to the ElevenLabs documented ceiling."""
+        convert, _ = self._run({"elevenlabs": {"speed": 5.0}}, tmp_path, monkeypatch)
+        vs = convert.call_args.kwargs["voice_settings"]
+        assert _get_voice_settings_field(vs, "speed") == pytest.approx(1.2)
+
+    def test_speed_clamped_low(self, tmp_path, monkeypatch):
+        """Below 0.7 clamps to the ElevenLabs documented floor."""
+        convert, _ = self._run({"elevenlabs": {"speed": 0.1}}, tmp_path, monkeypatch)
+        vs = convert.call_args.kwargs["voice_settings"]
+        assert _get_voice_settings_field(vs, "speed") == pytest.approx(0.7)
+
+    def test_invalid_speed_ignored(self, tmp_path, monkeypatch):
+        """A typoed string value logs a warning and is skipped, not raised."""
+        convert, _ = self._run({"elevenlabs": {"speed": "fast"}}, tmp_path, monkeypatch)
+        kwargs = convert.call_args.kwargs
+        assert "voice_settings" not in kwargs
+
+    def test_other_voice_settings_passed_through(self, tmp_path, monkeypatch):
+        """stability/similarity_boost/style/use_speaker_boost also flow through."""
+        cfg = {"elevenlabs": {
+            "speed": 1.2,
+            "stability": 0.4,
+            "similarity_boost": 0.8,
+            "style": 0.15,
+            "use_speaker_boost": False,
+        }}
+        convert, _ = self._run(cfg, tmp_path, monkeypatch)
+        vs = convert.call_args.kwargs["voice_settings"]
+        assert _get_voice_settings_field(vs, "speed") == pytest.approx(1.2)
+        assert _get_voice_settings_field(vs, "stability") == pytest.approx(0.4)
+        assert _get_voice_settings_field(vs, "similarity_boost") == pytest.approx(0.8)
+        assert _get_voice_settings_field(vs, "style") == pytest.approx(0.15)
+        assert _get_voice_settings_field(vs, "use_speaker_boost") is False
+
+    def test_other_providers_not_disturbed(self, tmp_path, monkeypatch):
+        """Sanity: setting tts.speed for ElevenLabs doesn't bleed into MiniMax
+        config defaults (regression guard for the additive-only contract)."""
+        from tools.tts_tool import _resolve_elevenlabs_voice_settings
+        # No-op config returns None — every other provider sees nothing new.
+        assert _resolve_elevenlabs_voice_settings({}, {}) is None
+        # Top-level speed=1.0 also returns None (don't ship a default payload).
+        assert _resolve_elevenlabs_voice_settings({}, {"speed": 1.0}) is None
+
+
+def _get_voice_settings_field(vs, name):
+    """Read a VoiceSettings field whether the helper returned the SDK
+    model or the dict fallback used when the SDK isn't installed."""
+    if hasattr(vs, name):
+        return getattr(vs, name)
+    return vs[name]

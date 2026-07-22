@@ -974,6 +974,88 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
 # ===========================================================================
 # Provider: ElevenLabs (premium)
 # ===========================================================================
+# ElevenLabs' documented `voice_settings.speed` range. Values outside this
+# window are silently rejected by the API; clamp at the edges so a bad
+# config typo doesn't 422 the whole TTS request.
+# https://elevenlabs.io/docs/api-reference/text-to-speech/convert
+ELEVENLABS_SPEED_MIN = 0.7
+ELEVENLABS_SPEED_MAX = 1.2
+
+
+def _resolve_elevenlabs_voice_settings(el_config: Dict[str, Any],
+                                       tts_config: Dict[str, Any]):
+    """Build a ``VoiceSettings`` object from per-profile config.
+
+    Returns ``None`` when no voice tuning is configured so the SDK falls
+    back to whatever defaults the chosen voice ships with — keeps current
+    behavior bit-for-bit identical for users who haven't opted in.
+
+    Recognized keys under ``tts.elevenlabs``:
+        * ``speed`` (0.7-1.2; clamped)
+        * ``stability`` (0.0-1.0)
+        * ``similarity_boost`` (0.0-1.0)
+        * ``style`` (0.0-1.0)
+        * ``use_speaker_boost`` (bool)
+
+    ``tts.speed`` (top-level) acts as a global fallback for ``speed``
+    only — mirrors the convention used by the Edge and OpenAI providers.
+    """
+    if not isinstance(el_config, dict):
+        el_config = {}
+
+    raw_speed = el_config.get("speed")
+    if raw_speed is None and isinstance(tts_config, dict):
+        raw_speed = tts_config.get("speed")
+
+    overrides: Dict[str, Any] = {}
+    if raw_speed is not None:
+        try:
+            speed_val = float(raw_speed)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid tts.elevenlabs.speed=%r; expected a number. Ignoring.",
+                raw_speed,
+            )
+        else:
+            if speed_val != 1.0:
+                clamped = max(ELEVENLABS_SPEED_MIN,
+                              min(ELEVENLABS_SPEED_MAX, speed_val))
+                if clamped != speed_val:
+                    logger.info(
+                        "Clamped tts.elevenlabs.speed %.3f -> %.3f "
+                        "(ElevenLabs supports %.1f-%.1f)",
+                        speed_val, clamped,
+                        ELEVENLABS_SPEED_MIN, ELEVENLABS_SPEED_MAX,
+                    )
+                overrides["speed"] = clamped
+
+    for key in ("stability", "similarity_boost", "style"):
+        val = el_config.get(key)
+        if val is not None:
+            try:
+                overrides[key] = float(val)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid tts.elevenlabs.%s=%r; expected a number. Ignoring.",
+                    key, val,
+                )
+
+    if "use_speaker_boost" in el_config and el_config["use_speaker_boost"] is not None:
+        overrides["use_speaker_boost"] = bool(el_config["use_speaker_boost"])
+
+    if not overrides:
+        return None
+
+    try:
+        from elevenlabs import VoiceSettings
+        return VoiceSettings(**overrides)
+    except ImportError:
+        # SDK missing: caller is about to bail anyway when it tries to
+        # import the client. Returning a plain dict keeps unit tests that
+        # stub out the client able to introspect the payload.
+        return overrides
+
+
 def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using ElevenLabs.
@@ -993,6 +1075,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     el_config = tts_config.get("elevenlabs") or {}
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
+    voice_settings = _resolve_elevenlabs_voice_settings(el_config, tts_config)
 
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
@@ -1002,12 +1085,15 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 
     ElevenLabs = _import_elevenlabs()
     client = ElevenLabs(api_key=api_key)
-    audio_generator = client.text_to_speech.convert(
-        text=text,
-        voice_id=voice_id,
-        model_id=model_id,
-        output_format=output_format,
-    )
+    convert_kwargs = {
+        "text": text,
+        "voice_id": voice_id,
+        "model_id": model_id,
+        "output_format": output_format,
+    }
+    if voice_settings is not None:
+        convert_kwargs["voice_settings"] = voice_settings
+    audio_generator = client.text_to_speech.convert(**convert_kwargs)
 
     # audio_generator yields chunks -- write them all
     with open(output_path, "wb") as f:
@@ -2780,6 +2866,7 @@ def stream_tts_to_speaker(
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
+        voice_settings = _resolve_elevenlabs_voice_settings(el_config, tts_config)
         # Per-sentence cap for the streaming path. Look up the cap against
         # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
         # not the sync model_id. A user override
@@ -2847,12 +2934,15 @@ def stream_tts_to_speaker(
             if len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
+                stream_kwargs = {
+                    "text": cleaned,
+                    "voice_id": voice_id,
+                    "model_id": model_id,
+                    "output_format": "pcm_24000",
+                }
+                if voice_settings is not None:
+                    stream_kwargs["voice_settings"] = voice_settings
+                audio_iter = client.text_to_speech.convert(**stream_kwargs)
                 if output_stream is not None:
                     for chunk in audio_iter:
                         if stop_event.is_set():

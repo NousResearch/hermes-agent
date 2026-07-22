@@ -2150,6 +2150,16 @@ DEFAULT_CONFIG = {
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
             "model_id": "eleven_multilingual_v2",
+            # Per-profile playback knobs. Defaults match the API's
+            # implicit "use the voice's own settings" behavior so
+            # existing installs sound identical until they opt in.
+            # `speed` is clamped to ElevenLabs' supported 0.7-1.2 range.
+            "speed": 1.0,
+            # Optional fine-tuning (unset = use ElevenLabs defaults):
+            # "stability": 0.5,
+            # "similarity_boost": 0.75,
+            # "style": 0.0,
+            # "use_speaker_boost": True,
         },
         "openai": {
             "model": "gpt-4o-mini-tts",

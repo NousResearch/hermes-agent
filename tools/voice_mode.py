@@ -13,6 +13,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -191,12 +192,27 @@ def detect_audio_environment() -> dict:
             )
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
-    # Only block if PULSE_SERVER is not configured.
+    # Only hard-block if PULSE_SERVER is not configured AND the WSL2
+    # PowerShell TTS fallback (Media.SoundPlayer via powershell.exe, see
+    # play_audio_file) isn't available either. The PowerShell path only
+    # covers OUTPUT (TTS playback) -- microphone recording genuinely still
+    # needs the PulseAudio bridge -- so when it's the only thing available
+    # we downgrade to a notice (keeps the same recording guidance visible,
+    # but doesn't block /voice on for TTS-only usage).
     try:
         with open('/proc/version', 'r', encoding="utf-8") as f:
             if 'microsoft' in f.read().lower():
                 if os.environ.get('PULSE_SERVER'):
                     notices.append("Running in WSL with PulseAudio bridge")
+                elif _wsl_powershell_tts_available():
+                    notices.append(
+                        "Running in WSL without a PulseAudio bridge -- TTS playback "
+                        "will use the PowerShell/Media.SoundPlayer fallback. "
+                        "Voice INPUT (recording) still requires a PulseAudio bridge:\n"
+                        "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
+                        "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
+                        "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav"
+                    )
                 else:
                     warnings.append(
                         "Running in WSL -- audio requires PulseAudio bridge.\n"
@@ -1040,6 +1056,36 @@ def stop_playback() -> None:
         pass
 
 
+def _is_wsl2_env() -> bool:
+    """Return True when running inside WSL2 (Windows Subsystem for Linux 2).
+
+    Reads /proc/version and checks for the Microsoft kernel signature.
+    Returns False on any error (non-WSL Linux, Docker, SSH, etc.).
+    Extracted as a module-level function so tests can patch it directly
+    without fighting builtins.open patching complexity.
+    """
+    try:
+        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
+            return "microsoft" in _fv.read().lower()
+    except OSError:
+        return False
+
+
+def _wsl_powershell_tts_available() -> bool:
+    """Return True when the WSL2 PowerShell TTS playback fallback can be used.
+
+    This only covers OUTPUT (TTS playback via Media.SoundPlayer on the
+    Windows host) -- it does NOT make microphone recording work. A caller
+    using this to relax the audio-environment gate must still surface the
+    existing PulseAudio-bridge guidance for recording/STT.
+    """
+    return bool(
+        _is_wsl2_env()
+        and shutil.which("powershell.exe")
+        and shutil.which("ffmpeg")
+    )
+
+
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
@@ -1088,6 +1134,60 @@ def play_audio_file(file_path: str) -> bool:
 
     if system == "Darwin":
         players.append(["afplay", file_path])
+
+    # WSL2 PowerShell fallback: when running in WSL without a PulseAudio
+    # bridge, ffplay and aplay have no audio device. If powershell.exe and
+    # ffmpeg are available, convert the audio to a uniquely-named WAV in the
+    # Windows %TEMP% directory and play it via Media.SoundPlayer -- which
+    # always has a working audio device on the Windows host (#17608).
+    # A unique suffix prevents concurrent Hermes TTS calls from colliding on
+    # the same filename. The WAV is deleted in the shell pipeline
+    # unconditionally (success or failure), and the ORIGINAL ffmpeg/
+    # powershell exit status is preserved past that cleanup so the player
+    # loop below can correctly fall through to ffplay/aplay on failure.
+    if system == "Linux" and shutil.which("powershell.exe") and shutil.which("ffmpeg"):
+        if _is_wsl2_env():
+            try:
+                import uuid
+                _win_tmp_raw = subprocess.check_output(
+                    ["cmd.exe", "/c", "echo %TEMP%"],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                _win_tmp_wsl = subprocess.check_output(
+                    ["wslpath", "-u", _win_tmp_raw],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                if _win_tmp_wsl:
+                    # Unique suffix prevents concurrent TTS playback collision.
+                    _unique = uuid.uuid4().hex[:8]
+                    _wsl_wav = os.path.join(_win_tmp_wsl, f"hermes-tts-{_unique}.wav")
+                    _win_wav = subprocess.check_output(
+                        ["wslpath", "-w", _wsl_wav],
+                        stderr=subprocess.DEVNULL, timeout=3,
+                    ).decode(errors="replace").strip()
+                    if _win_wav:
+                        _win_wav_safe = _win_wav.replace("'", "''")
+                        _ps_script = (
+                            f"(New-Object Media.SoundPlayer '{_win_wav_safe}').PlaySync()"
+                        )
+                        _ps_cmd = " && ".join([
+                            shlex.join(["ffmpeg", "-i", file_path, "-f", "wav",
+                                        _wsl_wav, "-loglevel", "quiet", "-y"]),
+                            shlex.join(["powershell.exe", "-NoProfile", "-Command",
+                                        _ps_script]),
+                        ])
+                        _cleanup = shlex.join(["rm", "-f", _wsl_wav])
+                        # Capture the (ffmpeg && powershell) exit status into
+                        # $rc BEFORE cleanup runs, then exit with that status
+                        # instead of rm -f's (rm -f always exits 0, which
+                        # would otherwise mask a conversion/playback failure
+                        # and prevent falling through to the next player).
+                        _full_cmd = f"( {_ps_cmd} ); rc=$?; {_cleanup}; exit $rc"
+                        # Use full path so the which(cmd[0]) check in the player loop passes.
+                        players.insert(0, ["/bin/sh", "-c", _full_cmd])
+            except Exception:
+                pass  # WSL path resolution failed; fall through to ffplay/aplay
+
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
         players.append(["aplay", "-q", file_path])
@@ -1100,9 +1200,15 @@ def play_audio_file(file_path: str) -> bool:
                 with _playback_lock:
                     _active_playback = proc
                 proc.wait(timeout=300)
+                rc = proc.returncode
                 with _playback_lock:
                     _active_playback = None
-                return True
+                if rc == 0:
+                    return True
+                # Non-zero exit: player failed (e.g. WSL ffplay/aplay with no
+                # audio device, or the PowerShell fallback's ffmpeg/playback
+                # step failing). Fall through to the next player in the list.
+                logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
                 proc.kill()

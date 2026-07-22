@@ -297,6 +297,24 @@ class TestBuildApiKwargsOpenRouter:
         # call_id/response_item_id still stripped regardless of model
         assert "call_id" not in result["tool_calls"][0]
 
+    def test_sanitize_tool_calls_strips_extra_content_for_gemma(self, monkeypatch):
+        """Gemma does not use the Gemini-3 thinking format and 400s on a leaked
+        thought_signature (cross-model fallback gemini-3-flash → gemma-4-31b-it,
+        #36907). The shared ``_model_consumes_thought_signature`` predicate must
+        strip extra_content for Gemma on this run_agent path too — parity with
+        the transport's convert_messages — while leaving canonical history intact.
+        """
+        agent = _make_agent(monkeypatch, "openrouter")
+        for model in ("gemma-4-31b-it", "google/gemma-3-27b"):
+            api_msg = self._api_msg_with_extra_content()
+            source_tool_call = api_msg["tool_calls"][0]
+            result = agent._sanitize_tool_calls_for_strict_api(api_msg, model=model)
+            assert "extra_content" not in result["tool_calls"][0], model
+            # Copy-on-write: the source tool_call dict keeps its extra_content.
+            assert source_tool_call["extra_content"] == {
+                "google": {"thought_signature": "SIG_123"}
+            }, model
+
 
 class TestDeveloperRoleSwap:
     """GPT-5 and Codex models should get 'developer' instead of 'system' role."""

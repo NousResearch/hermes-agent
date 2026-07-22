@@ -2,6 +2,9 @@
 
 import json
 
+import pytest
+
+from agent.display import _detect_tool_failure
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -130,6 +133,82 @@ def test_success_resets_exact_signature_failure_streak():
     assert controller.before_call("web_search", args).action == "allow"
     controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
     assert controller.before_call("web_search", args).action == "allow"
+
+
+class TestClassifyTerminalBenignExits:
+    """classify_tool_failure mirrors _detect_tool_failure's benign/failure
+    boolean for nonzero terminal exits, including error-first precedence: a
+    populated ``error`` is a failure even when ``exit_code_meaning`` is set.
+    (Suffix text may differ; only the boolean must match — it feeds the
+    guardrail counter via after_call's ``failed`` fallback.)"""
+
+    @staticmethod
+    def _assert_parity(result: str):
+        guard_failed, _ = classify_tool_failure("terminal", result)
+        display_failed, _ = _detect_tool_failure("terminal", result)
+        assert guard_failed == display_failed
+        return guard_failed
+
+    def test_grep_no_match_exit1_with_meaning_is_benign(self):
+        result = json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": None,
+            "exit_code_meaning": "No matches found (not an error)",
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
+    def test_diff_differs_exit1_with_meaning_is_benign(self):
+        result = json.dumps({
+            "output": "< old\n> new\n",
+            "exit_code": 1,
+            "exit_code_meaning": "Files differ",
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
+    def test_genuine_interrupt_exit130_with_marker_is_benign(self):
+        result = json.dumps({
+            "output": "partial\n[Command interrupted]",
+            "exit_code": 130,
+            "error": None,
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
+    def test_natural_exit130_without_marker_is_flagged(self):
+        # `bash -c 'exit 130'` — 130 without the marker stays a failure.
+        result = json.dumps({"output": "just exited 130", "exit_code": 130})
+        assert self._assert_parity(result) is True
+
+    def test_error_field_wins_over_meaning_parity(self):
+        # Error-first parity: a populated error flags even when a benign
+        # exit_code_meaning is present, matching _detect_tool_failure.
+        result = json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": "grep: invalid option",
+            "exit_code_meaning": "No matches found (not an error)",
+        })
+        assert self._assert_parity(result) is True
+
+    @pytest.mark.parametrize("payload", [
+        {"output": "", "exit_code": 2},                       # grep/diff real error
+        {"output": "", "exit_code": 124},                     # timeout stays a failure (D1)
+        {"output": "", "exit_code": 127},                     # command not found
+        {"output": "curl: (7) ...", "exit_code": 7},          # curl connect fail (no longer tagged)
+        {"output": "! [rejected]", "exit_code": 1},           # git push rejected (no longer tagged)
+        {"output": "first lines...", "exit_code": 141},       # SIGPIPE — benign only with a marker
+        {"output": "just exited 130", "exit_code": 130},      # natural exit 130, no marker
+        {"output": "Segmentation fault", "exit_code": 139},   # SIGSEGV crash
+        {"output": "", "exit_code": 137},                     # SIGKILL/OOM
+        {"output": "", "exit_code": -1,                       # exception path: error field
+         "error": "Failed to execute command: boom", "status": "error"},
+    ])
+    def test_real_failures_and_error_field_still_flagged(self, payload):
+        result = json.dumps(payload)
+        assert self._assert_parity(result) is True
 
 
 def test_file_mutation_lint_error_result_is_not_a_tool_failure():

@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+from tools.interrupt import INTERRUPT_EXIT_CODE, INTERRUPT_MARKER
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -205,6 +206,17 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
+                # Mirror _detect_tool_failure exactly: a populated error is a
+                # failure regardless of any benign tag (error-first), then the
+                # tool layer's exit_code_meaning marks known-benign codes, and a
+                # genuine user interrupt is rc 130 with the [Command interrupted]
+                # marker (a bare `exit 130` has no marker and stays a failure).
+                if data.get("error"):
+                    return True, f" [exit {exit_code}]"
+                if data.get("exit_code_meaning"):
+                    return False, ""
+                if exit_code == INTERRUPT_EXIT_CODE and INTERRUPT_MARKER in str(data.get("output") or ""):
+                    return False, ""
                 return True, f" [exit {exit_code}]"
         return False, ""
 

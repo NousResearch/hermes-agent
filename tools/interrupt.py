@@ -20,6 +20,18 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+# Exit code a user-interrupted command returns (128 + SIGINT(2)).  Mirrors the
+# value produced in tools/environments/base.py when a command is interrupted.
+INTERRUPT_EXIT_CODE = 130
+
+# Marker the executor appends to output when it actually interrupts a command
+# (tools/environments/base.py) — the same signal tools/terminal_tool.py checks
+# before relabelling rc 130 as an interrupt.  Failure classifiers treat exit
+# 130 as a benign interrupt ONLY when this marker is present: a command can
+# legitimately exit 130 on its own (e.g. `bash -c 'exit 130'`) with no marker,
+# and that stays a real failure.  Keep in sync with the string base.py emits.
+INTERRUPT_MARKER = "[Command interrupted]"
+
 # Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
 # tools/environments/base.py.  Enables per-call logging of set/check so the
 # caller thread, target thread, and current state are visible when

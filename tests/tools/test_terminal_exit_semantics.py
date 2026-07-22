@@ -69,24 +69,26 @@ class TestInterpretExitCode:
         assert result is not None
         assert "inaccessible" in result.lower()
 
-    # ---- curl: various informational codes ----
+    # ---- curl: genuine failures are NOT tagged benign ----
+    # curl 6/7/22/28 (DNS / connect / HTTP-error / timeout) are real failures,
+    # not "context". They must return None so the classifiers flag them — the
+    # failure reason is already in curl's stderr (merged into output). If they
+    # carried exit_code_meaning, a curl that could not connect would render as
+    # success and dodge the guardrail.
 
-    def test_curl_timeout(self):
-        result = _interpret_exit_code("curl https://example.com", 28)
-        assert result is not None
-        assert "timed out" in result.lower()
+    @pytest.mark.parametrize("code", [6, 7, 22, 28])
+    def test_curl_failure_codes_not_benign(self, code):
+        assert _interpret_exit_code("curl https://example.com", code) is None
 
-    def test_curl_connection_refused(self):
-        result = _interpret_exit_code("curl http://localhost:99999", 7)
-        assert result is not None
-        assert "connect" in result.lower()
+    # ---- git: exit 1 is ambiguous, so never tagged benign ----
+    # git exit 1 is benign for `git diff` (files differ) but a genuine failure
+    # for push-rejected / merge|rebase conflicts / `commit` with nothing staged.
+    # A by-base-command table can't disambiguate, and masking a failed push is
+    # worse than over-tagging `git diff`, so git returns None for all of them.
 
-    # ---- git: exit 1 is context-dependent ----
-
-    def test_git_diff_exit_1(self):
-        result = _interpret_exit_code("git diff HEAD~1", 1)
-        assert result is not None
-        assert "normal" in result.lower()
+    def test_git_exit_1_not_benign(self):
+        assert _interpret_exit_code("git diff HEAD~1", 1) is None
+        assert _interpret_exit_code("git push origin main", 1) is None
 
     # ---- pipeline / chain handling ----
 
@@ -150,3 +152,14 @@ class TestInterpretExitCode:
     def test_only_env_vars(self):
         """Command with only env var assignments, no actual command."""
         assert _interpret_exit_code("FOO=bar", 1) is None
+
+    # ---- interrupt (130) has no command-semantic note ----
+
+    def test_signal_exits_have_no_meaning(self):
+        """Signal-death exits (130 SIGINT, 141 SIGPIPE) are not command-semantic
+        codes, so _interpret_exit_code returns None. Interrupt handling lives in
+        the failure classifiers (rc 130 gated on the [Command interrupted]
+        marker), not here — this locks that split so the layers stay separate."""
+        assert _interpret_exit_code("grep 'foo' bar", 130) is None
+        assert _interpret_exit_code("python3 script.py", 130) is None
+        assert _interpret_exit_code("grep 'foo' big | head", 141) is None

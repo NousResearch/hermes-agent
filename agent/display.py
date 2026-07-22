@@ -18,6 +18,7 @@ from typing import Any
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
+from tools.interrupt import INTERRUPT_EXIT_CODE, INTERRUPT_MARKER
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -1287,6 +1288,15 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 err_msg = data.get("error")
                 if err_msg:
                     return True, f" [{_trim_error(str(err_msg))}]"
+                # Benign nonzero exits are not failures: the tool layer tags
+                # known-benign cases (grep=1, diff=1, test=1, find=1) with
+                # exit_code_meaning. A genuine user interrupt returns 130 with
+                # the executor's [Command interrupted] marker in output — a bare
+                # `exit 130` has no marker and stays a real failure.
+                if data.get("exit_code_meaning"):
+                    return False, ""
+                if exit_code == INTERRUPT_EXIT_CODE and INTERRUPT_MARKER in str(data.get("output") or ""):
+                    return False, ""
                 return True, f" [exit {exit_code}]"
         return False, ""
 

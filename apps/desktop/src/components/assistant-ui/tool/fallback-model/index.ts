@@ -638,6 +638,13 @@ function extractSearchResults(result: unknown, limit = 6): SearchResultRow[] {
     .slice(0, limit)
 }
 
+// A genuine user interrupt returns rc 130 with the executor's marker appended
+// to output (mirrors the Python INTERRUPT_EXIT_CODE / INTERRUPT_MARKER). A bare
+// `exit 130` has no marker and is a real failure, so 130 is benign only when
+// the marker is present.
+const INTERRUPT_EXIT_CODE = 130
+const INTERRUPT_MARKER = '[Command interrupted]'
+
 function toolErrorText(part: ToolPart, result: Record<string, unknown>): string {
   const extractedError = extractToolErrorMessage(part.result)
 
@@ -669,9 +676,18 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   const exit = numberValue(result.exit_code)
 
   if (exit !== null && exit !== 0) {
-    const hasOutput = Boolean(firstStringField(result, ['output', 'stdout', 'stderr'])?.trim())
+    const output = firstStringField(result, ['output', 'stdout', 'stderr']) ?? ''
 
-    return hasOutput ? '' : `Command failed with exit code ${exit}.`
+    // Benign nonzero: backend tagged it (grep no-match, diff differs, test
+    // false, find), or it's a genuine user interrupt — rc 130 with the
+    // [Command interrupted] marker (a bare `exit 130` has no marker and is a
+    // real failure). Not a failure even with no output — grep prints nothing
+    // when it finds nothing.
+    if (result.exit_code_meaning || (exit === INTERRUPT_EXIT_CODE && output.includes(INTERRUPT_MARKER))) {
+      return ''
+    }
+
+    return output.trim() ? '' : `Command failed with exit code ${exit}.`
   }
 
   return ''

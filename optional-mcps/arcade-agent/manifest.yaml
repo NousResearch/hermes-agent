@@ -1,0 +1,55 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: arcade-agent
+description: Parse codebases, recover architecture, detect smells, and compute quality metrics.
+source: https://github.com/lemduc/arcade-agent
+
+transport:
+  type: stdio
+  # uvx manages the Python 3.12 runtime and isolates the exact PyPI release.
+  command: uvx
+  args:
+    - --python
+    - "3.12"
+    - --from
+    - "arcade-agent[mcp]==0.1.0"
+    - arcade-mcp
+  version: "0.1.0"
+  # Fail closed: even if a caller requests use_llm=true, Arcade must not
+  # invoke the external Claude CLI unless the user explicitly removes this.
+  env:
+    ARCADE_MOCK: "1"
+
+auth:
+  type: none
+
+# Keep Hermes's model-tool footprint focused while exposing the complete
+# architecture workflow available in the pinned stable release. Session IDs
+# from parse and recover feed downstream tools without large payloads.
+tools:
+  default_enabled:
+    - summarize
+    - parse
+    - recover
+    - detect_smells
+    - compute_metrics
+    - get_full_result
+
+post_install: |
+  Arcade Agent runs locally and needs no credentials. uvx downloads the
+  pinned release on first use, manages Python 3.12, and reuses its own cache
+  afterwards. Parsing and summaries may write .arcade-cache in the analyzed
+  repository.
+
+  ARCADE_MOCK=1 prevents detect_smells(use_llm=true) from invoking the external
+  Claude CLI. Remove that environment override from mcp_servers.arcade-agent
+  only if you explicitly opt in to sending architecture context to Claude.
+
+  Start a new Hermes session, then ask it to analyze a local repository. Pass
+  the session ID returned by parse into recover, then reuse both session IDs
+  for smell detection and metric computation.
+
+  Enable Arcade's additional query, impact, or visualization tools with:
+    hermes mcp configure arcade-agent

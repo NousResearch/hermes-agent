@@ -876,7 +876,17 @@ class TestShippedCatalog:
 
             t = entry.transport
             if t.type == "stdio" and (t.command or "") in launcher_commands:
-                pkg_args = [a for a in t.args if not a.startswith("-")]
+                pkg_args = []
+                if t.command in {"uvx", "pipx"}:
+                    for index, arg in enumerate(t.args):
+                        if arg == "--from" and index + 1 < len(t.args):
+                            pkg_args = [t.args[index + 1]]
+                            break
+                        if arg.startswith("--from="):
+                            pkg_args = [arg.removeprefix("--from=")]
+                            break
+                if not pkg_args:
+                    pkg_args = [a for a in t.args if not a.startswith("-")]
                 if not pkg_args:
                     problems.append(f"{entry.name}: launcher {t.command} has no package arg")
                     continue

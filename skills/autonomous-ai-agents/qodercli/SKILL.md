@@ -1,7 +1,7 @@
 ---
 name: qodercli
 description: "Delegate coding to Qoder CLI (features, PRs, refactors)."
-version: 2.3.0
+version: 2.4.0
 author: explicitcontextualunderstanding
 license: MIT
 platforms: [linux, macos, windows]
@@ -66,7 +66,7 @@ terminal(command="HERMES_QODERCLI_BIN=/opt/homebrew/bin/qodercli qodercli -p '..
 | CI/automation/piped input | **`-p` with `-o json`** | Structured output, no PTY needed |
 | Genuinely iterative (needs clarification) | `-i` (interactive) | Only when task requires multi-turn dialogue |
 
-**Default to print mode.** CTA evidence (N=9 interactive sessions): interactive mode has a 40% stuck-session rate where the model polls endlessly without progress. Print mode has zero such failures and achieves 8x write compression on multi-file tasks.
+**Default to print mode.** CTA evidence (N=12 sessions): legacy PTY interactive mode had a 40% stuck-session rate (spinner-only polls → premature kill). Plan 7 eliminated this for background tasks via automatic NDJSON structured progress (0% spinner-only, 100% tool-use visibility). Print mode remains simplest for bounded tasks; background mode now has full observability.
 
 ### Print mode (one-shot, preferred)
 
@@ -109,8 +109,9 @@ process(action="log", session_id="<id>")
 process(action="write", session_id="<id>", data="\x03")
 ```
 
-**Monitoring patience (critical):**
-- Use `process(action="wait", timeout=120)` between checks — NOT rapid `process(poll)` loops.
+**Monitoring patience (interactive foreground only):**
+- Background tasks get automatic NDJSON structured progress — no patience needed (see below).
+- For interactive foreground (`-i` without `background=true`): use `process(action="wait", timeout=120)` between checks — NOT rapid `process(poll)` loops.
 - Qodercli needs 60–300s for multi-file tasks. Spinner characters (⠋⠙⠹) mean it is actively working. Do NOT kill it.
 - Maximum 10 process() calls before checking `git diff --stat` in the working directory for evidence of progress.
 - If files are being written, keep waiting. If no file changes after 5 minutes, then investigate with `process(action="log")`.
@@ -237,7 +238,7 @@ When qodercli dies mid-task (credit limit, timeout, crash):
 - **Auth token expiry.** 401/403 mid-session means re-run `qodercli login`.
 - **Don't echo the token.** `qodercli` reads `QODER_PERSONAL_ACCESS_TOKEN` automatically. Never run `echo $QODER_PERSONAL_ACCESS_TOKEN` for validation — use `qodercli --version` or the smoke test below.
 - **Credit drain on vague prompts.** Tight scope = fewer turns = fewer credits.
-- **Spinner means working.** If `process(poll)` or `process(log)` shows only spinner characters (⠋⠙⠹⠸⠼⠴) with no meaningful text, qodercli is actively implementing. Do NOT kill it. Wait longer.
+- **Spinner means working (interactive foreground only).** If `process(poll)` or `process(log)` shows only spinner characters (⠋⠙⠹⠸⠼⠴) with no meaningful text, qodercli is actively implementing. Do NOT kill it. Wait longer. Background tasks emit structured NDJSON instead — you'll see tool names and thinking state, never bare spinners.
 - **Never rapid-poll.** Polling more than once per 30 seconds wastes context on spinner frames. Use `process(action="wait", timeout=120)`. Multi-file implementation takes 2–5 minutes. Prefer print mode to avoid monitoring entirely.
 - **Structured progress in background mode.** When qodercli runs as a background process, Hermes automatically uses pipe mode with `--output-format stream-json`. Poll output shows structured events (`Tools used: Read (file.py) | Thinking... | Completed (success, N turns, Ns)`) instead of spinner glyphs. No action needed — this is automatic.
 

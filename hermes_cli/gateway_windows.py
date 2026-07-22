@@ -971,15 +971,38 @@ def _install_choice_from_env(name: str) -> bool | None:
 def _prompt_install_choices(
     start_now: bool | None = None,
     start_on_login: bool | None = None,
+    *,
+    yes: bool = False,
 ) -> tuple[bool, bool]:
-    """Return (start_now, start_on_login), asking before any UAC escalation."""
-    env_start_now = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_NOW")
-    env_start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
-    if start_now is None:
-        start_now = env_start_now
-    if start_on_login is None:
-        start_on_login = env_start_on_login
+    """Return (start_now, start_on_login), asking before any UAC escalation.
+
+    Order of precedence (highest wins):
+      1. Explicit ``yes`` flag (--yes) — accept defaults, never block on TTY.
+      2. Explicit CLI ``start_now`` / ``start_on_login`` values.
+      3. ``HERMES_GATEWAY_INSTALL_START_NOW`` / ``..._START_ON_LOGIN`` env vars
+         (preserved for backward compat).
+      4. Interactive ``prompt_yes_no`` when attached to a TTY.
+      5. Defaults when piped / non-interactive: start_now=True,
+         start_on_login=True (matches the systemd path's headless behavior).
+
+    ``yes`` is preferred over falling through to env vars so callers that want
+    to script the install don't get surprised by inherited shell env.
+    """
+    if not yes:
+        env_start_now = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_NOW")
+        env_start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
+        if start_now is None:
+            start_now = env_start_now
+        if start_on_login is None:
+            start_on_login = env_start_on_login
     if start_now is not None and start_on_login is not None:
+        return start_now, start_on_login
+
+    if yes or not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+        if start_now is None:
+            start_now = True
+        if start_on_login is None:
+            start_on_login = True
         return start_now, start_on_login
 
     from hermes_cli.setup import prompt_yes_no
@@ -1027,6 +1050,7 @@ def install(
     start_now: bool | None = None,
     start_on_login: bool | None = None,
     elevated_handoff: bool = False,
+    yes: bool = False,
 ) -> None:
     """Install the gateway as a Windows Scheduled Task (with Startup fallback).
 
@@ -1035,7 +1059,9 @@ def install(
     / ``systemd_install`` but isn't needed — we always reconcile.
     """
     _assert_windows()
-    start_now, start_on_login = _prompt_install_choices(start_now, start_on_login)
+    start_now, start_on_login = _prompt_install_choices(
+        start_now, start_on_login, yes=yes
+    )
 
     if not start_on_login:
         print("ℹ Skipped Windows login auto-start install.")
@@ -1063,7 +1089,13 @@ def install(
 
         print("↻ Scheduled Task install may need administrator approval on this Windows account.")
         print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
-        if prompt_yes_no("  Open the UAC prompt now?", False):
+        # ``--yes`` accepts the trade-off that a headless ``Open the UAC prompt now?``
+        # answer is implicit-yes; without ``--yes`` we've already grabbed non-TTY
+        # defaults above. Under TTY+interactive, prompt normally — except when
+        # --yes says accept whatever default, which here is "don't open" — so
+        # we treat --yes as "yes, open it" (the user opted in to scripted install).
+        open_uac = yes or prompt_yes_no("  Open the UAC prompt now?", False)
+        if open_uac:
             if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
                 print("✓ Launched elevated Hermes gateway install prompt.")
                 if start_now:
@@ -1104,7 +1136,8 @@ def install(
 
         print(f"↻ Scheduled Task install needs administrator approval ({detail.splitlines()[0]})")
         print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
-        if prompt_yes_no("  Open the UAC prompt now?", False):
+        open_uac = yes or prompt_yes_no("  Open the UAC prompt now?", False)
+        if open_uac:
             if _launch_elevated_install(force=force, start_now=start_now, start_on_login=start_on_login):
                 print("✓ Launched elevated Hermes gateway install prompt.")
                 if start_now:

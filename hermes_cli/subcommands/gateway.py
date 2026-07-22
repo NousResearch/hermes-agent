@@ -206,6 +206,17 @@ def build_gateway_parser(
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    gateway_install.add_argument(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help=(
+            "Accept default answers for any prompts raised by install "
+            "(start-now, start-on-login, UAC escalation) and never block on "
+            "a TTY. Mirrors `hermes update --yes` for scripted provisioning."
+        ),
+    )
 
     # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser(

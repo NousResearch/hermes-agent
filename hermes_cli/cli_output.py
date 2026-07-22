@@ -61,7 +61,11 @@ def prompt(
             value = masked_secret_prompt(display)
         else:
             value = input(display)
-        value = value.strip()
+        # Stripping also drops trailing 'r' / chr(13) carried in by
+        # CRLF line endings on Windows when stdin is piped (see #60244 —
+        # PowerShell `"y" | hermes …` was failing the first compare against
+        # 'y'/'n' because the bare 'r' from the line terminator survived).
+        value = value.strip().strip("\r")
         return value if value else (default or "")
     except (KeyboardInterrupt, EOFError):
         print()

@@ -9,6 +9,118 @@ import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
 
 
+# ---------------------------------------------------------------------------
+# #60244 — headless provisioning path (--yes / piped stdin / CRLF / TTY branch)
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_install_choices_honors_cli_flags_without_prompting(monkeypatch):
+    """Explicit ``start_now`` / ``start_on_login`` CLI flags short-circuit prompts.
+
+    Regression for #60244: prior to the fix, the helper only consulted env
+    vars, so a calling site that passed ``start_now=True`` (e.g. from
+    ``hermes gateway install --start-now``) would still prompt and the
+    piped-stdin answer would silently get the wrong default on Windows.
+    """
+    prompts = []
+    _patched_setup_prompt(monkeypatch, prompts)
+
+    sn, sol = gateway_windows._prompt_install_choices(
+        start_now=True, start_on_login=False
+    )
+
+    assert (sn, sol) == (True, False)
+    assert prompts == []  # no prompt_yes_no calls happened
+
+
+def test_prompt_install_choices_non_tty_uses_defaults(monkeypatch):
+    """Piped stdin falls through to (True, True) so headless users get a config.
+
+    This is the path ``"y" | hermes gateway install`` and CI use — even
+    without ``--yes``, the helper now treats non-TTY as an implicit accept
+    of the documented defaults. See #60244.
+    """
+    prompts = []
+    _patched_setup_prompt(monkeypatch, prompts)
+    monkeypatch.setattr(gateway_windows.sys.stdin, "isatty", lambda: False)
+
+    sn, sol = gateway_windows._prompt_install_choices(
+        start_now=None, start_on_login=None
+    )
+
+    assert (sn, sol) == (True, True)
+    assert prompts == []
+
+
+def test_prompt_install_choices_yes_overrides_env_var(monkeypatch):
+    """``yes=True`` (i.e. ``--yes``) takes precedence over ``HERMES_*`` env vars.
+
+    A scripted installer inheriting shell env should not get surprised by a
+    previously-exported ``HERMES_GATEWAY_INSTALL_START_ON_LOGIN=0`` overriding
+    its requested default.
+    """
+    prompts = []
+    _patched_setup_prompt(monkeypatch, prompts)
+    # Pretend the env var is set to "no"…
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_choice_from_env",
+        lambda _name: False,
+    )
+    # …and stdin claims TTY so we'd otherwise be in the interactive branch
+    # — but ``yes=True`` should bypass that and just return the defaults
+    # regardless of env.
+    monkeypatch.setattr(gateway_windows.sys.stdin, "isatty", lambda: True)
+
+    sn, sol = gateway_windows._prompt_install_choices(
+        start_now=None, start_on_login=None, yes=True
+    )
+
+    assert (sn, sol) == (True, True)
+    assert prompts == []
+
+
+def test_prompt_install_choices_tty_prompt_path_preserved(monkeypatch):
+    """The interactive TTY branch is unchanged when --yes isn't passed.
+
+    Sanity check the existing contract: prompt is asked with the documented
+    defaults (start_now=True, start_on_login=True).
+    """
+    prompts = []
+    _patched_setup_prompt(monkeypatch, prompts)
+    monkeypatch.setattr(gateway_windows.sys.stdin, "isatty", lambda: True)
+    # Make env vars inert so the test exercises only the TTY branch.
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_choice_from_env",
+        lambda _name: None,
+    )
+
+    sn, sol = gateway_windows._prompt_install_choices()
+
+    assert (sn, sol) == (True, True)
+    # Both prompts fire and in the right order.
+    assert [p[0] for p in prompts] == [
+        "Start the gateway now after install?",
+        "Start the gateway automatically on Windows login with a Scheduled Task?",
+    ]
+    # Defaults for both prompts are "yes" (True) per #60244 — see the helper
+    # docstring; agents should opt in cleanly under non-`--yes` headless too.
+    assert all(p[1] is True for p in prompts)
+
+
+def _patched_setup_prompt(monkeypatch, prompts):
+    """Helper: route every prompt_yes_no through a list so tests can inspect.
+
+    Each entry is ``(question, default_yes_no, return_value)``.
+    """
+    monkeypatch.setattr(
+        setup,
+        "prompt_yes_no",
+        lambda q, default=True: prompts.append((q, default)) or True,
+    )
+
+
 @pytest.mark.parametrize(
     "detail",
     [
@@ -498,6 +610,10 @@ def test_install_prompts_start_choices_before_uac(monkeypatch, tmp_path, capsys)
         ),
     )
     monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: False)
+    # Force the TTY branch: stdin claims to be a tty so the helper prompts
+    # for start-now / on-login instead of falling through to non-interactive
+    # defaults (which is the headless provisioning path #60244 enables).
+    monkeypatch.setattr(gateway_windows.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(setup, "prompt_yes_no", lambda prompt, default=True: calls.append(("prompt", prompt, default)) or next(answers))
     monkeypatch.setattr(
         gateway_windows,

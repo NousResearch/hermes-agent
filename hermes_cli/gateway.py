@@ -6770,6 +6770,7 @@ def _gateway_command_inner(args):
                 start_now=getattr(args, 'start_now', None),
                 start_on_login=getattr(args, 'start_on_login', None),
                 elevated_handoff=getattr(args, 'elevated_handoff', False),
+                yes=getattr(args, 'yes', False),
             )
         elif is_wsl():
             print("WSL detected but systemd is not running.")

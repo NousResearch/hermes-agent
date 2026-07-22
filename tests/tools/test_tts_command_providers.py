@@ -450,6 +450,37 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
 
+    def test_provider_override_routes_internal_call_without_mutating_config(self, tmp_path):
+        cfg = {
+            "provider": "py-config",
+            "providers": {
+                "py-config": {
+                    "type": "command",
+                    "command": _python_copy_command(),
+                    "output_format": "mp3",
+                },
+                "py-override": {
+                    "type": "command",
+                    "command": _python_copy_command(),
+                    "output_format": "mp3",
+                },
+            },
+        }
+        out = tmp_path / "override.mp3"
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(
+                text="hi",
+                output_path=str(out),
+                provider_override="py-override",
+            )
+
+        data = json.loads(result)
+        assert data["success"] is True, data
+        assert data["provider"] == "py-override"
+        assert cfg["provider"] == "py-config"
+        assert Path(data["file_path"]).exists()
+
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the
         file is already .ogg (no ffmpeg needed)."""

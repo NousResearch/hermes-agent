@@ -759,7 +759,68 @@ from hermes_cli.model_setup_flows import (
     _model_flow_anthropic,
     _model_flow_moa,
 )
+from hermes_cli.display_width import (
+    cell_width as _text_display_width,
+    fit_cells as _pad_display_right,
+    format_columns as _format_display_columns,
+    truncate_cells as _fit_display_width,
+)
 logger = logging.getLogger(__name__)
+
+
+def print_sessions_table(
+    sessions: list,
+    *,
+    has_titles: bool,
+    indent: str = "",
+    include_index: bool = False,
+    show_full_titles: bool = False,
+    print_fn=None,
+) -> None:
+    """Print session rows with terminal-accurate column alignment (CJK-safe).
+
+    Plain ``str.ljust`` / f-string padding counts Unicode code points, not
+    terminal cell width, which breaks mixed Chinese/Latin rows.  Full titles
+    requested for an inline resume list are emitted on a continuation line so
+    the fixed table columns remain aligned.
+    """
+
+    emit = print if print_fn is None else print_fn
+
+    if has_titles:
+        header_columns = [("Title", 32), ("Preview", 40), ("Last Active", 13), ("ID", None)]
+        title_width = 32
+        rule_w = 110
+    else:
+        header_columns = [("Preview", 50), ("Last Active", 13), ("Src", 6), ("ID", None)]
+        rule_w = 95
+
+    if include_index:
+        header_columns.insert(0, ("#", 3))
+        rule_w += 4
+
+    emit(f"{indent}{_format_display_columns(*header_columns)}")
+    emit(f"{indent}{'─' * rule_w}")
+    for index, session in enumerate(sessions, start=1):
+        if has_titles:
+            title = session.get("title") or "—"
+            columns = [
+                (title, title_width),
+                (session.get("preview") or "", 40),
+            ]
+        else:
+            columns = [
+                (session.get("preview") or "", 50),
+                (session.get("source") or "", 6),
+            ]
+        columns.insert(-1 if not has_titles else 2, (_relative_time(session.get("last_active")), 13))
+        columns.append((session.get("id") or "", None))
+        if include_index:
+            columns.insert(0, (str(index), 3))
+        emit(f"{indent}{_format_display_columns(*columns)}")
+        if has_titles and show_full_titles and _text_display_width(title) > title_width:
+            title_indent = indent + (" " * 4 if include_index else "")
+            emit(f"{title_indent}↳ {title}")
 
 
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
@@ -918,6 +979,66 @@ def _relative_time(ts) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+_BROWSE_PREFIX_WIDTH = 3
+_BROWSE_LAST_ACTIVE_WIDTH = 10
+_BROWSE_SOURCE_WIDTH = 5
+_BROWSE_SESSION_ID_WIDTH = 18
+_BROWSE_COLUMN_GAPS_WIDTH = 5
+_BROWSE_MIN_NAME_WIDTH = 20
+_BROWSE_FIXED_COLUMNS_WIDTH = (
+    _BROWSE_PREFIX_WIDTH
+    + _BROWSE_LAST_ACTIVE_WIDTH
+    + _BROWSE_SOURCE_WIDTH
+    + _BROWSE_SESSION_ID_WIDTH
+    + _BROWSE_COLUMN_GAPS_WIDTH
+)
+_BROWSE_MIN_CONTENT_WIDTH = _BROWSE_FIXED_COLUMNS_WIDTH + _BROWSE_MIN_NAME_WIDTH
+# curses avoids writing the final terminal cell, so reserve one column for it.
+_BROWSE_MIN_TERMINAL_WIDTH = _BROWSE_MIN_CONTENT_WIDTH + 1
+
+
+def _session_browse_name_width(terminal_width: int) -> int:
+    """Return the flexible browse-column width within a terminal row."""
+    return max(_BROWSE_MIN_NAME_WIDTH, terminal_width - _BROWSE_FIXED_COLUMNS_WIDTH)
+
+
+def _format_session_browse_row(session: dict, terminal_width: int) -> str:
+    """Format one curses-browser row with cell-aware fixed columns."""
+    title = str(session.get("title") or "").strip()
+    preview = str(session.get("preview") or "").strip()
+    session_id = str(session.get("id") or "")
+    name = title or preview or session_id
+    name_width = _session_browse_name_width(terminal_width)
+    return (
+        f"{_pad_display_right(name, name_width)}  "
+        f"{_pad_display_right(_relative_time(session.get('last_active')), _BROWSE_LAST_ACTIVE_WIDTH)}  "
+        f"{_pad_display_right(str(session.get('source') or ''), _BROWSE_SOURCE_WIDTH)} "
+        f"{_fit_display_width(session_id, _BROWSE_SESSION_ID_WIDTH)}"
+    )
+
+
+def _format_session_browse_header(terminal_width: int) -> str:
+    """Return the browse header aligned with :func:`_format_session_browse_row`."""
+    return (
+        f"{' ' * _BROWSE_PREFIX_WIDTH}"
+        f"{_pad_display_right('Title / Preview', _session_browse_name_width(terminal_width))}  "
+        f"{_pad_display_right('Active', _BROWSE_LAST_ACTIVE_WIDTH)}  "
+        f"{_pad_display_right('Src', _BROWSE_SOURCE_WIDTH)} ID"
+    )
+
+
+def _format_session_browse_fallback_row(index: int, session: dict) -> str:
+    """Format one numbered no-curses browser row with cell-aware columns."""
+    title = str(session.get("title") or "").strip()
+    preview = str(session.get("preview") or "").strip()
+    label = title or preview or str(session.get("id") or "")
+    return (
+        f"  {index + 1:>3}. {_pad_display_right(label, 50, ellipsis='...')}  "
+        f"{_pad_display_right(_relative_time(session.get('last_active')), _BROWSE_LAST_ACTIVE_WIDTH)}  "
+        f"{_pad_display_right(str(session.get('source') or ''), 6)}"
+    )
+
+
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
@@ -1051,28 +1172,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
         result_holder = [None]
 
-        def _format_row(s, max_x):
-            """Format a session row for display."""
-            title = (s.get("title") or "").strip()
-            preview = (s.get("preview") or "").strip()
-            source = s.get("source", "")[:6]
-            last_active = _relative_time(s.get("last_active"))
-            sid = s["id"][:18]
-
-            # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
-            name_width = max(20, max_x - fixed_cols)
-
-            if title:
-                name = title[:name_width]
-            elif preview:
-                name = preview[:name_width]
-            else:
-                name = sid
-
-            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
-
         def _match(s, query):
             """Check if a session matches the search query (case-insensitive)."""
             q = query.lower()
@@ -1101,7 +1200,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
-                if max_y < 5 or max_x < 40:
+                if max_y < 5 or max_x < _BROWSE_MIN_TERMINAL_WIDTH:
                     # Terminal too small
                     try:
                         stdscr.addstr(0, 0, "Terminal too small")
@@ -1127,10 +1226,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 except curses.error:
                     pass
 
+                # Leave curses' final terminal cell untouched: some terminals
+                # scroll when it is written.  Format rows to that same width.
+                render_width = max_x - 1
+
                 # Column header line
-                fixed_cols = 3 + 12 + 6 + 18 + 6
-                name_width = max(20, max_x - fixed_cols)
-                col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
+                col_header = _format_session_browse_header(render_width)
                 try:
                     dim_attr = (
                         curses.color_pair(4) if curses.has_colors() else curses.A_DIM
@@ -1170,7 +1271,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                             break
                         s = filtered[i]
                         arrow = " → " if i == cursor else "   "
-                        row = arrow + _format_row(s, max_x - 3)
+                        row = arrow + _format_session_browse_row(s, render_width)
                         attr = curses.A_NORMAL
                         if i == cursor:
                             attr = curses.A_BOLD
@@ -1250,14 +1351,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     # Fallback: numbered list (Windows without curses, etc.)
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
-        title = (s.get("title") or "").strip()
-        preview = (s.get("preview") or "").strip()
-        label = title or preview or s["id"]
-        if len(label) > 50:
-            label = label[:47] + "..."
-        last_active = _relative_time(s.get("last_active"))
-        src = s.get("source", "")[:6]
-        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+        print(_format_session_browse_fallback_row(i, s))
 
     while True:
         try:
@@ -14692,42 +14786,30 @@ def main():
 
             if has_ws:
                 if has_titles:
-                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                    print(_format_display_columns(
+                        ("Title", 28), ("Workspace", 18), ("Last Active", 13), ("ID", None)
+                    ))
                     print("─" * 110)
                 else:
-                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                    print(_format_display_columns(
+                        ("Preview", 38), ("Workspace", 18), ("Last Active", 13), ("Src", 6), ("ID", None)
+                    ))
                     print("─" * 100)
                 for s in sessions:
                     last_active = _relative_time(s.get("last_active"))
-                    ws = _ws_label(s)[:16]
+                    ws = _ws_label(s)
                     if has_titles:
-                        title = (s.get("title") or "—")[:26]
-                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                        print(_format_display_columns(
+                            (s.get("title") or "—", 28), (ws, 18), (last_active, 13), (s["id"], None)
+                        ))
                     else:
-                        preview = s.get("preview", "")[:36]
-                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                        print(_format_display_columns(
+                            (s.get("preview", ""), 38), (ws, 18), (last_active, 13),
+                            (s["source"], 6), (s["id"], None),
+                        ))
                 return
 
-            if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
-            else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
-            for s in sessions:
-                last_active = _relative_time(s.get("last_active"))
-                preview = (
-                    s.get("preview", "")[:38]
-                    if has_titles
-                    else s.get("preview", "")[:48]
-                )
-                if has_titles:
-                    title = (s.get("title") or "—")[:30]
-                    sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
-                else:
-                    sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+            print_sessions_table(sessions, has_titles=has_titles)
 
         elif action == "export":
             from hermes_cli.session_filters import (

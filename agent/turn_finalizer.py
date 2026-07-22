@@ -386,8 +386,9 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
-            if _failed and agent._file_mutation_verifier_enabled():
-                footer = agent._format_file_mutation_failure_footer(_failed)
+            _superseded = getattr(agent, "_turn_superseded_file_mutations", None) or {}
+            if (_failed or _superseded) and agent._file_mutation_verifier_enabled():
+                footer = agent._format_file_mutation_failure_footer(_failed, _superseded)
                 if footer:
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:

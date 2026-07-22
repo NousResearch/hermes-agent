@@ -2963,10 +2963,20 @@ class AIAgent:
         state dict hasn't been initialised yet (e.g. a tool dispatched
         outside ``run_conversation``).
         """
-        if tool_name not in _FILE_MUTATING_TOOLS:
-            return
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
+            return
+
+        # A protected config.yaml patch/write_file failure can be recovered in the same
+        # turn by the sanctioned CLI path (`hermes config set ...`).  That is
+        # not a file-tool mutation, so the verifier should not keep implying
+        # the turn outcome is unknown when it has direct evidence that the
+        # approved config command succeeded.
+        if tool_name == "terminal":
+            self._record_config_set_superseded_mutation(args, result, is_error)
+            return
+
+        if tool_name not in _FILE_MUTATING_TOOLS:
             return
         targets = _extract_file_mutation_targets(tool_name, args)
         if not targets:
@@ -2990,6 +3000,69 @@ class AIAgent:
         else:
             for path in targets:
                 state.pop(path, None)
+
+    @staticmethod
+    def _terminal_config_set_path(args: Dict[str, Any], result: Any) -> Optional[str]:
+        """Return config.yaml path from a successful sanctioned config write.
+
+        This intentionally recognizes only the narrow, approved path that
+        resolves protected config.yaml patch failures: `hermes config set ...`
+        with a zero exit code and the CLI's success output naming config.yaml.
+        It does not try to infer arbitrary file changes from terminal output.
+        """
+        command = str(args.get("command") or "") if isinstance(args, dict) else ""
+        if not re.search(r"(?:^|[;&|]\s*)hermes\s+config\s+set\b", command):
+            return None
+        if not isinstance(result, str):
+            return None
+        try:
+            data = json.loads(result.strip())
+        except Exception:
+            return None
+        if not isinstance(data, dict) or data.get("exit_code") != 0 or data.get("error"):
+            return None
+        output = str(data.get("output") or "")
+        match = re.search(r"(?m)\bSet\b.*?\bin\s+(.+?config\.yaml)\s*$", output)
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    @staticmethod
+    def _same_path(left: str, right: str) -> bool:
+        def _norm(p: str) -> str:
+            return os.path.expanduser(str(p)).replace("\\", "/")
+        return _norm(left) == _norm(right)
+
+    def _record_config_set_superseded_mutation(
+        self,
+        args: Dict[str, Any],
+        result: Any,
+        is_error: bool,
+    ) -> None:
+        """Move protected config patch failures to a recovered bucket.
+
+        The regular verifier state is keyed by file-tool targets.  A later
+        `hermes config set ...` terminal call can legitimately modify the same
+        config file through the sanctioned interface, so preserve both facts:
+        the patch failed, and the approved config command succeeded.
+        """
+        if is_error:
+            return
+        config_path = self._terminal_config_set_path(args, result)
+        if not config_path:
+            return
+        failed = getattr(self, "_turn_failed_file_mutations", None)
+        if not failed:
+            return
+        superseded = getattr(self, "_turn_superseded_file_mutations", None)
+        if superseded is None:
+            superseded = {}
+            self._turn_superseded_file_mutations = superseded
+        for path in list(failed):
+            if self._same_path(path, config_path):
+                info = dict(failed.pop(path) or {})
+                info["superseded_by"] = "terminal: hermes config set"
+                superseded[path] = info
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
@@ -3048,12 +3121,17 @@ class AIAgent:
         return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
 
     @classmethod
-    def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
-        """Render the per-turn failed-mutation dict as a user-facing footer.
+    def _format_file_mutation_failure_footer(
+        cls,
+        failed: Dict[str, Dict[str, Any]],
+        superseded: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> str:
+        """Render per-turn file-mutation verifier state as a footer.
 
-        Displays up to 10 paths with their first error preview, then a
-        count of any additional failures.  Returns an empty string when
-        the dict is empty so callers can concatenate unconditionally.
+        Displays failed file-tool mutations and, when applicable, protected
+        config edit attempts that failed via patch/write_file but were later
+        recovered by an approved command such as `hermes config set`.
+        Returns an empty string when both dicts are empty.
 
         Every file path that reaches the user-facing text — both the bullet
         path and any path echoed inside the tool's error preview — is
@@ -3061,14 +3139,33 @@ class AIAgent:
         bare-path media extractor can never auto-attach a protected file
         (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
         """
-        if not failed:
+        failed = failed or {}
+        superseded = superseded or {}
+        if not failed and not superseded:
             return ""
-        lines = [
-            "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
-        ]
+        lines: List[str] = []
+        if failed and superseded:
+            lines.append(
+                "⚠️ File-mutation verifier: "
+                f"{len(failed)} file mutation attempt(s) still failed; "
+                f"{len(superseded)} protected config edit attempt(s) failed via "
+                "direct file mutation but were later applied through an approved command. "
+                "Run `git status` or `read_file` to confirm."
+            )
+        elif failed:
+            lines.append(
+                "⚠️ File-mutation verifier: "
+                f"{len(failed)} file(s) were NOT modified this turn despite any "
+                "wording above that may suggest otherwise. Run `git status` or "
+                "`read_file` to confirm."
+            )
+        else:
+            lines.append(
+                "⚠️ File-mutation verifier: direct file mutation was blocked, "
+                "but the requested protected config change was later applied "
+                "through the approved `hermes config set` command."
+            )
+
         shown = 0
         for path, info in failed.items():
             if shown >= 10:
@@ -3080,7 +3177,21 @@ class AIAgent:
             else:
                 lines.append(f"  • `{path}` — [{tool}] failed")
             shown += 1
-        remaining = len(failed) - shown
+
+        for path, info in superseded.items():
+            if shown >= 10:
+                break
+            preview = (info.get("error_preview") or "").strip()
+            tool = info.get("tool") or "patch"
+            superseded_by = info.get("superseded_by") or "terminal: hermes config set"
+            if preview:
+                lines.append(f"  • `{path}` — [{tool}] blocked: {preview}")
+            else:
+                lines.append(f"  • `{path}` — [{tool}] blocked")
+            lines.append(f"    ↳ recovered by [{superseded_by}]")
+            shown += 1
+
+        remaining = len(failed) + len(superseded) - shown
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")
         # Neutralize any path the preview text echoed (the bullet path is

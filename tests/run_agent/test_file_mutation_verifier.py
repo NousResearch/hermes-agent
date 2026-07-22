@@ -129,6 +129,7 @@ def _bare_agent() -> AIAgent:
     """
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
+    agent._turn_superseded_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     return agent
 
@@ -257,6 +258,189 @@ class TestRecordFileMutationResult:
         # the initial root cause.
         assert "first error" in agent._turn_failed_file_mutations["/tmp/a.md"]["error_preview"]
 
+    def test_successful_hermes_config_set_supersedes_config_patch_failure(self):
+        agent = _bare_agent()
+        cfg = "/home/u/.hermes/config.yaml"
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": cfg, "old_string": "", "new_string": "max_concurrent_sessions: 10"},
+            json.dumps({"error": f"Refusing to write to Hermes config file: {cfg}"}),
+            is_error=True,
+        )
+        assert cfg in agent._turn_failed_file_mutations
+
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "hermes config set max_concurrent_sessions 10"},
+            json.dumps({
+                "output": f"✓ Set max_concurrent_sessions = 10 in {cfg}",
+                "exit_code": 0,
+                "error": None,
+            }),
+            is_error=False,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+        assert cfg in agent._turn_superseded_file_mutations
+        info = agent._turn_superseded_file_mutations[cfg]
+        assert info["tool"] == "patch"
+        assert info["superseded_by"] == "terminal: hermes config set"
+
+    def test_failed_hermes_config_set_does_not_supersede_config_patch_failure(self):
+        agent = _bare_agent()
+        cfg = "/home/u/.hermes/config.yaml"
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": cfg, "old_string": "", "new_string": "x"},
+            json.dumps({"error": "Refusing to write to Hermes config file"}),
+            is_error=True,
+        )
+
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "hermes config set max_concurrent_sessions 10"},
+            json.dumps({"output": "boom", "exit_code": 1, "error": None}),
+            is_error=True,
+        )
+
+        assert cfg in agent._turn_failed_file_mutations
+        assert agent._turn_superseded_file_mutations == {}
+
+    def test_hermes_config_set_only_supersedes_matching_config_yaml_leaves_unrelated(self):
+        """Successful `hermes config set` moves only the matching config.yaml
+        failure to superseded; an unrelated failed file mutation stays put."""
+        agent = _bare_agent()
+        cfg = "/home/u/.hermes/config.yaml"
+        other = "/tmp/other.md"
+
+        # Unrelated file mutation fails.
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": other, "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+        # Config patch fails.
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": cfg, "old_string": "", "new_string": "z"},
+            json.dumps({"error": f"Refusing to write to Hermes config file: {cfg}"}),
+            is_error=True,
+        )
+        assert other in agent._turn_failed_file_mutations
+        assert cfg in agent._turn_failed_file_mutations
+
+        # Sanctioned config set succeeds for the same config.yaml.
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "hermes config set max_concurrent_sessions 10"},
+            json.dumps({
+                "output": f"✓ Set max_concurrent_sessions = 10 in {cfg}",
+                "exit_code": 0,
+                "error": None,
+            }),
+            is_error=False,
+        )
+
+        # Only the matching config.yaml was moved to superseded.
+        assert other in agent._turn_failed_file_mutations
+        assert cfg not in agent._turn_failed_file_mutations
+        assert cfg in agent._turn_superseded_file_mutations
+        assert other not in agent._turn_superseded_file_mutations
+
+    def test_hermes_config_set_different_path_does_not_supersede_original(self):
+        """A `hermes config set` targeting a *different* config.yaml path
+        leaves the original failed config mutation untouched."""
+        agent = _bare_agent()
+        cfg_orig = "/home/u/.hermes/config.yaml"
+        cfg_other = "/home/u/.hermes/profiles/foo/config.yaml"
+
+        # Config patch fails for the original path.
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": cfg_orig, "old_string": "", "new_string": "x"},
+            json.dumps({"error": "Refusing to write to Hermes config file"}),
+            is_error=True,
+        )
+        assert cfg_orig in agent._turn_failed_file_mutations
+
+        # Sanctioned config set succeeds for a *different* config file.
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "hermes config set max_concurrent_sessions 10"},
+            json.dumps({
+                "output": f"✓ Set max_concurrent_sessions = 10 in {cfg_other}",
+                "exit_code": 0,
+                "error": None,
+            }),
+            is_error=False,
+        )
+
+        # Original failure still stands; nothing was superseded.
+        assert cfg_orig in agent._turn_failed_file_mutations
+        assert agent._turn_superseded_file_mutations == {}
+
+    def test_hermes_config_set_tilde_path_matches_absolute_path(self):
+        """``hermes config set`` output with ``~/.hermes/config.yaml``
+        matches the absolute ``/home/...`` path stored in failed mutations."""
+        import os as _os
+        agent = _bare_agent()
+        home = _os.path.expanduser("~")
+        cfg_abs = f"{home}/.hermes/config.yaml"
+        cfg_tilde = "~/.hermes/config.yaml"
+
+        # Config patch fails for absolute path.
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": cfg_abs, "old_string": "", "new_string": "x"},
+            json.dumps({"error": "Refusing to write to Hermes config file"}),
+            is_error=True,
+        )
+        assert cfg_abs in agent._turn_failed_file_mutations
+
+        # Sanctioned config set succeeds; output uses tilde path.
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "hermes config set max_concurrent_sessions 10"},
+            json.dumps({
+                "output": f"\u2713 Set max_concurrent_sessions = 10 in {cfg_tilde}",
+                "exit_code": 0,
+                "error": None,
+            }),
+            is_error=False,
+        )
+
+        # Tilde path matches absolute path via expanduser, superseding failure.
+        assert agent._turn_failed_file_mutations == {}
+        assert cfg_abs in agent._turn_superseded_file_mutations
+
+    def test_hermes_config_set_success_line_can_have_trailing_output(self):
+        """Recovery should not depend on the success line being final output."""
+        agent = _bare_agent()
+        cfg = "/home/u/.hermes/config.yaml"
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": cfg, "old_string": "", "new_string": "x"},
+            json.dumps({"error": "Refusing to write to Hermes config file"}),
+            is_error=True,
+        )
+        assert cfg in agent._turn_failed_file_mutations
+
+        agent._record_file_mutation_result(
+            "terminal",
+            {"command": "hermes config set max_concurrent_sessions 10"},
+            json.dumps({
+                "output": f"✓ Set max_concurrent_sessions = 10 in {cfg}\nReloaded config",
+                "exit_code": 0,
+                "error": None,
+            }),
+            is_error=False,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+        assert cfg in agent._turn_superseded_file_mutations
+
     def test_v4a_multi_file_all_tracked(self):
         agent = _bare_agent()
         body = (
@@ -350,6 +534,23 @@ class TestFormatFooter:
         # No double-backticking anywhere.
         assert "``" not in out
 
+    def test_superseded_config_patch_footer_shows_both_attempts(self):
+        cfg = "/home/u/.hermes/config.yaml"
+        out = AIAgent._format_file_mutation_failure_footer(
+            {},
+            {cfg: {
+                "tool": "patch",
+                "error_preview": f"Refusing to write to Hermes config file: {cfg}",
+                "superseded_by": "terminal: hermes config set",
+            }},
+        )
+
+        assert "direct file mutation was blocked" in out
+        assert "approved `hermes config set` command" in out
+        assert "[patch] blocked" in out
+        assert "recovered by [terminal: hermes config set]" in out
+        assert f"`{cfg}`" in out
+
     def test_footer_path_not_extracted_by_gateway(self):
         """End-to-end: the gateway's extract_local_files must NOT pull a
         config.yaml path out of the rendered footer (#35584)."""
@@ -360,7 +561,7 @@ class TestFormatFooter:
         tmp = tempfile.mkdtemp(prefix="hermes_footer_")
         try:
             cfg = os.path.join(tmp, "config.yaml")
-            with open(cfg, "w") as fh:
+            with open(cfg, "w", encoding="utf-8") as fh:
                 fh.write("openrouter_api_key: sk-LEAK\n")
             footer = AIAgent._format_file_mutation_failure_footer(
                 {cfg: {

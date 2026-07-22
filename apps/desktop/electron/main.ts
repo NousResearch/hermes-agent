@@ -1984,6 +1984,43 @@ function getVenvPython(venvRoot) {
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
 
+/**
+ * Read pyvenv.cfg from a venv root and resolve the base Python interpreter.
+ *
+ * uv-created Windows venvs write ``pyvenv.cfg`` with a ``home`` key
+ * pointing at the base Python directory (e.g.
+ * ``C:\Users\me\AppData\Local\Programs\Python\Python311``).
+ * `venv/Scripts/python.exe` loads native ``.pyd`` extensions from the venv,
+ * which Windows locks while the process lives — blocking ``hermes update``.
+ * Using the base Python with ``PYTHONPATH`` set to include the source root
+ * and venv site-packages (already done by ``buildDesktopBackendEnv``)
+ * avoids those locks entirely.  Mirrors ``_resolve_detached_python`` in
+ * ``hermes_cli/gateway_windows.py``.
+ *
+ * Returns the path to the base ``python.exe``, or ``null`` when the venv
+ * is not uv-created, the config file can't be read, or the base Python
+ * doesn't exist at the expected location.
+ */
+function resolveBasePythonFromVenvCfg(venvRoot) {
+  if (!venvRoot || !IS_WINDOWS) return null
+
+  try {
+    const cfgPath = path.join(venvRoot, 'pyvenv.cfg')
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+
+    // PEP 405: ``home = <path>`` (case-insensitive).
+    const homeMatch = cfg.match(/^home\s*=\s*(.+)$/im)
+    if (!homeMatch) return null
+
+    const baseDir = homeMatch[1].trim()
+    const basePython = path.join(baseDir, 'python.exe')
+
+    return fileExists(basePython) ? basePython : null
+  } catch {
+    return null
+  }
+}
+
 function makeDashboardReadyFile() {
   const dir = path.join(app.getPath('userData'), 'backend-ready')
   fs.mkdirSync(dir, { recursive: true })
@@ -3748,11 +3785,13 @@ async function ensureRuntime(backend) {
   }
 
   // bootstrap=true with a real backend (createActiveBackend path) means we
-  // have a checkout and need to ensure the venv-derived Python command is
-  // wired into the backend before launch. Same code path the old factory
-  // sync flow exited through, minus all the factory/pip/marker machinery
-  // (install.ps1 owns those concerns now and the bootstrap-complete marker
-  // attests they ran successfully).
+  // have a checkout and need to ensure the Python command is wired into the
+  // backend before launch. On Windows, prefer the base Python from pyvenv.cfg
+  // to avoid venv .pyd file locks (blocking hermes update); fall back to the
+  // venv interpreter when base resolution fails. Same code path the old
+  // factory sync flow exited through, minus all the factory/pip/marker
+  // machinery (install.ps1 owns those concerns now and the bootstrap-complete
+  // marker attests they ran successfully).
   if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT)) {
     throw new Error(
       `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
@@ -3790,8 +3829,11 @@ async function ensureRuntime(backend) {
     )
   }
 
-  backend.command = getVenvPython(VENV_ROOT)
-  backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
+  const basePython = IS_WINDOWS ? resolveBasePythonFromVenvCfg(VENV_ROOT) : null
+  backend.command = basePython || venvPython
+  backend.label = basePython
+    ? `Hermes at ${ACTIVE_HERMES_ROOT} (base Python: ${VENV_ROOT})`
+    : `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
   updateBootProgress({
     phase: 'runtime.ready',
     message: 'Hermes runtime is ready',

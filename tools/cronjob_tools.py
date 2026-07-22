@@ -308,6 +308,46 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
+def _check_cron_ticker_warning() -> Optional[str]:
+    """Return a warning when the gateway (and thus the cron ticker) is not running.
+
+    Cron jobs only fire automatically while the gateway is up; in CLI-only mode
+    nothing advances ``next_run_at`` until the user runs ``hermes cron tick``.
+    Surfacing this at create time stops the silent "I scheduled it but it never
+    ran" trap. Best-effort: any failure to determine gateway status returns
+    ``None`` (no warning) rather than blocking job creation.
+
+    Only the built-in ticker depends on a live gateway process. An external
+    provider (e.g. Chronos) fires jobs via its own managed scheduler while the
+    gateway is scaled to zero, so a missing gateway PID does NOT mean those jobs
+    won't fire — warning there would be a false alarm. Mirror the CLI contract
+    (``hermes_cli/cron.py``) and stay silent for any non-builtin scheduler.
+    """
+    try:
+        try:
+            from cron.scheduler_provider import resolve_cron_scheduler
+
+            scheduler_name = resolve_cron_scheduler().name or "builtin"
+        except Exception:
+            # Fall back to the historical ticker-based check on any failure.
+            scheduler_name = "builtin"
+
+        if scheduler_name != "builtin":
+            return None
+
+        from gateway.status import get_running_pid
+
+        if get_running_pid() is None:
+            return (
+                "⚠️ The gateway is not running — this cron job will NOT fire "
+                "automatically. Start it with 'hermes gateway run', or trigger "
+                "jobs manually with 'hermes cron tick'."
+            )
+    except Exception:
+        pass
+    return None
+
+
 def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
     """Return an informational notice when a created job won't deliver anywhere.
 
@@ -756,6 +796,9 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
+            _ticker_warning = _check_cron_ticker_warning()
+            if _ticker_warning:
+                _create_message = f"{_create_message} {_ticker_warning}"
             return json.dumps(
                 {
                     "success": True,

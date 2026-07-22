@@ -380,7 +380,8 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 // (quietRpc → null) left the revision recorded as applied, and no subsequent
 // poll retried it until an unrelated MCP edit.
 describe('syncMcpReload (revision-aware ack)', () => {
-  const gwOk = (payload: unknown) => ({ request: vi.fn(() => Promise.resolve(payload)), on: vi.fn(), off: vi.fn() }) as any
+  const gwOk = (payload: unknown) =>
+    ({ request: vi.fn(() => Promise.resolve(payload)), on: vi.fn(), off: vi.fn() }) as any
 
   const freshState = (accepted = 'rev-a'): McpRevState => ({ accepted, inFlight: false })
 

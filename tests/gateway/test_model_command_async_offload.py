@@ -192,3 +192,62 @@ async def test_picker_path_requests_moa_presets(_isolated_config, monkeypatch):
 
     assert result is None
     assert captured["include_moa"] is True
+
+
+@pytest.mark.asyncio
+async def test_picker_path_forwards_provider_scoped_exclusions(
+    _isolated_config,
+    monkeypatch,
+):
+    captured = {}
+
+    def _fake_list_picker_providers(**kwargs):
+        captured.update(kwargs)
+        return [{
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "is_current": True,
+            "models": ["deepseek/deepseek-v4"],
+            "total_models": 1,
+        }]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        _fake_list_picker_providers,
+    )
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "provider": "openrouter",
+                "default": "deepseek/deepseek-v4",
+            },
+            "model_catalog": {
+                "excluded_models": {
+                    "openrouter": ["anthropic/*", "openai/*"],
+                },
+            },
+        },
+    )
+
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(
+        runner,
+        "_thread_metadata_for_source",
+        lambda *a, **k: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reply_anchor_for_event",
+        lambda *a, **k: None,
+        raising=False,
+    )
+
+    result = await runner._handle_model_command(_make_event())
+
+    assert result is None
+    assert captured["excluded_models"] == {
+        "openrouter": ["anthropic/*", "openai/*"],
+    }

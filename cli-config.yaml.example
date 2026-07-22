@@ -106,6 +106,18 @@ model:
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
 
+# Model picker visibility (optional)
+# Provider-scoped model patterns use case-insensitive shell-style globs. They
+# hide models only from picker inventories; explicit model IDs remain valid.
+#
+# model_catalog:
+#   excluded_providers:
+#     - copilot
+#   excluded_models:
+#     openrouter:
+#       - "anthropic/*"
+#       - "openai/gpt-5.6-sol"
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.

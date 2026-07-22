@@ -2819,6 +2819,7 @@ def list_picker_providers(
     current_model: str = "",
     include_moa: bool = False,
     excluded_providers: list | None = None,
+    excluded_models: dict | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2839,6 +2840,7 @@ def list_picker_providers(
     The typed ``/model <name>`` path is unaffected -- only the interactive
     picker payload is narrowed.
     """
+    from hermes_cli.model_filters import filter_model_ids
     from hermes_cli.models import fetch_openrouter_models
 
     providers = list_authenticated_providers(
@@ -2863,9 +2865,21 @@ def list_picker_providers(
                 live_ids = [mid for mid, _ in live]
             except Exception:
                 live_ids = list(p.get("models", []))
+            allowed_ids = filter_model_ids(slug, live_ids, excluded_models)
             p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
-            p["total_models"] = len(live_ids)
+            p["models"] = (
+                allowed_ids[:max_models]
+                if max_models is not None
+                else allowed_ids
+            )
+            p["total_models"] = len(allowed_ids)
+        else:
+            models = list(p.get("models") or [])
+            allowed_ids = filter_model_ids(slug, models, excluded_models)
+            if allowed_ids != models:
+                p = dict(p)
+                p["models"] = allowed_ids
+                p["total_models"] = len(allowed_ids)
 
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))

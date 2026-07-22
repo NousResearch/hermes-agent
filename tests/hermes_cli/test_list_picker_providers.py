@@ -63,6 +63,35 @@ def test_openrouter_models_replaced_with_live_catalog(monkeypatch):
     assert openrouter["total_models"] == 2
 
 
+def test_excluded_models_filter_runs_after_openrouter_live_refresh(monkeypatch):
+    base = [_make_provider("openrouter", models=["placeholder/model"])]
+    live = [
+        ("anthropic/claude-opus-4.8", ""),
+        ("openai/gpt-5.6-sol", ""),
+        ("deepseek/deepseek-v4", ""),
+    ]
+
+    monkeypatch.setattr(
+        model_switch,
+        "list_authenticated_providers",
+        lambda **kw: list(base),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: list(live),
+    )
+
+    result = model_switch.list_picker_providers(
+        max_models=50,
+        excluded_models={
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    )
+
+    assert result[0]["models"] == ["deepseek/deepseek-v4"]
+    assert result[0]["total_models"] == 1
+
+
 def test_openrouter_falls_back_to_base_models_on_fetch_failure(monkeypatch):
     """If the live catalog fetch raises, keep whatever base provided."""
     fallback_models = ["openai/gpt-5.4", "moonshotai/kimi-k2.6"]

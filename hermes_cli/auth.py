@@ -7040,6 +7040,30 @@ def _prompt_model_selection(
     )
 
     _unavailable = unavailable_models or []
+    if confirm_provider:
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.model_filters import filter_model_ids
+
+            catalog_cfg = load_config().get("model_catalog", {})
+            excluded_models = (
+                catalog_cfg.get("excluded_models", {})
+                if isinstance(catalog_cfg, dict)
+                else {}
+            )
+            model_ids = filter_model_ids(
+                confirm_provider,
+                model_ids,
+                excluded_models,
+            )
+            _unavailable = filter_model_ids(
+                confirm_provider,
+                _unavailable,
+                excluded_models,
+            )
+        except Exception:
+            pass
+
     # Sale chrome (★ / -N% / was) is Nous Portal-only — never for OpenRouter
     # or other providers even if pricing.original is somehow present.
     sale_chrome = (confirm_provider or "").strip().lower() == "nous"

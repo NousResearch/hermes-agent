@@ -1445,6 +1445,92 @@ class TestMatrixAccessTokenAuth:
         await adapter.disconnect()
 
     @pytest.mark.asyncio
+    async def test_connect_reads_recovery_key_from_active_profile_scope(self, monkeypatch):
+        """The E2EE recovery key must come from the active profile's secret scope.
+
+        Regression for the multiplexed-gateway bug where every profile's adapter
+        read ``MATRIX_RECOVERY_KEY`` via ``os.getenv`` and therefore verified
+        cross-signing with the DEFAULT profile's key ("Key MAC does not match").
+        Each profile connects inside ``set_secret_scope(...)``; the adapter must
+        resolve the recovery key from that scope, not from ``os.environ`` (which
+        in a multiplexer may hold another profile's value).
+        """
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from agent import secret_scope
+
+        # os.environ holds the WRONG (default-profile) key; the installed scope
+        # holds THIS profile's key. The fix must pick the scoped value.
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY", "default-profile-wrong-key")
+        profile_recovery_key = "developer-profile-correct-key"
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@developer:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@developer:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@developer:example.org", device_id="DEV123")
+        )
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@developer:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+        # Spy on the recovery-key verification call.
+        mock_olm.verify_with_recovery_key = AsyncMock()
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        scope_token = secret_scope.set_secret_scope(
+            {"MATRIX_RECOVERY_KEY": profile_recovery_key}
+        )
+        try:
+            with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+                with patch.dict("sys.modules", fake_mautrix_mods):
+                    with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                        with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                            assert await adapter.connect() is True
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+
+        # Verified with the PROFILE's scoped key, never the os.environ default.
+        mock_olm.verify_with_recovery_key.assert_awaited_once_with(profile_recovery_key)
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
     async def test_connect_does_not_wait_for_stuck_pending_invite(self):
         """A stale pending invite must not keep the Matrix platform unready."""
         from plugins.platforms.matrix.adapter import MatrixAdapter

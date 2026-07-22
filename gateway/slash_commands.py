@@ -4315,7 +4315,7 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.usage.label_input_tokens", count=f"{input_tokens:,}"))
             lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
-            lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
+            lines.append(t("gateway.usage.label_api_calls", count=f"{agent.session_api_calls:,}"))
 
             # Context window and compressions
             ctx = agent.context_compressor
@@ -4324,7 +4324,7 @@ class GatewaySlashCommandsMixin:
                 pct = min(100, _lpt / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(t("gateway.usage.label_context", used=f"{_lpt:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
             if ctx.compression_count:
-                lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+                lines.append(t("gateway.usage.label_compressions", count=f"{ctx.compression_count:,}"))
 
             # Per-category context breakdown (estimated — chars/4 heuristic).
             # Same engine the desktop popover uses (PR #54907). The system
@@ -4355,7 +4355,7 @@ class GatewaySlashCommandsMixin:
             approx = estimate_messages_tokens_rough(msgs)
             lines = [
                 t("gateway.usage.header_session_info"),
-                t("gateway.usage.label_messages", count=len(msgs)),
+                t("gateway.usage.label_messages", count=f"{len(msgs):,}"),
                 t("gateway.usage.label_estimated_context", count=f"{approx:,}"),
                 t("gateway.usage.detailed_after_first"),
             ]

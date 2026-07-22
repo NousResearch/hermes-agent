@@ -109,6 +109,20 @@ class TestUsageCachedAgent:
         assert "API calls: 10" in result
 
     @pytest.mark.asyncio
+    async def test_detailed_path_formats_large_counts_with_separators(self):
+        """api_calls and compression_count >999 must render with thousands separators."""
+        agent = _make_mock_agent(session_api_calls=1_234)
+        agent.context_compressor.compression_count = 2_345
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+            result = await runner._handle_usage_command(event)
+
+        assert "1,234" in result   # session_api_calls formatted
+        assert "2,345" in result   # compression_count formatted
+
+    @pytest.mark.asyncio
     async def test_sentinel_skipped_uses_cache(self):
         """PENDING sentinel in _running_agents should fall through to cache."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -146,6 +160,27 @@ class TestUsageCachedAgent:
         assert "Session Info" in result
         assert "Messages: 2" in result
         assert "~500" in result
+
+    @pytest.mark.asyncio
+    async def test_fallback_path_formats_large_message_count_with_separators(self):
+        """len(msgs) >999 must render with thousands separators in fallback /usage path."""
+        runner = _make_runner(SK)
+        event = MagicMock()
+
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-large"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        # 1500 messages — enough to cross the 999 boundary
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": "msg"}
+            for i in range(1_500)
+        ]
+
+        with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=300_000):
+            result = await runner._handle_usage_command(event)
+
+        assert "1,500" in result   # len(msgs) formatted with separator
+        assert "300,000" in result
 
     @pytest.mark.asyncio
     async def test_cache_read_write_hidden_when_zero(self):

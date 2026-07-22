@@ -1549,6 +1549,21 @@ DEFAULT_CONFIG = {
                                       # models) still applies on top of overrides
                                       # (raise-only: an override above the floor
                                       # wins; one below it is raised to the floor).
+        "idle_compact_after_seconds": 0,  # Opt-in idle compaction (0 = disabled).
+                                      # When > 0, a session that resumes after at
+                                      # least this many seconds of inactivity
+                                      # compacts its accumulated history up front,
+                                      # before the first reply — so a long-lived
+                                      # thread resumed hours later doesn't re-read
+                                      # its full stale context on every turn.
+                                      # Time-based; complements (does not replace)
+                                      # the size-based `threshold` above. Skipped
+                                      # when the context is already at/below the
+                                      # post-compression target (threshold ×
+                                      # target_ratio) and it honors the same
+                                      # failure-cooldown / anti-thrash / per-session
+                                      # lock guards as every automatic compaction.
+                                      # Example: 1800 = compact after 30 min idle.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

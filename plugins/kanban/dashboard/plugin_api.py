@@ -36,8 +36,10 @@ the port.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import secrets
 import sqlite3
 import time
 from dataclasses import asdict
@@ -116,6 +118,50 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     return normed
 
 
+FLOW_LAYOUT_PRESETS = {
+    "balanced-horizontal",
+    "balanced-vertical",
+    "compact",
+}
+DEFAULT_FLOW_LAYOUT_PRESET = "balanced-horizontal"
+
+
+class FlowSettingsBody(BaseModel):
+    layout_preset: str
+
+
+def _flow_settings_path(board: Optional[str]) -> Path:
+    slug = board or kanban_db.get_current_board()
+    return kanban_db.board_dir(slug) / "flow.json"
+
+
+def _read_flow_settings(board: Optional[str]) -> dict[str, str]:
+    path = _flow_settings_path(board)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+    preset = raw.get("layout_preset") if isinstance(raw, dict) else None
+    if preset not in FLOW_LAYOUT_PRESETS:
+        preset = DEFAULT_FLOW_LAYOUT_PRESET
+    return {"layout_preset": preset}
+
+
+def _write_flow_settings(board: Optional[str], preset: str) -> dict[str, str]:
+    if preset not in FLOW_LAYOUT_PRESETS:
+        raise HTTPException(status_code=422, detail="unknown Flow layout preset")
+    path = _flow_settings_path(board)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".json.tmp")
+    payload = {"layout_preset": preset}
+    temp.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    temp.replace(path)
+    return payload
+
+
 def _conn(board: Optional[str] = None):
     """Open a kanban_db connection, creating the schema on first use.
 
@@ -133,6 +179,566 @@ def _conn(board: Optional[str] = None):
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
     return kanban_db.connect(board=board)
+
+
+# ---------------------------------------------------------------------------
+# Canonical workflow archive/restore state
+# ---------------------------------------------------------------------------
+
+WORKFLOW_PREVIEW_TTL_SECONDS = 5 * 60
+
+
+class WorkflowPreviewBody(BaseModel):
+    seed_task_id: str
+    visible_task_ids: list[str] = Field(default_factory=list)
+
+
+class WorkflowArchiveBody(BaseModel):
+    board: str
+    seed_task_id: str
+    preview_id: str
+    task_ids: list[str]
+
+
+def _canonical_board_slug(board: Optional[str]) -> str:
+    return board or kanban_db.get_current_board() or kanban_db.DEFAULT_BOARD
+
+
+def _ensure_workflow_archive_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS workflow_archive_previews (
+            preview_id    TEXT PRIMARY KEY,
+            board_slug    TEXT NOT NULL,
+            seed_task_id  TEXT NOT NULL,
+            fingerprint   TEXT NOT NULL,
+            task_ids_json TEXT NOT NULL,
+            created_at    INTEGER NOT NULL,
+            expires_at    INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_preview_expiry
+            ON workflow_archive_previews(expires_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_archives (
+            id                TEXT PRIMARY KEY,
+            board_slug        TEXT NOT NULL,
+            seed_task_id      TEXT NOT NULL,
+            label             TEXT NOT NULL,
+            preview_id        TEXT NOT NULL,
+            scope_fingerprint TEXT NOT NULL,
+            created_at        INTEGER NOT NULL,
+            restored_at       INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS workflow_archive_tasks (
+            archive_id      TEXT NOT NULL,
+            task_id         TEXT NOT NULL,
+            previous_status TEXT NOT NULL,
+            PRIMARY KEY (archive_id, task_id),
+            FOREIGN KEY (archive_id) REFERENCES workflow_archives(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_archive_task
+            ON workflow_archive_tasks(task_id);
+        """
+    )
+
+
+def _workflow_component(
+    conn: sqlite3.Connection,
+    seed_task_id: str,
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    seed = conn.execute(
+        "SELECT id FROM tasks WHERE id = ?", (seed_task_id,)
+    ).fetchone()
+    if seed is None:
+        raise HTTPException(status_code=404, detail=f"task {seed_task_id} not found")
+
+    task_ids = {
+        row["id"] for row in conn.execute("SELECT id FROM tasks").fetchall()
+    }
+    all_links = conn.execute(
+        "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
+    ).fetchall()
+    valid_links = [
+        row for row in all_links
+        if row["parent_id"] in task_ids and row["child_id"] in task_ids
+    ]
+    neighbors: dict[str, set[str]] = {}
+    for row in valid_links:
+        neighbors.setdefault(row["parent_id"], set()).add(row["child_id"])
+        neighbors.setdefault(row["child_id"], set()).add(row["parent_id"])
+    if seed_task_id not in neighbors:
+        raise HTTPException(status_code=409, detail="task is not a linked workflow")
+
+    seen = {seed_task_id}
+    queue = [seed_task_id]
+    while queue:
+        current = queue.pop(0)
+        for neighbor in sorted(neighbors.get(current, set())):
+            if neighbor not in seen:
+                seen.add(neighbor)
+                queue.append(neighbor)
+
+    ordered_ids = sorted(seen)
+    placeholders = ",".join("?" for _ in ordered_ids)
+    tasks = conn.execute(
+        f"SELECT id, title, status, tenant, assignee, current_run_id, "
+        f"claim_lock, worker_pid FROM tasks WHERE id IN ({placeholders}) ORDER BY id",
+        tuple(ordered_ids),
+    ).fetchall()
+    component_links = [
+        row for row in valid_links
+        if row["parent_id"] in seen and row["child_id"] in seen
+    ]
+    return tasks, component_links
+
+
+def _workflow_scope_fingerprint(
+    task_ids: list[str],
+    links: list[sqlite3.Row],
+) -> str:
+    payload = {
+        "task_ids": sorted(task_ids),
+        "links": sorted(
+            [row["parent_id"], row["child_id"]] for row in links
+        ),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _workflow_state_fingerprint(
+    tasks: list[sqlite3.Row],
+    links: list[sqlite3.Row],
+) -> str:
+    payload = {
+        "scope": _workflow_scope_fingerprint([row["id"] for row in tasks], links),
+        "tasks": [
+            {
+                "id": row["id"],
+                "status": row["status"],
+                "current_run_id": row["current_run_id"],
+                "claim_lock": row["claim_lock"],
+                "worker_pid": row["worker_pid"],
+            }
+            for row in tasks
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _workflow_label(tasks: list[sqlite3.Row]) -> str:
+    tenants = sorted({row["tenant"] for row in tasks if row["tenant"]})
+    if len(tenants) == 1:
+        return tenants[0]
+    return tasks[0]["title"] or "Workflow"
+
+
+def _workflow_counts(tasks: list[sqlite3.Row]) -> dict[str, int]:
+    return {
+        "total": len(tasks),
+        "active": sum(row["status"] not in {"done", "archived"} for row in tasks),
+        "running": sum(row["status"] == "running" for row in tasks),
+        "review": sum(row["status"] == "review" for row in tasks),
+        "done": sum(row["status"] == "done" for row in tasks),
+        "archived": sum(row["status"] == "archived" for row in tasks),
+    }
+
+
+def _active_workflow_runs(
+    conn: sqlite3.Connection,
+    tasks: list[sqlite3.Row],
+) -> list[dict[str, Any]]:
+    task_by_id = {row["id"]: row for row in tasks}
+    task_ids = sorted(task_by_id)
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = conn.execute(
+        f"SELECT id AS run_id, task_id, claim_lock, worker_pid FROM task_runs "
+        f"WHERE task_id IN ({placeholders}) AND ended_at IS NULL "
+        f"AND status = 'running' ORDER BY task_id, id",
+        tuple(task_ids),
+    ).fetchall()
+    active = [dict(row) for row in rows]
+    run_task_ids = {row["task_id"] for row in rows}
+    for task in tasks:
+        if task["status"] == "running" and task["id"] not in run_task_ids:
+            active.append({
+                "run_id": task["current_run_id"],
+                "task_id": task["id"],
+                "claim_lock": task["claim_lock"],
+                "worker_pid": task["worker_pid"],
+            })
+    return active
+
+
+def _active_run_signature(rows: list[dict[str, Any]]) -> list[list[Any]]:
+    return sorted([
+        [row.get("task_id"), row.get("run_id"), row.get("claim_lock"), row.get("worker_pid")]
+        for row in rows
+    ])
+
+
+def _terminate_active_run(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """Use the Kanban kernel's existing TERM/wait/KILL policy without
+    releasing claims or changing task/run rows before every process is stopped.
+    """
+    task_id = row["task_id"]
+    run_id = row["run_id"]
+    pid = row["worker_pid"]
+    claim_lock = row["claim_lock"]
+    if not pid:
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "run_id": run_id,
+            "detail": "no live worker process recorded",
+        }
+    termination = kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    survived = kanban_db._worker_survived_termination(termination)
+    if survived or not termination.get("host_local") or not termination.get("terminated"):
+        return {
+            "ok": False,
+            "task_id": task_id,
+            "run_id": run_id,
+            "detail": "worker did not acknowledge termination within the Kanban timeout",
+            "termination": termination,
+        }
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "run_id": run_id,
+        "detail": "worker terminated",
+        "termination": termination,
+    }
+
+
+def _restore_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    previous_status: str,
+) -> str:
+    if previous_status not in {"running", "ready"}:
+        return previous_status
+    task = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    undone_parent = conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return "ready" if task and task["assignee"] and undone_parent is None else "todo"
+
+
+@router.post("/workflow-groups/preview")
+def preview_workflow_group(
+    payload: WorkflowPreviewBody,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    board_slug = _canonical_board_slug(board)
+    conn = _conn(board=board)
+    try:
+        _ensure_workflow_archive_schema(conn)
+        tasks, links = _workflow_component(conn, payload.seed_task_id)
+        task_ids = [row["id"] for row in tasks]
+        preview_id = secrets.token_hex(32)
+        now = int(time.time())
+        expires_at = now + WORKFLOW_PREVIEW_TTL_SECONDS
+        fingerprint = _workflow_state_fingerprint(tasks, links)
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "DELETE FROM workflow_archive_previews WHERE expires_at < ?", (now,)
+            )
+            conn.execute(
+                "INSERT INTO workflow_archive_previews "
+                "(preview_id, board_slug, seed_task_id, fingerprint, task_ids_json, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    preview_id,
+                    board_slug,
+                    payload.seed_task_id,
+                    fingerprint,
+                    json.dumps(task_ids),
+                    now,
+                    expires_at,
+                ),
+            )
+        visible = set(payload.visible_task_ids)
+        return {
+            "preview_id": preview_id,
+            "expires_at": expires_at,
+            "board": board_slug,
+            "seed_task_id": payload.seed_task_id,
+            "label": _workflow_label(tasks),
+            "task_ids": task_ids,
+            "tasks": [
+                {"id": row["id"], "title": row["title"], "status": row["status"]}
+                for row in tasks
+            ],
+            "counts": _workflow_counts(tasks),
+            "hidden_count": sum(task_id not in visible for task_id in task_ids),
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/workflow-groups/archive")
+def archive_workflow_group(
+    payload: WorkflowArchiveBody,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    board_slug = _canonical_board_slug(board)
+    if payload.board != board_slug:
+        raise HTTPException(
+            status_code=409,
+            detail="archive preview is bound to a different board; refresh the preview",
+        )
+    conn = _conn(board=board)
+    terminated: list[dict[str, Any]] = []
+    try:
+        _ensure_workflow_archive_schema(conn)
+        token = conn.execute(
+            "SELECT * FROM workflow_archive_previews WHERE preview_id = ?",
+            (payload.preview_id,),
+        ).fetchone()
+        if token is None or token["board_slug"] != board_slug:
+            raise HTTPException(
+                status_code=409,
+                detail="archive preview is invalid for this board; refresh the preview",
+            )
+        now = int(time.time())
+        if int(token["expires_at"]) < now:
+            raise HTTPException(
+                status_code=409,
+                detail="archive preview expired; refresh the preview",
+            )
+        if token["seed_task_id"] != payload.seed_task_id:
+            raise HTTPException(status_code=409, detail="archive preview seed changed; refresh the preview")
+        preview_task_ids = json.loads(token["task_ids_json"])
+        if sorted(payload.task_ids) != sorted(preview_task_ids):
+            raise HTTPException(
+                status_code=409,
+                detail="submitted workflow scope is incomplete; refresh the preview",
+            )
+
+        tasks, links = _workflow_component(conn, payload.seed_task_id)
+        original_task_ids = [row["id"] for row in tasks]
+        if sorted(original_task_ids) != sorted(preview_task_ids):
+            raise HTTPException(status_code=409, detail="workflow scope changed; refresh the preview")
+        if _workflow_state_fingerprint(tasks, links) != token["fingerprint"]:
+            raise HTTPException(status_code=409, detail="workflow changed; refresh the preview")
+        original_statuses = {row["id"]: row["status"] for row in tasks}
+        scope_fingerprint = _workflow_scope_fingerprint(original_task_ids, links)
+        active_runs = _active_workflow_runs(conn, tasks)
+        if len({row["task_id"] for row in active_runs}) != len(active_runs):
+            raise HTTPException(
+                status_code=409,
+                detail="workflow has multiple active runs for one task; resolve run state before archiving",
+            )
+        for run in active_runs:
+            if not kanban_db.reclaim_task(
+                conn,
+                run["task_id"],
+                reason="workflow archived from Flow view",
+            ):
+                earlier = " Earlier workflow runs were reclaimed; task statuses are unchanged." if terminated else ""
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"canonical reclaim failed for task {run['task_id']} "
+                        f"run {run['run_id']}.{earlier}"
+                    ),
+                )
+            terminated.append(run)
+
+        archive_id = "wa_" + secrets.token_hex(12)
+        try:
+            with kanban_db.write_txn(conn):
+                current_tasks, current_links = _workflow_component(conn, payload.seed_task_id)
+                if _workflow_scope_fingerprint(
+                    [row["id"] for row in current_tasks], current_links,
+                ) != scope_fingerprint:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="workflow scope changed while workers were reclaiming; statuses were not archived",
+                    )
+                if _active_workflow_runs(conn, current_tasks):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="workflow has active runs after reclaim; statuses were not archived",
+                    )
+                conn.execute(
+                    "INSERT INTO workflow_archives "
+                    "(id, board_slug, seed_task_id, label, preview_id, scope_fingerprint, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        archive_id,
+                        board_slug,
+                        payload.seed_task_id,
+                        _workflow_label(current_tasks),
+                        payload.preview_id,
+                        scope_fingerprint,
+                        now,
+                    ),
+                )
+                for row in current_tasks:
+                    task_id = row["id"]
+                    conn.execute(
+                        "INSERT INTO workflow_archive_tasks "
+                        "(archive_id, task_id, previous_status) VALUES (?, ?, ?)",
+                        (archive_id, task_id, original_statuses[task_id]),
+                    )
+                for row in current_tasks:
+                    task_id = row["id"]
+                    conn.execute(
+                        "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL, current_run_id = NULL WHERE id = ?",
+                        (task_id,),
+                    )
+                    kanban_db._append_event(
+                        conn,
+                        task_id,
+                        "status",
+                        {"from": original_statuses[task_id], "to": "archived", "archive_id": archive_id},
+                    )
+                kanban_db._append_event(
+                    conn,
+                    payload.seed_task_id,
+                    "workflow_archived",
+                    {"archive_id": archive_id, "task_ids": original_task_ids},
+                )
+                conn.execute(
+                    "DELETE FROM workflow_archive_previews WHERE preview_id = ?",
+                    (payload.preview_id,),
+                )
+        except sqlite3.Error as exc:
+            recovery = (
+                " Active workers were terminated, but task statuses and archive metadata were rolled back; "
+                "workers remain stopped."
+                if terminated else
+                " Task statuses and archive metadata were rolled back."
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"workflow status transaction failed.{recovery} ({exc})",
+            ) from exc
+
+        return {
+            "ok": True,
+            "archive_id": archive_id,
+            "archived_count": len(original_task_ids),
+            "terminated_run_ids": [
+                int(item["run_id"]) for item in terminated if item.get("run_id") is not None
+            ],
+            "refresh_required": True,
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/workflow-groups/{archive_id}/restore")
+def restore_workflow_group(
+    archive_id: str,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    board_slug = _canonical_board_slug(board)
+    conn = _conn(board=board)
+    try:
+        _ensure_workflow_archive_schema(conn)
+        archive = conn.execute(
+            "SELECT * FROM workflow_archives WHERE id = ?", (archive_id,)
+        ).fetchone()
+        if archive is None or archive["board_slug"] != board_slug:
+            raise HTTPException(status_code=404, detail="workflow archive not found on this board")
+        if archive["restored_at"] is not None:
+            raise HTTPException(status_code=409, detail="workflow archive already restored")
+        provenance = conn.execute(
+            "SELECT task_id, previous_status FROM workflow_archive_tasks "
+            "WHERE archive_id = ? ORDER BY task_id",
+            (archive_id,),
+        ).fetchall()
+        expected_ids = [row["task_id"] for row in provenance]
+        if not expected_ids:
+            raise HTTPException(status_code=409, detail="workflow archive has no recovery provenance")
+        try:
+            tasks, links = _workflow_component(conn, archive["seed_task_id"])
+        except HTTPException as exc:
+            raise HTTPException(status_code=409, detail="workflow scope changed; restore none") from exc
+        current_ids = [row["id"] for row in tasks]
+        current_scope = _workflow_scope_fingerprint(current_ids, links)
+        if sorted(current_ids) != sorted(expected_ids) or current_scope != archive["scope_fingerprint"]:
+            raise HTTPException(status_code=409, detail="workflow scope changed; restore none")
+        for row in tasks:
+            if row["status"] != "archived":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"task {row['id']} is no longer archived; restore none",
+                )
+        active_archive_ids = {
+            row["task_id"]: row["archive_id"]
+            for row in conn.execute(
+                "SELECT wat.task_id, wat.archive_id FROM workflow_archive_tasks wat "
+                "JOIN workflow_archives wa ON wa.id = wat.archive_id "
+                "WHERE wa.restored_at IS NULL AND wat.task_id IN ("
+                + ",".join("?" for _ in expected_ids)
+                + ") ORDER BY wa.created_at, wa.rowid",
+                tuple(expected_ids),
+            ).fetchall()
+        }
+        if any(active_archive_ids.get(task_id) != archive_id for task_id in expected_ids):
+            raise HTTPException(status_code=409, detail="newer archive provenance exists; restore none")
+
+        now = int(time.time())
+        try:
+            with kanban_db.write_txn(conn):
+                transaction_tasks, transaction_links = _workflow_component(conn, archive["seed_task_id"])
+                if (
+                    [row["id"] for row in transaction_tasks] != current_ids
+                    or _workflow_scope_fingerprint(current_ids, transaction_links) != current_scope
+                    or any(row["status"] != "archived" for row in transaction_tasks)
+                ):
+                    raise HTTPException(status_code=409, detail="workflow changed during restore; restore none")
+                for row in provenance:
+                    restored_status = _restore_status(
+                        conn, row["task_id"], row["previous_status"]
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+                        "worker_pid = NULL, current_run_id = NULL WHERE id = ?",
+                        (restored_status, row["task_id"]),
+                    )
+                    kanban_db._append_event(
+                        conn,
+                        row["task_id"],
+                        "status",
+                        {"from": "archived", "to": restored_status, "archive_id": archive_id},
+                    )
+                kanban_db._append_event(
+                    conn,
+                    archive["seed_task_id"],
+                    "workflow_restored",
+                    {"archive_id": archive_id, "task_ids": expected_ids},
+                )
+                conn.execute(
+                    "UPDATE workflow_archives SET restored_at = ? WHERE id = ? AND restored_at IS NULL",
+                    (now, archive_id),
+                )
+        except sqlite3.Error as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"workflow restore transaction failed; restore none ({exc})",
+            ) from exc
+        return {
+            "ok": True,
+            "archive_id": archive_id,
+            "restored_count": len(provenance),
+            "refresh_required": True,
+        }
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +1005,15 @@ def get_board(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        _ensure_workflow_archive_schema(conn)
+        workflow_archive_ids = {
+            row["task_id"]: row["archive_id"]
+            for row in conn.execute(
+                "SELECT wat.task_id, wat.archive_id FROM workflow_archive_tasks wat "
+                "JOIN workflow_archives wa ON wa.id = wat.archive_id "
+                "WHERE wa.restored_at IS NULL ORDER BY wa.created_at, wa.rowid"
+            ).fetchall()
+        }
         tasks = kanban_db.list_tasks(
             conn,
             tenant=tenant,
@@ -406,11 +1021,13 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
-        # Pre-fetch link counts per task (cheap: one query).
+        # Pre-fetch dependency edges once. The same rows feed both card link
+        # counts and the Flow projection so the board is one coherent snapshot.
+        link_rows = conn.execute(
+            "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
+        ).fetchall()
         link_counts: dict[str, dict[str, int]] = {}
-        for row in conn.execute(
-            "SELECT parent_id, child_id FROM task_links"
-        ).fetchall():
+        for row in link_rows:
             link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})[
                 "children"
             ] += 1
@@ -465,6 +1082,8 @@ def get_board(
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
             d = _task_dict(t, latest_summary=preview)
+            if t.status == "archived" and t.id in workflow_archive_ids:
+                d["workflow_archive_id"] = workflow_archive_ids[t.id]
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -497,12 +1116,21 @@ def get_board(
             )
         ]
 
+        visible_task_ids = {t.id for t in tasks}
+        visible_links = [
+            {"parent_id": row["parent_id"], "child_id": row["child_id"]}
+            for row in link_rows
+            if row["parent_id"] in visible_task_ids
+            and row["child_id"] in visible_task_ids
+        ]
+
         return {
             "columns": [
                 {"name": name, "tasks": columns[name]} for name in columns.keys()
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "links": visible_links,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
@@ -1139,6 +1767,21 @@ def delete_link(
         return {"ok": bool(ok)}
     finally:
         conn.close()
+
+
+@router.get("/flow-settings")
+def get_flow_settings(board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    return _read_flow_settings(board)
+
+
+@router.patch("/flow-settings")
+def update_flow_settings(
+    payload: FlowSettingsBody,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    return _write_flow_settings(board, payload.layout_preset)
 
 
 # ---------------------------------------------------------------------------

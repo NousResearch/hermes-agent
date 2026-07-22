@@ -401,7 +401,10 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert 'useState(() => readSelectedBoard() || null)' in js
     assert "const storedBoard = readSelectedBoard();" in js
     assert "if (!storedBoard && !board && data && data.current)" in js
-    assert "setBoard(data.current);" in js
+    # Board changes go through the Flow-aware setter so pending layout requests
+    # are invalidated before React commits the new board state.
+    assert "setCurrentBoard(data.current);" in js
+    assert "setBoard(nextBoard);" in js
     assert 'readSelectedBoard() || "default"' not in js
 
 

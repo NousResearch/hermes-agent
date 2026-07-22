@@ -52,6 +52,20 @@ export function usePlugins() {
         }
       }
 
+      // Load declared classic-script dependencies first.  `async=false` makes
+      // dynamically inserted scripts execute in append order.
+      for (const dependency of manifest.scripts ?? []) {
+        const dependencyUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${dependency}`;
+        if (loadedScripts.current.has(dependencyUrl)) continue;
+        loadedScripts.current.add(dependencyUrl);
+        const dependencyScript = document.createElement("script");
+        dependencyScript.setAttribute("data-hermes-plugin", manifest.name);
+        dependencyScript.src = dependencyUrl;
+        dependencyScript.async = false;
+        document.body.appendChild(dependencyScript);
+        injectedScripts.push(dependencyScript);
+      }
+
       // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
       // in-memory registry while the browser would otherwise never
       // re-execute a previously cached <script> URL.
@@ -67,7 +81,7 @@ export function usePlugins() {
       const script = document.createElement("script");
       script.setAttribute("data-hermes-plugin", manifest.name);
       script.src = scriptSrc;
-      script.async = true;
+      script.async = false;
       // SRI integrity verification — defense against compromised plugin
       // delivery. Plugin manifests can declare an integrity hash
       // (e.g. "sha384-...") which the browser verifies before executing.

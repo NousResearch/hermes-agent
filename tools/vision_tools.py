@@ -1525,13 +1525,13 @@ registry.register(
 # Video Analysis Tool
 # ---------------------------------------------------------------------------
 
-# Extension → MIME. avi/mkv fall back to mp4.
+# Extension → Gemini-supported video MIME. Unsupported containers such as
+# Matroska must be transcoded before this path rather than mislabeled as MP4.
 _VIDEO_MIME_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
-    ".mov": "video/mov",
-    ".avi": "video/mp4",
-    ".mkv": "video/mp4",
+    ".mov": "video/quicktime",
+    ".avi": "video/avi",
     ".mpeg": "video/mpeg",
     ".mpg": "video/mpeg",
 }

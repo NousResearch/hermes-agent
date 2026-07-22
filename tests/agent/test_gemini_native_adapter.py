@@ -19,6 +19,48 @@ class DummyResponse:
         return self._payload
 
 
+def test_build_native_request_accepts_base64_video_parts():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this clip"},
+                {
+                    "type": "video_url",
+                    "video_url": {"url": "data:video/mp4;base64,AAEC"},
+                },
+            ],
+        }],
+        tools=[],
+        tool_choice=None,
+    )
+    assert request["contents"][0]["parts"] == [
+        {"text": "Describe this clip"},
+        {"inlineData": {"mimeType": "video/mp4", "data": "AAEC"}},
+    ]
+
+
+def test_build_native_request_rejects_malformed_video_data_parts():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    for url in (
+        "data:video/mp4,AAEC",
+        "data:video/mp4;base64,!!!!",
+        "data:text/plain;base64,AAEC",
+        "data:video/x-matroska;base64,AAEC",
+    ):
+        request = build_gemini_request(
+            messages=[{"role": "user", "content": [{
+                "type": "video_url", "video_url": {"url": url}
+            }]}],
+            tools=[],
+            tool_choice=None,
+        )
+        assert request["contents"] == []
+
+
 def test_build_native_request_preserves_thought_signature_on_tool_replay():
     from agent.gemini_native_adapter import build_gemini_request
 

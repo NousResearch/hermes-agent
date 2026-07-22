@@ -1063,10 +1063,11 @@ def _handle_attachments(args: dict, **kw) -> str:
 
 
 def _handle_create(args: dict, **kw) -> str:
-    """Create a child task. Orchestrator workers use this to fan out.
+    """Create a task. Orchestrator workers use this to fan out.
 
     ``parents`` can be a list of task ids; dependency-gated promotion
-    works as usual.
+    works as usual. ``blocks`` can identify existing tasks that must wait
+    for the new task.
     """
     title = args.get("title")
     if not title or not str(title).strip():
@@ -1079,6 +1080,7 @@ def _handle_create(args: dict, **kw) -> str:
         )
     body = args.get("body")
     parents = args.get("parents") or []
+    blocks = args.get("blocks") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
@@ -1122,6 +1124,12 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    if isinstance(blocks, str):
+        blocks = [blocks]
+    if not isinstance(blocks, (list, tuple)):
+        return tool_error(
+            f"blocks must be a list of task ids, got {type(blocks).__name__}"
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1145,6 +1153,7 @@ def _handle_create(args: dict, **kw) -> str:
                 body=body,
                 assignee=str(assignee),
                 parents=tuple(parents),
+                dependents=tuple(blocks),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
@@ -1721,7 +1730,8 @@ KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
         "Create a new kanban task, optionally as a child of the current "
-        "one (pass the current task id in ``parents``). Used by "
+        "one (pass the current task id in ``parents``) or as a prerequisite "
+        "for existing tasks (pass their ids in ``blocks``). Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
         "then complete your own task. The dispatcher picks up the new "
@@ -1760,6 +1770,14 @@ KANBAN_CREATE_SCHEMA = {
                     "auto-promotes to 'ready'. Typical fan-in: list "
                     "all the researcher task ids when creating a "
                     "synthesizer task."
+                ),
+            },
+            "blocks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Existing task ids that depend on the new task. Each task "
+                    "is held in 'todo' until the new task reaches 'done'."
                 ),
             },
             "tenant": {

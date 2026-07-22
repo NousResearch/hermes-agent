@@ -236,6 +236,98 @@ def test_create_task_unknown_parent_errors(kanban_home):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
 
 
+def test_create_task_links_and_gates_dependents(kanban_home):
+    with kb.connect() as conn:
+        dependent = kb.create_task(conn, title="dependent", assignee="worker")
+
+        prerequisite = kb.create_task(
+            conn,
+            title="prerequisite",
+            assignee="worker",
+            dependents=[dependent],
+        )
+
+        assert kb.child_ids(conn, prerequisite) == [dependent]
+        assert kb.parent_ids(conn, dependent) == [prerequisite]
+        assert kb.get_task(conn, dependent).status == "todo"
+
+
+def test_create_task_rejects_running_dependent_and_rolls_back(kanban_home):
+    with kb.connect() as conn:
+        ready_dependent = kb.create_task(
+            conn, title="ready dependent", assignee="worker"
+        )
+        running_dependent = kb.create_task(
+            conn, title="running dependent", assignee="worker"
+        )
+        assert kb.claim_task(conn, running_dependent, claimer="worker:1") is not None
+        task_ids_before = {task.id for task in kb.list_tasks(conn)}
+        edges_before = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+
+        with pytest.raises(ValueError, match="ready or todo"):
+            kb.create_task(
+                conn,
+                title="unsafe prerequisite",
+                assignee="worker",
+                dependents=[ready_dependent, running_dependent],
+            )
+
+        assert {task.id for task in kb.list_tasks(conn)} == task_ids_before
+        edges_after = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+        assert edges_after == edges_before
+        assert kb.get_task(conn, ready_dependent).status == "ready"
+        assert kb.get_task(conn, running_dependent).status == "running"
+
+
+def test_create_task_rolls_back_task_and_edges_for_cyclic_dependent(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        valid_dependent = kb.create_task(
+            conn, title="valid dependent", assignee="worker"
+        )
+        cyclic_dependent = kb.create_task(
+            conn, title="cyclic dependent", assignee="worker"
+        )
+        kb.link_tasks(conn, cyclic_dependent, parent)
+        task_ids_before = {task.id for task in kb.list_tasks(conn)}
+        edges_before = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+
+        with pytest.raises(ValueError, match="cycle"):
+            kb.create_task(
+                conn,
+                title="invalid prerequisite",
+                assignee="worker",
+                parents=[parent],
+                dependents=[valid_dependent, cyclic_dependent],
+            )
+
+        assert {task.id for task in kb.list_tasks(conn)} == task_ids_before
+        edges_after = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+        assert edges_after == edges_before
+        assert kb.parent_ids(conn, valid_dependent) == []
+        assert kb.get_task(conn, valid_dependent).status == "ready"
+
+
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")

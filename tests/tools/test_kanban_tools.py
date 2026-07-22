@@ -1171,6 +1171,27 @@ def test_create_rejects_non_list_parents(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_create_blocks_existing_tasks(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        dependent = kb.create_task(conn, title="dependent", assignee="peer")
+
+    out = kt._handle_create({
+        "title": "prerequisite",
+        "assignee": "peer",
+        "blocks": [dependent],
+    })
+    result = json.loads(out)
+
+    assert result["ok"] is True
+    assert "blocks" in kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    with kb.connect() as conn:
+        assert kb.child_ids(conn, result["task_id"]) == [dependent]
+        assert kb.get_task(conn, dependent).status == "todo"
+
+
 def test_create_parses_triage_string_false(worker_env):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb

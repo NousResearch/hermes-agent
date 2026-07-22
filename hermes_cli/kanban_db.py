@@ -2731,6 +2731,7 @@ def create_task(
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
+    dependents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
@@ -2743,7 +2744,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> str:
-    """Create a new task and optionally link it under parent tasks.
+    """Create a new task and optionally link parents and dependents.
 
     Returns the new task id.  Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
@@ -2825,6 +2826,7 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
+    dependents = tuple(dict.fromkeys(d for d in dependents if d))
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2913,6 +2915,28 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                if dependents:
+                    missing = _find_missing_parents(conn, dependents)
+                    if missing:
+                        raise ValueError(
+                            f"unknown dependent task(s): {', '.join(missing)}"
+                        )
+                    rows = conn.execute(
+                        "SELECT id, status FROM tasks WHERE id IN "
+                        "(" + ",".join("?" * len(dependents)) + ")",
+                        dependents,
+                    ).fetchall()
+                    dependent_statuses = {row["id"]: row["status"] for row in rows}
+                    unsafe_dependents = [
+                        f"{dependent_id} ({dependent_statuses[dependent_id]})"
+                        for dependent_id in dependents
+                        if dependent_statuses[dependent_id] not in {"ready", "todo"}
+                    ]
+                    if unsafe_dependents:
+                        raise ValueError(
+                            "dependent task(s) must be ready or todo: "
+                            + ", ".join(unsafe_dependents)
+                        )
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3001,6 +3025,26 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                for dependent_id in dependents:
+                    if _would_cycle(conn, task_id, dependent_id):
+                        raise ValueError(
+                            f"linking {task_id} -> {dependent_id} would create a cycle"
+                        )
+                    conn.execute(
+                        "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                        (task_id, dependent_id),
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET status = 'todo' "
+                        "WHERE id = ? AND status = 'ready'",
+                        (dependent_id,),
+                    )
+                    _append_event(
+                        conn,
+                        dependent_id,
+                        "linked",
+                        {"parent": task_id, "child": dependent_id},
+                    )
                 _append_event(
                     conn,
                     task_id,
@@ -3009,6 +3053,7 @@ def create_task(
                         "assignee": assignee,
                         "status": task_status,
                         "parents": list(parents),
+                        "dependents": list(dependents),
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,

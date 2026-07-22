@@ -434,3 +434,68 @@ class TestWindowsWmicEncoding:
             )
             # Must not raise.
             assert _find_stale_dashboard_pids() == []
+
+
+class TestWindowsMalformedProcessId:
+    """The wmic branch must survive a malformed ``ProcessId=`` value.
+
+    ``int(pid_str)`` used to be evaluated inside the ``if`` condition, i.e.
+    *before* the ``try`` that was meant to catch it.  Any non-numeric
+    ProcessId on a line whose CommandLine matched a dashboard pattern
+    therefore raised ValueError out of ``_find_stale_dashboard_pids`` and
+    aborted `hermes update`.  wmic can emit such records: a process that
+    exits mid-scan leaves a truncated or empty field.
+
+    The guard only fires for *matching* command lines, so a non-matching
+    process with a bad ProcessId never reached the conversion and these
+    tests would have passed before the fix — hence the matching CommandLine
+    in both cases below.
+    """
+
+    def test_malformed_pid_on_matching_command_does_not_raise(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(os, "getpid", lambda: 999999)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "CommandLine=python -m hermes_cli.main dashboard\n"
+                    "ProcessId=\n"
+                ),
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == []
+
+    def test_scan_continues_past_malformed_pid(self, monkeypatch):
+        """A bad record must be skipped, not abort the whole scan: the valid
+        dashboard process *after* it still has to be collected and killed."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(os, "getpid", lambda: 999999)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "CommandLine=python -m hermes_cli.main dashboard\n"
+                    "ProcessId=N/A\n"
+                    "CommandLine=python -m hermes_cli.main dashboard\n"
+                    "ProcessId=4321\n"
+                ),
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [4321]
+
+    def test_self_pid_still_excluded_after_the_fix(self, monkeypatch):
+        """Moving the conversion into the try must not drop the self-PID
+        filter — `hermes update` would otherwise kill its own process."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(os, "getpid", lambda: 4321)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "CommandLine=python -m hermes_cli.main dashboard\n"
+                    "ProcessId=4321\n"
+                ),
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == []

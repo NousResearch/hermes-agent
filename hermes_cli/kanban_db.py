@@ -138,6 +138,29 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
+def _assert_not_delegated_child_mutation() -> None:
+    """Reject Kanban state mutations from ``delegate_task`` child contexts.
+
+    The structured kanban tools and CLI dispatch layer both have fast-fail
+    guards for better UX, but neither is a trust boundary: a delegated child can
+    still shell out to the CLI or import this module directly. The actual
+    invariant belongs at the DB/filesystem mutation layer so every public
+    mutator that uses ``write_txn`` (tasks, runs, comments, attachments,
+    dispatcher claims, repair events, subscriptions, GC, etc.) and every board
+    metadata mutator fails closed before touching durable state.
+    """
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+
+        delegated = is_delegated_child_process_context()
+    except Exception:
+        delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    if delegated:
+        raise PermissionError(
+            "delegate_task child contexts cannot mutate Kanban tasks or boards"
+        )
+
+
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
 
@@ -468,6 +491,7 @@ def set_current_board(slug: str) -> Path:
     so that ``hermes kanban boards switch <typo>`` returns an error
     instead of silently pointing at nothing.
     """
+    _assert_not_delegated_child_mutation()
     normed = _normalize_board_slug(slug)
     if not normed:
         raise ValueError("board slug is required")
@@ -479,6 +503,7 @@ def set_current_board(slug: str) -> Path:
 
 def clear_current_board() -> None:
     """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
+    _assert_not_delegated_child_mutation()
     try:
         current_board_path().unlink()
     except FileNotFoundError:
@@ -681,6 +706,7 @@ def write_board_metadata(
     Preserves any existing fields not mentioned in the call. Sets
     ``created_at`` on first write. Returns the resulting metadata dict.
     """
+    _assert_not_delegated_child_mutation()
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
     meta = read_board_metadata(slug)
     # Preserve existing DB-derived fields — they get re-computed each
@@ -796,6 +822,7 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     Returns a summary dict describing what happened (``{"slug", "action",
     "new_path"}``).
     """
+    _assert_not_delegated_child_mutation()
     normed = _normalize_board_slug(slug)
     if not normed:
         raise ValueError("board slug is required")
@@ -2674,6 +2701,7 @@ def write_txn(conn: sqlite3.Connection):
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
+    _assert_not_delegated_child_mutation()
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn

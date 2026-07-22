@@ -300,6 +300,16 @@ class TestIsBlockedIp:
         "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
+        # NAT64 Well-Known Prefix (RFC 6052) embedding a PRIVATE/RESERVED
+        # IPv4 target must STILL be blocked — the embedded low-32-bits are
+        # attacker-controllable, so allowing the whole prefix would be a
+        # fail-open SSRF bypass (cloud metadata, RFC1918, loopback, CGNAT).
+        "64:ff9b::169.254.169.254",  # cloud metadata via NAT64
+        "64:ff9b::10.0.0.1",         # RFC1918 via NAT64
+        "64:ff9b::127.0.0.1",        # loopback via NAT64
+        "64:ff9b::192.168.1.1",      # RFC1918 via NAT64
+        "64:ff9b::100.64.0.1",       # CGNAT via NAT64
+        "64:ff9b::0.0.0.0",          # unspecified via NAT64
     ])
     def test_blocked_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
@@ -308,10 +318,42 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",
         "2606:4700::1", "2001:4860:4860::8888",
+        # NAT64 Well-Known Prefix (RFC 6052, 64:ff9b::/96) embedding a PUBLIC
+        # IPv4 target. ipaddress.is_reserved flags the whole prefix, but the
+        # embedded IPv4 is public and reachable via an upstream NAT64
+        # translator (common on dual-stack-lite consumer ISPs). Must allow.
+        "64:ff9b::2.19.248.139",  # blogs.nvidia.com
+        "64:ff9b::8.8.8.8",       # Google DNS
+        "64:ff9b::1.1.1.1",       # Cloudflare DNS
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+    def test_nat64_url_allowed_end_to_end(self):
+        """is_safe_url accepts a host that resolves to a NAT64 synthesized
+        IPv6 alongside a public IPv4 (typical dual-stack-lite DNS result)."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2,  1, 6, "", ("2.19.248.139", 0)),
+            (10, 1, 6, "", ("64:ff9b::2.19.248.139", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://blogs.nvidia.com/") is True
+
+    def test_nat64_only_resolution_allowed(self):
+        """IPv6-only host on a DS-Lite network gets ONLY NAT64 addresses
+        back; must pass because the embedded IPv4 target is public."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::8.8.8.8", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://dns.google/") is True
+
+    def test_nat64_embedding_metadata_blocked_end_to_end(self):
+        """A host resolving to a NAT64 address that embeds the cloud-metadata
+        IPv4 (169.254.169.254) must be blocked — fail-open SSRF guard."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://evil.example/") is False
 
 
 class TestGlobalAllowPrivateUrls:
@@ -502,6 +544,29 @@ class TestAllowPrivateUrlsIntegration:
         ]):
             assert is_safe_url("http://169.254.42.99/anything") is False
 
+    def test_nat64_metadata_blocked_even_with_toggle(self, monkeypatch):
+        """NAT64-wrapped IMDS (64:ff9b::169.254.169.254) is ALWAYS blocked.
+
+        With the toggle on, is_safe_url skips _is_blocked_ip (where the NAT64
+        unwrap lives), so the always-blocked metadata floor must itself unwrap
+        the embedded IPv4 — otherwise this is a fail-open SSRF to cloud
+        metadata in the allow_private_urls configuration.
+        """
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://attacker-controlled.example/") is False
+
+    def test_nat64_public_ip_allowed_when_toggle_on(self, monkeypatch):
+        """A NAT64 address embedding a PUBLIC IPv4 still passes with toggle on —
+        the floor only unwraps to block metadata/link-local, not public targets."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::8.8.8.8", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://dns.google/") is True
+
     def test_dns_failure_still_blocked_with_toggle(self, monkeypatch):
         """DNS failures are still blocked even with toggle on."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
@@ -551,6 +616,18 @@ class TestIsAlwaysBlockedUrl:
         ]):
             assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
 
+    def test_literal_nat64_imds_always_blocked(self):
+        """A literal NAT64-wrapped IMDS URL is caught by the floor — the
+        embedded IPv4 (169.254.169.254) must be unwrapped before the check."""
+        assert is_always_blocked_url("http://[64:ff9b::169.254.169.254]/latest/") is True
+
+    def test_hostname_resolving_to_nat64_imds_always_blocked(self):
+        """Attacker hostname resolving to NAT64-wrapped IMDS still blocks."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
+
     # -- Things the floor must NOT block ----------------------------------------
 
     def test_public_url_not_blocked(self):
@@ -562,10 +639,15 @@ class TestIsAlwaysBlockedUrl:
         "http://10.0.0.5/",
         "http://172.16.0.1/",
         "http://100.64.0.1/",  # CGNAT — blocked by is_safe_url but not by the floor
+        "http://[64:ff9b::10.0.0.1]/",  # NAT64-wrapped RFC1918 — private, not floor
     ])
     def test_ordinary_private_urls_not_in_floor(self, url):
         """Floor is narrower than is_safe_url — ordinary private URLs pass."""
         assert is_always_blocked_url(url) is False
+
+    def test_nat64_public_ip_not_in_floor(self):
+        """A NAT64 address embedding a public IPv4 is not in the metadata floor."""
+        assert is_always_blocked_url("http://[64:ff9b::8.8.8.8]/") is False
 
     def test_dns_failure_not_in_floor(self):
         """DNS failure on a non-sentinel hostname = not always-blocked.

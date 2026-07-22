@@ -526,6 +526,23 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_inherit_memory() -> bool:
+    """Whether subagents should load MEMORY.md / USER.md like the parent does.
+
+    Config key: ``delegation.inherit_memory`` (bool, default False).
+
+    Default is False to preserve the historical behavior where subagents
+    receive only the parent's explicit ``context`` argument and skip the
+    persistent memory file.  Setting it True flips ``skip_memory=False`` on
+    the child AIAgent so it reads the same MEMORY.md / USER.md that the
+    parent does, ensuring operating preferences (e.g. "prefer Composio
+    over local IMAP gmail MCP", "use Camofox not Safari on captcha-protected
+    sites") are honored inside delegated tasks too.  See issue #30269.
+    """
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("inherit_memory"), default=False)
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -1380,7 +1397,12 @@ def _build_child_agent(
         log_prefix=f"[subagent-{task_index}]",
         platform="subagent",
         skip_context_files=True,
-        skip_memory=True,
+        # By default subagents skip MEMORY.md / USER.md to keep their context
+        # narrow and deterministic.  Operators can flip this with
+        # ``delegation.inherit_memory: true`` so children read the same
+        # persistent memory the parent does — see issue #30269 and
+        # ``_get_inherit_memory()`` for the rationale.
+        skip_memory=not _get_inherit_memory(),
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),

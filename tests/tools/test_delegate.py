@@ -2047,6 +2047,72 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             ["web", "browser"],
         )
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_skip_memory_default_true(self, mock_cfg):
+        """Subagents skip MEMORY.md by default (issue #30269 baseline)."""
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Test default skip_memory",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertTrue(MockAgent.call_args[1]["skip_memory"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_memory": True},
+    )
+    def test_build_child_agent_inherit_memory_when_enabled(self, mock_cfg):
+        """delegation.inherit_memory=True flips skip_memory=False on child (issue #30269)."""
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Test inherit_memory opt-in",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertFalse(MockAgent.call_args[1]["skip_memory"])
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_memory": False},
+    )
+    def test_build_child_agent_inherit_memory_explicit_false(self, mock_cfg):
+        """Explicit delegation.inherit_memory=False preserves skip_memory=True."""
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Test inherit_memory explicit off",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertTrue(MockAgent.call_args[1]["skip_memory"])
+
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):

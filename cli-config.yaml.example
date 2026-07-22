@@ -1135,6 +1135,10 @@ delegation:
                                               # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
                                               # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
+  # inherit_memory: false                     # When true, subagents load the same MEMORY.md / USER.md the parent uses, so operating preferences
+                                              # (e.g. "prefer Composio over local IMAP gmail MCP", "use Camofox not Safari on captcha sites") are honored
+                                              # inside delegated tasks too.  Default false preserves the historical narrow-context behaviour where the
+                                              # subagent only sees the parent's explicit ``context`` argument.  See issue #30269.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.

@@ -6823,6 +6823,102 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncate_ordinal_reflects_concurrent_writer(monkeypatch):
+    """truncate_before_user_ordinal must be checked against the CURRENT
+    DB row set, not this TUI process's possibly-stale in-memory history.
+
+    session["history"] is only refreshed on resume — it does not track
+    writes made by another client sharing this same session_key (e.g. the
+    REST gateway used by a web UI). If a second user turn lands in the DB
+    that way after this TUI last refreshed, an ordinal that is valid
+    against the CURRENT session must not be rejected as "no longer in
+    session history" just because the stale in-memory copy is shorter.
+    """
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "edited reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "edited reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    # What this TUI process still has in memory from its last resume.
+    stale_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=stale_history)
+
+    # What is actually in the DB right now — a second exchange landed here
+    # via another client (e.g. webui's REST gateway) after this TUI's last
+    # refresh, so ordinal=1 ("the second user turn") is valid against the
+    # DB even though the stale in-memory copy only has one user turn.
+    fresh_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second (from another client)"},
+        {"role": "assistant", "content": "second reply (from another client)"},
+    ]
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def get_messages_as_conversation(self, session_id, include_ancestors=True):
+            return list(fresh_history)
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited second",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+
+        # Before the fix this was rejected with 4018 ("target user message
+        # is no longer in session history") because ordinal=1 is out of
+        # range for the 1-user-turn stale in-memory copy — even though it
+        # is perfectly valid against the DB's actual 2-user-turn history.
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert seen["history"] == fresh_history[:2]
+        assert stub_db.replaced == [("session-key", fresh_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ---------------------------------------------------------------------------
 # session.interrupt must only cancel pending prompts owned by the calling
 # session — it must not blast-resolve clarify/sudo/secret prompts on

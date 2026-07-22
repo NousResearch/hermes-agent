@@ -9436,7 +9436,24 @@ def _(rid, params: dict) -> dict:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+            # session["history"] is only refreshed on resume (session.resume) —
+            # it does not track writes made by other clients sharing this same
+            # session_key (e.g. the REST gateway used by a web UI) in the
+            # meantime. Re-read from the DB right before truncating, mirroring
+            # session.history's own fresh-read, so replace_messages below
+            # persists a truncation of the CURRENT row set instead of silently
+            # dropping any rows a concurrent writer appended after this TUI's
+            # last refresh — that would otherwise be an unrecoverable
+            # cross-client data loss, not just a stale display.
+            db = _get_db()
             history = session.get("history", [])
+            if db is not None and session.get("session_key"):
+                try:
+                    history = db.get_messages_as_conversation(
+                        session["session_key"], include_ancestors=True
+                    )
+                except Exception:
+                    history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
@@ -9448,7 +9465,7 @@ def _(rid, params: dict) -> dict:
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
+            if db is not None:
                 try:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:

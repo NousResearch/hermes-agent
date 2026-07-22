@@ -387,7 +387,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     Boolean(rawResult.trim())
 
   const hasExpandableContent = Boolean(
-    view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
+    view.command || view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
   )
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
@@ -524,6 +524,14 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.inlineDiff && (
             <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
+          )}
+          {view.command && (
+            <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+              <p className={TOOL_SECTION_LABEL_CLASS}>Command</p>
+              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
+                {view.command}
+              </pre>
+            </div>
           )}
           {showDetail &&
             toolViewMode !== 'technical' &&

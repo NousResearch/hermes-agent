@@ -28,6 +28,7 @@ export interface CountMetric {
 }
 
 export interface ToolView {
+  command?: string
   countLabel?: string
   detail: string
   detailLabel: string

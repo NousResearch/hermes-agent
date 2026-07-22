@@ -290,22 +290,54 @@ describe('buildToolView title actions', () => {
     }
   })
 
-  it('uses inherited backend context for live terminal rows', () => {
+  it('retains the full terminal command for the renderer', () => {
+    const view = buildToolView(
+      part({ args: { command: 'cd /tmp && pnpm run lint' }, result: { output: 'done' }, toolName: 'terminal' }),
+      ''
+    )
+
+    expect(view.command).toBe('cd /tmp && pnpm run lint')
+    expect(view.title).toBe('done')
+  })
+
+  it('retains the command for output-backed terminal rows', () => {
+    const view = buildToolView(
+      part({ args: { command: 'pnpm build' }, result: { output: 'Build succeeded' }, toolName: 'terminal' }),
+      ''
+    )
+
+    expect(view.command).toBe('pnpm build')
+  })
+
+  it('retains the command for split-stream terminal rows', () => {
     const view = buildToolView(
       part({
-        args: {
-          command: 'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 | tail -20',
-          context: 'pnpm run lint'
-        },
-        result: undefined,
+        args: { command: 'npm run test' },
+        result: { stdout: 'PASS tests/index.test.ts', stderr: '' },
         toolName: 'terminal'
       }),
       ''
     )
 
-    expect(view.title).toBe('Running pnpm run lint')
-    expect(view.subtitle).toBe('')
-    expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
+    expect(view.command).toBe('npm run test')
+  })
+
+  it('retains the command for command-only terminal rows (no output)', () => {
+    const view = buildToolView(
+      part({ args: { command: 'sleep 1' }, result: undefined, toolName: 'terminal' }),
+      ''
+    )
+
+    expect(view.command).toBe('sleep 1')
+  })
+
+  it('retains the code for execute_code rows', () => {
+    const view = buildToolView(
+      part({ args: { code: 'print("hello world")' }, result: { output: 'hello world' }, toolName: 'execute_code' }),
+      ''
+    )
+
+    expect(view.command).toBe('print("hello world")')
   })
 
   it('uses the runtime locale for title text and action placement', () => {

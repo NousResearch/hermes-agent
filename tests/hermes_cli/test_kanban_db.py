@@ -242,7 +242,9 @@ def test_workspace_kind_validation(kanban_home):
 
 
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
-    target = tmp_path / ".worktrees" / "t6-wire"
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = repo / ".worktrees" / "t6-wire"
     with kb.connect() as conn:
         tid = kb.create_task(
             conn,
@@ -268,6 +270,133 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
             workspace_kind="scratch",
             branch_name="wt/bad",
         )
+
+
+# ---------------------------------------------------------------------------
+# Worktree mint hygiene — reject un-dispatchable worktree cards at mint time.
+# A ``workspace_kind=worktree`` card needs a git repo to branch from. If the
+# caller supplies no resolvable ``workspace_path`` AND the board carries no
+# git-repo ``default_workdir``, the card can never dispatch: it would
+# ``spawn_failed`` until the breaker trips and parks it silently blocked. Refuse
+# to write the row instead (regression: fleet-heal bad-worktree-mint incident,
+# residual after the pantheon card_mint_guard which only covered pantheon's own
+# mint helpers, not the raw ``kanban_create`` tool / CLI path).
+# ---------------------------------------------------------------------------
+
+def test_worktree_mint_rejects_empty_path_on_null_default_board(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
+        kb.create_task(
+            conn,
+            title="broken worktree",
+            assignee="hephaestus",
+            workspace_kind="worktree",
+        )
+
+
+def test_worktree_mint_rejects_relative_path(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
+        kb.create_task(
+            conn,
+            title="relative worktree",
+            workspace_kind="worktree",
+            workspace_path="relative/wt/path",
+        )
+
+
+def test_worktree_mint_rejects_nonexistent_parent_path(kanban_home):
+    # Absolute path whose PARENT does not exist and which is not itself a repo:
+    # git cannot create a worktree there, so the card is un-dispatchable.
+    with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
+        kb.create_task(
+            conn,
+            title="dangling worktree",
+            workspace_kind="worktree",
+            workspace_path="/nonexistent-abcxyz/deeper/still/wt",
+        )
+
+
+def test_worktree_mint_accepts_absolute_path_with_existing_parent(kanban_home, tmp_path):
+    # Explicit target under a real git repo whose .worktrees dir does not exist
+    # yet — dispatch walks up to the repo root, so mint must accept it.
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = repo / ".worktrees" / "t-ok"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ok worktree",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+        )
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(target)
+
+
+def test_worktree_mint_accepts_path_that_is_a_git_repo(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="repo worktree",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+        )
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.workspace_path == str(repo)
+
+
+def test_worktree_mint_accepts_when_board_default_workdir_is_git_repo(kanban_home, tmp_path):
+    # No explicit workspace_path, but the board's default_workdir is a real git
+    # repo the dispatcher will fall back to — this is dispatchable, so accept.
+    repo = tmp_path / "board-repo"
+    _init_git_repo(repo)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="board-default worktree",
+            workspace_kind="worktree",
+        )
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    # create_task inherits the board default_workdir into workspace_path.
+    assert task.workspace_path == str(repo)
+
+
+def test_worktree_mint_rejects_when_board_default_workdir_not_a_repo(kanban_home, tmp_path):
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    kb.write_board_metadata("default", default_workdir=str(plain))
+    # The board default is inherited into workspace_path, but it is not a git
+    # repo and its own parent (tmp_path) exists — so the containment/parent rule
+    # would otherwise accept it. It must still be rejected because a worktree
+    # needs an actual git repo to branch from.
+    with kb.connect() as conn, pytest.raises(ValueError, match="git repo"):
+        kb.create_task(
+            conn,
+            title="non-repo board default worktree",
+            workspace_kind="worktree",
+        )
+
+
+def test_scratch_and_dir_mints_are_not_affected_by_worktree_guard(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        # scratch with no path is always fine.
+        s = kb.create_task(conn, title="scratch ok", workspace_kind="scratch")
+        assert kb.get_task(conn, s).workspace_kind == "scratch"
+        # dir with an absolute path is governed by its own rules, not the
+        # worktree guard.
+        d = kb.create_task(
+            conn,
+            title="dir ok",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        assert kb.get_task(conn, d).workspace_kind == "dir"
 
 
 # ---------------------------------------------------------------------------
@@ -2187,22 +2316,22 @@ def test_worktree_no_path_anchors_on_board_default_workdir(kanban_home, tmp_path
 
 
 def test_worktree_no_path_no_board_default_raises(kanban_home, tmp_path, monkeypatch):
-    """With neither an explicit workspace_path nor a board default_workdir,
-    resolution fails loudly pointing at default_workdir / worktree:<path> —
-    rather than silently materializing under the dispatcher's CWD (the old
-    behavior that scattered worktrees under whatever dir launched the
-    gateway)."""
-    # Park the dispatcher CWD inside a real git repo so the OLD cwd-anchored
-    # code would have "succeeded" — proving the new code does NOT use cwd.
+    """With neither an explicit workspace_path nor a board default_workdir, the
+    mint is rejected at ``create_task`` — the card can never dispatch (a worktree
+    needs a git repo to branch from), so we refuse to write the row rather than
+    let it ``spawn_failed`` until the breaker parks it silently blocked.
+
+    Previously the row was written and only ``resolve_workspace`` failed later;
+    the mint-time reject closes that green-when-broken gap. Park the dispatcher
+    CWD inside a real git repo so the OLD cwd-anchored code would have
+    "succeeded" — proving the new code does NOT use cwd to rescue the mint.
+    """
     decoy_repo = tmp_path / "decoy"
     _init_git_repo(decoy_repo)
     monkeypatch.chdir(decoy_repo)
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
-        task = kb.get_task(conn, t)
-        assert task is not None
-        with pytest.raises(ValueError, match="default_workdir"):
-            kb.resolve_workspace(task)
+        with pytest.raises(ValueError, match="worktree"):
+            kb.create_task(conn, title="ship", workspace_kind="worktree")
 
 
 def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_home, tmp_path):

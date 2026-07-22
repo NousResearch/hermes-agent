@@ -28,14 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    from hermes_constants import get_hermes_home
-except Exception:  # pragma: no cover — plugin may load before constants resolves
-    import os
-
-    def get_hermes_home() -> Path:  # type: ignore[no-redef]
-        val = (os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val).resolve() if val else (Path.home() / ".hermes").resolve()
+from hermes_constants import get_hermes_home
 
 
 logger = logging.getLogger(__name__)

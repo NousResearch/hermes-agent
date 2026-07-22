@@ -685,7 +685,7 @@ function StepUpScreen({
 function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const ar = s.auto_reload
   const enabled = Boolean(ar?.enabled)
-  const distinctCard = ar?.card.kind === 'distinct' ? ar.card : null
+  const distinctCard = ar?.card?.kind === 'distinct' ? ar.card : null
 
   const distinctCardName = distinctCard
     ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||

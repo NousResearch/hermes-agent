@@ -944,6 +944,34 @@ class TestTerminalOutputRedaction:
         assert not is_env_dump_command("")
         assert not is_env_dump_command(None)
 
+    def test_is_env_dump_command_sees_through_sudo_and_full_paths(self):
+        """`sudo env` / `/usr/bin/env` / `command env` still dump the whole
+        environment, so they must be classified as env dumps — otherwise the
+        ENV pass is skipped and an opaque-named secret leaks from the dump."""
+        from agent.redact import is_env_dump_command
+        assert is_env_dump_command("sudo env")
+        assert is_env_dump_command("sudo printenv")
+        assert is_env_dump_command("sudo -E env")
+        assert is_env_dump_command("sudo -EH printenv")
+        assert is_env_dump_command("/usr/bin/env")
+        assert is_env_dump_command("/usr/bin/printenv")
+        assert is_env_dump_command("command env")
+        assert is_env_dump_command("cat /tmp/x && sudo env")
+        assert is_env_dump_command("sudo /usr/bin/env | grep API")
+        # A real program that merely lives at a path ending in a different
+        # basename is NOT an env dump.
+        assert not is_env_dump_command("sudo python app.py")
+        assert not is_env_dump_command("/usr/local/bin/myenvtool")
+
+    def test_sudo_env_masks_opaque_token(self):
+        """End-to-end: the opaque-named secret in a `sudo env` dump is masked,
+        matching bare `env` — the leak this fix closes."""
+        from agent.redact import redact_terminal_output
+        out = "DEPLOY_SESSION_SECRET=a9Xk2Lp7Qz4Rt8Vw1Nb6Mc3\nPATH=/usr/bin"
+        red = redact_terminal_output(out, "sudo env", force=True)
+        assert "a9Xk2Lp7Qz4Rt8Vw1Nb6Mc3" not in red
+        assert "PATH=/usr/bin" in red
+
     def test_env_dump_masks_opaque_token(self):
         from agent.redact import redact_terminal_output
         out = "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u"

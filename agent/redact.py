@@ -752,19 +752,34 @@ def redact_sensitive_text(
 # fixtures, ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
+# Wrapper commands that commonly precede a real command without changing what
+# it prints. ``sudo env`` / ``command env`` / ``/usr/bin/env`` still dump the
+# environment, so the env-dump classification must see through them — otherwise
+# the ENV-assignment redaction pass is skipped and an opaque-named secret
+# (a VAR whose name isn't a known-secret word and whose value has no vendor
+# prefix) leaks verbatim from the dump.
+_ENV_DUMP_WRAPPERS = frozenset(
+    {"sudo", "command", "nice", "nohup", "stdbuf", "time", "doas", "setsid"}
+)
+
 
 def is_env_dump_command(command: str | None) -> bool:
     """Return True if ``command`` dumps environment variables to stdout.
 
     Detects ``env`` / ``printenv`` / ``set`` / ``export`` / ``declare`` as the
-    first token of any segment in a pipeline or sequence (``;`` / ``&&`` /
-    ``||`` / ``|``). Conservative: a parse failure or anything unrecognized
-    returns False (callers then fall back to the safer code_file=True path,
-    which still masks prefix-shaped keys).
+    effective command of any segment in a pipeline or sequence (``;`` / ``&&``
+    / ``||`` / ``|``). The command is matched by its basename so a full path
+    (``/usr/bin/env``) counts, and a leading wrapper such as ``sudo`` /
+    ``command`` (with its own ``-flags`` and ``VAR=val`` assignments) is
+    skipped so ``sudo env`` / ``sudo -E printenv`` are recognised. Conservative:
+    a parse failure or anything unrecognized returns False (callers then fall
+    back to the safer code_file=True path, which still masks prefix-shaped
+    keys).
     """
     if not command or not isinstance(command, str):
         return False
-    # Split on shell separators, then inspect the first token of each segment.
+    # Split on shell separators, then inspect the effective command of each
+    # segment.
     segments = re.split(r"[|;&]+", command)
     for seg in segments:
         seg = seg.strip()
@@ -774,7 +789,19 @@ def is_env_dump_command(command: str | None) -> bool:
             tokens = shlex.split(seg)
         except ValueError:
             tokens = seg.split()
-        if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
+        # Skip leading wrapper commands plus the flags / assignments that
+        # belong to them, then match the real command's basename.
+        idx = 0
+        while idx < len(tokens):
+            if os.path.basename(tokens[idx]) in _ENV_DUMP_WRAPPERS:
+                idx += 1
+                while idx < len(tokens) and (
+                    tokens[idx].startswith("-") or "=" in tokens[idx]
+                ):
+                    idx += 1
+                continue
+            break
+        if idx < len(tokens) and os.path.basename(tokens[idx]) in _ENV_DUMP_COMMANDS:
             return True
     return False
 

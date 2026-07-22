@@ -31,6 +31,7 @@ import {
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
+import { SmartMedia } from './smart-media'
 
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
@@ -238,6 +239,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    const kind = mediaKind(mediaPath)
+    if (kind === 'image' || kind === 'video') {
+      return <SmartMedia src={mediaPath} />
+    }
     return <MediaAttachment path={mediaPath} />
   }
 
@@ -285,16 +290,15 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   )
 }
 
-function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+function MarkdownImage({ className, src, alt, ...props }: ComponentProps<"img">) {
   return (
-    <ZoomableImage
+    <SmartMedia
       alt={alt}
       className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-[min(100%,var(--image-preview-max-width))] rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+        "m-0 block h-auto w-auto max-h-(--image-preview-height) max-w-[min(100%,var(--image-preview-max-width))] rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]",
         className
       )}
       containerClassName="my-2 block w-fit max-w-full"
-      slot="aui_markdown-image"
       src={src}
       {...props}
     />

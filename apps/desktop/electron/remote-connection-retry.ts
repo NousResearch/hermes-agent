@@ -18,6 +18,61 @@ function requiresOauthLogin(error: unknown): boolean {
   return candidate.needsOauthLogin === true || isGatewayAuthRejection(error) || isGatewayAuthRejection(candidate.cause)
 }
 
+const RETRYABLE_NETWORK_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'ERR_INTERNET_DISCONNECTED',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET'
+])
+
+/** True only for failures that can plausibly clear without changing config. */
+function isRetryableRemoteConnectionError(error: unknown, seen = new Set<object>()): boolean {
+  if (!error || typeof error !== 'object' || requiresOauthLogin(error) || seen.has(error)) {
+    return false
+  }
+
+  seen.add(error)
+
+  const candidate = error as {
+    cause?: unknown
+    code?: unknown
+    kind?: unknown
+    message?: unknown
+    statusCode?: unknown
+  }
+
+  const statusCode = Number(candidate.statusCode)
+
+  if (statusCode === 408 || statusCode === 425 || statusCode === 429 || (statusCode >= 500 && statusCode <= 599)) {
+    return true
+  }
+
+  if (candidate.kind === 'timeout' || candidate.kind === 'unreachable') {
+    return true
+  }
+
+  if (typeof candidate.code === 'string' && RETRYABLE_NETWORK_CODES.has(candidate.code.toUpperCase())) {
+    return true
+  }
+
+  if (candidate.cause && isRetryableRemoteConnectionError(candidate.cause, seen)) {
+    return true
+  }
+
+  // Some timeout wrappers (including the desktop's bounded ticket request)
+  // carry no structured code. Keep this narrow: configuration messages such as
+  // invalid URLs, missing tokens, invalid SSH settings, and auth failures do not
+  // match and therefore fail immediately.
+  return typeof candidate.message === 'string' && /(?:timed? out|timeout)/i.test(candidate.message)
+}
+
 /**
  * A remote restart can outlive one 8-second ticket/status request. Retry only
  * ordinary transport/server failures; a positively classified 401/403 must
@@ -44,7 +99,7 @@ async function resolveRemoteConnectionWithRetry<T>(
     try {
       return await resolve()
     } catch (error) {
-      if (attempt >= attempts || requiresOauthLogin(error)) {
+      if (attempt >= attempts || !isRetryableRemoteConnectionError(error)) {
         throw error
       }
 
@@ -57,5 +112,5 @@ async function resolveRemoteConnectionWithRetry<T>(
   throw new Error('Remote connection retry loop exhausted unexpectedly')
 }
 
-export { requiresOauthLogin, resolveRemoteConnectionWithRetry }
+export { isRetryableRemoteConnectionError, requiresOauthLogin, resolveRemoteConnectionWithRetry }
 export type { RemoteConnectionRetryOptions }

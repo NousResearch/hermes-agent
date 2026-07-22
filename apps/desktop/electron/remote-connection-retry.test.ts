@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { requiresOauthLogin, resolveRemoteConnectionWithRetry } from './remote-connection-retry'
+import {
+  isRetryableRemoteConnectionError,
+  requiresOauthLogin,
+  resolveRemoteConnectionWithRetry
+} from './remote-connection-retry'
 
 test('401 and 403 require OAuth login and are never retried', async () => {
   for (const statusCode of [401, 403]) {
@@ -26,6 +30,7 @@ test('401 and 403 require OAuth login and are never retried', async () => {
 
 test('wrapped sign-in-required failures are never retried', async () => {
   let attempts = 0
+
   const authError = Object.assign(new Error('Sign in again'), {
     cause: Object.assign(new Error('forbidden'), { statusCode: 403 }),
     needsOauthLogin: true
@@ -51,6 +56,7 @@ test('timeouts and 5xx failures use fresh resolver calls with exponential backof
     new Error('Timed out connecting to Hermes backend after 8000ms'),
     Object.assign(new Error('503 upstream unavailable'), { statusCode: 503 })
   ]
+
   const sleeps: number[] = []
   let attempts = 0
 
@@ -121,4 +127,42 @@ test('ordinary connection retries are bounded', async () => {
   )
 
   assert.equal(attempts, 3)
+})
+
+test('permanent URL, token, and SSH configuration errors fail immediately', async () => {
+  const permanentErrors = [
+    Object.assign(new TypeError('Invalid URL'), { code: 'ERR_INVALID_URL' }),
+    new Error('Remote Hermes gateway is selected, but no session token is saved.'),
+    new Error('HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not.'),
+    Object.assign(new Error('Permission denied (publickey).'), { kind: 'auth-failed' }),
+    Object.assign(new Error('Remote host identification has changed.'), { kind: 'host-key-changed' }),
+    Object.assign(new Error('SSH bootstrap was superseded by newer connection settings.'), { kind: 'superseded' }),
+    Object.assign(new Error('Unsupported SSH configuration.'), { kind: 'unknown' })
+  ]
+
+  for (const error of permanentErrors) {
+    let attempts = 0
+
+    assert.equal(isRetryableRemoteConnectionError(error), false)
+    await assert.rejects(
+      () =>
+        resolveRemoteConnectionWithRetry(
+          async () => {
+            attempts += 1
+            throw error
+          },
+          { maxAttempts: 5, sleep: async () => undefined }
+        ),
+      candidate => candidate === error
+    )
+    assert.equal(attempts, 1)
+  }
+})
+
+test('wrapped transport failures remain retryable', () => {
+  const wrapped = Object.assign(new Error('Could not reach the remote gateway.'), {
+    cause: Object.assign(new Error('fetch failed'), { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) })
+  })
+
+  assert.equal(isRetryableRemoteConnectionError(wrapped), true)
 })

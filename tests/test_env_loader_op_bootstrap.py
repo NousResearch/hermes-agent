@@ -97,6 +97,48 @@ def test_missing_op_env_is_a_noop(tmp_path):
     assert os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") is None
 
 
+def test_repeated_dotenv_load_preserves_resolved_op_secret(tmp_path, monkeypatch):
+    """Second load_hermes_dotenv must not re-poison a vault-resolved API key.
+
+    ``.env`` keeps ``op://`` references for ``op run`` / docs, while
+    ``secrets.onepassword`` (or a prior ``op run``) injects the real value.
+    OP apply is idempotent per HERMES_HOME, so a naive ``load_dotenv(override=True)``
+    on the second call would leave the literal ``op://`` in ``os.environ`` and
+    break providers that call ``has_usable_secret`` (e.g. Cursor).
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "CURSOR_API_KEY=op://Infrastructure/Cursor API Key/credential\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CURSOR_API_KEY", "crsr_already_resolved_from_vault_xxxxx")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert os.environ["CURSOR_API_KEY"] == "crsr_already_resolved_from_vault_xxxxx"
+
+    # Idempotent OP apply: second dotenv load must not clobber the resolved key.
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert os.environ["CURSOR_API_KEY"] == "crsr_already_resolved_from_vault_xxxxx"
+    assert not os.environ["CURSOR_API_KEY"].startswith("op://")
+
+
+def test_dotenv_op_ref_does_not_enter_environ_when_unset(tmp_path, monkeypatch):
+    """Unresolved ``op://`` refs must not be left in ``os.environ`` as poison."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "CURSOR_API_KEY=op://Infrastructure/Cursor API Key/credential\nFOO=bar\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ.get("FOO") == "bar"
+    assert os.environ.get("CURSOR_API_KEY") is None
+
+
 # ---------------------------------------------------------------------------
 # Patch 2 — credential_pool prefers resolved value over raw op:// ref
 # ---------------------------------------------------------------------------

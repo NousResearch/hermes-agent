@@ -10,6 +10,7 @@ import yaml
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     check_config_version,
+    edit_config,
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
@@ -1928,3 +1929,62 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+class TestEditConfig:
+    """Regression tests for edit_config subprocess timeout."""
+
+    def test_passes_timeout_argument(self, tmp_path):
+        """Verify subprocess.run is called with timeout=3600."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("key: value\n")
+
+        with (
+            patch("hermes_cli.config.is_managed", return_value=False),
+            patch("hermes_cli.config.get_config_path", return_value=config_path),
+            patch("hermes_cli.config.os.getenv", return_value="nano"),
+            patch("hermes_cli.config.subprocess.run") as mock_run,
+        ):
+            edit_config()
+
+        mock_run.assert_called_once_with(
+            ["nano", str(config_path)],
+            timeout=3600,
+        )
+
+    def test_timeout_expired_caught(self, tmp_path, capsys):
+        """Verify TimeoutExpired prints a message and does not propagate."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("key: value\n")
+
+        with (
+            patch("hermes_cli.config.is_managed", return_value=False),
+            patch("hermes_cli.config.get_config_path", return_value=config_path),
+            patch("hermes_cli.config.os.getenv", return_value="nano"),
+            patch("hermes_cli.config.subprocess.run") as mock_run,
+        ):
+            import subprocess as _subprocess
+
+            mock_run.side_effect = _subprocess.TimeoutExpired(
+                cmd=["nano", str(config_path)],
+                timeout=3600,
+            )
+            edit_config()
+
+        captured = capsys.readouterr()
+        assert "Editor timed out after 1 hour." in captured.out
+
+    def test_keyboard_interrupt_caught(self, tmp_path, capsys):
+        """Verify KeyboardInterrupt prints a message and does not propagate."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("key: value\n")
+
+        with (
+            patch("hermes_cli.config.is_managed", return_value=False),
+            patch("hermes_cli.config.get_config_path", return_value=config_path),
+            patch("hermes_cli.config.os.getenv", return_value="nano"),
+            patch("hermes_cli.config.subprocess.run") as mock_run,
+        ):
+            mock_run.side_effect = KeyboardInterrupt()
+            edit_config()
+
+        captured = capsys.readouterr()
+        assert "Editor interrupted." in captured.out

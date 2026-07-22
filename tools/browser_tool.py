@@ -69,7 +69,7 @@ from agent.redact import redact_cdp_url
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import windows_hide_flags, windows_batch_safe_args
 
 # Browser-specific tool keys passed through to the agent-browser subprocess
 # AFTER credential stripping.  agent-browser is a Node process loading npm
@@ -1146,7 +1146,7 @@ def _run_chrome_fallback_command(
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
                 _popen_extra["startupinfo"] = _si
             proc = subprocess.Popen(
-                full, stdout=stdout_fd, stderr=stderr_fd,
+                windows_batch_safe_args(full), stdout=stdout_fd, stderr=stderr_fd,
                 stdin=subprocess.DEVNULL, env=browser_env,
                 **_popen_extra,
             )
@@ -2487,7 +2487,7 @@ def _run_browser_command(
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
                 _popen_extra["startupinfo"] = _si
             proc = subprocess.Popen(
-                cmd_parts,
+                windows_batch_safe_args(cmd_parts),
                 stdout=stdout_fd,
                 stderr=stderr_fd,
                 stdin=subprocess.DEVNULL,

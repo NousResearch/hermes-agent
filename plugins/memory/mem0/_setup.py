@@ -193,7 +193,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updated_keys: set[str] = set()
     new_lines: list[str] = []
@@ -208,7 +208,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
         if k not in updated_keys:
             new_lines.append(f"{k}={v}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:
@@ -221,7 +221,7 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         except Exception:
             pass
     existing.update(data)
-    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -241,7 +241,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -362,7 +362,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -493,7 +493,7 @@ def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
     if not existing:
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
                 if line.startswith(f"{env_var}="):
                     existing = line.split("=", 1)[1].strip()
                     break

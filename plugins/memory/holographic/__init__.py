@@ -13,6 +13,15 @@ Config in $HERMES_HOME/config.yaml (profile-scoped):
       default_trust: 0.5
       min_trust_threshold: 0.3
       temporal_decay_half_life: 0
+      
+      # Optional: Post memory writes to an external URL (e.g. for archiving to another agent)
+      post_write_webhook:
+        enabled: false
+        url: "http://your-server.com/hook"
+        method: "POST"
+        headers:
+          Content-Type: "application/json"
+        payload: "{ \"content\": \"${content}\", \"action\": \"${action}\", \"target\": \"${target}\" }"
 """
 
 from __future__ import annotations
@@ -153,6 +162,8 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
+            {"key": "webhook_enabled", "description": "Enable memory write webhook", "default": "false", "choices": ["true", "false"]},
+            {"key": "webhook_url", "description": "Webhook URL for memory writes", "default": ""},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -241,14 +252,142 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
+        # NEW: Send session summary to webhook
+        if self._config.get("webhook_enabled", False):
+            self._send_session_summary()
+
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
+        """Mirror built-in memory writes as facts. (No longer auto-posts to webhook on every write)"""
         if action == "add" and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"
                 self._store.add_fact(content, category=category)
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
+
+    def _send_session_summary(self) -> None:
+        """Generate a markdown summary of the session's facts and post to webhook."""
+        import os
+        import requests
+        import threading
+        from datetime import datetime
+
+        webhook_config = self._config.get("post_write_webhook", {})
+        is_enabled = webhook_config.get("enabled", False) or str(self._config.get("webhook_enabled", "false")).lower() == "true"
+        
+        if not is_enabled:
+            return
+
+        url = webhook_config.get("url", "") or self._config.get("webhook_url", "")
+        if not url:
+            return
+
+        # 1. Gather recent facts (Last 20)
+        try:
+            facts = self._store.get_recent_facts(limit=20)
+        except Exception as e:
+            logger.debug("Failed to get facts for summary: %s", e)
+            return
+
+        if not facts:
+            return
+
+        # 2. Construct Markdown Summary
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        md_lines = [f"# Session Summary - {now}", ""]
+        
+        # Group by category if possible, otherwise just list
+        # Simple list for now
+        for f in reversed(facts): # Reverse to chronological order
+            md_lines.append(f"- [{f.get('category', 'general')}] {f['content']}")
+
+        summary_text = "\n".join(md_lines)
+
+        # 3. Send Webhook
+        def _send():
+            try:
+                headers = {}
+                raw_headers = webhook_config.get("headers", {})
+                for k, v in raw_headers.items():
+                    if isinstance(v, str) and v.startswith("$"):
+                        headers[k] = os.environ.get(v[1:], v)
+                    else:
+                        headers[k] = v
+
+                payload_template = webhook_config.get("payload", '{ "content": "${summary}" }')
+                payload_str = payload_template.replace("${summary}", summary_text)
+                
+                import json
+                try:
+                    payload = json.loads(payload_str)
+                except json.JSONDecodeError:
+                    payload = {"raw": payload_str}
+
+                requests.post(url, headers=headers, json=payload, timeout=60)
+                logger.debug("Session summary sent to %s", url)
+            except Exception as e:
+                logger.debug("Session summary webhook failed: %s", e)
+        
+        threading.Thread(target=_send, daemon=True).start()
+
+    def _post_write_webhook(self, action: str, target: str, content: str) -> None:
+        """Asynchronously post memory write data to a configured webhook URL."""
+        import os
+        import requests
+        import threading
+        
+        # Support both flat keys (from setup wizard) and nested keys (manual YAML config)
+        is_enabled = (
+            self._config.get("post_write_webhook", {}).get("enabled", False) or
+            str(self._config.get("webhook_enabled", "false")).lower() == "true"
+        )
+        if not is_enabled:
+            return
+
+        url = (
+            self._config.get("post_write_webhook", {}).get("url", "") or
+            self._config.get("webhook_url", "")
+        )
+        if not url:
+            return
+
+        method = "POST"
+        headers = {}
+        payload_template = '{ "content": "${content}", "action": "${action}", "target": "${target}" }'
+
+        # Check for nested advanced config
+        if "post_write_webhook" in self._config:
+            webhook_cfg = self._config["post_write_webhook"]
+            method = webhook_cfg.get("method", "POST").upper()
+            headers = webhook_cfg.get("headers", {})
+            payload_template = webhook_cfg.get("payload", payload_template)
+
+        # Support basic variable substitution in headers (e.g., env vars)
+        processed_headers = {}
+        for k, v in headers.items():
+            if isinstance(v, str) and v.startswith("$"):
+                processed_headers[k] = os.environ.get(v[1:], v)
+            else:
+                processed_headers[k] = v
+
+        # Payload template substitution
+        payload_str = payload_template.replace("${content}", content).replace("${action}", action).replace("${target}", target)
+        
+        def _send():
+            try:
+                # Parse JSON payload if possible
+                import json
+                try:
+                    payload = json.loads(payload_str)
+                except json.JSONDecodeError:
+                    payload = {"raw": payload_str}
+                
+                requests.request(method, url, headers=processed_headers, json=payload, timeout=60)
+                logger.debug("Memory webhook sent to %s", url)
+            except Exception as e:
+                logger.debug("Memory webhook failed: %s", e)
+        
+        threading.Thread(target=_send, daemon=True).start()
 
     def shutdown(self) -> None:
         # Release the shared SQLite connection deterministically on the

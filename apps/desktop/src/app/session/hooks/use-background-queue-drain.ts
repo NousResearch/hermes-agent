@@ -93,6 +93,13 @@ export function useBackgroundQueueDrain({
         drainFailuresRef.current.set(entry.id, failures)
 
         if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
+          // The entry is provably undrainable -- the session cannot be
+          // resolved to a runtime ID (never opened, or stale beyond
+          // migration).  Remove it so it doesn't trigger a permanent
+          // "Queued message not sent" notification on every restart.
+          removeQueuedPrompt(sessionKey, entry.id)
+          drainFailuresRef.current.delete(entry.id)
+
           notify({
             id: `composer-background-queue-stuck-${sessionKey}`,
             kind: 'error',

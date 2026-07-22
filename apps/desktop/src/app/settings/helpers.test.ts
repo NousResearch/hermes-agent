@@ -34,14 +34,36 @@ describe('settings helpers', () => {
     const options = enumOptionsFor('memory.provider', '', {})
 
     // Built-in memory is not a provider plugin; the empty sentinel is the
-    // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
+    // only built-in-shaped entry (#49513). The rest are the shipped provider
+    // plugins under plugins/memory/, in directory order (#68528).
+    expect(options).toEqual([
+      '',
+      'byterover',
+      'hindsight',
+      'holographic',
+      'honcho',
+      'mem0',
+      'openviking',
+      'retaindb',
+      'supermemory',
+    ])
   })
 
   it('keeps a legacy literal builtin value visible as the current selection', () => {
     const options = enumOptionsFor('memory.provider', 'builtin', {})
 
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+    expect(options).toEqual([
+      '',
+      'byterover',
+      'hindsight',
+      'holographic',
+      'honcho',
+      'mem0',
+      'openviking',
+      'retaindb',
+      'supermemory',
+      'builtin',
+    ])
   })
 
   describe('isExternalMemoryProvider', () => {

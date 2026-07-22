@@ -5183,6 +5183,10 @@ def run_conversation(
                 # flag so it can fire again if the model goes empty on
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
+                # A landed tool call means any earlier dropped-tool-call stall
+                # was recovered — refresh that budget too so it guards each
+                # stall independently rather than capping the whole run.
+                agent._dropped_toolcall_retries = 0
 
                 previous_msg = messages[-1] if messages else None
                 current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
@@ -5352,8 +5356,54 @@ def run_conversation(
                 continue
             
             else:
+                # ── Dropped tool-call recovery (copilot/Claude) ────────
+                # Some providers (observed: claude-opus-4.8 / claude-sonnet-4.5
+                # on GitHub Copilot, ~2026-07) return finish_reason="tool_calls"
+                # while the parsed tool_calls array is empty. The model INTENDED
+                # to act but the payload shipped no call — the narration may land
+                # in `content` OR only in the `reasoning` field (empty content).
+                # Either way, treating it as a final answer silently ends the
+                # turn with the task unstarted. The invariant we key on is the
+                # provider contract violation itself: finish_reason=="tool_calls"
+                # with zero tool_calls. Re-prompt (bounded) to make the model
+                # emit the call. finish_reason=="stop" text finishes are
+                # unaffected. The retry budget resets after any successful tool
+                # round (see the post-tool reset), so it guards each stall, not
+                # the whole run.
+                _dropped_tc_mismatch = (
+                    finish_reason == "tool_calls"
+                    and not assistant_message.tool_calls
+                )
+                if _dropped_tc_mismatch and getattr(agent, "_dropped_toolcall_retries", 0) < 3:
+                    agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
+                    logger.warning(
+                        "finish_reason=tool_calls with empty tool_calls array "
+                        "(narration only) — re-prompting to emit the call "
+                        "(retry %d/3, model=%s provider=%s)",
+                        agent._dropped_toolcall_retries, agent.model, agent.provider,
+                    )
+                    agent._emit_status(
+                        "↻ Model signaled a tool call but sent none — "
+                        f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+                    )
+                    interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    messages.append(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous turn indicated a tool call but none was "
+                            "included. Do not narrate a plan or restate intent — issue "
+                            "the actual tool call now to continue the task."
+                        ),
+                        "_dropped_toolcall_nudge": True,
+                    })
+                    agent._session_messages = messages
+                    continue
+
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                # A real final answer resets the dropped-tool-call retry budget.
+                agent._dropped_toolcall_retries = 0
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

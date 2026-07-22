@@ -90,6 +90,23 @@ so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_to
 4. **Confirm the new look landed** and tell the user how to revert: run
    `hermes config set display.skin default` (or they can `/skin default`).
 
+## Tweak the active look (change one thing)
+
+When the user wants to adjust the CURRENT look ("make the tool `●` cyan", "warmer
+background"), **edit the active skin in place** — do NOT create a new skin from
+`default`, which drops the current palette (background included).
+
+1. Find the active skin: `hermes config get display.skin`.
+2. **If a file exists** at `<hermes-home>/skins/<active>.yaml`: `patch` ONLY the
+   key(s) you're changing (e.g. add/replace `ui_tool: "#00FFFF"`), leaving every
+   other line untouched. Saving bumps the file's mtime; the watcher repaints live
+   — no `config set` needed, name unchanged.
+3. **If the active skin is a built-in** (no file — e.g. `default`, `mono`): fork
+   it once, carrying its FULL palette into a new user skin, then change the one
+   key and `hermes config set display.skin <newname>`. Copy `templates/skin.yaml`
+   and match the built-in's colors; never start from a bare `default` fork that
+   omits `background`.
+
 ## Pitfalls
 
 - **Don't hardcode `~/.hermes`** when a profile is active — resolve the real home
@@ -107,6 +124,10 @@ so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_to
 - **You apply it, not the user.** `hermes config set display.skin <name>` is
   enough — the gateway's watcher repaints every surface within ~a second. Don't
   defer to "type /skin yourself"; that's the old behavior.
+- **To change one color, edit the ACTIVE skin — never fork `default`.** Forking
+  `default` for a tweak drops the current palette: a skin with no `background`
+  resets the terminal to its own default (often black). Patch the active skin's
+  file in place so `background` and everything else survive.
 
 ## Verification
 

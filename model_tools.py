@@ -1374,11 +1374,37 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        # Result-level failure capture.  Many tools return a well-formed JSON
+        # ({"error": ...}) instead of raising — the exception-only hooks in
+        # registry.dispatch / this function's except block never see those.
+        # Reuse the same failure classifier the display layer uses
+        # (agent.display._detect_tool_failure) so the journal matches what the
+        # user is shown.  Never log our own journal tool, and never re-log a
+        # result that already came from an auto-logged exception path.
+        try:
+            if function_name not in ("tool_failure_log",):
+                from agent.display import _detect_tool_failure
+
+                is_failure, suffix = _detect_tool_failure(function_name, result)
+                if is_failure:
+                    from tools._failure_log_store import auto_log
+
+                    err_text = suffix.strip() or "tool returned an error result"
+                    auto_log(function_name, err_text, function_args, session_id or "")
+        except Exception:
+            pass  # never let failure logging break the agent loop
+
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
+        # Auto-log to tool failure journal so patterns can be reviewed later
+        try:
+            from tools._failure_log_store import auto_log
+            auto_log(function_name, str(e), function_args, session_id or "")
+        except Exception:
+            pass  # never let failure logging break the agent loop
         return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
 
 

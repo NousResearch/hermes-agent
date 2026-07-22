@@ -657,3 +657,50 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+# ---------------------------------------------------------------------------
+# Session-key subscription decoding (dispatcher-spawned worker path)
+# ---------------------------------------------------------------------------
+
+def test_parse_gateway_session_key():
+    from tools.kanban_tools import _parse_gateway_session_key as parse
+
+    # thread session: 6th part is the thread id
+    assert parse("agent:main:discord:thread:123:456") == ("discord", "123", "456")
+    # dm without thread suffix
+    assert parse("agent:main:telegram:dm:999") == ("telegram", "999", None)
+    # group: 6th part may be a per-user suffix, NOT a thread id
+    assert parse("agent:main:discord:group:123:u42") == ("discord", "123", None)
+    # profile-namespaced key (multiplexing)
+    assert parse("agent:coder:slack:dm:C1:T1") == ("slack", "C1", "T1")
+    # non-gateway keys
+    assert parse("") is None
+    assert parse("desktop-session-abc") is None
+    assert parse("agent:main:discord") is None
+
+
+def test_auto_subscribe_decodes_gateway_session_key(kanban_home, monkeypatch):
+    """A worker subprocess that only inherits HERMES_SESSION_KEY gets a
+    REAL platform/chat subscription, not an undeliverable 'tui' row."""
+    import hermes_cli.kanban_db as kb
+    from tools.kanban_tools import _maybe_auto_subscribe
+
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:discord:thread:123:456")
+    monkeypatch.setenv("HERMES_PROFILE", "dirk")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="sub-decode task", assignee="worker1")
+        assert _maybe_auto_subscribe(conn, tid) is True
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "123"
+    assert subs[0]["thread_id"] == "456"
+

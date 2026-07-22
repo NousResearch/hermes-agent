@@ -202,6 +202,20 @@ def _coerce_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _guess_image_mime(url: str) -> str:
+    """Best-effort MIME type from a URL extension, defaulting to image/jpeg."""
+    import re as _re
+    m = _re.search(r"\.(png|gif|webp|bmp|tiff?|jpeg|jpg|avif|jxl)(?:\?|$)", url, _re.I)
+    if m:
+        ext = m.group(1).lower()
+        if ext == "jpg":
+            ext = "jpeg"
+        if ext == "tif":
+            ext = "tiff"
+        return f"image/{ext}"
+    return "image/jpeg"
+
+
 def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
     if not isinstance(content, list):
         text = _coerce_content_to_text(content)
@@ -221,22 +235,45 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
                 parts.append({"text": text})
         elif ptype == "image_url":
             url = ((item.get("image_url") or {}).get("url") or "")
-            if not isinstance(url, str) or not url.startswith("data:"):
+            if not isinstance(url, str) or not url:
                 continue
-            try:
-                header, encoded = url.split(",", 1)
-                mime = header.split(":", 1)[1].split(";", 1)[0]
-                raw = base64.b64decode(encoded)
-            except Exception:
-                continue
-            parts.append(
-                {
-                    "inlineData": {
-                        "mimeType": mime,
-                        "data": base64.b64encode(raw).decode("ascii"),
+            if url.startswith("data:"):
+                try:
+                    header, encoded = url.split(",", 1)
+                    mime = header.split(":", 1)[1].split(";", 1)[0]
+                    raw = base64.b64decode(encoded)
+                except Exception:
+                    continue
+                parts.append(
+                    {
+                        "inlineData": {
+                            "mimeType": mime,
+                            "data": base64.b64encode(raw).decode("ascii"),
+                        }
                     }
-                }
-            )
+                )
+            elif url.startswith(("http://", "https://")):
+                # Gemini requires inlineData/fileData — fetch remote images
+                # and inline as base64 so they are not silently dropped.
+                try:
+                    resp = httpx.get(url, timeout=10, follow_redirects=True)
+                    resp.raise_for_status()
+                    raw = resp.content
+                    mime = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                    if not mime.startswith("image/"):
+                        mime = _guess_image_mime(url)
+                    parts.append(
+                        {
+                            "inlineData": {
+                                "mimeType": mime,
+                                "data": base64.b64encode(raw).decode("ascii"),
+                            }
+                        }
+                    )
+                except Exception:
+                    # Fetch failed — emit a text reference so the image is
+                    # not silently lost (consistent with Bedrock fallback).
+                    parts.append({"text": f"[Image: {url}]"})
     return parts
 
 

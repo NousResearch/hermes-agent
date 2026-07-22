@@ -46,6 +46,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -6419,7 +6420,9 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     raw = task_config.get("timeout")
     if raw is not None:
         try:
-            return float(raw)
+            parsed = float(raw)
+            if math.isfinite(parsed):
+                return parsed
         except (ValueError, TypeError):
             pass
     return default

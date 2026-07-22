@@ -2981,15 +2981,83 @@ class AIAgent:
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we
                 # later see success.  A repeated failure with a different
-                # message shouldn't silently overwrite the original.
+                # message shouldn't silently overwrite the original.  Still
+                # refresh the filesystem fingerprint so a later unrelated
+                # external edit cannot hide the most recent failed attempt.
+                fingerprint = self._get_local_file_mutation_fingerprint(path)
                 if path not in state:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "_fingerprint": fingerprint,
                     }
+                else:
+                    state[path]["_fingerprint"] = fingerprint
         else:
             for path in targets:
                 state.pop(path, None)
+
+    @staticmethod
+    def _get_local_file_mutation_fingerprint(path: str) -> Optional[Dict[str, Any]]:
+        """Return a lightweight local filesystem fingerprint for ``path``.
+
+        This is intentionally stat-based rather than content-hash-based: the
+        verifier only needs to know whether a failed mutation target changed
+        later in the same turn, and hashing large files would make the footer
+        path unexpectedly expensive.  ``st_mtime_ns``/``st_ctime_ns`` plus
+        size, inode, device, and mode detect normal in-place edits, atomic
+        replacement, creation, and deletion.  They can miss changes on unusual
+        filesystems with coarse or synthetic stat metadata; those cases fail
+        closed by retaining the warning when inspection is unavailable.
+        """
+        backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+        if backend and backend != "local":
+            return None
+        try:
+            candidate = Path(path).expanduser()
+            if not candidate.is_absolute():
+                from agent.runtime_cwd import resolve_agent_cwd
+
+                candidate = resolve_agent_cwd() / candidate
+            try:
+                st = candidate.stat()
+            except FileNotFoundError:
+                return {"exists": False}
+            except OSError:
+                return None
+            return {
+                "exists": True,
+                "st_dev": st.st_dev,
+                "st_ino": st.st_ino,
+                "st_mode": st.st_mode,
+                "st_size": st.st_size,
+                "st_mtime_ns": st.st_mtime_ns,
+                "st_ctime_ns": st.st_ctime_ns,
+            }
+        except Exception:
+            return None
+
+    def _get_unresolved_file_mutation_failures(self) -> Dict[str, Dict[str, Any]]:
+        """Return failed file mutations whose targets still look unchanged.
+
+        Failed entries without a fingerprint are retained because remote
+        backends, unsafe paths, and stat failures cannot be verified locally.
+        Entries with a changed fingerprint are removed from the per-turn state
+        and suppressed from the user-facing footer.
+        """
+        state = getattr(self, "_turn_failed_file_mutations", None) or {}
+        unresolved: Dict[str, Dict[str, Any]] = {}
+        for path, info in list(state.items()):
+            then = info.get("_fingerprint") if isinstance(info, dict) else None
+            if then is None:
+                unresolved[path] = info
+                continue
+            now = self._get_local_file_mutation_fingerprint(path)
+            if now is None or now == then:
+                unresolved[path] = info
+                continue
+            state.pop(path, None)
+        return unresolved
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.

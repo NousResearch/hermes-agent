@@ -735,12 +735,21 @@ class TestLaunchdServiceRecovery:
         assert "--replace" in plist_path.read_text(encoding="utf-8")
         # No DIRECT bootout/bootstrap ran (those would kill us mid-sequence).
         assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
-        # Exactly one detached helper was spawned, in a new session, and it
-        # performs both bootout and bootstrap.
+        # Exactly one Popen call was made for the transient launchd job.
         assert len(popen_calls) == 1
         cmd, kwargs = popen_calls[0]
-        assert kwargs.get("start_new_session") is True
-        script = cmd[-1]
+        # Must use `launchctl submit` (not `start_new_session=True`) so the
+        # helper runs as a transient launchd job outside the gateway's process
+        # coalition, surviving bootout (#69098).
+        assert cmd[:3] == ["launchctl", "submit", "-l"]
+        assert kwargs.get("start_new_session") is not True
+        assert "-o" in cmd
+        assert "-e" in cmd
+        # The script is passed via -- /bin/bash -c ...
+        bash_idx = cmd.index("--") + 1
+        assert cmd[bash_idx] == "/bin/bash"
+        assert cmd[bash_idx + 1] == "-c"
+        script = cmd[bash_idx + 2]
         assert "bootout" in script and "bootstrap" in script
         assert str(plist_path) in script
 

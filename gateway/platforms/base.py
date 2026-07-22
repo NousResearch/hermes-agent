@@ -5959,8 +5959,14 @@ class BasePlatformAdapter(ABC):
                 stripped = line.strip()
                 if stripped.startswith("```"):
                     if in_code:
-                        in_code = False
-                        lang = ""
+                        # A closing fence must consist solely of backtick/
+                        # tilde characters and whitespace (CommonMark spec
+                        # §4.5).  Trailing non-whitespace content means
+                        # this is ordinary code, not a closing fence.
+                        after = stripped.lstrip("`")
+                        if not after or after.isspace():
+                            in_code = False
+                            lang = ""
                     else:
                         in_code = True
                         tag = stripped[3:].strip()

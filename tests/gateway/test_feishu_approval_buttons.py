@@ -420,7 +420,7 @@ class TestNonApprovalCardAction:
 
         data = _make_card_action_data(
             action_value={"custom_action": "something_else"},
-            token="tok_normal",
+            token="c-card-update-credential",
         )
 
         with (
@@ -436,6 +436,7 @@ class TestNonApprovalCardAction:
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
+        assert event.message_id is None
 
 
 # ===========================================================================

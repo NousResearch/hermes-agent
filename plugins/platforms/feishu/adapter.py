@@ -3050,7 +3050,10 @@ class FeishuAdapter(BasePlatformAdapter):
             message_type=MessageType.COMMAND,
             source=source,
             raw_message=data,
-            message_id=token or str(uuid.uuid4()),
+            # Card callback tokens are short-lived card-update credentials,
+            # not IM message IDs.  Leave the synthetic event unanchored so
+            # downstream delivery creates a regular chat message.
+            message_id=None,
             channel_prompt=self._resolve_channel_prompt(chat_id),
             timestamp=datetime.now(),
         )

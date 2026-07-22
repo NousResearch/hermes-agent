@@ -171,6 +171,34 @@ describe('SidebarSessionRow', () => {
     expect(onResume).not.toHaveBeenCalled()
   })
 
+  it.each([{ altKey: true }, { metaKey: true }])(
+    'does not archive a Ctrl+Shift-click with extra modifiers',
+    (modifiers: { altKey?: boolean; metaKey?: boolean }) => {
+      const onArchive = vi.fn()
+
+      render(
+        <SidebarSessionRow
+          isPinned={false}
+          isSelected={false}
+          isWorking={false}
+          onArchive={onArchive}
+          onDelete={noop}
+          onPin={noop}
+          onResume={noop}
+          session={makeSession({ title: 'Keep me active' })}
+        />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Keep me active' }), {
+        ctrlKey: true,
+        shiftKey: true,
+        ...modifiers
+      })
+
+      expect(onArchive).not.toHaveBeenCalled()
+    }
+  )
+
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(
       <SidebarSessionRow

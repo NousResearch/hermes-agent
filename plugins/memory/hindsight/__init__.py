@@ -140,6 +140,101 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+_WINDOWS_HINDSIGHT_BOOTSTRAP = """\
+import os
+import runpy
+import site
+import subprocess
+import sys
+
+venv_root = sys.argv.pop(1)
+site_packages = sys.argv.pop(1)
+os.environ["VIRTUAL_ENV"] = venv_root
+site.addsitedir(site_packages)
+
+_original_popen = subprocess.Popen
+
+class _HiddenPopen(_original_popen):
+    def __init__(self, *args, **kwargs):
+        flags = kwargs.get("creationflags", 0)
+        if not flags & subprocess.CREATE_NEW_CONSOLE:
+            kwargs["creationflags"] = flags | subprocess.CREATE_NO_WINDOW
+        super().__init__(*args, **kwargs)
+
+subprocess.Popen = _HiddenPopen
+runpy.run_module("hindsight_api.main", run_name="__main__")
+"""
+
+
+def _patch_windows_hindsight_daemon_launcher() -> None:
+    """Keep Hindsight's embedded daemon and its children console-less on Windows.
+
+    uv-created ``Scripts/pythonw.exe`` files are launchers. On Windows they
+    respawn the base console ``python.exe``, which makes Windows Terminal open
+    a persistent blank tab despite Hindsight's detached-process flags. Replace
+    only that command with the real base ``pythonw.exe`` and a small bootstrap
+    that activates the venv packages and hides console-subsystem children such
+    as pg0 and PostgreSQL helpers.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        manager_module = importlib.import_module("hindsight_embed.daemon_embed_manager")
+        manager_class = manager_module.DaemonEmbedManager
+        original_find_api_command = manager_class._find_api_command
+    except (AttributeError, ImportError):
+        return
+
+    if getattr(manager_class, "_hermes_uv_safe_launcher", False):
+        return
+
+    def _find_api_command(self):
+        from pathlib import Path
+
+        command = list(original_find_api_command(self))
+        if len(command) < 3 or command[1:3] != ["-m", "hindsight_api.main"]:
+            return command
+
+        launcher = Path(command[0])
+        if (
+            launcher.name.casefold() != "pythonw.exe"
+            or launcher.parent.name.casefold() != "scripts"
+        ):
+            return command
+
+        venv_root = launcher.parent.parent
+        config_path = venv_root / "pyvenv.cfg"
+        site_packages = venv_root / "Lib" / "site-packages"
+        try:
+            config = {}
+            for line in config_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator:
+                    config[key.strip().casefold()] = value.strip().strip('"')
+        except OSError:
+            return command
+
+        if "uv" not in config or not config.get("home"):
+            return command
+
+        base_pythonw = Path(config["home"]) / "pythonw.exe"
+        if not base_pythonw.exists() or not site_packages.is_dir():
+            return command
+
+        return [
+            str(base_pythonw),
+            "-c",
+            _WINDOWS_HINDSIGHT_BOOTSTRAP,
+            str(venv_root),
+            str(site_packages),
+            *command[3:],
+        ]
+
+    manager_class._find_api_command = _find_api_command
+    manager_class._hermes_uv_safe_launcher = True
+
+
 def _ensure_cloud_client_dependency() -> None:
     """Install the Hindsight cloud client lazily before importing it."""
     try:
@@ -1026,6 +1121,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     pass
                 except Exception as _e:
                     raise ImportError(str(_e))
+                _patch_windows_hindsight_daemon_launcher()
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")

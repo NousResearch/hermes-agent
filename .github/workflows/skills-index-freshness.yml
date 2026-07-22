@@ -20,6 +20,7 @@ jobs:
   check-freshness:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Probe live index
         id: probe
@@ -28,7 +29,7 @@ jobs:
           URL="https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
           echo "Probing $URL"
           # -L follows redirects; -f fails on HTTP errors; -s suppresses progress
-          if ! curl -fsSL -o /tmp/skills-index.json "$URL"; then
+          if ! curl -fsSL --retry 3 --retry-delay 10 -o /tmp/skills-index.json "$URL"; then
             echo "status=fetch-failed" >> "$GITHUB_OUTPUT"
             echo "detail=Could not download $URL" >> "$GITHUB_OUTPUT"
             exit 0
@@ -107,10 +108,18 @@ jobs:
             echo "Summary:      ${{ steps.probe.outputs.summary }}"
           fi
 
+      - name: Get GitHub App token
+        if: steps.probe.outputs.status != 'ok'
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
         run: |

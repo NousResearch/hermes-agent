@@ -96,11 +96,28 @@ class TestBuildOSSConfig:
         assert oss["vector_store"]["provider"] == "qdrant"
         assert env_writes["OPENAI_API_KEY"] == "sk-oai"
 
+    def test_openai_custom_urls_use_mem0_provider_specific_keys(self):
+        flags = parse_flags([
+            "--mode", "oss",
+            "--oss-llm-key", "sk-oai",
+            "--oss-llm-url", "https://llm.example/v1",
+            "--oss-embedder-url", "https://embed.example/v1",
+        ])
+
+        oss, _ = build_oss_config(flags)
+
+        assert oss["llm"]["config"]["openai_base_url"] == "https://llm.example/v1"
+        assert oss["embedder"]["config"]["openai_base_url"] == "https://embed.example/v1"
+        assert "api_base" not in oss["llm"]["config"]
+        assert "api_base" not in oss["embedder"]["config"]
+
     def test_ollama_no_key_needed(self):
         flags = parse_flags(["--mode", "oss", "--oss-llm", "ollama", "--oss-embedder", "ollama"])
         oss, env_writes = build_oss_config(flags)
         assert oss["llm"]["provider"] == "ollama"
         assert "model" in oss["llm"]["config"]
+        assert oss["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
+        assert oss["embedder"]["config"]["ollama_base_url"] == "http://localhost:11434"
         assert env_writes == {}
 
     def test_embedder_reuses_llm_key(self):

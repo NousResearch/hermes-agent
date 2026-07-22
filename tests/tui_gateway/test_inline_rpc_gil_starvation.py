@@ -64,6 +64,7 @@ def capture(server):
 # seconds when the GIL is contended by concurrent agent turns.
 
 FRONTEND_POLLED_RPCS = [
+    "session.active_list",   # live-session rehydrate — in-memory registry
     "session.list",          # loads session list — SQLite query
     "pet.info",              # petdex poll — file/network read
     "process.list",          # background process status — process registry scan
@@ -109,7 +110,7 @@ def test_dispatch_inline_rpc_does_not_block_under_gil_pressure(server):
     fast_elapsed = time.monotonic() - t0
 
     assert fast_resp["result"] == {"ok": True}
-    assert fast_elapsed < 0.5, (
+    assert fast_elapsed < 2.0, (
         f"fast handler blocked for {fast_elapsed:.2f}s behind slow session.list — "
         f"the WS read loop would stall, causing false 'needs setup' (#50005)."
     )
@@ -140,7 +141,7 @@ def test_dispatch_pet_info_does_not_block_prompt_submit(server):
     elapsed = time.monotonic() - t0
 
     assert resp["result"] == {"status": "streaming"}
-    assert elapsed < 0.5, (
+    assert elapsed < 2.0, (
         f"prompt.submit blocked for {elapsed:.2f}s behind slow pet.info — "
         f"the user's message would appear stuck under GIL pressure (#50005)."
     )

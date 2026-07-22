@@ -53,6 +53,118 @@ class TestParseTargetRef:
         assert is_explicit is False
 
 
+class TestPlatformEntryTargetParsing:
+    def test_parse_target_ref_fn_is_used(self):
+        """PlatformEntry.parse_target_ref_fn is consulted for explicit targets."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_name = "fmsg-parse-test"
+
+        def _parser(ref):
+            if ref.startswith("@") and "@" in ref[1:]:
+                return ref, None
+            return None
+
+        entry = PlatformEntry(
+            name=platform_name,
+            label="Fmsg parse test",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            parse_target_ref_fn=_parser,
+        )
+        platform_registry.register(entry)
+        try:
+            chat_id, thread_id, is_explicit = _parse_target_ref(
+                platform_name, "@alice@example.com"
+            )
+            assert chat_id == "@alice@example.com"
+            assert thread_id is None
+            assert is_explicit is True
+        finally:
+            platform_registry.unregister(platform_name)
+
+    def test_parse_target_ref_fn_returns_none_falls_through(self):
+        """When parse_target_ref_fn returns None, target falls through to enricher."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_name = "fmsg-fallback-test"
+
+        def _parser(ref):
+            return None
+
+        entry = PlatformEntry(
+            name=platform_name,
+            label="Fmsg fallback test",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            parse_target_ref_fn=_parser,
+        )
+        platform_registry.register(entry)
+        register_send_message_enricher(platform_name, AsyncMock())
+        try:
+            chat_id, thread_id, is_explicit = _parse_target_ref(
+                platform_name, "anything"
+            )
+            assert chat_id == "anything"
+            assert thread_id is None
+            assert is_explicit is True
+        finally:
+            platform_registry.unregister(platform_name)
+
+    def test_parse_target_ref_fn_thread_id(self):
+        """parse_target_ref_fn can return a thread_id alongside chat_id."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_name = "threaded-parse-test"
+
+        def _parser(ref):
+            if ":" in ref:
+                room, thread = ref.split(":", 1)
+                return room, thread
+            return None
+
+        entry = PlatformEntry(
+            name=platform_name,
+            label="Threaded parse test",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            parse_target_ref_fn=_parser,
+        )
+        platform_registry.register(entry)
+        try:
+            chat_id, thread_id, is_explicit = _parse_target_ref(
+                platform_name, "room-1:thread-99"
+            )
+            assert chat_id == "room-1"
+            assert thread_id == "thread-99"
+            assert is_explicit is True
+        finally:
+            platform_registry.unregister(platform_name)
+
+    def test_builtin_platform_ignores_parse_target_ref_fn(self):
+        """Built-in platform parsers win over a rogue PlatformEntry parser."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        def _parser(ref):
+            return "SHOULD_NOT_RETURN", None
+
+        entry = PlatformEntry(
+            name="telegram",
+            label="Telegram rogue",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            parse_target_ref_fn=_parser,
+        )
+        platform_registry.register(entry)
+        try:
+            chat_id, thread_id, is_explicit = _parse_target_ref("telegram", "12345")
+            assert chat_id == "12345"
+            assert thread_id is None
+            assert is_explicit is True
+        finally:
+            platform_registry.unregister("telegram")
+
+
 class TestSchemaMerge:
     def test_schema_fragment_stored(self):
         """Schema fragments are stored in _SEND_MESSAGE_SCHEMA_FRAGMENTS."""

@@ -419,21 +419,45 @@ def _handle_send(args):
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
+        resolution_failed = False
         try:
             from gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(
+                    platform_name, resolved
+                )
+                # Directory entries are trusted platform IDs.  Preserve an
+                # opaque plugin ID even when no built-in parser recognizes it.
+                chat_id = parsed_chat_id or resolved
+                if parsed_thread_id is not None:
+                    thread_id = parsed_thread_id
+        except Exception:
+            resolved = None
+            resolution_failed = True
+
+        if not resolved:
+            from gateway.config import Platform
+            from gateway.platform_registry import platform_registry
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            entry = platform_registry.get(platform_name)
+            is_builtin = platform_name in {member.value for member in Platform}
+            if entry is not None and entry.source == "plugin" and not is_builtin:
+                # Registered plugin platforms may use opaque IDs unknown to
+                # core.  Their adapter owns final target validation.
+                chat_id = target_ref
+            elif resolution_failed:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Try using a numeric channel ID instead."
+                })
             else:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
                     f"Use send_message(action='list') to see available targets."
                 })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -665,7 +689,22 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
-    # Plugin-enriched platforms
+
+    # Plugin platforms may register a custom target parser via PlatformEntry.
+    # This is evaluated before the blanket enricher fallback so plugins can
+    # opt individual target shapes in/out explicitly.
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+        if entry is not None and entry.parse_target_ref_fn is not None:
+            parsed = entry.parse_target_ref_fn(target_ref)
+            if parsed is not None:
+                chat_id, thread_id = parsed
+                return chat_id, thread_id, True
+    except Exception:
+        pass
+
+    # Plugin-enriched platforms (legacy blanket fallback)
     if platform_name in _SEND_MESSAGE_ENRICHERS:
         if target_ref:
             return target_ref, None, True

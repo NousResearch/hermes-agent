@@ -141,6 +141,21 @@ class PlatformEntry:
     # resolve the default chat/room ID.  Empty = no cron home-channel support.
     cron_deliver_env_var: str = ""
 
+    # ── Target parsing ──
+    # Optional: callable that parses a raw target string for this platform into
+    # a (chat_id, thread_id) tuple, or None if the string is not a recognized
+    # explicit target.  Invoked by ``tools/send_message_tool._parse_target_ref``
+    # before channel-directory fallback so plugin platforms can declare their
+    # own native target syntax (e.g. ``fmsg:@alice@example.com``) without
+    # hard-casing in Hermes core.
+    #
+    # Signature:
+    #     (target_ref: str) -> Optional[tuple[str, Optional[str]]]
+    #
+    # If the callable returns None the target proceeds to the usual directory
+    # resolution / verbatim fallback path.
+    parse_target_ref_fn: Optional[Callable[[str], Optional[tuple[str, Optional[str]]]]] = None
+
     # ── Standalone (out-of-process) sending ──
     # Optional: async coroutine that delivers a message without a live
     # gateway adapter.  Called by ``tools/send_message_tool._send_via_adapter``

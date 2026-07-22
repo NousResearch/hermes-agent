@@ -25,6 +25,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from .store import MemoryStore
+from .extract_llm import extract_facts
 from .retrieval import FactRetriever
 from hermes_cli.config import cfg_get
 
@@ -153,6 +154,10 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
+            {"key": "extract_llm", "description": "Extraction mode: auto (LLM-based), regex (English patterns), off", "default": "regex", "choices": ["auto", "regex", "off"]},
+            {"key": "extract_llm_model", "description": "LLM model name for extraction", "default": "glm-4.5-flash"},
+            {"key": "extract_llm_endpoint", "description": "Full API URL (with /chat/completions)", "default": ""},
+            {"key": "extract_llm_api_key_env", "description": "Environment variable name for API key", "default": ""},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -368,6 +373,49 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
+        mode = self._config.get("extract_llm", "regex")
+        if mode == "off":
+            return
+        if mode == "regex":
+            self._auto_extract_regex(messages)
+            return
+
+        # LLM-based extraction
+        user_msgs = [
+            m.get("content", "")
+            for m in messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str) and len(m.get("content", "").strip()) >= 5
+        ]
+        if not user_msgs or len(user_msgs) < 2:
+            return
+
+        model = self._config.get("extract_llm_model", "glm-4.5-flash")
+        endpoint = self._config.get("extract_llm_endpoint", "")
+        key_env = self._config.get("extract_llm_api_key_env", "")
+
+        try:
+            facts = extract_facts(
+                user_msgs,
+                model=model,
+                endpoint=endpoint,
+                api_key_env=key_env,
+            )
+        except Exception as exc:
+            logger.debug("LLM extraction failed: %s", exc)
+            return
+
+        count = 0
+        for item in facts:
+            try:
+                self._store.add_fact(item["fact"], category=item["category"])
+                count += 1
+            except Exception:
+                pass
+        if count:
+            logger.info("LLM extracted %d facts from conversation", count)
+
+    def _auto_extract_regex(self, messages: list) -> None:
+        """Legacy English-only regex extraction (extract_llm: regex mode)."""
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),

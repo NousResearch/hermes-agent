@@ -14954,7 +14954,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # extract_local_files scanned text that still contained MEDIA: tags,
             # producing false-positive bare-path matches with the MEDIA: prefix
             # glued on. This matches the chain order in gateway/platforms/base.py.
-            _, cleaned = adapter.extract_images(cleaned)
+            remote_images, cleaned = adapter.extract_images(cleaned)
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
@@ -14986,12 +14986,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     non_image_local.append(file_path)
 
-            if image_paths:
+            image_batch = list(remote_images or [])
+            image_batch.extend((f"file://{_quote(p)}", "") for p in image_paths)
+            if image_batch:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
-                        images=images,
+                        images=image_batch,
                         metadata=_thread_meta,
                     )
                 except Exception as e:
@@ -15041,6 +15042,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+
+    async def _send_queued_first_response(
+        self,
+        response: str,
+        event: MessageEvent,
+        adapter,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Deliver a queued-turn first response with normal media handling.
+
+        The queued follow-up path cannot hand the response back to
+        ``BasePlatformAdapter._process_message_background()``, so sending the raw
+        text through ``adapter.send()`` would expose MEDIA directives and skip
+        attachments. Mirror the normal response pipeline: send only display text,
+        then deliver extracted MEDIA/local files separately.
+        """
+        if not response:
+            return
+
+        text_content = response
+        try:
+            from gateway.platforms.base import _strip_media_directives
+
+            _, text_content = adapter.extract_media(text_content)
+            _, text_content = adapter.extract_images(text_content)
+            _, text_content = adapter.extract_local_files(text_content)
+            text_content = _strip_media_directives(text_content).strip()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Queued follow-up response media cleanup failed: %s",
+                getattr(adapter, "name", "adapter"),
+                exc,
+            )
+            text_content = response
+
+        if text_content:
+            await adapter.send(
+                event.source.chat_id,
+                text_content,
+                metadata=metadata,
+            )
+
+        await self._deliver_media_from_response(response, event, adapter)
 
 
 
@@ -22341,9 +22386,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
-                                source.chat_id,
+                            response_event = MessageEvent(
+                                text="",
+                                message_type=MessageType.TEXT,
+                                source=source,
+                                message_id=event_message_id,
+                            )
+                            await self._send_queued_first_response(
                                 first_response,
+                                response_event,
+                                adapter,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:

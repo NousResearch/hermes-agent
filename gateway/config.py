@@ -605,6 +605,12 @@ class PlatformConfig:
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
+    # Runtime-only provenance for the token's immediate source. Kept last to
+    # preserve the dataclass's legacy positional constructor contract. This is
+    # intentionally excluded from to_dict(): it describes how the running
+    # process resolved the credential, not durable user configuration.
+    credential_source: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "enabled": self.enabled,
@@ -666,6 +672,7 @@ class PlatformConfig:
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
+            credential_source="config_file" if data.get("token") else None,
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
@@ -1722,6 +1729,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
+        telegram_config.credential_source = (
+            "profile_env" if current_secret_scope() is not None else "process_env"
+        )
     
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = getenv("TELEGRAM_REPLY_TO_MODE", "").lower()

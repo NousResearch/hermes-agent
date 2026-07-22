@@ -19627,6 +19627,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event_type not in {"tool.started",}:
                 return
 
+            # Never render a progress bubble for the clarify tool.  The
+            # adapter's send_clarify IS the user-facing rendering (interactive
+            # buttons or the numbered-text fallback), so a progress bubble is
+            # pure duplication — and in verbose mode it dumps the raw
+            # tool-call args JSON ({"question": ..., "choices": [...]}) into
+            # the chat.  Because the progress queue drains on a background
+            # task, that raw JSON typically lands right underneath the
+            # rendered prompt (#52374).
+            if tool_name == "clarify":
+                return
+
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
             # fires N "tool.started" events back-to-back before checking for

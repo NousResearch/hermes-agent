@@ -670,6 +670,22 @@ def run_codex_app_server_turn(
                 exc_info=True,
             )
 
+        # Keep Hermes' configured MCPs scoped to the Codex app-server runtime
+        # while using the upstream full event bridge for progress/interim text.
+        codex_extra_args: list[str] = []
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.codex_runtime_plugin_migration import (
+                build_runtime_mcp_enable_args,
+            )
+
+            codex_extra_args = build_runtime_mcp_enable_args(load_config())
+        except Exception:
+            logger.debug(
+                "codex app-server: failed to build scoped MCP overrides",
+                exc_info=True,
+            )
+
         # Bridge codex JSON-RPC notifications (item/started, item/completed,
         # item/agentMessage/delta, ...) into Hermes' gateway UI callbacks
         # (tool_progress_callback, _fire_stream_delta,
@@ -679,6 +695,7 @@ def run_codex_app_server_turn(
         # Supersedes the narrower item/started-only bridge from #38835.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            extra_args=codex_extra_args,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

@@ -55,6 +55,61 @@ def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):
     assert calls == ["finalize", "cleanup", "release"]
 
 
+def test_finalize_single_query_ends_sqlite_session_before_cleanup(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="one-shot", source="cli")
+    calls = []
+    fake_agent = SimpleNamespace(session_id="one-shot", platform="cli")
+    fake_cli = SimpleNamespace(
+        agent=fake_agent,
+        session_id="one-shot",
+        _session_db=db,
+        _release_active_session=lambda: calls.append("release"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_notify_single_query_session_finalize",
+        lambda _cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **_kwargs: calls.append("cleanup"))
+
+    cli._finalize_single_query(fake_cli)
+    row = db.get_session("one-shot")
+
+    assert row["ended_at"] is not None
+    assert row["end_reason"] == "agent_close"
+    assert calls == ["finalize", "cleanup", "release"]
+    db.close()
+
+
+def test_finalize_single_query_ends_sqlite_session_when_cleanup_fails(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="one-shot", source="cli")
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(session_id="one-shot", platform="cli"),
+        _session_db=db,
+        _release_active_session=lambda: None,
+    )
+    monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _cli: None)
+    monkeypatch.setattr(
+        cli,
+        "_run_cleanup",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        cli._finalize_single_query(fake_cli)
+
+    row = db.get_session("one-shot")
+    assert row["ended_at"] is not None
+    assert row["end_reason"] == "agent_close"
+    db.close()
+
+
 def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch):
     calls = []
     fake_agent = SimpleNamespace(session_id="agent-session", platform="cli")

@@ -458,6 +458,14 @@ def _run_agent(
                 agent.close()
             except Exception:
                 logging.debug("oneshot agent cleanup failed", exc_info=True)
+        # Top-level ``hermes -z`` skips the normal CLI process cleanup. Stop
+        # process-global MCP transports before closing the database handle.
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers
+
+            shutdown_mcp_servers()
+        except BaseException:
+            logging.debug("oneshot MCP cleanup failed", exc_info=True)
         # agent.close() calls session_db.end_session() but leaves the connection
         # open; close it here to checkpoint the WAL before os._exit skips
         # finalizers.

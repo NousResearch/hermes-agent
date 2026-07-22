@@ -8959,7 +8959,19 @@ def _resolve_update_branch(args) -> str:
     ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
     the same answer.
     """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    explicit = getattr(args, "branch", None)
+    if explicit is not None:
+        return explicit.strip() or "main"
+    try:
+        from hermes_cli.config import read_raw_config
+
+        updates = read_raw_config().get("updates", {})
+        configured = updates.get("branch") if isinstance(updates, dict) else None
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+    except Exception:
+        pass
+    return "main"
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
@@ -9970,7 +9982,7 @@ def cmd_update(args):
         branch = _resolve_update_branch(args)
         _cmd_update_check(
             branch=branch,
-            branch_explicit=bool(getattr(args, "branch", None)),
+            branch_explicit=bool(getattr(args, "branch", None)) or branch != "main",
         )
         return
 
@@ -14531,6 +14543,36 @@ def main():
         help="Also delete archived sessions (excluded by default)",
     )
 
+    sessions_finalize_stale = sessions_subparsers.add_parser(
+        "finalize-stale",
+        help="Offline repair for abandoned open CLI sessions",
+    )
+    sessions_finalize_stale.add_argument("--source", required=True, choices=["cli"])
+    sessions_finalize_stale.add_argument(
+        "--older-than",
+        required=True,
+        type=float,
+        help="Minimum age in days; must be at least 1",
+    )
+    sessions_finalize_stale.add_argument("--limit", type=int, default=50_000)
+    sessions_finalize_stale.add_argument("--apply", action="store_true")
+    sessions_finalize_stale.add_argument(
+        "--offline",
+        action="store_true",
+        help="Confirm all gateways and other Hermes CLI processes are stopped",
+    )
+    sessions_finalize_stale.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+
+    sessions_drop_trigram = sessions_subparsers.add_parser(
+        "drop-trigram",
+        help="Remove the optional trigram search index after disabling it in config",
+    )
+    sessions_drop_trigram.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+
     sessions_archive = sessions_subparsers.add_parser(
         "archive",
         help="Bulk-archive (soft-hide) sessions matching filters — no deletion",
@@ -15152,6 +15194,105 @@ def main():
                 print(f"Deleted session '{resolved_session_id}'.")
             else:
                 print(f"Session '{args.session_id}' not found.")
+
+        elif action == "finalize-stale":
+            if args.older_than < 1:
+                print("Error: --older-than must be at least 1 day.")
+                return
+            candidates = db.list_stale_open_sessions(
+                source=args.source,
+                older_than_days=args.older_than,
+                limit=args.limit,
+            )
+            if not candidates:
+                print("No stale open sessions match.")
+                return
+            print(
+                f"{len(candidates)} open {args.source} session(s) have no activity "
+                f"for at least {args.older_than:g} day(s)."
+            )
+            for row in candidates[:100]:
+                print(
+                    f"  {row['id']}  last_active={row['last_active']:.0f}  "
+                    f"{row['message_count']} msgs"
+                )
+            if len(candidates) > 100:
+                print(f"  ... {len(candidates) - 100} more")
+            if not args.apply:
+                print("Dry run — pass --apply after stopping other Hermes processes.")
+                return
+            if not args.offline:
+                print(
+                    "Refusing to apply without --offline. Stop all Hermes gateways "
+                    "and other Hermes CLI processes first."
+                )
+                return
+            if not args.yes and not _confirm_prompt(
+                f"Finalize these {len(candidates)} session(s) as stale? [y/N] "
+            ):
+                print("Cancelled.")
+                return
+            from hermes_cli.active_sessions import locked_active_session_registry
+            from hermes_cli.gateway import find_gateway_pids
+
+            gateway_pids = find_gateway_pids(
+                exclude_pids={os.getpid()}, all_profiles=True
+            )
+            if gateway_pids:
+                print("Refusing to finalize while a Hermes gateway is running.")
+                return
+            candidate_ids = {row["id"] for row in candidates}
+            try:
+                with locked_active_session_registry() as active_entries:
+                    leased_ids = {
+                        str(entry.get("session_id") or "") for entry in active_entries
+                    }
+                    if candidate_ids & leased_ids:
+                        print("Refusing to finalize sessions with live CLI leases.")
+                        return
+                    revalidated = db.list_stale_open_sessions(
+                        source=args.source,
+                        older_than_days=args.older_than,
+                        limit=args.limit,
+                    )
+                    safe_ids = [
+                        row["id"]
+                        for row in revalidated
+                        if row["id"] in candidate_ids
+                        and not db.get_compression_lock_holder(row["id"])
+                    ]
+                    if len(safe_ids) != len(candidate_ids):
+                        print(
+                            "Refusing to finalize because ownership or activity "
+                            "changed after the preview."
+                        )
+                        return
+                    count = db.finalize_stale_open_sessions(
+                        session_ids=safe_ids,
+                        older_than_days=args.older_than,
+                    )
+            except RuntimeError:
+                print("Refusing to finalize because lease ownership is unreadable.")
+                return
+            print(f"Finalized {count} stale session(s).")
+
+        elif action == "drop-trigram":
+            if db.session_policy.trigram_enabled:
+                print(
+                    "Refusing to remove trigram while sessions.trigram_enabled is true."
+                )
+                return
+            if not args.yes and not _confirm_prompt(
+                "Remove the derived trigram search index? [y/N] "
+            ):
+                print("Cancelled.")
+                return
+            removed = db.drop_trigram_index()
+            print(
+                "Removed trigram search index."
+                if removed
+                else "Trigram search index is already absent."
+            )
 
         elif action in ("prune", "archive"):
             from hermes_cli.session_filters import (

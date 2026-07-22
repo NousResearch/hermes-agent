@@ -1322,6 +1322,18 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
+        agent = getattr(cli, "agent", None)
+        session_id = getattr(agent, "session_id", None) or getattr(
+            cli, "session_id", None
+        )
+        session_db = getattr(cli, "_session_db", None) or getattr(
+            agent, "_session_db", None
+        )
+        if session_db is not None and session_id:
+            try:
+                session_db.end_session(session_id, "agent_close")
+            except Exception:
+                pass
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
@@ -1862,17 +1874,13 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 def _run_state_db_auto_maintenance(session_db) -> None:
     """Call ``SessionDB.maybe_auto_prune_and_vacuum`` using current config.
 
-    Reads the ``sessions:`` section from config.yaml via
-    :func:`hermes_cli.config.load_config` (the authoritative loader that
-    deep-merges DEFAULT_CONFIG, so unmigrated configs still get default
-    values). Honours ``auto_prune`` / ``retention_days`` /
-    ``vacuum_after_prune`` / ``min_interval_hours``, and delegates to the
-    DB. Never raises — maintenance must never block interactive startup.
+    Uses the profile-specific policy loaded by SessionDB and delegates the
+    maintenance operation to the database. Never raises — maintenance must
+    never block interactive startup.
     """
     if session_db is None:
         return
     try:
-        from hermes_cli.config import load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home
         _hermes_home_maint = _get_hermes_home()
 
@@ -1900,13 +1908,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         except Exception as _finalize_exc:
             logger.debug("Orphan compression finalize skipped: %s", _finalize_exc)
 
-        cfg = (_load_full_config().get("sessions") or {})
-        if not cfg.get("auto_prune", False):
-            return
-        session_db.maybe_auto_prune_and_vacuum(
-            retention_days=int(cfg.get("retention_days", 90)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            vacuum=bool(cfg.get("vacuum_after_prune", True)),
+        session_db.maybe_auto_maintenance(
             sessions_dir=_hermes_home_maint / "sessions",
         )
     except Exception as exc:
@@ -4238,7 +4240,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
-            return True
+            if stderr:
+                print("Hermes could not verify active-session ownership.", file=sys.stderr)
+            else:
+                self._console_print(
+                    "[bold red]Hermes could not verify active-session ownership.[/]"
+                )
+            return False
         if message:
             if stderr:
                 print(message, file=sys.stderr)

@@ -483,6 +483,22 @@ delete them too.
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
 :::
 
+### Finalize Stale Open Sessions
+
+If an older Hermes version exited a one-shot CLI run without recording its end,
+repair those rows before pruning them. This command is deliberately dry-run by
+default and requires both a source and a minimum age:
+
+```bash
+hermes sessions finalize-stale --source cli --older-than 2
+hermes sessions finalize-stale --source cli --older-than 2 --apply --offline --yes
+```
+
+Stop other Hermes CLI processes before applying the repair. The command ignores
+ended and archived sessions, marks matching rows with `end_reason=stale_repair`,
+and can be repeated safely. It does not delete messages; a later, separately
+reviewed `sessions prune` command performs deletion.
+
 ### Bulk-Archive Sessions
 
 If you want sessions out of your listings without deleting anything,
@@ -503,6 +519,26 @@ At least one filter is required — a bare `hermes sessions archive` refuses to
 archive your entire history. Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
+
+### Drop the Trigram Search Index
+
+The optional trigram FTS index accelerates longer CJK substring searches but can
+be substantially larger than the normal full-text index. Disable it in config,
+stop Hermes writers, then remove the derived index:
+
+```yaml
+sessions:
+  trigram_enabled: false
+```
+
+```bash
+hermes sessions drop-trigram --yes
+hermes sessions optimize
+```
+
+Normal English full-text search is unchanged. CJK substring searches fall back
+to a slower `LIKE` query. The removal command refuses to run while the config
+setting is enabled and is idempotent.
 
 ### Session Statistics
 
@@ -681,6 +717,7 @@ Key tables in `state.db`:
 - **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
+- **messages_fts_trigram** — optional FTS5 trigram index for longer CJK substring search; absent when `sessions.trigram_enabled` is false
 
 ## Session Expiry and Cleanup
 
@@ -688,7 +725,7 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
+- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions use `sessions.retention_days_by_source` when their source is listed and `sessions.retention_days` as the fallback
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
@@ -698,11 +735,21 @@ Default is **off** — session history is valuable for `session_search` recall, 
 sessions:
   auto_prune: true          # opt in — default is false
   retention_days: 90        # keep ended sessions this many days
-  vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  retention_days_by_source:
+    cron: 7
+    cli: 30
+    discord: 90
+  trigram_enabled: false    # omit the larger optional CJK substring index
+  vacuum_after_prune: false # reuse freed pages; compact explicitly offline
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Active sessions are never auto-pruned, regardless of age.
+Active and archived sessions are never auto-pruned, regardless of age. Sources
+not listed in `retention_days_by_source` use the global `retention_days` value.
+For high-volume installations, leave `vacuum_after_prune` false so a daily
+prune does not rewrite the entire database. Run `hermes sessions optimize`
+offline after a large one-time cleanup when disk space needs to be returned to
+the operating system.
 
 ### Manual Cleanup
 
@@ -716,6 +763,15 @@ hermes sessions delete <session_id>
 # Export before pruning (backup)
 hermes sessions export backup.jsonl
 hermes sessions prune --older-than 30 --yes
+
+# Repair leaked one-shot rows before a scoped prune
+hermes sessions finalize-stale --source cli --older-than 2
+hermes sessions finalize-stale --source cli --older-than 2 --apply --offline --yes
+hermes sessions prune --source cli --older-than 30 --dry-run
+
+# Remove the optional trigram index after disabling it in config
+hermes sessions drop-trigram --yes
+hermes sessions optimize
 ```
 
 :::tip

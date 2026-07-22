@@ -88,6 +88,11 @@ class FakeThread:
         self.parent_id = getattr(parent, "id", None)
         self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
         self.topic = None
+        self.sent_messages = []
+
+    async def send(self, content):
+        self.sent_messages.append(content)
+        return SimpleNamespace(id=len(self.sent_messages), content=content)
 
     def history(self, *, limit, before, after=None, oldest_first=None):
         async def _iter():
@@ -116,6 +121,8 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_AUTO_THREAD_FREE_RESPONSE",
+        "DISCORD_SELF_MESSAGE_CHANNELS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -685,6 +692,97 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     assert event.source.chat_type == "group"
 
 
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_can_auto_thread_when_enabled(adapter, monkeypatch):
+    """Opt-in free-response channels can still auto-thread root messages."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_FREE_RESPONSE", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    thread = FakeThread(channel_id=790, name="job thread", parent=FakeTextChannel(channel_id=789))
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="apply to this job",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "apply to this job"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "790"
+    assert thread.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_discord_job_dispatch_auto_thread_posts_visible_start(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_FREE_RESPONSE", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    thread = FakeThread(channel_id=790, name="job thread", parent=FakeTextChannel(channel_id=789))
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content=(
+            "Use the `manual-job-application-dispatch` skill for one automated job application.\n\n"
+            "Queue ID: dutchie|staff software engineer, front-end|https://example.com|linkedin\n"
+            "Company: Dutchie\n"
+            "Title: Staff Software Engineer, Front-End\n"
+            "ATS: linkedin\n"
+            "URL: https://example.com\n\n"
+            "Report result in this thread.\n"
+            "Why it passed: manual CAPTCHA/bot-security retry"
+        ),
+    )
+
+    await adapter._handle_message(message)
+
+    assert thread.sent_messages == [
+        "Starting application process for Dutchie: Staff Software Engineer, Front-End.\n"
+        "I'll report the result in this thread."
+    ]
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "790"
+
+
+def test_discord_manual_job_dispatch_start_message_falls_back_to_queue_id(adapter):
+    message = DiscordAdapter._manual_job_dispatch_start_message(
+        "Use the `manual-job-application-dispatch` skill for one automated job application.\n"
+        "Queue ID: code metal|principal frontend engineer|https://example.com|linkedin"
+    )
+
+    assert message == (
+        "Starting application process for code metal: principal frontend engineer.\n"
+        "I'll report the result in this thread."
+    )
+
+
+def test_discord_manual_job_dispatch_start_message_ignores_other_messages(adapter):
+    assert DiscordAdapter._manual_job_dispatch_start_message("apply to this job") is None
+
+
+def test_discord_self_message_allowed_only_for_configured_top_level_channel(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SELF_MESSAGE_CHANNELS", "789")
+
+    assert adapter._discord_self_message_allowed(
+        make_message(channel=FakeTextChannel(channel_id=789), content="dispatch")
+    )
+    assert not adapter._discord_self_message_allowed(
+        make_message(channel=FakeTextChannel(channel_id=456), content="dispatch")
+    )
+    assert not adapter._discord_self_message_allowed(
+        make_message(channel=FakeThread(channel_id=790, parent=FakeTextChannel(channel_id=789)), content="reply")
+    )
 
 
 @pytest.mark.asyncio

@@ -206,13 +206,14 @@ def apply(
         if ok:
             msg_lines.append(f"codex CLI: {ver}")
         # Auto-migrate Hermes' MCP servers + Codex's installed curated
-        # plugins into ~/.codex/config.toml so the spawned codex subprocess
-        # sees the same tool surface AND can call back into Hermes for
-        # browser/web/delegate_task/vision/memory tools (#7 fix).
+        # plugins into ~/.codex/config.toml. Hermes-owned MCP entries are
+        # disabled in this shared config so unrelated Codex Desktop tasks do
+        # not spawn them; Hermes' own app-server process enables the scoped
+        # subset with per-process config overrides.
         # Failures are non-fatal — the runtime change still proceeds.
         try:
             from hermes_cli.codex_runtime_plugin_migration import migrate
-            mig_report = migrate(config)
+            mig_report = migrate(config, enable_mcp_by_default=False)
             # Tools/MCP servers (excluding the hermes-tools callback,
             # which is internal plumbing — surface separately).
             user_servers = [

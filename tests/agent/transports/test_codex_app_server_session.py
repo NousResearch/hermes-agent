@@ -113,6 +113,26 @@ def make_session(client: FakeClient, **kwargs) -> CodexAppServerSession:
     )
 
 
+def test_session_forwards_scoped_codex_args_to_client_factory():
+    client = FakeClient()
+    captured = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return client
+
+    session = CodexAppServerSession(
+        cwd="/tmp",
+        extra_args=["-c", "mcp_servers.hermes-tools.enabled=true"],
+        client_factory=factory,
+    )
+    session.ensure_started()
+
+    assert captured["extra_args"] == [
+        "-c", "mcp_servers.hermes-tools.enabled=true"
+    ]
+
+
 # ---- choice mapping ----
 
 class TestApprovalChoiceMapping:

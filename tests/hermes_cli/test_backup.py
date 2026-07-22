@@ -1627,6 +1627,139 @@ class TestQuickSnapshot:
         assert deleted == 7
         assert len(list_quick_snapshots(hermes_home=hermes_home)) == 3
 
+    def test_verify_snapshot(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert verify_quick_snapshot(snap_id, hermes_home=hermes_home) == (True, "ok")
+
+    def test_verify_rejects_missing_file(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        (hermes_home / "state-snapshots" / snap_id / "config.yaml").unlink()
+        ok, reason = verify_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert ok is False
+        assert "missing" in reason
+
+    def test_verify_rejects_size_mismatch(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        (hermes_home / "state-snapshots" / snap_id / "config.yaml").write_text("changed")
+        ok, reason = verify_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert ok is False
+        assert "size" in reason
+
+    def test_verify_rejects_same_size_corruption(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        config = hermes_home / "state-snapshots" / snap_id / "config.yaml"
+        original = config.read_bytes()
+        config.write_bytes(b"x" * len(original))
+        ok, reason = verify_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert ok is False
+        assert "digest" in reason
+
+    def test_verify_rejects_manifest_traversal(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        manifest = hermes_home / "state-snapshots" / snap_id / "manifest.json"
+        meta = json.loads(manifest.read_text())
+        meta["files"] = {"../config.yaml": 1}
+        meta["sha256"] = {"../config.yaml": "0" * 64}
+        meta["file_count"] = 1
+        meta["total_size"] = 1
+        manifest.write_text(json.dumps(meta))
+        ok, reason = verify_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert ok is False
+        assert "unsafe" in reason
+
+    @pytest.mark.parametrize("version", ("invalid", False, 1.5, 3))
+    def test_verify_rejects_malformed_manifest_version(self, hermes_home, version):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        manifest = hermes_home / "state-snapshots" / snap_id / "manifest.json"
+        meta = json.loads(manifest.read_text())
+        meta["manifest_version"] = version
+        manifest.write_text(json.dumps(meta))
+        ok, reason = verify_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert ok is False
+        assert "version" in reason
+
+    def test_prune_preserves_snapshot_when_verifier_raises(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        old = backup_mod.create_quick_snapshot(label="old", hermes_home=hermes_home)
+        backup_mod.create_quick_snapshot(label="new", hermes_home=hermes_home)
+        real_verify = backup_mod.verify_quick_snapshot
+
+        def raising_verify(snapshot_id, hermes_home=None):
+            if snapshot_id == old:
+                raise OSError("unreadable")
+            return real_verify(snapshot_id, hermes_home=hermes_home)
+
+        monkeypatch.setattr(backup_mod, "verify_quick_snapshot", raising_verify)
+        assert backup_mod.prune_quick_snapshots(keep=1, hermes_home=hermes_home) == 0
+        assert (hermes_home / "state-snapshots" / old).exists()
+
+    def test_verify_rejects_corrupt_database(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, verify_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        db_path = hermes_home / "state-snapshots" / snap_id / "state.db"
+        db_path.write_bytes(b"not a sqlite database")
+        manifest = hermes_home / "state-snapshots" / snap_id / "manifest.json"
+        meta = json.loads(manifest.read_text())
+        meta["files"]["state.db"] = db_path.stat().st_size
+        meta["total_size"] = sum(meta["files"].values())
+        manifest.write_text(json.dumps(meta))
+        ok, reason = verify_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert ok is False
+        assert "database" in reason or "digest" in reason
+
+    def test_prune_preserves_unverified_snapshot(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, prune_quick_snapshots
+        bad_id = create_quick_snapshot(label="bad", hermes_home=hermes_home)
+        (hermes_home / "state-snapshots" / bad_id / "config.yaml").unlink()
+        for label in ("newer-a", "newer-b"):
+            create_quick_snapshot(label=label, hermes_home=hermes_home)
+        deleted = prune_quick_snapshots(keep=2, hermes_home=hermes_home)
+        assert deleted == 0
+        assert (hermes_home / "state-snapshots" / bad_id).exists()
+
+    def test_unverified_newest_does_not_displace_verified_recovery_point(
+        self, hermes_home
+    ):
+        from hermes_cli.backup import create_quick_snapshot, prune_quick_snapshots
+        oldest = create_quick_snapshot(label="a-oldest", hermes_home=hermes_home)
+        newest_verified = create_quick_snapshot(
+            label="m-newest-verified", hermes_home=hermes_home
+        )
+        newest_bad = create_quick_snapshot(label="z-newest-bad", hermes_home=hermes_home)
+        (hermes_home / "state-snapshots" / newest_bad / "config.yaml").unlink()
+        assert prune_quick_snapshots(keep=1, hermes_home=hermes_home) == 1
+        assert not (hermes_home / "state-snapshots" / oldest).exists()
+        assert (hermes_home / "state-snapshots" / newest_verified).exists()
+        assert (hermes_home / "state-snapshots" / newest_bad).exists()
+
+    def test_failed_state_db_copy_never_produces_verified_manifest(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        real_copy = backup_mod._safe_copy_db
+
+        def fail_state_db(src, dst):
+            if src.name == "state.db":
+                return False
+            return real_copy(src, dst)
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", fail_state_db)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is None
+        snapshots = list((hermes_home / "state-snapshots").iterdir())
+        assert len(snapshots) == 1
+        assert not (snapshots[0] / "manifest.json").exists()
+
     def test_snapshot_includes_pairing_directories(self, hermes_home):
         """Pairing JSONs live outside state.db — snapshot must capture them
         recursively (generic + per-platform) so approved-user lists survive

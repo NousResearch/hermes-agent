@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import cmd_update, PROJECT_ROOT, _resolve_update_branch
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -38,6 +38,31 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
 @pytest.fixture
 def mock_args():
     return SimpleNamespace()
+
+
+def test_update_branch_uses_config_when_cli_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {"updates": {"branch": "jr-stable"}},
+    )
+    assert _resolve_update_branch(SimpleNamespace(branch=None)) == "jr-stable"
+
+
+def test_update_branch_cli_overrides_config(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {"updates": {"branch": "jr-stable"}},
+    )
+    assert _resolve_update_branch(SimpleNamespace(branch="upstream-test")) == "upstream-test"
+
+
+@pytest.mark.parametrize(
+    "config",
+    ({}, {"updates": []}, {"updates": {"branch": "  "}}, {"updates": {"branch": 3}}),
+)
+def test_update_branch_invalid_config_falls_back_to_main(monkeypatch, config):
+    monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: config)
+    assert _resolve_update_branch(SimpleNamespace(branch=None)) == "main"
 
 
 # ---------------------------------------------------------------------------

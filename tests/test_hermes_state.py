@@ -4877,12 +4877,16 @@ class TestOptimizeFts:
 
 class TestAutoMaintenance:
     def _make_old_ended(self, db, sid: str, days_old: int = 100):
-        """Create a session that is ended and was started `days_old` days ago."""
+        """Create a session that ended ``days_old`` days ago."""
         db.create_session(session_id=sid, source="cli")
         db.end_session(sid, end_reason="done")
         db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (time.time() - days_old * 86400, sid),
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (
+                time.time() - days_old * 86400,
+                time.time() - days_old * 86400,
+                sid,
+            ),
         )
         db._conn.commit()
 
@@ -6265,8 +6269,168 @@ class TestGetMessagesPagination:
         self._seed(db, n=5)
         rows = db.get_messages("s1", offset=3)
         assert [m["content"] for m in rows] == ["msg-3", "msg-4"]
+def test_trigram_policy_disables_growth_and_explicit_drop_is_idempotent(tmp_path):
+    db_path = tmp_path / "state.db"
+    enabled = SessionDB(db_path=db_path)
+    enabled.create_session(session_id="s1", source="cli")
+    enabled.append_message("s1", role="user", content="大别山 project alpha")
+    assert enabled._fts_table_exists("messages_fts_trigram") is True
+    enabled.close()
+
+    (tmp_path / "config.yaml").write_text(
+        "sessions:\n  trigram_enabled: false\n",
+        encoding="utf-8",
+    )
+    disabled = SessionDB(db_path=db_path)
+    assert disabled._trigram_available is False
+    trigger_count = disabled._conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+        "AND name LIKE 'messages_fts_trigram_%'"
+    ).fetchone()[0]
+    assert trigger_count == 0
+    before = disabled._conn.execute(
+        "SELECT COUNT(*) FROM messages_fts_trigram"
+    ).fetchone()[0]
+    disabled.append_message("s1", role="assistant", content="new unindexed text")
+    after = disabled._conn.execute(
+        "SELECT COUNT(*) FROM messages_fts_trigram"
+    ).fetchone()[0]
+    assert after == before
+    assert len(disabled.search_messages("alpha")) == 1
+    assert len(disabled.search_messages("大别山")) == 1
+    assert disabled.drop_trigram_index() is True
+    assert disabled.drop_trigram_index() is False
+    disabled.close()
+
+    reopened = SessionDB(db_path=db_path)
+    assert reopened._fts_table_exists("messages_fts_trigram") is False
+    assert reopened._trigram_available is False
+    assert len(reopened.search_messages("alpha")) == 1
+    assert len(reopened.search_messages("大别山")) == 1
+    reopened.close()
 
 
+def test_session_policy_coerces_quoted_booleans_and_fails_closed(tmp_path):
+    from session_policy import load_session_policy
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "sessions:\n"
+        "  trigram_enabled: \"false\"\n"
+        "  auto_prune: \"false\"\n"
+        "  vacuum_after_prune: \"false\"\n",
+        encoding="utf-8",
+    )
+    policy = load_session_policy(tmp_path)
+    assert policy.trigram_enabled is False
+    assert policy.auto_prune is False
+    assert policy.vacuum_after_prune is False
+
+    config_path.write_text(
+        "sessions:\n"
+        "  trigram_enabled: invalid\n"
+        "  auto_prune: invalid\n"
+        "  vacuum_after_prune: invalid\n",
+        encoding="utf-8",
+    )
+    policy = load_session_policy(tmp_path)
+    assert policy.trigram_enabled is False
+    assert policy.auto_prune is False
+    assert policy.vacuum_after_prune is False
+
+    config_path.write_text("sessions: [", encoding="utf-8")
+    policy = load_session_policy(tmp_path)
+    assert policy.trigram_enabled is False
+    assert policy.auto_prune is False
+    assert policy.vacuum_after_prune is False
+
+
+def test_source_retention_uses_global_fallback_and_preserves_protected_rows(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    now = time.time()
+    for session_id, source, age_days, ended, archived in (
+        ("cron-old", "cron", 10, True, False),
+        ("cron-new", "cron", 2, True, False),
+        ("discord-kept", "discord", 100, True, False),
+        ("unknown-old", "custom", 100, True, False),
+        ("recently-ended-long", "custom", 100, True, False),
+        ("active-old", "cron", 30, False, False),
+        ("archived-old", "cron", 30, True, True),
+    ):
+        db.create_session(session_id=session_id, source=source)
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, archived=? WHERE id=?",
+            (
+                now - age_days * 86400,
+                now - age_days * 86400 if ended else None,
+                int(archived),
+                session_id,
+            ),
+        )
+    db._conn.commit()
+    db._conn.execute(
+        "UPDATE sessions SET ended_at=? WHERE id='recently-ended-long'",
+        (now - 86400,),
+    )
+    db._conn.commit()
+
+    result = db.maybe_auto_prune_and_vacuum(
+        retention_days=90,
+        retention_days_by_source={"cron": 7, "discord": 120},
+        min_interval_hours=0,
+        vacuum=False,
+    )
+
+    assert result["pruned"] == 2
+    assert result["pruned_by_source"]["cron"] == 1
+    assert result["pruned_by_source"]["discord"] == 0
+    assert result["pruned_by_source"]["custom"] == 1
+    assert db.get_session("cron-old") is None
+    assert db.get_session("unknown-old") is None
+    for session_id in (
+        "cron-new",
+        "discord-kept",
+        "recently-ended-long",
+        "active-old",
+        "archived-old",
+    ):
+        assert db.get_session(session_id) is not None
+    db.close()
+
+
+def test_finalize_stale_open_sessions_is_scoped_and_idempotent(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    now = time.time()
+    for session_id, source, age_days, archived, ended in (
+        ("stale-cli", "cli", 3, False, False),
+        ("recent-cli", "cli", 0.25, False, False),
+        ("archived-cli", "cli", 3, True, False),
+        ("stale-discord", "discord", 3, False, False),
+        ("ended-cli", "cli", 3, False, True),
+    ):
+        db.create_session(session_id=session_id, source=source)
+        timestamp = now - age_days * 86400
+        db.append_message(session_id, role="user", content=session_id, timestamp=timestamp)
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, archived=?, ended_at=? WHERE id=?",
+            (timestamp, int(archived), timestamp if ended else None, session_id),
+        )
+    db._conn.commit()
+
+    candidates = db.list_stale_open_sessions(source="cli", older_than_days=2)
+    assert [row["id"] for row in candidates] == ["stale-cli"]
+    assert db.finalize_stale_open_sessions(
+        session_ids=["stale-cli"], older_than_days=2
+    ) == 1
+    assert db.finalize_stale_open_sessions(
+        session_ids=["stale-cli"], older_than_days=2
+    ) == 0
+    repaired = db.get_session("stale-cli")
+    assert repaired["ended_at"] is not None
+    assert repaired["end_reason"] == "stale_repair"
+    assert db.get_session("archived-cli")["ended_at"] is None
+    assert db.get_session("stale-discord")["ended_at"] is None
+    db.close()
 # =========================================================================
 # Lone-surrogate persistence
 # =========================================================================
@@ -6358,4 +6522,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

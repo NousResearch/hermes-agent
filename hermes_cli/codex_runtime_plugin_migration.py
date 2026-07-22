@@ -614,6 +614,7 @@ def migrate(
     discover_plugins: bool = True,
     default_permission_profile: Optional[str] = ":workspace",
     expose_hermes_tools: bool = True,
+    enable_mcp_by_default: bool = True,
 ) -> MigrationReport:
     """Translate Hermes mcp_servers config + Codex curated plugins into
     ~/.codex/config.toml.
@@ -640,6 +641,11 @@ def migrate(
             memory, skills, etc.) as an MCP server in ~/.codex/config.toml
             so the codex subprocess can call back into Hermes for tools
             codex doesn't have built in. Set False to opt out.
+        enable_mcp_by_default: when False, write Hermes-managed MCP entries
+            disabled in the shared Codex config. Hermes' own app-server
+            subprocess enables only those entries with scoped ``-c``
+            overrides, preventing unrelated Codex Desktop tasks from
+            spawning and retaining Hermes MCP subprocesses.
     """
     report = MigrationReport(dry_run=dry_run)
     codex_home = codex_home or Path.home() / ".codex"
@@ -662,6 +668,8 @@ def migrate(
             )
             continue
         translated[str(name)] = out
+        if not enable_mcp_by_default:
+            out["enabled"] = False
         if skipped:
             report.skipped_keys_per_server[str(name)] = skipped
         report.migrated.append(str(name))
@@ -695,6 +703,8 @@ def migrate(
     # and is launched on demand by codex (stdio MCP).
     if expose_hermes_tools:
         translated["hermes-tools"] = _build_hermes_tools_mcp_entry()
+        if not enable_mcp_by_default:
+            translated["hermes-tools"]["enabled"] = False
         if "hermes-tools" not in report.migrated:
             report.migrated.append("hermes-tools")
 
@@ -755,3 +765,34 @@ def migrate(
     except Exception as exc:
         report.errors.append(f"could not write {target}: {exc}")
     return report
+
+
+def build_runtime_mcp_enable_args(
+    hermes_config: dict,
+    *,
+    expose_hermes_tools: bool = True,
+) -> list[str]:
+    """Return Codex ``-c`` overrides for MCPs owned by a Hermes runtime.
+
+    The shared ``~/.codex/config.toml`` keeps these entries disabled so
+    Codex Desktop tasks do not inherit Hermes' process-heavy MCP surface.
+    A Hermes-owned app-server process opts back into the enabled subset.
+    """
+    names: set[str] = set()
+    servers = (hermes_config or {}).get("mcp_servers") or {}
+    if isinstance(servers, dict):
+        for raw_name, cfg in servers.items():
+            if not isinstance(cfg, dict) or cfg.get("enabled") is False:
+                continue
+            translated, _skipped = _translate_one_server(str(raw_name), cfg)
+            if translated is not None:
+                names.add(str(raw_name))
+    if expose_hermes_tools:
+        names.add("hermes-tools")
+
+    args: list[str] = []
+    for name in sorted(names):
+        args.extend(
+            ["-c", f"mcp_servers.{_quote_key(name)}.enabled=true"]
+        )
+    return args

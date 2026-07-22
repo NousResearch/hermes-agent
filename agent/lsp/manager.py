@@ -485,6 +485,12 @@ class LSPService:
         return list(client.diagnostics_for(file_path))
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
+        # A gateway can touch hundreds of short-lived worktrees without ever
+        # exiting.  Reap clients before resolving the next one so the
+        # process-wide singleton stays bounded instead of retaining every
+        # language server until gateway shutdown.
+        await self._reap_idle_clients()
+
         srv = find_server_for_file(file_path)
         if srv is None:
             return None
@@ -508,6 +514,10 @@ class LSPService:
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
+                # Refresh before handing the client to the caller.  This
+                # prevents another concurrent request's reaper pass from
+                # shutting down a client that is about to be used.
+                self._last_used[key] = time.time()
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
             spawning = self._spawning.get(key)
@@ -565,6 +575,46 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+
+    async def _reap_idle_clients(self, *, now: Optional[float] = None) -> int:
+        """Shut down clients that have been idle longer than the configured limit.
+
+        The service is process-wide and gateways are intentionally long-lived,
+        so relying on :meth:`shutdown` alone retains one language server per
+        visited workspace indefinitely.  Removing entries under the state lock
+        prevents new callers from receiving a client while it is being stopped;
+        the relatively slow protocol shutdowns then run concurrently outside
+        the lock.
+        """
+        if self._idle_timeout <= 0:
+            return 0
+
+        current = time.time() if now is None else now
+        stale: List[Tuple[Tuple[str, str], LSPClient]] = []
+        with self._state_lock:
+            for key, client in list(self._clients.items()):
+                last_used = self._last_used.get(key)
+                if last_used is None or current - last_used <= self._idle_timeout:
+                    continue
+                if key in self._spawning:
+                    continue
+                stale.append((key, client))
+                self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+
+        if not stale:
+            return 0
+
+        await asyncio.gather(
+            *(client.shutdown() for _, client in stale),
+            return_exceptions=True,
+        )
+        logger.info(
+            "LSP idle reaper stopped %d client(s) after %.0fs idle timeout",
+            len(stale),
+            self._idle_timeout,
+        )
+        return len(stale)
 
     async def _shutdown_async(self) -> None:
         with self._state_lock:

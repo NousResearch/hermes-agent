@@ -270,6 +270,10 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda *args, **kwargs: ["unexpected-live-model"],
+    )
 
     result = model_switch.list_picker_providers(
         current_provider="custom:ollama",
@@ -291,6 +295,7 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
             },
         ],
         max_models=50,
+        probe_custom_providers=False,
     )
 
     custom_rows = [p for p in result if p.get("is_user_defined")]

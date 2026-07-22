@@ -1170,6 +1170,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to ``blocked`` for a human. Preserved across unblock so a re-block for
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
+    -- Durable authority bit for canonical worker/operator blocks. Unlike
+    -- ``block_kind`` this is cleared only by repository-owned release paths.
+    -- A DB trigger rejects blocked -> ready/running updates that leave it set,
+    -- so raw bridge SQL cannot erase the visible block fields first and append
+    -- a bridge receipt afterward.
+    operator_blocked     INTEGER NOT NULL DEFAULT 0,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
     -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
@@ -1977,6 +1983,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # generic human blocker — same behaviour they had before the column.
         _add_column_if_missing(conn, "tasks", "block_kind", "block_kind TEXT")
 
+    if "operator_blocked" not in cols:
+        # Canonical worker/operator blocks need a durable DB-authority bit.
+        # The legacy event log is backfilled below before the guard trigger is
+        # installed, so already-blocked rows are protected on first upgrade.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "operator_blocked",
+            "operator_blocked INTEGER NOT NULL DEFAULT 0",
+        )
+
     if "block_recurrences" not in cols:
         # Unblock-loop counter. Existing rows start at 0, so the loop breaker
         # only begins counting from the first re-block after this migration.
@@ -2099,6 +2116,84 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
     _rebuild_drifted_tables(conn)
+    _install_operator_block_guard(conn)
+
+
+_OPERATOR_BLOCK_GUARD_TRIGGER = "trg_tasks_operator_block_guard"
+
+
+def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
+    """Backfill and install the DB-level canonical-block transition guard.
+
+    ``kanban_bridge_state.py`` and other broker clients can execute raw SQL,
+    bypassing Python transition helpers entirely. The durable
+    ``operator_blocked`` bit is therefore enforced by SQLite itself: changing
+    a protected row to ``ready`` or ``running`` without clearing that bit in
+    the same authoritative update aborts the whole transaction before a later
+    bridge event can make the rewrite look legitimate.
+
+    The fallback backfill intentionally applies only when no sticky lifecycle
+    event survived. An active ``bridge_blocked`` row may also carry
+    ``block_kind='needs_input'`` but is owned by the independent bridge channel
+    and must remain releasable by a bridge transition.
+    """
+    task_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    if not {"status", "block_kind", "operator_blocked"} <= task_columns:
+        # Some migration-unit harnesses intentionally construct only the
+        # additive columns. Real Kanban schemas always have these base fields;
+        # skip guard installation rather than making the additive pass depend
+        # on a synthetic table being otherwise complete.
+        return
+
+    conn.execute(
+        """
+        UPDATE tasks
+           SET operator_blocked = 1
+         WHERE status = 'blocked'
+           AND operator_blocked = 0
+           AND (
+               COALESCE((
+                   SELECT MAX(e.id) FROM task_events e
+                    WHERE e.task_id = tasks.id AND e.kind = 'blocked'
+               ), 0) > COALESCE((
+                   SELECT MAX(e.id) FROM task_events e
+                    WHERE e.task_id = tasks.id AND e.kind = 'unblocked'
+               ), 0)
+               OR (
+                   block_kind IN ('needs_input', 'capability', 'transient')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM task_events e
+                        WHERE e.task_id = tasks.id
+                          AND e.kind IN (
+                              'blocked', 'unblocked', 'bridge_blocked',
+                              'bridge_requeued', 'bridge_dispatched'
+                          )
+                   )
+               )
+           )
+        """
+    )
+    # Recreate rather than CREATE IF NOT EXISTS so upgrades cannot retain an
+    # older trigger body under the same stable schema-object name.
+    conn.execute(f"DROP TRIGGER IF EXISTS {_OPERATOR_BLOCK_GUARD_TRIGGER}")
+    conn.execute(
+        f"""
+        CREATE TRIGGER {_OPERATOR_BLOCK_GUARD_TRIGGER}
+        BEFORE UPDATE OF status ON tasks
+        FOR EACH ROW
+        WHEN OLD.operator_blocked = 1
+         AND NEW.operator_blocked = 1
+         AND NEW.status IN ('ready', 'running')
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'operator-blocked task requires authoritative unblock'
+            );
+        END
+        """
+    )
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -3380,6 +3475,13 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     row but lost its sticky event.  Circuit-breaker rows have no such block
     classification and retain their pre-#28712 auto-recover semantics.
     """
+    task = conn.execute(
+        "SELECT status, block_kind, operator_blocked FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task and bool(task["operator_blocked"]):
+        return True
+
     row = conn.execute(
         "SELECT "
         "MAX(CASE WHEN kind = 'blocked' THEN id END) AS canonical_block, "
@@ -3403,9 +3505,6 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     if bridge_block > max(bridge_clear, canonical_unblock):
         return True
 
-    task = conn.execute(
-        "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,),
-    ).fetchone()
     return bool(
         task
         and task["status"] == "blocked"
@@ -4196,6 +4295,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
+                       operator_blocked = 0,
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
@@ -4213,6 +4313,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
+                       operator_blocked = 0,
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
@@ -4964,7 +5065,8 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       operator_blocked = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5018,7 +5120,8 @@ def block_task(
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
-                       block_recurrences = ?
+                       block_recurrences = ?,
+                       operator_blocked = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5057,7 +5160,8 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           operator_blocked = 1
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                     """,
@@ -5072,7 +5176,8 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           operator_blocked = 1
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
@@ -5142,6 +5247,12 @@ def promote_task(
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
             f"'todo' or 'blocked'"
+        )
+
+    if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+        return False, (
+            f"task {task_id} is explicitly blocked; use unblock so the "
+            "canonical operator block is released atomically"
         )
 
     if not force:
@@ -5235,6 +5346,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "operator_blocked = 0, "
             "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
@@ -5565,7 +5677,7 @@ def decompose_triage_task(
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
-            "UPDATE tasks SET status = 'archived', "
+            "UPDATE tasks SET status = 'archived', operator_blocked = 0, "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),

@@ -88,6 +88,68 @@ class TestRequestToolApproval:
         assert persisted["key"] == "plugin_rule:ssh-writes"
         assert persisted["saved"] is True
 
+    def test_non_persistent_cli_approval_does_not_reuse_or_store_session(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
+        captured = {}
+
+        def prompt(*_args, **kwargs):
+            captured.update(kwargs)
+            return "session"
+
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", prompt)
+        session = []
+        monkeypatch.setattr(
+            approval, "approve_session", lambda sk, pk: session.append(pk)
+        )
+
+        res = request_tool_approval(
+            "terminal", "one operation", allow_permanent=False
+        )
+
+        assert res["approved"] is True
+        assert captured["allow_permanent"] is False
+        assert session == []
+
+    def test_non_persistent_gateway_approval_hides_and_ignores_broad_scopes(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
+        submitted = {}
+        session = []
+
+        def notify(_data):
+            return None
+
+        monkeypatch.setitem(
+            approval._gateway_notify_cbs, "test-session", notify
+        )
+        monkeypatch.setattr(
+            approval,
+            "_await_gateway_decision",
+            lambda sk, cb, data, surface: (
+                submitted.update(data)
+                or {"resolved": True, "choice": "session"}
+            ),
+        )
+        monkeypatch.setattr(
+            approval, "approve_session", lambda sk, pk: session.append(pk)
+        )
+
+        res = request_tool_approval(
+            "terminal", "one operation", allow_permanent=False
+        )
+
+        assert res["approved"] is True
+        assert submitted["allow_permanent"] is False
+        assert submitted["allow_session"] is False
+        assert session == []
+
     def test_gateway_path_submits_pending_and_defers(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)

@@ -2651,6 +2651,8 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    allow_permanent: bool = True,
+    allow_session: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -2687,6 +2689,10 @@ def _run_approval_gate(
             plugin-flagged action never runs ungated without a human.
         no_human_block_message: Message returned when
             ``fail_closed_when_no_human`` blocks.
+        allow_permanent: Whether the prompt may offer and persist an
+            ``always`` decision.
+        allow_session: Whether existing session approval may short-circuit
+            the gate and a new ``session`` decision may be persisted.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
@@ -2699,7 +2705,9 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if (allow_session or allow_permanent) and is_approved(
+        session_key, pattern_key
+    ):
         return {"approved": True, "message": None}
 
     if approval_callback is None:
@@ -2768,8 +2776,8 @@ def _run_approval_gate(
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
-                "allow_permanent": True,
-                "allow_session": True,
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
@@ -2808,9 +2816,9 @@ def _run_approval_gate(
                     "user_consent": False,
                 }
 
-            if choice == "session":
+            if choice == "session" and allow_session:
                 approve_session(session_key, pattern_key)
-            elif choice == "always":
+            elif choice == "always" and allow_permanent:
                 approve_session(session_key, pattern_key)
                 approve_permanent(pattern_key)
                 save_permanent_allowlist(_permanent_approved)
@@ -2822,6 +2830,8 @@ def _run_approval_gate(
             "command": display_target,
             "pattern_key": pattern_key,
             "description": description,
+            "allow_permanent": allow_permanent,
+            "allow_session": allow_session,
         })
         return {
             "approved": False,
@@ -2835,8 +2845,12 @@ def _run_approval_gate(
             ),
         }
 
-    choice = prompt_dangerous_approval(display_target, description,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        display_target,
+        description,
+        allow_permanent=allow_permanent,
+        approval_callback=approval_callback,
+    )
 
     if choice == "deny":
         return {
@@ -2850,9 +2864,9 @@ def _run_approval_gate(
             "description": description,
         }
 
-    if choice == "session":
+    if choice == "session" and allow_session:
         approve_session(session_key, pattern_key)
-    elif choice == "always":
+    elif choice == "always" and allow_permanent:
         approve_session(session_key, pattern_key)
         approve_permanent(pattern_key)
         save_permanent_allowlist(_permanent_approved)
@@ -2950,6 +2964,7 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    allow_permanent: bool = True,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -2977,6 +2992,11 @@ def request_tool_approval(
             on the same tool).
         approval_callback: Optional CLI callback for interactive prompts
             (same contract as ``check_dangerous_command``).
+        allow_permanent: Preserve the historical session/permanent approval
+            choices when True. When False, do not reuse or persist either
+            session or permanent approval, so this exact request requires a
+            fresh one-operation decision. Gateway surfaces receive both
+            persistence flags as false.
 
     Returns:
         ``{"approved": True, "message": None}`` when allowed, or
@@ -3028,6 +3048,8 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+        allow_permanent=allow_permanent,
+        allow_session=allow_permanent,
     )
 
 

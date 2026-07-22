@@ -813,3 +813,37 @@ def test_cmd_install_realtime_skips_when_deps_present(capsys):
     assert sudo_calls == [], f"unexpected sudo invocation: {sudo_calls}"
     out = capsys.readouterr().out
     assert "already installed" in out
+
+
+# ---------------------------------------------------------------------------
+# `hermes meet node` fallback when the node submodule is unavailable
+# ---------------------------------------------------------------------------
+
+def test_node_unavailable_fallback_does_not_raise(monkeypatch, capsys):
+    """When the node CLI fails to register, the fallback must print a clear
+    message and return 1 — not crash with NameError.
+
+    Regression: the fallback closure referenced the ``except ... as e``
+    target, which Python deletes when the block exits, so invoking the
+    fallback later raised ``NameError: ... free variable 'e' ...`` instead of
+    surfacing the intended "module unavailable" message.
+    """
+    import argparse
+    import plugins.google_meet.node.cli as node_cli
+    from plugins.google_meet import cli as meet_cli
+
+    def _boom(*_a, **_k):
+        raise ImportError("simulated missing optional dependency")
+
+    monkeypatch.setattr(node_cli, "register_cli", _boom)
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    meet_cli.register_cli(parser)
+
+    args = parser.parse_args(["node"])
+    rc = args.func(args)
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "module unavailable" in out
+    assert "simulated missing optional dependency" in out

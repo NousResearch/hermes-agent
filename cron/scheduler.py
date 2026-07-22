@@ -2907,7 +2907,24 @@ def run_job(
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _is_persistent = job_name.startswith("persistent:")
+    _cron_session_id = (
+        f"cron_{job_id}"
+        if _is_persistent
+        else f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    )
+
+    # For persistent jobs, load previous conversation history so the agent
+    # can resume with context from last run (e.g. "continue where we left off").
+    _conversation_history = None
+    if _is_persistent:
+        try:
+            _conversation_history = _session_db.get_messages_as_conversation(_cron_session_id)
+            if _conversation_history:
+                logger.info("Loaded %d prior messages for persistent session '%s'", len(_conversation_history), _cron_session_id)
+        except Exception as _e:
+            logger.warning("Failed to load history for persistent session '%s': %s", _cron_session_id, _e)
+            _conversation_history = None
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -3429,7 +3446,12 @@ def run_job(
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            agent.run_conversation,
+            prompt,
+            conversation_history=_conversation_history,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:

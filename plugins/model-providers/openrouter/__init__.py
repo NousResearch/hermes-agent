@@ -47,6 +47,13 @@ def _anthropic_reasoning_is_mandatory(model: str | None) -> bool:
 class OpenRouterProfile(ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
 
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return 65535 for Gemini models on OpenRouter to prevent low default output caps."""
+        m = (model or "").lower()
+        if "gemini" in m or m.startswith("google/"):
+            return 65535
+        return self.default_max_tokens
+
     def fetch_models(
         self,
         *,

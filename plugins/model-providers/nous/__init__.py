@@ -10,6 +10,13 @@ from providers.base import ProviderProfile
 class NousProfile(ProviderProfile):
     """Nous Portal — product tags, reasoning with Nous-specific omission."""
 
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return 65535 for Gemini models on Nous Portal."""
+        m = (model or "").lower()
+        if "gemini" in m or m.startswith("google/"):
+            return 65535
+        return self.default_max_tokens
+
     def build_extra_body(
         self, *, session_id: str | None = None, **context
     ) -> dict[str, Any]:

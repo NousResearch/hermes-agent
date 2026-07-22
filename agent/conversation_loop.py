@@ -1989,12 +1989,17 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    _has_reasoning_data = bool(
+                        agent._extract_reasoning(_trunc_msg)
+                        or getattr(_trunc_msg, "reasoning_content", None)
+                        or getattr(_trunc_msg, "reasoning", None)
+                    )
                     _thinking_exhausted = (
                         not _trunc_has_tool_calls
-                        and _has_think_tags
+                        and (_has_think_tags or _has_reasoning_data)
                         and (
                             (_trunc_content is not None and not agent._has_content_after_think_block(_trunc_content))
-                            or _trunc_content is None
+                            or not _trunc_content
                         )
                     )
 
@@ -2127,6 +2132,16 @@ def run_conversation(
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
+
+                                # Boost ephemeral max output tokens for text continuation retries
+                                _cont_boost_base = agent.max_tokens if agent.max_tokens else 8192
+                                _cont_boost = _cont_boost_base * (2 ** length_continue_retries)
+                                _cont_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+                                if _cont_requested_cap is not None:
+                                    _cont_boost = max(_cont_boost, _cont_requested_cap)
+                                _cont_boost_cap = max(65536, _cont_requested_cap or 0)
+                                agent._ephemeral_max_output_tokens = min(_cont_boost, _cont_boost_cap)
+
                                 _retry.restart_with_length_continuation = True
                                 break
 

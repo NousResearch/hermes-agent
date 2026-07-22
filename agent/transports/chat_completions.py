@@ -388,7 +388,10 @@ class ChatCompletionsTransport(ProviderTransport):
         elif max_tokens is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(max_tokens))
         elif anthropic_max_out is not None:
-            api_kwargs["max_tokens"] = anthropic_max_out
+            if max_tokens_fn:
+                api_kwargs.update(max_tokens_fn(anthropic_max_out))
+            else:
+                api_kwargs["max_tokens"] = anthropic_max_out
 
         # Kimi: top-level reasoning_effort (unless thinking disabled)
         if is_kimi:
@@ -577,7 +580,10 @@ class ChatCompletionsTransport(ProviderTransport):
         elif profile_max and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(profile_max))
         elif anthropic_max is not None:
-            api_kwargs["max_tokens"] = anthropic_max
+            if max_tokens_fn:
+                api_kwargs.update(max_tokens_fn(anthropic_max))
+            else:
+                api_kwargs["max_tokens"] = anthropic_max
 
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))

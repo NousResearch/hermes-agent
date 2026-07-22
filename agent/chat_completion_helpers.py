@@ -981,6 +981,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _get_gemini_max_output(model: str) -> int | None:
+    """Return 65535 default max output tokens for Gemini models to avoid premature truncation."""
+    m = (model or "").strip().lower()
+    if "gemini" in m or m.startswith("google/"):
+        return 65535
+    return None
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
@@ -1143,6 +1151,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     except Exception:
         pass
 
+    _gem_max = _get_gemini_max_output(agent.model)
+    _model_default_max = _ant_max or _gem_max
+
     # Qwen session metadata
     _qwen_meta = None
     if _is_qwen:
@@ -1187,7 +1198,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
-            anthropic_max_output=_ant_max,
+            anthropic_max_output=_model_default_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
         )

@@ -410,6 +410,13 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     provider_config["user_id"] = user_id
     provider_config["agent_id"] = agent_id
 
+    # Detect cloud-compatible API format (Volcengine, etc.) based on host pattern
+    if "volces.com" in host or "volcengine" in host:
+        provider_config["api_format"] = "cloud"
+        print("  Detected Volcengine host — using cloud API format (Token auth + /v1/ routes)")
+    else:
+        provider_config.setdefault("api_format", "selfhosted")
+
     from hermes_cli.config import save_config
     config["memory"]["provider"] = "mem0"
     save_config(config)

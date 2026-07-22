@@ -2192,7 +2192,7 @@ class TestWebServerEndpoints:
 
         captured = {}
 
-        def fake_transcribe_audio(path):
+        def fake_transcribe_audio(path, model=None):
             captured["path"] = path
             return {
                 "success": True,
@@ -2218,6 +2218,36 @@ class TestWebServerEndpoints:
         }
         assert captured["path"].endswith(".webm")
         assert not Path(captured["path"]).exists()
+
+    def test_audio_transcription_no_speech_is_not_an_error(self, monkeypatch):
+        """A provider hearing silence (empty transcript) must return 200/"" —
+        the live voice loop treats it as a quiet turn and re-listens, instead
+        of surfacing a 400 toast on every pause (the ElevenLabs empty-
+        transcript spam)."""
+        import tools.transcription_tools as transcription_tools
+
+        monkeypatch.setattr(
+            transcription_tools,
+            "transcribe_audio",
+            lambda path, model=None: {
+                "success": False,
+                "transcript": "",
+                "error": "ElevenLabs STT returned empty transcript",
+                "no_speech": True,
+            },
+        )
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["transcript"] == ""
 
     def test_audio_transcription_rejects_invalid_base64(self):
         resp = self.client.post(

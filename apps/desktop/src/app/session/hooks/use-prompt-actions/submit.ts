@@ -6,6 +6,7 @@ import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { isVoicePlaybackActive, stopVoicePlayback } from '@/lib/voice-playback'
 import {
   $composerAttachments,
   clearComposerAttachments,
@@ -139,6 +140,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false
+      }
+
+      // Typing barge-in: a new send silences any in-flight spoken reply.
+      if (isVoicePlaybackActive()) {
+        stopVoicePlayback()
       }
 
       // Queue drains carry their source session explicitly. A background drain

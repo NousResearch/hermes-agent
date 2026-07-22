@@ -368,6 +368,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # Trusted argv-only control plane for bounded orchestration roots.  This is
+    # intentionally separate from both ordinary create and the model tool.
+    p_program = sub.add_parser("program", help="Manage bounded orchestration programs")
+    program_sub = p_program.add_subparsers(dest="program_action", required=True)
+    p_program_create = program_sub.add_parser("create", help="Create a bounded policy root")
+    p_program_create.add_argument("--title", required=True)
+    p_program_create.add_argument("--body", default=None)
+    p_program_create.add_argument("--assignee", required=True)
+    p_program_create.add_argument("--allowed-assignee", action="append", required=True)
+    p_program_create.add_argument("--orchestrator", action="append", required=True)
+    p_program_create.add_argument("--max-depth", type=int, required=True)
+    p_program_create.add_argument("--max-tasks", type=int, required=True)
+    p_program_create.add_argument("--max-concurrency", type=int, required=True)
+    p_program_create.add_argument("--max-runtime-seconds", type=int, required=True)
+    p_program_create.add_argument("--max-wall-clock-seconds", type=int, required=True)
+    p_program_create.add_argument("--goal-max-turns", type=int, required=True)
+    p_program_create.add_argument("--tenant", default=None)
+    p_program_create.add_argument("--project", default=None)
+    p_program_create.add_argument("--idempotency-key", default=None)
+    p_program_create.add_argument("--json", action="store_true")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -926,6 +947,11 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # Reject before board resolution or DB initialization can read, create, or
+    # mutate any persistent state.
+    if action == "program" and not kb.is_mission_control_command_cgroup():
+        return _reject_program_create()
+
     # Board-management commands operate on board metadata and the persisted
     # current-board pointer itself. They must ignore the shared `--board`
     # task-routing override; otherwise `/kanban --board beta boards show`
@@ -984,6 +1010,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "program":  _cmd_program_create,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -1417,6 +1444,53 @@ def _cmd_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reject_program_create() -> int:
+    print(
+        "kanban program create: restricted to the trusted Mission Control broker",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _cmd_program_create(args: argparse.Namespace) -> int:
+    """Create a program root only inside Mission Control's command unit."""
+    if not kb.is_mission_control_command_cgroup():
+        return _reject_program_create()
+    try:
+        policy = kb.OrchestrationPolicy(
+            allowed_assignees=tuple(args.allowed_assignee),
+            orchestrator_assignees=tuple(args.orchestrator),
+            max_depth=args.max_depth,
+            max_tasks=args.max_tasks,
+            max_runtime_seconds=args.max_runtime_seconds,
+            max_concurrency=args.max_concurrency,
+            max_wall_clock_seconds=args.max_wall_clock_seconds,
+            goal_max_turns=args.goal_max_turns,
+        )
+        with kb.connect_closing() as conn:
+            task_id = kb.create_task(
+                conn, title=args.title, body=args.body, assignee=args.assignee,
+                tenant=args.tenant, project_id=args.project,
+                idempotency_key=args.idempotency_key,
+                orchestration_policy=policy, created_by=_profile_author(),
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        print(f"kanban program create: {exc}", file=sys.stderr)
+        return 2
+    safe = {
+        "id": task.id,
+        "status": task.status,
+        "orchestration_root_id": task.orchestration_root_id,
+        "policy": json.loads(task.orchestration_policy.to_json()),
+    }
+    if args.json:
+        print(json.dumps(safe, sort_keys=True, separators=(",", ":")))
+    else:
+        print(f"Created program {task.id} ({task.status})")
+    return 0
+
+
 def _cmd_swarm(args: argparse.Namespace) -> int:
     try:
         workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
@@ -1666,8 +1740,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
-    with kb.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.assign_task(conn, args.task_id, profile)
+    except ValueError as exc:
+        print(f"kanban assign: {exc}", file=sys.stderr)
+        return 2
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
@@ -1846,8 +1924,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
-    with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+    try:
+        with kb.connect_closing() as conn:
+            kb.link_tasks(conn, args.parent_id, args.child_id)
+    except ValueError as exc:
+        print(f"kanban link: {exc}", file=sys.stderr)
+        return 2
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 
@@ -3027,6 +3109,21 @@ def run_slash(rest: str) -> str:
     # bubble).  Per-subcommand help still works via ``/kanban foo -h``.
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
         return _SLASH_KANBAN_HELP
+
+    # Program roots grant bounded delegation authority and are broker-only.
+    # Every interactive and gateway /kanban path enters through run_slash;
+    # reject before argparse dispatch so no future handler refactor can expose
+    # this mutation surface outside trusted direct OS argv.
+    command_tokens = [token for token in tokens if not token.startswith("--board=")]
+    if command_tokens[:2] == ["program", "create"] or (
+        len(command_tokens) >= 4
+        and command_tokens[0] == "--board"
+        and command_tokens[2:4] == ["program", "create"]
+    ):
+        return (
+            "⚠ /kanban program create is restricted to the trusted direct "
+            "OS argv CLI"
+        )
 
     # Single argparse tree rooted at "/kanban".  build_parser() expects a
     # subparsers action to attach to, so build a throwaway one and pull

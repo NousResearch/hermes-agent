@@ -251,6 +251,27 @@ def test_run_slash_assign_reassigns(kanban_home):
     assert "bob" in show
 
 
+def test_run_slash_assign_rejects_managed_task_outside_policy(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setattr(kb, "is_mission_control_command_cgroup", lambda: True)
+    policy = kb.OrchestrationPolicy(
+        allowed_assignees=("planner", "worker"),
+        orchestrator_assignees=("planner",),
+        max_depth=2,
+        max_tasks=4,
+        max_runtime_seconds=60,
+    )
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn, title="managed", assignee="planner", orchestration_policy=policy
+        )
+    out = kc.run_slash(f"assign {tid} outsider")
+    assert "allowed_assignees" in out
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).assignee == "planner"
+
+
 def test_run_slash_link_unlink(kanban_home):
     a = kc.run_slash("create 'a'")
     b = kc.run_slash("create 'b'")

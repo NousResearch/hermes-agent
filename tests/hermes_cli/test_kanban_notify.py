@@ -490,6 +490,29 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
 
 @pytest.mark.asyncio
+async def test_gateway_program_create_uses_fail_closed_slash_path(kanban_home):
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    runner = object.__new__(GatewayRunner)
+    event = SimpleNamespace(
+        text=(
+            "/kanban program create --title root --assignee planner "
+            "--allowed-assignee planner --orchestrator planner --max-depth 1 "
+            "--max-tasks 2 --max-concurrency 1 --max-runtime-seconds 60 "
+            "--max-wall-clock-seconds 300 --goal-max-turns 5"
+        ),
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM, chat_id="chat1", thread_id=None, user_id="u1"
+        ),
+    )
+    output = await GatewayRunner._handle_kanban_command(runner, event)
+    assert "trusted direct" in output.lower()
+    with kb.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
 async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
     """When a completed event carries ``artifacts`` in its payload, the
     notifier uploads each file to the subscribed chat as a native

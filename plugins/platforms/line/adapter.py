@@ -65,6 +65,7 @@ import base64
 import enum
 import hashlib
 import hmac
+import itertools
 import json
 import logging
 import mimetypes
@@ -598,6 +599,58 @@ def build_postback_button_message(
     }
 
 
+# Approval button labels — LINE caps action.label at 20 chars.
+_APPROVAL_BUTTON_LABELS: Tuple[Tuple[str, str], ...] = (
+    ("once", "✅ Allow Once"),
+    ("session", "✅ Session"),
+    ("always", "✅ Always"),
+    ("deny", "❌ Deny"),
+)
+_APPROVAL_PROMPT_TEXT = "⚠️ Approve dangerous command?"
+
+
+def build_exec_approval_button_message(
+    command: str, description: str, approval_id: int
+) -> Dict[str, Any]:
+    """Template Buttons message with 4 actions for dangerous-command approval.
+
+    The command itself rides in a separate text bubble preceding this one —
+    LINE caps the Buttons template ``text`` field at 160 chars, which is
+    too tight for arbitrary shell commands.  Here we render just the
+    prompt + button row; the command preview is sent as a normal bubble.
+
+    Each button carries postback data the adapter parses on tap:
+
+        ``{"action": "approve", "choice": "once|session|always|deny",
+           "approval_id": <int>}``
+
+    The choice is then routed to ``tools.approval.resolve_gateway_approval``
+    via ``_handle_postback_event`` — same unblock primitive every other
+    platform's button flow uses.
+    """
+    alt = f"Approval required: {description}"
+    actions = [
+        {
+            "type": "postback",
+            "label": label,
+            "data": json.dumps(
+                {"action": "approve", "choice": choice, "approval_id": approval_id}
+            ),
+            "displayText": label,
+        }
+        for choice, label in _APPROVAL_BUTTON_LABELS
+    ]
+    return {
+        "type": "template",
+        "altText": alt if len(alt) <= 400 else alt[:397] + "...",
+        "template": {
+            "type": "buttons",
+            "text": _APPROVAL_PROMPT_TEXT,
+            "actions": actions,
+        },
+    }
+
+
 # Prefixes the gateway uses for system busy-acks (interrupting / queued /
 # steered). When the postback cache has a PENDING entry we *bypass* the
 # cache for these so they reach the user as visible bubbles instead of
@@ -737,6 +790,13 @@ class LineAdapter(BasePlatformAdapter):
         # Pending-button slot per chat — ensures one outstanding postback
         # button per chat at a time. Postback cache request_id keyed by chat_id.
         self._pending_buttons: Dict[str, str] = {}
+
+        # Exec-approval button state — approval_id -> session_key.
+        # Populated by send_exec_approval, drained by _handle_postback_event
+        # when the user taps Allow Once / Session / Always / Deny.  Mirrors
+        # the Telegram adapter's ``_approval_state`` exactly.
+        self._approval_state: Dict[int, str] = {}
+        self._approval_counter = itertools.count(1)
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -996,7 +1056,13 @@ class LineAdapter(BasePlatformAdapter):
         await self.handle_message(event_obj)
 
     async def _handle_postback_event(self, event: Dict[str, Any]) -> None:
-        """User tapped the slow-LLM postback button — deliver cached payload."""
+        """Route postback taps by action.
+
+        Two actions are currently understood:
+
+        * ``show_response`` — slow-LLM postback delivering cached payload.
+        * ``approve`` — dangerous-command approval (once/session/always/deny).
+        """
         postback = event.get("postback") or {}
         data = postback.get("data", "") or ""
         reply_token = event.get("replyToken", "")
@@ -1008,7 +1074,13 @@ class LineAdapter(BasePlatformAdapter):
         except (TypeError, json.JSONDecodeError):
             return
 
-        if parsed.get("action") != "show_response":
+        action = parsed.get("action")
+
+        if action == "approve":
+            await self._handle_approval_postback(parsed, reply_token)
+            return
+
+        if action != "show_response":
             return
         request_id = parsed.get("request_id", "")
         if not request_id:
@@ -1053,6 +1125,67 @@ class LineAdapter(BasePlatformAdapter):
                 await self._client.reply(reply_token, [_text_message(self.pending_text)])
             except Exception:
                 pass
+
+    async def _handle_approval_postback(
+        self, parsed: Dict[str, Any], reply_token: str
+    ) -> None:
+        """Resolve a dangerous-command approval from a button tap.
+
+        Drains the ``approval_id`` → ``session_key`` map (pop, so a
+        second tap on the same prompt is a no-op), echoes a confirmation
+        bubble back via the *postback* reply token (always fresh, always
+        free — taps generate a new token even after the original message's
+        token has expired), then calls
+        ``tools.approval.resolve_gateway_approval`` to unblock the waiting
+        agent thread.  Same primitive Telegram, Slack, Discord, Feishu use.
+        """
+        choice = parsed.get("choice")
+        approval_id = parsed.get("approval_id")
+        if choice not in ("once", "session", "always", "deny"):
+            return
+        if not isinstance(approval_id, int):
+            return
+
+        session_key = self._approval_state.pop(approval_id, None)
+        if not session_key:
+            # Double-tap or stale button after gateway restart — let the
+            # user know without raising.
+            if self._client and reply_token:
+                try:
+                    await self._client.reply(
+                        reply_token,
+                        [_text_message("This approval has already been resolved.")],
+                    )
+                except Exception as exc:
+                    logger.debug("LINE: stale-approval ack reply failed: %s", exc)
+            return
+
+        label_map = {
+            "once": "✅ Approved once",
+            "session": "✅ Approved for session",
+            "always": "✅ Approved permanently",
+            "deny": "❌ Denied",
+        }
+        label = label_map.get(choice, "Resolved")
+
+        if self._client and reply_token:
+            try:
+                await self._client.reply(reply_token, [_text_message(label)])
+            except Exception as exc:
+                logger.warning("LINE: approval confirmation reply failed: %s", exc)
+
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "LINE button resolved %d approval(s) for session %s (choice=%s)",
+                count,
+                session_key,
+                choice,
+            )
+        except Exception as exc:
+            logger.error("LINE: failed to resolve gateway approval: %s", exc)
 
     async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
         if not self._client or not message_id:
@@ -1151,6 +1284,73 @@ class LineAdapter(BasePlatformAdapter):
         """Trigger LINE's loading-animation indicator (DM only)."""
         if self._client and chat_id:
             await self._client.loading(chat_id)
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a 4-button Template Buttons approval prompt.
+
+        Two LINE messages in one Push call:
+
+        1.  A plain text bubble with the command preview + reason (because
+            the Buttons template's ``text`` field maxes at 160 chars, far
+            short of arbitrary shell commands).
+        2.  A Buttons template carrying four postback actions
+            (once / session / always / deny).
+
+        Each tap fires a postback the adapter routes via
+        ``_handle_postback_event`` → ``tools.approval.resolve_gateway_approval``,
+        the same unblock primitive every other platform's button flow uses.
+
+        Approval prompts fire mid-agent-turn, long after the inbound
+        message's reply token has expired, so we always Push (metered).
+        On free-tier this is a couple hundred messages a month, which is
+        adequate for hobby use; production deployments should budget for
+        Push volume proportional to the dangerous-command rate.
+        """
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+
+        try:
+            approval_id = next(self._approval_counter)
+
+            # Build preview bubble — LINE caps a single text bubble at 5000
+            # chars; we chunk via the same splitter normal sends use, then
+            # reserve the final slot for the Buttons template.
+            cmd_preview = command if len(command) <= 3800 else command[:3797] + "..."
+            preview_text = (
+                f"⚠️ Dangerous command requires approval:\n"
+                f"{cmd_preview}\n\n"
+                f"Reason: {description}"
+            )
+            preview_chunks = split_for_line(preview_text)
+            text_slots_available = LINE_MAX_MESSAGES_PER_CALL - 1  # leave room for buttons
+            messages: List[Dict[str, Any]] = [
+                _text_message(c) for c in preview_chunks[:text_slots_available]
+            ]
+            messages.append(
+                build_exec_approval_button_message(command, description, approval_id)
+            )
+
+            # Approval prompts always Push — reply tokens are tied to the
+            # inbound user message and have long expired by the time the
+            # agent reaches the gate.
+            await self._client.push(chat_id, messages)
+
+            # Record the session_key only after the send actually lands —
+            # otherwise a failed send leaves a dangling map entry the
+            # postback handler can never consume.
+            self._approval_state[approval_id] = session_key
+
+            return SendResult(success=True, message_id=str(approval_id))
+        except Exception as exc:
+            logger.warning("LINE: send_exec_approval failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Best-effort chat info derived from the chat_id prefix.

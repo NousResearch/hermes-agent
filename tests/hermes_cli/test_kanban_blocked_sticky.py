@@ -99,6 +99,82 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         assert kb.get_task(conn, child).status == "blocked"
 
 
+def test_initial_blocked_task_is_typed_and_sticky(kanban_home: Path) -> None:
+    """A human-ops task created blocked must wait for explicit unblock."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        kb.complete_task(conn, parent, result="parent ok")
+        child = kb.create_task(
+            conn,
+            title="protected gate",
+            parents=[parent],
+            initial_status="blocked",
+        )
+
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        assert task.block_recurrences == 1
+        blocked = [e for e in kb.list_events(conn, child) if e.kind == "blocked"]
+        assert blocked[-1].payload["kind"] == "needs_input"
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "blocked"
+        assert kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_legacy_initial_blocked_task_without_metadata_is_sticky(
+    kanban_home: Path,
+) -> None:
+    """Existing initial-status blocks must not need an unsafe unblock cycle."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="legacy protected gate",
+            initial_status="blocked",
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET block_kind=NULL, block_recurrences=0 WHERE id=?",
+                (task_id,),
+            )
+            conn.execute(
+                "DELETE FROM task_events WHERE task_id=? AND kind='blocked'",
+                (task_id,),
+            )
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, task_id).status == "blocked"
+
+
+def test_manual_promote_releases_initial_sticky_block(kanban_home: Path) -> None:
+    """Manual promotion is an explicit release, just like unblock."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="operator-released gate",
+            initial_status="blocked",
+        )
+        promoted, error = kb.promote_task(
+            conn,
+            task_id,
+            actor="operator",
+            reason="evidence accepted",
+        )
+        assert promoted and error is None
+
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='transient error' WHERE id=?",
+            (task_id,),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------

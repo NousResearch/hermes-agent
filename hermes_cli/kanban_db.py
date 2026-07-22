@@ -2970,8 +2970,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        block_kind, block_recurrences
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2994,6 +2995,8 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        "needs_input" if task_status == "blocked" else None,
+                        1 if task_status == "blocked" else 0,
                     ),
                 )
                 for pid in parents:
@@ -3015,6 +3018,17 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "created blocked for human/operator review",
+                            "kind": "needs_input",
+                            "recurrences": 1,
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3704,24 +3718,48 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       automatically once the underlying conditions change (e.g. parents
       finish, transient infra error clears).
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    The primary signal is the most recent ``"blocked"``, ``"unblocked"``, or
+    ``"promoted_manual"`` event.  Explicit unblock or manual promotion wins
+    even though typed block metadata remains for recurrence tracking.  For
+    rows created before blocked-at-creation emitted that event, typed metadata
+    or a ``created`` payload whose original status was ``blocked`` is the
+    backward-compatible sticky signal.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Returns ``False`` for circuit-breaker blocks, which have no explicit block
+    event, no human block kind, and were not originally created blocked.  This
+    preserves the pre-#28712 auto-recover semantics for that path.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN "
+        "('blocked', 'unblocked', 'promoted_manual') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row:
+        return row["kind"] == "blocked"
+
+    task_row = conn.execute(
+        "SELECT block_kind FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task_row and task_row["block_kind"] in {
+        "needs_input", "capability", "transient",
+    }:
+        return True
+
+    created = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'created' ORDER BY id ASC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not created or not created["payload"]:
+        return False
+    try:
+        payload = json.loads(created["payload"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return payload.get("status") == "blocked"
 
 
 def recompute_ready(

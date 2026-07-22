@@ -38,13 +38,14 @@ const PROBE_TIMEOUT_MS = 5000
 
 /**
  * Return the Python snippet used to verify Hermes can import far enough to
- * launch the CLI. Kept exported for tests so dependency regressions are
- * caught without needing a real broken venv fixture.
+ * launch the Desktop backend. Keep this list aligned with the `hermes serve`
+ * startup path rather than merely checking that the CLI configuration module
+ * happens to be importable.
  *
  * @returns {string}
  */
 function hermesRuntimeImportProbe() {
-  return 'import yaml; import dotenv; import hermes_cli.config'
+  return 'import yaml; import dotenv; import hermes_cli.config; import fastapi; import hermes_cli.web_server'
 }
 
 /**
@@ -123,4 +124,4 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 }
 
-export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, verifyHermesCli }
+export { canImportHermesCli, PROBE_TIMEOUT_MS, verifyHermesCli }

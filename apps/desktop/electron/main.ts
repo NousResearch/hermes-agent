@@ -134,6 +134,7 @@ import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
+import { bootstrapRuntimeStatus } from './runtime-preflight'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -3230,29 +3231,12 @@ function isActiveRuntimeUsable() {
   )
 }
 
-function isBootstrapComplete() {
-  const marker = readBootstrapMarker()
-
-  if (!marker || typeof marker !== 'object') {
-    return false
-  }
-
-  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) {
-    return false
-  }
-
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) {
-    return false
-  }
-
-  // We DELIBERATELY do NOT verify that the checkout is currently at the
-  // pinned commit -- users update via the in-app update path or `hermes
-  // update`, which moves HEAD legitimately. The marker just attests "we
-  // ran the bootstrap successfully at least once." We DO additionally require
-  // a runnable venv: an interrupted or split-home install can leave the marker
-  // + checkout without a venv, and trusting that spawns a dead backend
-  // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isActiveRuntimeUsable()
+function currentBootstrapRuntimeStatus() {
+  return bootstrapRuntimeStatus({
+    marker: readBootstrapMarker(),
+    markerSchemaVersion: BOOTSTRAP_MARKER_SCHEMA_VERSION,
+    runtimeUsable: isActiveRuntimeUsable
+  })
 }
 
 function writeBootstrapMarker(payload) {
@@ -3518,9 +3502,30 @@ function resolveHermesBackend(backendArgs) {
   //    completed initial configuration; we trust the install and go straight
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
-  if (isBootstrapComplete()) {
+  const bootstrapStatus = currentBootstrapRuntimeStatus()
+
+  if (bootstrapStatus === 'ready') {
     return createActiveBackend(backendArgs)
   }
+
+  if (bootstrapStatus === 'repair') {
+    rememberLog('[bootstrap] active Hermes runtime failed preflight; refreshing the active install.')
+
+    return {
+      kind: 'bootstrap-needed',
+      label: 'Hermes Agent runtime needs repair; bootstrap required',
+      command: null,
+      args: backendArgs,
+      bootstrap: true,
+      env: {},
+      shell: false,
+      activeRoot: ACTIVE_HERMES_ROOT,
+      installStamp: INSTALL_STAMP,
+      isPackaged: IS_PACKAGED,
+      platform: process.platform
+    }
+  }
+
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
   //    a previous tool-only setup, or pip-installed system-wide. Use it but

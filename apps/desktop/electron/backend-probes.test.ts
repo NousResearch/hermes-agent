@@ -6,13 +6,14 @@
  */
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { canImportHermesCli, hermesRuntimeImportProbe, verifyHermesCli } from './backend-probes'
+import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't
@@ -20,6 +21,50 @@ import { canImportHermesCli, hermesRuntimeImportProbe, verifyHermesCli } from '.
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
+
+function findPythonInterpreter() {
+  for (const candidate of [process.env.PYTHON, 'python3', 'python', 'py']) {
+    if (!candidate) {
+      continue
+    }
+
+    const result = spawnSync(candidate, ['-c', 'import sys'], { stdio: 'ignore', windowsHide: true })
+    if (!result.error && result.status === 0) {
+      return candidate
+    }
+  }
+
+  throw new Error('Desktop runtime probe tests require an available Python interpreter')
+}
+
+function dashboardImportInterpreterFixture() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probes-dashboard-import-'))
+  const hermesCli = path.join(directory, 'hermes_cli')
+  fs.mkdirSync(hermesCli)
+
+  // A shallow config probe can import this fixture, but the real Desktop
+  // startup boundary cannot: the web-server module represents a broken
+  // dashboard dependency. This makes the test prove the actual child-process
+  // import behavior rather than freezing the generated Python source text.
+  for (const module of ['yaml.py', 'dotenv.py', 'fastapi.py', 'hermes_cli/__init__.py', 'hermes_cli/config.py']) {
+    fs.writeFileSync(path.join(directory, module), '')
+  }
+  fs.writeFileSync(path.join(hermesCli, 'web_server.py'), "raise ImportError('broken dashboard fixture')\n")
+
+  return {
+    cleanup: () => fs.rmSync(directory, { force: true, recursive: true }),
+    // Python normally puts the checkout cwd ahead of PYTHONPATH. The Electron
+    // test project runs from this repository, so it would otherwise import the
+    // real hermes_cli package rather than this deliberately broken runtime
+    // fixture. Safe-path mode removes that implicit cwd entry while preserving
+    // the fixture as the explicit runtime import root.
+    env: {
+      PYTHONPATH: [directory, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+      PYTHONSAFEPATH: '1'
+    },
+    interpreter: findPythonInterpreter()
+  }
+}
 
 test('canImportHermesCli returns false when path is falsy', () => {
   assert.equal(canImportHermesCli(''), false)
@@ -41,14 +86,23 @@ test('canImportHermesCli returns false when binary does not exist', () => {
   assert.equal(canImportHermesCli(ghost), false)
 })
 
-test('hermes runtime import probe checks config dependencies', () => {
-  const probe = hermesRuntimeImportProbe()
-  assert.match(probe, /\bimport yaml\b/)
-  // dotenv is the first third-party import on the CLI boot path
-  // (hermes_cli/env_loader.py); a mid-update venv missing python-dotenv
-  // passed the old probe and produced an unrecoverable boot loop.
-  assert.match(probe, /\bimport dotenv\b/)
-  assert.match(probe, /\bimport hermes_cli\.config\b/)
+test('canImportHermesCli rejects a runtime whose config loads but web-server startup fails', () => {
+  const fixture = dashboardImportInterpreterFixture()
+
+  try {
+    const shallow = spawnSync(fixture.interpreter, ['-c', 'import yaml; import dotenv; import hermes_cli.config'], {
+      env: { ...process.env, ...fixture.env },
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    assert.equal(shallow.status, 0)
+
+    // The current probe follows the same import boundary as `hermes serve`,
+    // so it must reject this otherwise-configurable interpreter.
+    assert.equal(canImportHermesCli(fixture.interpreter, { env: fixture.env }), false)
+  } finally {
+    fixture.cleanup()
+  }
 })
 
 test('verifyHermesCli returns false when command is falsy', () => {

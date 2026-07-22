@@ -3525,11 +3525,26 @@ def run_job(
             and bool(final_response_text)
         )
         if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-            _err_text = (
-                result.get("error")
-                or final_response_text
-                or "agent reported failure"
-            )
+            # Build the failure reason from failure *metadata* only.
+            # ``final_response`` is the agent's reply, not an error description;
+            # using it as the exception text pasted the entire response body into
+            # the job's ``last_status``, alert channels and logs, so a genuine
+            # crash was indistinguishable from a truncated-but-successful run and
+            # legitimate output was recorded as the failure reason (#69224). Prefer
+            # the explicit ``error``, fall back to a generic marker (optionally
+            # tagged with the turn-exit reason), and record the presence of a
+            # non-error response as a log field instead of leaking it as the text.
+            _err_text = str(result.get("error") or "").strip() or "agent reported failure"
+            if turn_exit_reason:
+                _err_text = f"{_err_text} (turn_exit_reason={turn_exit_reason})"
+            if not result.get("error") and final_response_text:
+                logger.warning(
+                    "Job '%s': agent-flagged failure carried a non-error "
+                    "final_response (%d chars); surfacing failure metadata as the "
+                    "reason instead of the response body",
+                    job_name,
+                    len(final_response_text),
+                )
             raise RuntimeError(_err_text)
         if max_iteration_summary:
             logger.warning(

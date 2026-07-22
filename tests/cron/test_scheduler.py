@@ -1399,6 +1399,16 @@ class TestRunJobSessionPersistence:
                 },
                 "model abort",
             ),
+            # #69224: failure with a real response but no `error` key must not
+            # paste the response body as the reason — fall back to the marker.
+            (
+                {
+                    "final_response": "Here is the full report you asked for...",
+                    "failed": True,
+                    "completed": False,
+                },
+                "agent reported failure",
+            ),
         ],
     )
     def test_run_job_treats_agent_failure_flag_as_failure(
@@ -1446,6 +1456,53 @@ class TestRunJobSessionPersistence:
         assert "(FAILED)" in output
         # Ephemeral cron agent must still be closed even on agent-flagged failure.
         mock_agent.close.assert_called_once()
+
+    def test_run_job_failure_reason_excludes_response_body(self, tmp_path):
+        """Issue #69224: on an agent-flagged failure that carries a real (non-error)
+        ``final_response``, the failure reason must be built from failure metadata
+        only. The response body must never be pasted into ``error`` — otherwise the
+        whole reply lands in ``last_status``/alerts and a genuine crash becomes
+        indistinguishable from a truncated-but-successful run.
+        """
+        body = "Quarterly summary: revenue up 12%, three incidents resolved."
+        job = {"id": "report-job", "name": "weekly report", "prompt": "summarize"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": body,
+                "failed": True,
+                "completed": False,
+                "turn_exit_reason": "model_abort",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        # The response body must not leak into the failure reason or FAILED output.
+        assert error is not None
+        assert body not in error
+        assert body not in output
+        # A useful failure reason is still produced, tagged with the exit reason.
+        assert "agent reported failure" in error
+        assert "model_abort" in error
 
     def test_run_job_completed_true_without_failed_flag_succeeds(self, tmp_path):
         """Regression guard: a normal success result (``completed=True``,

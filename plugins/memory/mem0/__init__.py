@@ -41,6 +41,7 @@ import time
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.memory_ranking import rerank_memories
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -442,7 +443,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 results = backend.search(
                     query, filters=self._read_filters(), top_k=10, rerank=False,
                 )
-                lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
+                ranked = rerank_memories(results or [], query=query)
+                lines = [r.get("memory", "") for r in ranked if r.get("memory")]
                 if lines:
                     body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines)
                 self._record_success()

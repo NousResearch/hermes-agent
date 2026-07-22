@@ -58,19 +58,19 @@ worktrees so that research / ops / digital-twin workloads work alongside
 coding workloads.  See ``docs/hermes-kanban-v1-spec.pdf`` for the full
 design specification.
 
-Concurrency strategy: WAL mode + ``BEGIN IMMEDIATE`` for write
-transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
-``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
-most one claimer can win any given task.  Losers observe zero affected
-rows and move on -- no retry loops, no distributed-lock machinery.
-The CAS coordination is **per-board** — each board is a separate DB,
-so multi-board installs get the same atomicity guarantees without any
-new locking.
+Concurrency strategy: a board-scoped ``.dispatch.lock`` serializes every
+schema/write transaction across processes, while WAL mode + ``BEGIN
+IMMEDIATE`` + compare-and-swap (CAS) updates on ``tasks.status`` and
+``tasks.claim_lock`` provide SQLite-level atomicity.  The dispatcher holds
+the same lock for its complete tick; other writers acquire it at each write
+transaction.  The coordination is **per-board** — each board is a separate
+DB, so unrelated boards still write independently.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -1283,8 +1283,10 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
+_WRITE_LOCK_STATE = threading.local()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
+_WRITE_LOCK_POLL_SECONDS = 0.05
 
 # Maximum number of ``<db>.corrupt.<hash>.bak`` quarantine files retained per
 # board DB. Content-addressing already dedupes identical corrupt bytes, but
@@ -1321,6 +1323,43 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
+class _KanbanConnection(sqlite3.Connection):
+    """SQLite connection whose close-time checkpoint shares the board lock.
+
+    SQLite may checkpoint or delete WAL files when a connection closes. That
+    work happens after the caller's last explicit transaction, so serializing
+    only :func:`write_txn` still leaves a close-time writer outside the board
+    lock. Keep the connection's resolved path and acquire the same lock around
+    ``close()`` to cover that final implicit write phase.
+    """
+
+    _kanban_db_path: Optional[Path] = None
+    _kanban_is_closed = False
+
+    def close(self) -> None:
+        if self._kanban_is_closed:
+            return
+        db_path = self._kanban_db_path
+        if db_path is None:
+            super().close()
+            self._kanban_is_closed = True
+            return
+        with board_write_lock(db_path):
+            super().close()
+            self._kanban_is_closed = True
+
+    def __del__(self):
+        # ``connect()`` intentionally leaves lifetime management to callers, but
+        # legacy ``with connect()`` sites can still reach GC without an explicit
+        # close. Route that final SQLite close/checkpoint through the lock too.
+        try:
+            self.close()
+        except Exception:
+            # Destructors run during interpreter teardown when module globals may
+            # already be unavailable. Never turn cleanup into an unraisable error.
+            pass
+
+
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
     """Open a Kanban SQLite connection with consistent lock waiting."""
     busy_timeout_ms = _resolve_busy_timeout_ms()
@@ -1328,7 +1367,9 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
         str(path),
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
+        factory=_KanbanConnection,
     )
+    conn._kanban_db_path = path.resolve()
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
     # the PRAGMA explicitly so it is observable and survives future wrapper
     # changes. Parameter binding is not supported for PRAGMA assignments.
@@ -1420,89 +1461,190 @@ def _cross_process_init_lock(path: Path):
             handle.close()
 
 
+def _write_lock_counts() -> dict[str, int]:
+    """Return this thread's re-entrant board-lock counts."""
+    counts = getattr(_WRITE_LOCK_STATE, "counts", None)
+    if counts is None:
+        counts = {}
+        _WRITE_LOCK_STATE.counts = counts
+    return counts
+
+
+def _write_lock_key(db_path: Path) -> str:
+    try:
+        return str(db_path.resolve())
+    except OSError:
+        return str(db_path.absolute())
+
+
+def _lock_would_block(exc: OSError) -> bool:
+    """Return whether an OS lock error means another holder owns the file."""
+    return isinstance(exc, BlockingIOError) or exc.errno in {
+        errno.EACCES,
+        errno.EAGAIN,
+        errno.EDEADLK,
+    }
+
+
+@contextlib.contextmanager
+def _board_file_lock(
+    db_path: Path,
+    *,
+    blocking: bool,
+    timeout_seconds: Optional[float] = None,
+):
+    """Acquire the board's cross-process ``.dispatch.lock``.
+
+    ``blocking=False`` is used by dispatcher ticks: a competing dispatcher
+    skips immediately. Normal writers use a bounded blocking acquire and fail
+    closed if the lock cannot be obtained, rather than falling through to an
+    unsafe concurrent SQLite write.
+    """
+    lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        if blocking:
+            raise RuntimeError(
+                f"could not open kanban write lock {lock_path}: {exc}"
+            ) from exc
+        _log.error("could not open kanban dispatch lock %s: %s", lock_path, exc)
+        yield False
+        return
+
+    acquired = False
+    try:
+        if timeout_seconds is None:
+            timeout_seconds = _resolve_busy_timeout_ms() / 1000.0
+        timeout_seconds = max(0.0, float(timeout_seconds))
+        deadline = time.monotonic() + timeout_seconds
+
+        if _IS_WINDOWS:
+            import msvcrt
+
+            # msvcrt byte-range locking requires a byte to exist.
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            locking = getattr(msvcrt, "locking")
+            nb_lock = getattr(msvcrt, "LK_NBLCK")
+
+            def try_acquire() -> bool:
+                handle.seek(0)
+                try:
+                    locking(handle.fileno(), nb_lock, 1)
+                    return True
+                except OSError as exc:
+                    if _lock_would_block(exc):
+                        return False
+                    raise
+        else:
+            import fcntl
+
+            def try_acquire() -> bool:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except OSError as exc:
+                    if _lock_would_block(exc):
+                        return False
+                    raise
+
+        while True:
+            acquired = try_acquire()
+            if acquired or not blocking:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(_WRITE_LOCK_POLL_SECONDS, remaining))
+
+        if blocking and not acquired:
+            raise RuntimeError(
+                f"timed out after {timeout_seconds:g}s waiting for kanban write lock "
+                f"{lock_path}; refusing an unsafe concurrent write"
+            )
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    locking = getattr(msvcrt, "locking")
+                    unlock_mode = getattr(msvcrt, "LK_UNLCK")
+                    locking(handle.fileno(), unlock_mode, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (OSError, AttributeError):
+            pass
+        finally:
+            handle.close()
+
+
+@contextlib.contextmanager
+def board_write_lock(db_path: Path, *, timeout_seconds: Optional[float] = None):
+    """Serialize an external board writer with dispatcher and core writes.
+
+    This public helper exists for integrations that must execute raw SQL rather
+    than call :func:`write_txn`. It is re-entrant within one thread so a raw
+    integration may hold it around a larger operation while nested kanban DB
+    helpers safely reuse the same lock.
+    """
+    db_path = Path(db_path)
+    key = _write_lock_key(db_path)
+    counts = _write_lock_counts()
+    if counts.get(key, 0):
+        counts[key] += 1
+        try:
+            yield
+        finally:
+            counts[key] -= 1
+        return
+
+    with _board_file_lock(
+        db_path,
+        blocking=True,
+        timeout_seconds=timeout_seconds,
+    ) as acquired:
+        if not acquired:  # defensive: blocking mode either acquires or raises
+            raise RuntimeError(f"could not acquire kanban write lock for {db_path}")
+        counts[key] = 1
+        try:
+            yield
+        finally:
+            counts.pop(key, None)
+
+
 @contextlib.contextmanager
 def _dispatch_tick_lock(db_path: Path):
     """Non-blocking single-writer guard around one dispatcher tick.
 
-    Yields ``True`` when this process holds the board's dispatch lock and
-    may proceed with the tick, or ``False`` when another process already
-    holds it (the caller should skip the tick this round).
-
-    Motivation (issue #35240): a ``hermes gateway run --replace`` /
-    ``gateway restart`` invoked from a shell on a systemd/launchd host can
-    leave an orphan gateway whose dispatcher escapes the service cgroup,
-    survives ``systemctl restart``, and becomes a *second* long-lived
-    writer on the same ``kanban.db``. Two dispatchers that each believe
-    they own the file both pass SQLite ``busy_timeout`` and then race on
-    WAL frames — the documented root cause of multi-writer corruption.
-    The startup guard (``_guard_supervised_gateway_conflict``) blocks the
-    common way an orphan is born, but this lock is the defense-in-depth
-    that prevents two dispatchers from ever writing concurrently
-    *regardless of how the second one got there*.
-
-    The lock is **non-blocking** on purpose: the gateway's async watcher
-    must never stall on a held lock. A losing dispatcher simply skips its
-    tick (the winner is making progress on the same board), and tries
-    again next interval.
-
-    Board-scoped: the lock file is a ``.dispatch.lock`` sibling of the
-    board's ``kanban.db``, so unrelated boards tick independently. On
-    platforms without ``fcntl``/``msvcrt`` the guard degrades to a no-op
-    (yields ``True``) — single-writer enforcement is best-effort and the
-    orphan-dispatcher scenario is specific to POSIX service managers.
+    The dispatcher keeps the board lock across its whole reclaim/spawn tick.
+    Normal writes acquire this same lock in :func:`write_txn`; nested write
+    transactions on the dispatcher thread detect this context and do not
+    deadlock by trying to lock the file again.
     """
-    lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
-    handle = None
-    acquired = False
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = lock_path.open("a+b")
-        if _IS_WINDOWS:
-            try:
-                import msvcrt
-
-                handle.seek(0)
-                locking = getattr(msvcrt, "locking")
-                # LK_NBLCK = non-blocking exclusive byte-range lock.
-                nb_lock = getattr(msvcrt, "LK_NBLCK")
-                locking(handle.fileno(), nb_lock, 1)
-                acquired = True
-            except (OSError, AttributeError):
-                acquired = False
-        else:
-            try:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except (BlockingIOError, OSError):
-                acquired = False
-    except OSError:
-        # Could not even open the lock file (permissions, read-only FS).
-        # Degrade to a no-op so a probe failure never blocks dispatch.
-        acquired = True
-        handle = None
-    try:
-        yield acquired
-    finally:
-        if handle is not None:
-            try:
-                if acquired:
-                    if _IS_WINDOWS:
-                        import msvcrt
-
-                        handle.seek(0)
-                        locking = getattr(msvcrt, "locking")
-                        unlock_mode = getattr(msvcrt, "LK_UNLCK")
-                        locking(handle.fileno(), unlock_mode, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except (OSError, AttributeError):
-                pass
-            finally:
-                handle.close()
+    db_path = Path(db_path)
+    key = _write_lock_key(db_path)
+    with _board_file_lock(db_path, blocking=False) as acquired:
+        counts = _write_lock_counts()
+        if acquired:
+            counts[key] = counts.get(key, 0) + 1
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                remaining = counts.get(key, 1) - 1
+                if remaining:
+                    counts[key] = remaining
+                else:
+                    counts.pop(key, None)
 
 
 # Periodic WAL checkpoint state for the dispatcher tick path. The kanban
@@ -2054,23 +2196,24 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
-        try:
-            conn.row_factory = sqlite3.Row
-            with _INIT_LOCK:
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.execute("PRAGMA secure_delete=ON")
-                conn.execute("PRAGMA cell_size_check=ON")
-        except Exception:
-            conn.close()
-            raise
+        with board_write_lock(path):
+            conn = _sqlite_connect(path)
+            try:
+                conn.row_factory = sqlite3.Row
+                with _INIT_LOCK:
+                    from hermes_state import apply_wal_with_fallback
+                    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                    conn.execute("PRAGMA synchronous=FULL")
+                    conn.execute("PRAGMA wal_autocheckpoint=100")
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    conn.execute("PRAGMA secure_delete=ON")
+                    conn.execute("PRAGMA cell_size_check=ON")
+            except Exception:
+                conn.close()
+                raise
         return conn
 
-    with _cross_process_init_lock(path):
+    with _cross_process_init_lock(path), board_write_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
@@ -2582,24 +2725,58 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
             return  # in-memory or unnamed DB; skip
         path = path_str
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        file_size = os.path.getsize(path)
-        with open(path, "rb") as f:
-            f.seek(28)
-            header_bytes = f.read(4)
-        if len(header_bytes) < 4:
-            return  # can't read header; skip
-        header_page_count = int.from_bytes(header_bytes, "big")
-        if header_page_count == 0:
-            return  # new/empty DB; skip
-        actual_pages = file_size // page_size
-        if actual_pages < header_page_count:
-            raise sqlite3.DatabaseError(
+
+        def snapshot() -> tuple[int, int, int]:
+            # Header first, size second: if a concurrent checkpoint extends the
+            # file between reads, the newer size can only make the sample safer.
+            with open(path, "rb") as f:
+                f.seek(28)
+                header_bytes = f.read(4)
+            if len(header_bytes) < 4:
+                return 0, 0, 0
+            header_pages = int.from_bytes(header_bytes, "big")
+            file_size = os.path.getsize(path)
+            return header_pages, file_size // page_size, file_size
+
+        header_page_count, actual_pages, file_size = snapshot()
+        if header_page_count == 0 or actual_pages >= header_page_count:
+            return
+
+        def mismatch_error() -> sqlite3.DatabaseError:
+            return sqlite3.DatabaseError(
                 f"torn-extend detected: page count mismatch on {path}: "
                 f"header claims {header_page_count} pages, "
                 f"file has {actual_pages} pages "
                 f"(missing {header_page_count - actual_pages} pages, "
                 f"file_size={file_size}, page_size={page_size})"
             )
+
+        # In WAL mode page 1 (which carries the database-size field) and the
+        # final extending page are checkpointed separately. A live/incomplete
+        # checkpoint may therefore expose a temporary main-file mismatch that
+        # is not corruption. Only diagnose after a PASSIVE checkpoint confirms
+        # every WAL frame reached the main file; otherwise defer to the next
+        # post-commit check and the normal integrity probes.
+        try:
+            journal_row = conn.execute("PRAGMA journal_mode").fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise mismatch_error() from exc
+        journal_mode = str(journal_row[0]).lower() if journal_row else ""
+        if journal_mode == "wal":
+            try:
+                checkpoint = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            except sqlite3.DatabaseError as exc:
+                raise mismatch_error() from exc
+            if checkpoint is None:
+                return
+            busy, log_frames, checkpointed_frames = map(int, checkpoint[:3])
+            if busy or checkpointed_frames < log_frames:
+                return
+            header_page_count, actual_pages, file_size = snapshot()
+            if header_page_count == 0 or actual_pages >= header_page_count:
+                return
+
+        raise mismatch_error()
     except sqlite3.DatabaseError:
         raise
     except Exception:
@@ -2638,6 +2815,23 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+def _connection_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    """Return the main on-disk DB path for a real/wrapped SQLite connection."""
+    try:
+        cursor = conn.execute("PRAGMA database_list")
+        rows = cursor.fetchall()
+    except (AttributeError, sqlite3.Error):
+        return None
+    for row in rows:
+        try:
+            name, filename = row[1], row[2]
+        except (IndexError, KeyError, TypeError):
+            continue
+        if name == "main" and filename:
+            return Path(filename)
+    return None
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
@@ -2650,32 +2844,35 @@ def write_txn(conn: sqlite3.Connection):
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
-    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except Exception:
+    db_path = _connection_db_path(conn)
+    lock_scope = board_write_lock(db_path) if db_path else contextlib.nullcontext()
+    with lock_scope:
+        _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
         try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
-            pass
-        raise
-    else:
-        try:
-            _execute_boundary_with_retry(conn, "COMMIT")
+            yield conn
         except Exception:
-            # COMMIT exhausted retries with the txn still open; roll back so the
-            # connection isn't poisoned for the next BEGIN IMMEDIATE.
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
+                # SQLite has already auto-rolled-back the transaction (typical
+                # under EIO, lock contention, or corruption). Nothing to undo;
+                # do not let this secondary failure shadow the real one.
                 pass
             raise
-        # Post-commit file-length check: header page_count must match actual file pages.
-        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        else:
+            try:
+                _execute_boundary_with_retry(conn, "COMMIT")
+            except Exception:
+                # COMMIT exhausted retries with the txn still open; roll back so the
+                # connection isn't poisoned for the next BEGIN IMMEDIATE.
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.OperationalError:
+                    pass
+                raise
+            # Post-commit file-length check: header page_count must match actual file pages.
+            # A discrepancy means a torn-extend — raise now rather than silently corrupt.
+            _check_file_length_invariant(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -7799,25 +7996,15 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
-    try:
-        db_path = kanban_db_path(board=board)
-    except Exception:
-        # Path resolution should never fail, but if it somehow does we
-        # must not lose the tick — fall through to an unguarded dispatch
-        # rather than dropping work.
-        return _dispatch_once_locked(
-            conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-        )
+    db_path = _connection_db_path(conn)
+    if db_path is None:
+        try:
+            db_path = kanban_db_path(board=board)
+        except Exception as exc:
+            # Fail closed: an unguarded dispatcher write would defeat the
+            # single-writer guarantee this wrapper exists to provide.
+            _log.error("could not resolve kanban dispatch lock path: %s", exc)
+            return DispatchResult(skipped_locked=True)
     with _dispatch_tick_lock(db_path) as held:
         if not held:
             return DispatchResult(skipped_locked=True)

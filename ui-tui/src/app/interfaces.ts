@@ -345,6 +345,7 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  maxHistory: number
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   info: null | SessionInfo

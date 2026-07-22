@@ -17,6 +17,11 @@ const ESTIMATE = 4
 // dev (https://news.ycombinator.com/item?id=46699072) confirmed GC pressure
 // from large JSX trees was their main perf issue post-rewrite.
 const OVERSCAN = 20
+// Cooldown after a manual scroll during which sticky (follow-to-bottom) scroll
+// is suppressed, so re-reading a long response isn't yanked back to the tail by
+// the next incoming token (issue #55594, root cause #2). The issue proposed
+// 2-3s; 2500ms balances reading time against follow latency.
+export const STICKY_SCROLL_COOLDOWN_MS = 2500
 // Hard cap on mounted items.  Was 260; profiling showed ~23k live Yoga
 // nodes during sustained PageUp catch-up (renderer p99=106ms).  The
 // viewport+2*overscan = 80 rows of needed coverage = ~25 items at avg 3
@@ -243,7 +248,7 @@ export function useVirtualHistory(
   const target = Math.max(0, top + pendingDelta)
   const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0)
   const sticky = scrollRef.current?.isSticky() ?? true
-  const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < 1200
+  const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < STICKY_SCROLL_COOLDOWN_MS
 
   // During a freeze, drop the frozen range if items shrank past its start
   // (/clear, compaction) — clamping would collapse to an empty mount and

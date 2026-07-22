@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
+import { MAX_HISTORY } from '../config/limits.js'
 import { ZERO } from '../domain/usage.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -14,6 +15,7 @@ const buildUiState = (): UiState => ({
   busy: false,
   busyInputMode: 'queue',
   compact: false,
+  maxHistory: MAX_HISTORY,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,

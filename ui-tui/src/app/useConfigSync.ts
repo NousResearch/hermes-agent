@@ -1,6 +1,7 @@
 import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
+import { MAX_HISTORY } from '../config/limits.js'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
@@ -59,6 +60,28 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   const v = raw.trim().toLowerCase() as IndicatorStyle
 
   return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
+}
+
+export const normalizeMaxHistory = (raw: unknown): number => {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.max(1, Math.round(raw))
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+
+    if (!trimmed) {
+      return MAX_HISTORY
+    }
+
+    const n = Number(trimmed)
+
+    if (Number.isFinite(n)) {
+      return Math.max(1, Math.round(n))
+    }
+  }
+
+  return MAX_HISTORY
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
@@ -277,6 +300,7 @@ export const applyDisplay = (
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
+    maxHistory: normalizeMaxHistory(d.max_history),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),

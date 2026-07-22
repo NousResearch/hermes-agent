@@ -146,6 +146,145 @@ const keepGridCursorInBounds = (grid: GridTestState): GridTestState => ({
   activeRow: clamp(grid.activeRow, 0, grid.rows - 1)
 })
 
+interface StackedModalKey {
+  ctrl: boolean
+  downArrow: boolean
+  escape: boolean
+  leftArrow: boolean
+  return: boolean
+  rightArrow: boolean
+  upArrow: boolean
+}
+
+/**
+ * Input routing for the stacked demo modals (dialog over grid-test).
+ * Exported so tests can drive the real dispatch against the overlay store.
+ *
+ * ORDER IS THE CONTRACT: input routing follows visual stacking. /grid-test's
+ * `d` opens a dialog ON TOP of the grid without clearing it — the dialog
+ * branch must run first, or Esc/q/Enter mutate the hidden grid instead of
+ * closing the visible dialog, contradicting its "Esc/q/Enter close" hint
+ * (review on #20379, finding 3).
+ *
+ * Returns true when a modal consumed the key (callers stop routing).
+ */
+export function handleStackedModalInput(
+  overlay: Pick<OverlayState, 'dialog' | 'gridTest'>,
+  key: StackedModalKey,
+  ch: string
+): boolean {
+  if (overlay.dialog) {
+    if (key.escape || isCtrl(key, ch, 'c') || ch === 'q' || key.return) {
+      patchOverlayState({ dialog: null })
+    }
+
+    return true
+  }
+
+  if (!overlay.gridTest) {
+    return false
+  }
+
+  const updateGrid = (fn: (grid: GridTestState) => GridTestState) =>
+    patchOverlayState(prev => (prev.gridTest ? { ...prev, gridTest: keepGridCursorInBounds(fn(prev.gridTest)) } : prev))
+
+  const openDemoDialog = () =>
+    patchOverlayState({
+      dialog: {
+        body: ['Dialog overlaid on top of /grid-test.', '', 'Backdrop dims the grid behind.'].join('\n'),
+        hint: 'Esc/q/Enter close',
+        title: 'Overlay primitive',
+        zone: 'center'
+      }
+    })
+
+  const resetGrid = () =>
+    updateGrid(grid => ({
+      ...grid,
+      activeCol: 0,
+      activeRow: 0,
+      areas: false,
+      cols: 4,
+      gap: null,
+      nested: false,
+      paddingX: null,
+      rows: 3,
+      streamFocus: 0,
+      streamMain: 0,
+      streams: false,
+      zoomed: false
+    }))
+
+  if (isCtrl(key, ch, 'c')) {
+    patchOverlayState({ gridTest: null })
+
+    return true
+  }
+
+  // Streams mode swallows the grid-shape keys: focus cycles across the
+  // live panels and Enter promotes the focused one to the 2x2 slot.
+  if (overlay.gridTest.streams) {
+    if (key.escape || ch === 'q' || ch === 's') {
+      updateGrid(grid => ({ ...grid, streams: false }))
+    } else if (key.return) {
+      updateGrid(grid => ({ ...grid, streamMain: grid.streamFocus }))
+    } else if (ch === 'd') {
+      openDemoDialog()
+    } else if (ch === 'r') {
+      resetGrid()
+    } else if (key.leftArrow || key.upArrow || ch === 'h' || ch === 'k') {
+      updateGrid(grid => ({
+        ...grid,
+        streamFocus: (grid.streamFocus + GRID_STREAM_COUNT - 1) % GRID_STREAM_COUNT
+      }))
+    } else if (key.rightArrow || key.downArrow || ch === 'l' || ch === 'j') {
+      updateGrid(grid => ({ ...grid, streamFocus: (grid.streamFocus + 1) % GRID_STREAM_COUNT }))
+    }
+
+    return true
+  }
+
+  if (overlay.gridTest.zoomed && (key.escape || ch === 'q')) {
+    updateGrid(grid => ({ ...grid, zoomed: false }))
+  } else if (key.escape || ch === 'q') {
+    patchOverlayState({ gridTest: null })
+  } else if (key.return) {
+    updateGrid(grid => ({ ...grid, nested: true, zoomed: true }))
+  } else if (ch === 'n') {
+    updateGrid(grid => ({ ...grid, nested: !grid.nested }))
+  } else if (ch === 'a') {
+    updateGrid(grid => ({ ...grid, areas: !grid.areas, streams: false }))
+  } else if (ch === 's') {
+    updateGrid(grid => ({ ...grid, areas: false, streams: true }))
+  } else if (ch === 'g') {
+    updateGrid(grid => ({ ...grid, gap: cycleAutoNumber(grid.gap, 3) }))
+  } else if (ch === 'p') {
+    updateGrid(grid => ({ ...grid, paddingX: cycleAutoNumber(grid.paddingX, 2) }))
+  } else if (ch === 'd') {
+    openDemoDialog()
+  } else if (ch === 'r') {
+    resetGrid()
+  } else if (ch === '+' || ch === '=') {
+    updateGrid(grid => ({ ...grid, cols: clamp(grid.cols + 1, 1, GRID_TEST_MAX_SIZE) }))
+  } else if (ch === '-' || ch === '_') {
+    updateGrid(grid => ({ ...grid, cols: clamp(grid.cols - 1, 1, GRID_TEST_MAX_SIZE) }))
+  } else if (ch === ']') {
+    updateGrid(grid => ({ ...grid, rows: clamp(grid.rows + 1, 1, GRID_TEST_MAX_SIZE) }))
+  } else if (ch === '[') {
+    updateGrid(grid => ({ ...grid, rows: clamp(grid.rows - 1, 1, GRID_TEST_MAX_SIZE) }))
+  } else if (key.leftArrow || ch === 'h') {
+    updateGrid(grid => ({ ...grid, activeCol: clamp(grid.activeCol - 1, 0, grid.cols - 1) }))
+  } else if (key.rightArrow || ch === 'l') {
+    updateGrid(grid => ({ ...grid, activeCol: clamp(grid.activeCol + 1, 0, grid.cols - 1) }))
+  } else if (key.upArrow || ch === 'k') {
+    updateGrid(grid => ({ ...grid, activeRow: clamp(grid.activeRow - 1, 0, grid.rows - 1) }))
+  } else if (key.downArrow || ch === 'j') {
+    updateGrid(grid => ({ ...grid, activeRow: clamp(grid.activeRow + 1, 0, grid.rows - 1) }))
+  }
+
+  return true
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -428,156 +567,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (overlay.gridTest) {
-        const updateGrid = (fn: (grid: GridTestState) => GridTestState) =>
-          patchOverlayState(prev =>
-            prev.gridTest ? { ...prev, gridTest: keepGridCursorInBounds(fn(prev.gridTest)) } : prev
-          )
-
-        const openDemoDialog = () =>
-          patchOverlayState({
-            dialog: {
-              body: ['Dialog overlaid on top of /grid-test.', '', 'Backdrop dims the grid behind.'].join('\n'),
-              hint: 'Esc/q/Enter close',
-              title: 'Overlay primitive',
-              zone: 'center'
-            }
-          })
-
-        const resetGrid = () =>
-          updateGrid(grid => ({
-            ...grid,
-            activeCol: 0,
-            activeRow: 0,
-            areas: false,
-            cols: 4,
-            gap: null,
-            nested: false,
-            paddingX: null,
-            rows: 3,
-            streamFocus: 0,
-            streamMain: 0,
-            streams: false,
-            zoomed: false
-          }))
-
-        if (isCtrl(key, ch, 'c')) {
-          return patchOverlayState({ gridTest: null })
-        }
-
-        // Streams mode swallows the grid-shape keys: focus cycles across the
-        // live panels and Enter promotes the focused one to the 2x2 slot.
-        if (overlay.gridTest.streams) {
-          if (key.escape || ch === 'q' || ch === 's') {
-            return updateGrid(grid => ({ ...grid, streams: false }))
-          }
-
-          if (key.return) {
-            return updateGrid(grid => ({ ...grid, streamMain: grid.streamFocus }))
-          }
-
-          if (ch === 'd') {
-            return openDemoDialog()
-          }
-
-          if (ch === 'r') {
-            return resetGrid()
-          }
-
-          if (key.leftArrow || key.upArrow || ch === 'h' || ch === 'k') {
-            return updateGrid(grid => ({
-              ...grid,
-              streamFocus: (grid.streamFocus + GRID_STREAM_COUNT - 1) % GRID_STREAM_COUNT
-            }))
-          }
-
-          if (key.rightArrow || key.downArrow || ch === 'l' || ch === 'j') {
-            return updateGrid(grid => ({ ...grid, streamFocus: (grid.streamFocus + 1) % GRID_STREAM_COUNT }))
-          }
-
-          return
-        }
-
-        if (overlay.gridTest.zoomed && (key.escape || ch === 'q')) {
-          return updateGrid(grid => ({ ...grid, zoomed: false }))
-        }
-
-        if (key.escape || ch === 'q') {
-          return patchOverlayState({ gridTest: null })
-        }
-
-        if (key.return) {
-          return updateGrid(grid => ({ ...grid, nested: true, zoomed: true }))
-        }
-
-        if (ch === 'n') {
-          return updateGrid(grid => ({ ...grid, nested: !grid.nested }))
-        }
-
-        if (ch === 'a') {
-          return updateGrid(grid => ({ ...grid, areas: !grid.areas, streams: false }))
-        }
-
-        if (ch === 's') {
-          return updateGrid(grid => ({ ...grid, areas: false, streams: true }))
-        }
-
-        if (ch === 'g') {
-          return updateGrid(grid => ({ ...grid, gap: cycleAutoNumber(grid.gap, 3) }))
-        }
-
-        if (ch === 'p') {
-          return updateGrid(grid => ({ ...grid, paddingX: cycleAutoNumber(grid.paddingX, 2) }))
-        }
-
-        if (ch === 'd') {
-          return openDemoDialog()
-        }
-
-        if (ch === 'r') {
-          return resetGrid()
-        }
-
-        if (ch === '+' || ch === '=') {
-          return updateGrid(grid => ({ ...grid, cols: clamp(grid.cols + 1, 1, GRID_TEST_MAX_SIZE) }))
-        }
-
-        if (ch === '-' || ch === '_') {
-          return updateGrid(grid => ({ ...grid, cols: clamp(grid.cols - 1, 1, GRID_TEST_MAX_SIZE) }))
-        }
-
-        if (ch === ']') {
-          return updateGrid(grid => ({ ...grid, rows: clamp(grid.rows + 1, 1, GRID_TEST_MAX_SIZE) }))
-        }
-
-        if (ch === '[') {
-          return updateGrid(grid => ({ ...grid, rows: clamp(grid.rows - 1, 1, GRID_TEST_MAX_SIZE) }))
-        }
-
-        if (key.leftArrow || ch === 'h') {
-          return updateGrid(grid => ({ ...grid, activeCol: clamp(grid.activeCol - 1, 0, grid.cols - 1) }))
-        }
-
-        if (key.rightArrow || ch === 'l') {
-          return updateGrid(grid => ({ ...grid, activeCol: clamp(grid.activeCol + 1, 0, grid.cols - 1) }))
-        }
-
-        if (key.upArrow || ch === 'k') {
-          return updateGrid(grid => ({ ...grid, activeRow: clamp(grid.activeRow - 1, 0, grid.rows - 1) }))
-        }
-
-        if (key.downArrow || ch === 'j') {
-          return updateGrid(grid => ({ ...grid, activeRow: clamp(grid.activeRow + 1, 0, grid.rows - 1) }))
-        }
-
-        return
-      }
-
-      if (overlay.dialog) {
-        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q' || key.return) {
-          return patchOverlayState({ dialog: null })
-        }
-
+      // Stacked demo modals (dialog over grid-test): shared routing where
+      // the topmost visual layer consumes input first.
+      if (handleStackedModalInput(overlay, key, ch)) {
         return
       }
 

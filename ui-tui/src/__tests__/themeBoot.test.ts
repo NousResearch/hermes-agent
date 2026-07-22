@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { invalidateBootBackground, seedBootEnvironment, type BootTheme } from '../lib/themeBoot.js'
+import { type BootTheme, invalidateBootBackground, seedBootEnvironment } from '../lib/themeBoot.js'
 import { defaultTheme } from '../theme.js'
 
 // Review on #20379 (finding 2): the boot cache seeds the previous session's

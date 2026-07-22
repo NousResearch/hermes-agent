@@ -953,6 +953,7 @@ def _find_shell() -> str:
 # Standard PATH entries for environments with minimal PATH.
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
+    "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 

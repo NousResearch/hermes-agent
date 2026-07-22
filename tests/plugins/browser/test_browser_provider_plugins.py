@@ -23,6 +23,8 @@ PR #25182.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 
@@ -53,6 +55,40 @@ def _ensure_plugins_loaded() -> None:
     from hermes_cli.plugins import _ensure_plugins_discovered
 
     _ensure_plugins_discovered()
+
+
+class _FakeStreamResponse:
+    def __init__(
+        self,
+        body: bytes = b"{}",
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        chunks: list[bytes] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._chunks = chunks if chunks is not None else [body]
+        self.closed = False
+        self.iter_content_calls: list[int] = []
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 400
+
+    @property
+    def text(self) -> str:
+        raise AssertionError("unbounded response.text should not be used")
+
+    def json(self) -> dict[str, Any]:
+        raise AssertionError("unbounded response.json() should not be used")
+
+    def iter_content(self, chunk_size: int):
+        self.iter_content_calls.append(chunk_size)
+        yield from self._chunks
+
+    def close(self) -> None:
+        self.closed = True
 
 
 # ---------------------------------------------------------------------------
@@ -377,3 +413,124 @@ class TestPickerIntegration:
 
         for row in _plugin_browser_providers():
             assert row.get("browser_plugin_name") == row.get("browser_provider")
+
+
+# ---------------------------------------------------------------------------
+# Bounded session-create response reads
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedSessionCreateResponses:
+    def test_json_reader_rejects_oversized_content_length(self) -> None:
+        from plugins.browser._response import read_browser_provider_json
+
+        response = _FakeStreamResponse(
+            b'{"id":"session"}',
+            headers={"Content-Length": "11"},
+        )
+
+        with pytest.raises(RuntimeError, match="test reader: response exceeds 10 bytes"):
+            read_browser_provider_json(response, label="test reader", max_bytes=10)
+
+        assert response.closed is True
+        assert response.iter_content_calls == []
+
+    def test_json_reader_rejects_stream_overflow(self) -> None:
+        from plugins.browser._response import read_browser_provider_response_bytes
+
+        response = _FakeStreamResponse(chunks=[b"123456", b"789012"])
+
+        with pytest.raises(RuntimeError, match="test reader: response exceeds 10 bytes"):
+            read_browser_provider_response_bytes(
+                response,
+                label="test reader",
+                max_bytes=10,
+            )
+
+        assert response.closed is True
+        assert response.iter_content_calls == [64 * 1024]
+
+    def test_browser_use_create_session_streams_and_caps_json(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "key")
+        calls: list[dict[str, Any]] = []
+        response = _FakeStreamResponse(
+            b'{"id":"bu-1","cdpUrl":"ws://browser-use"}',
+        )
+
+        def fake_post(*_args: Any, **kwargs: Any) -> _FakeStreamResponse:
+            calls.append(kwargs)
+            return response
+
+        monkeypatch.setattr(
+            "plugins.browser.browser_use.provider.requests.post",
+            fake_post,
+        )
+
+        result = BrowserUseBrowserProvider().create_session("task")
+
+        assert calls[0]["stream"] is True
+        assert response.closed is True
+        assert result["bb_session_id"] == "bu-1"
+        assert result["cdp_url"] == "ws://browser-use"
+
+    def test_browserbase_create_session_streams_and_caps_json(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
+
+        monkeypatch.setenv("BROWSERBASE_API_KEY", "key")
+        monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "project")
+        calls: list[dict[str, Any]] = []
+        response = _FakeStreamResponse(
+            b'{"id":"bb-1","connectUrl":"ws://browserbase"}',
+        )
+
+        def fake_post(*_args: Any, **kwargs: Any) -> _FakeStreamResponse:
+            calls.append(kwargs)
+            return response
+
+        monkeypatch.setattr(
+            "plugins.browser.browserbase.provider.requests.post",
+            fake_post,
+        )
+
+        result = BrowserbaseBrowserProvider().create_session("task")
+
+        assert calls[0]["stream"] is True
+        assert response.closed is True
+        assert result["bb_session_id"] == "bb-1"
+        assert result["cdp_url"] == "ws://browserbase"
+
+    def test_firecrawl_create_session_streams_and_caps_json(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.browser.firecrawl.provider import FirecrawlBrowserProvider
+
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "key")
+        calls: list[dict[str, Any]] = []
+        response = _FakeStreamResponse(
+            b'{"id":"fc-1","cdpUrl":"ws://firecrawl"}',
+        )
+
+        def fake_post(*_args: Any, **kwargs: Any) -> _FakeStreamResponse:
+            calls.append(kwargs)
+            return response
+
+        monkeypatch.setattr(
+            "plugins.browser.firecrawl.provider.requests.post",
+            fake_post,
+        )
+
+        result = FirecrawlBrowserProvider().create_session("task")
+
+        assert calls[0]["stream"] is True
+        assert response.closed is True
+        assert result["bb_session_id"] == "fc-1"
+        assert result["cdp_url"] == "ws://firecrawl"

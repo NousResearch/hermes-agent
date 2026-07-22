@@ -28,6 +28,7 @@ Auth env vars (one of)::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -37,6 +38,10 @@ from typing import Any, Dict, Optional
 import requests
 
 from agent.browser_provider import BrowserProvider
+from plugins.browser._response import (
+    read_browser_provider_json,
+    read_browser_provider_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +73,7 @@ def _clear_pending_create_key(task_id: str) -> None:
         _pending_create_keys.pop(task_id, None)
 
 
-def _should_preserve_pending_create_key(response: requests.Response) -> bool:
+def _should_preserve_pending_create_key(status_code: int, payload: object) -> bool:
     """Decide whether to keep the idempotency key after a failed create.
 
     Preserve the key when the failure looks retryable (5xx) OR when the
@@ -79,15 +84,10 @@ def _should_preserve_pending_create_key(response: requests.Response) -> bool:
     Drop the key on any other 4xx (auth failure, bad request, etc.) — those
     won't succeed by being retried.
     """
-    if response.status_code >= 500:
+    if status_code >= 500:
         return True
 
-    if response.status_code != 409:
-        return False
-
-    try:
-        payload = response.json()
-    except Exception:
+    if status_code != 409:
         return False
 
     if not isinstance(payload, dict):
@@ -211,6 +211,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
                 headers=headers,
                 json=payload,
                 timeout=30,
+                stream=True,
             )
         except requests.RequestException as exc:
             # Managed mode: propagate raw so callers can retry with the
@@ -222,21 +223,42 @@ class BrowserUseBrowserProvider(BrowserProvider):
                 f"Browser Use API connection failed: {exc}"
             ) from exc
 
-        if not response.ok:
-            if managed_mode and not _should_preserve_pending_create_key(response):
-                _clear_pending_create_key(task_id)
-            raise RuntimeError(
-                f"Failed to create Browser Use session: "
-                f"{response.status_code} {response.text}"
-            )
+        try:
+            if not response.ok:
+                try:
+                    error_text = read_browser_provider_text(
+                        response,
+                        label="Browser Use session create error",
+                    )
+                except RuntimeError as exc:
+                    error_text = str(exc)
+                try:
+                    error_payload: object = json.loads(error_text)
+                except Exception:
+                    error_payload = None
+                if managed_mode and not _should_preserve_pending_create_key(
+                    response.status_code,
+                    error_payload,
+                ):
+                    _clear_pending_create_key(task_id)
+                raise RuntimeError(
+                    f"Failed to create Browser Use session: "
+                    f"{response.status_code} {error_text}"
+                )
 
-        session_data = response.json()
-        if managed_mode:
-            _clear_pending_create_key(task_id)
+            external_call_id = (
+                response.headers.get("x-external-call-id") if managed_mode else None
+            )
+            session_data = read_browser_provider_json(
+                response,
+                label="Browser Use session create",
+            )
+            if managed_mode:
+                _clear_pending_create_key(task_id)
+        finally:
+            response.close()
+
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-        external_call_id = (
-            response.headers.get("x-external-call-id") if managed_mode else None
-        )
 
         logger.info("Created Browser Use session %s", session_name)
 

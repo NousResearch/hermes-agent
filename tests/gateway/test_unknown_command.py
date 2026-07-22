@@ -382,6 +382,7 @@ async def test_gateway_plugin_command_receives_authenticated_context(monkeypatch
     runner._run_agent = AsyncMock(
         side_effect=AssertionError("plugin slash command leaked to the agent")
     )
+    runner.session_store.peek_session_id.return_value = "sess-1"
 
     received_contexts = []
 
@@ -414,10 +415,15 @@ async def test_gateway_plugin_command_receives_authenticated_context(monkeypatch
         lambda name: _handler if name == "audit" else None,
     )
 
-    result = await runner._handle_message(_make_event("/audit approve"))
+    event = _make_event("/audit approve")
+    result = await runner._handle_message(event)
 
     assert result == "approve:telegram:u1:tester:c1:dm:m1:True"
     assert received_contexts
-    assert received_contexts[0].session_id is None
+    assert received_contexts[0].session_id == "sess-1"
+    runner.session_store.peek_session_id.assert_called_once_with(
+        build_session_key(event.source)
+    )
+    runner.session_store.get_or_create_session.assert_not_called()
     with pytest.raises(Exception):
         received_contexts[0].user_id = "mutated"

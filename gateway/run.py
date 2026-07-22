@@ -11346,10 +11346,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
+                    session_id = await asyncio.to_thread(
+                        self.session_store.peek_session_id, _quick_key
+                    )
                     result = call_plugin_command_handler(
                         plugin_handler,
                         user_args,
-                        command_context=_build_plugin_command_context(event),
+                        command_context=_build_plugin_command_context(
+                            event, session_id=session_id
+                        ),
                     )
                     if inspect.isawaitable(result):
                         result = await result

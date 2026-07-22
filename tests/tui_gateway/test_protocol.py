@@ -156,6 +156,22 @@ def test_write_json_peer_gone_oserror_on_flush_returns_false(server):
     assert written and json.loads(written[0]) == {"x": 1}
 
 
+def test_write_json_peer_gone_einval_on_write_returns_false(server):
+    """On Windows, a detached stdout raises OSError(EINVAL) on write.
+
+    EINVAL must be treated as peer-gone (return False) rather than a
+    host I/O error, otherwise the TUI gateway crashes with WebSocket
+    1011 on every reconnect attempt (28+ in 10 minutes)."""
+    import errno
+
+    class _DetachedStdout:
+        def write(self, _): raise OSError(errno.EINVAL, "Invalid argument")
+        def flush(self): pass
+
+    server._real_stdout = _DetachedStdout()
+    assert server.write_json({"x": 1}) is False
+
+
 def test_write_json_non_peer_gone_oserror_re_raises(server):
     """Host I/O failures (ENOSPC, EACCES, EIO …) are NOT peer-gone — they
     must re-raise so the crash log records them instead of looking like

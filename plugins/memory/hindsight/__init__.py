@@ -349,47 +349,102 @@ REFLECT_SCHEMA = {
 def _load_config() -> dict:
     """Load config from profile-scoped path, legacy path, or env vars.
 
-    Resolution order:
+    Resolution order (env vars always win when set):
       1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
       2. ~/.hindsight/config.json             (legacy, shared)
-      3. Environment variables
+      3. Environment variables                (fallback for missing keys)
+    4. HINDSIGHT_* env vars overlay matching keys on the loaded config —
+       so `HINDSIGHT_BANK_ID=nihai-tcm` in a profile's .env is honoured
+       regardless of whether the user has a `config.json` from a prior
+       `hermes memory status` run. See #51166.
     """
     from pathlib import Path
+
+    config = {}
 
     # Profile-scoped path (preferred)
     profile_path = get_hermes_home() / "hindsight" / "config.json"
     if profile_path.exists():
         try:
-            return json.loads(profile_path.read_text(encoding="utf-8"))
+            config = json.loads(profile_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            config = {}
 
     # Legacy shared path (backward compat)
-    legacy_path = Path.home() / ".hindsight" / "config.json"
-    if legacy_path.exists():
-        try:
-            return json.loads(legacy_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    if not config:
+        legacy_path = Path.home() / ".hindsight" / "config.json"
+        if legacy_path.exists():
+            try:
+                config = json.loads(legacy_path.read_text(encoding="utf-8"))
+            except Exception:
+                config = {}
 
-    return {
-        "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
-        "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
-        "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
-        "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
-        "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
-        "observation_scopes": os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", ""),
-        "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
-        "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
-        "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
-        "banks": {
-            "hermes": {
-                "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
-                "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"),
-                "enabled": True,
-            }
-        },
+    # Seed any missing top-level keys with env-var defaults so the shape
+    # stays the same as the original env-only return.
+    if not config:
+        config = {
+            "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
+            "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+            "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
+            "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
+            "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
+            "observation_scopes": os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", ""),
+            "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
+            "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
+            "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
+            "banks": {
+                "hermes": {
+                    "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
+                    "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"),
+                    "enabled": True,
+                }
+            },
+        }
+
+    # HINDSIGHT_* env vars overlay matching keys when set. This is the
+    # #51166 fix: env vars are treated as a *per-process* override on top
+    # of whatever config.json says. Operators who want the JSON value to
+    # win simply unset the env var.
+    _ENV_OVERLAYS = {
+        "HINDSIGHT_MODE": "mode",
+        "HINDSIGHT_API_KEY": "apiKey",
+        "HINDSIGHT_TIMEOUT": "timeout",
+        "HINDSIGHT_IDLE_TIMEOUT": "idle_timeout",
+        "HINDSIGHT_RETAIN_TAGS": "retain_tags",
+        "HINDSIGHT_RETAIN_OBSERVATION_SCOPES": "observation_scopes",
+        "HINDSIGHT_RETAIN_SOURCE": "retain_source",
+        "HINDSIGHT_RETAIN_USER_PREFIX": "retain_user_prefix",
+        "HINDSIGHT_RETAIN_ASSISTANT_PREFIX": "retain_assistant_prefix",
+        "HINDSIGHT_BUDGET": "budget",
     }
+    for env_key, cfg_key in _ENV_OVERLAYS.items():
+        value = os.environ.get(env_key)
+        if value is None or value == "":
+            continue
+        if cfg_key in ("timeout", "idle_timeout"):
+            config[cfg_key] = _parse_int_setting(value, _DEFAULT_TIMEOUT if cfg_key == "timeout" else _DEFAULT_IDLE_TIMEOUT)
+        else:
+            config[cfg_key] = value
+
+    # HINDSIGHT_BANK_ID is special: it must be readable from
+    # `self._config.get("bank_id")` (the read site at line 1287 of the
+    # HindsightMemoryProvider.__init__), so we surface it both at the
+    # top level (for the read site) and under the legacy
+    # `banks["hermes"]["bankId"]` location (for any older code path
+    # that still reads the nested form).
+    bank_id_env = os.environ.get("HINDSIGHT_BANK_ID")
+    if bank_id_env:
+        config["bank_id"] = bank_id_env
+        config.setdefault("banks", {}).setdefault("hermes", {})["bankId"] = bank_id_env
+    else:
+        # No env var — surface the JSON-stored bank id at the top level
+        # too, so the read site is symmetric regardless of which path
+        # seeded the config.
+        nested = config.get("banks", {}).get("hermes", {}).get("bankId")
+        if nested and "bank_id" not in config:
+            config["bank_id"] = nested
+
+    return config
 
 
 def _normalize_retain_tags(value: Any) -> List[str]:

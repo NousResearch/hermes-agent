@@ -2410,7 +2410,11 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             continue
         active_sources.add(source)
         base_url = env_url or pconfig.inference_base_url
-        if provider == "kimi-coding":
+        # sk-kimi- Code keys must hit api.kimi.com/coding for BOTH provider ids.
+        # kimi-coding-cn's ProviderConfig default is moonshot.cn; without resolve,
+        # pool persists the wrong base_url → Anthropic /v1/messages 404/401.
+        # (Carried local fix; upstream only special-cases kimi-coding.)
+        if provider in {"kimi-coding", "kimi-coding-cn"}:
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)

@@ -1534,6 +1534,17 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "model_thresholds": {},       # Per-model threshold overrides. Keys are
+                                      # substring-matched against the model name
+                                      # (longest match wins); values replace the
+                                      # global `threshold` for that model, e.g.
+                                      #   model_thresholds:
+                                      #     "glm-5.2": 0.40
+                                      #     "claude-sonnet": 0.35
+                                      # The small-context floor (0.75 for <512K
+                                      # models) still applies on top of overrides
+                                      # (raise-only: an override above the floor
+                                      # wins; one below it is raised to the floor).
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

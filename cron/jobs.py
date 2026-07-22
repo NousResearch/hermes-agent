@@ -1569,8 +1569,20 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         save_jobs(jobs)
                         return
                 
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # ``advance_next_run()`` reserves the next recurring slot
+                # before execution for at-most-once crash safety.  Keep that
+                # reservation when this completion crosses a cron boundary:
+                # recomputing from completion would skip the reserved slot
+                # (for example, a :54 tick that finishes at :01 turns a
+                # one-minute job into a two-minute job).  The marker is only
+                # written by pre-dispatch paths and is cleared immediately so
+                # direct mark_job_run() callers retain their completion-based
+                # scheduling semantics.
+                pre_advanced_next = job.pop("_pre_run_next_run_at", None)
+                if pre_advanced_next and job.get("next_run_at") == pre_advanced_next:
+                    job["next_run_at"] = pre_advanced_next
+                else:
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -1723,10 +1735,15 @@ def advance_next_run(job_id: str) -> bool:
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(job["schedule"], now)
-                if new_next and new_next != job.get("next_run_at"):
+                if new_next:
+                    changed = new_next != job.get("next_run_at")
                     job["next_run_at"] = new_next
+                    # Retain the exact slot selected before execution so
+                    # mark_job_run() does not re-anchor a late completion and
+                    # silently skip an eligible cron occurrence.
+                    job["_pre_run_next_run_at"] = new_next
                     save_jobs(jobs)
-                    return True
+                    return changed
                 return False
         return False
 
@@ -1798,6 +1815,9 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
+                    # External providers claim and advance before dispatch as
+                    # well; preserve the reserved occurrence at completion.
+                    job["_pre_run_next_run_at"] = nxt
             save_jobs(jobs)
             return True
         return False

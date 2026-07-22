@@ -563,6 +563,32 @@ class TestResolveJobRef:
 
 
 class TestMarkJobRun:
+    def test_preserves_preadvanced_cron_slot_when_run_crosses_minute_boundary(self, tmp_cron_dir, monkeypatch):
+        """A late tick must not skip the following cron minute on completion.
+
+        The scheduler advances recurring jobs before execution for crash safety.
+        If a tick starts at :54 and finishes after the next :00 boundary,
+        recomputing from completion would replace the pre-advanced :00 slot
+        with the following minute and turn a one-minute job into a two-minute
+        job.  Completion must retain the slot selected before execution.
+        """
+        pytest.importorskip("croniter")
+        dispatch_at = datetime(2026, 7, 23, 4, 10, 54, tzinfo=timezone.utc)
+        completion_at = datetime(2026, 7, 23, 4, 11, 2, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: dispatch_at)
+        job = create_job(prompt="minute watchdog", schedule="* * * * *")
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = "2026-07-23T04:10:00+00:00"
+        save_jobs(jobs)
+        assert advance_next_run(job["id"]) is True
+        assert get_job(job["id"])["next_run_at"] == "2026-07-23T04:11:00+00:00"
+
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: completion_at)
+        mark_job_run(job["id"], success=True)
+
+        assert get_job(job["id"])["next_run_at"] == "2026-07-23T04:11:00+00:00"
+
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
         mark_job_run(job["id"], success=True)

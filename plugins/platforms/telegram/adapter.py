@@ -250,7 +250,7 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
-from gateway.authz_mixin import _coerce_allow_set
+from gateway.authz_mixin import _telegram_config_authorizes_source
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1014,16 +1014,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
-        # Adapter-level allow_from / group_allow_from: when set, they are the
-        # sole authority.  Group chats use group_allow_from; DMs use allow_from.
-        chat_type = source.chat_type or ""
-        if chat_type in ("group", "forum", "channel"):
-            adapter_allow_from = self.config.extra.get("group_allow_from")
-        else:
-            adapter_allow_from = self.config.extra.get("allow_from")
-        if adapter_allow_from is not None:
-            allowed = _coerce_allow_set(adapter_allow_from)
-            return user_id in allowed or "*" in allowed
+        # Config allowlists use the same union as runner authorization: global
+        # users work everywhere, while group users and allowed group chats add
+        # scoped grants without widening direct-message access.
+        config_authorized = _telegram_config_authorizes_source(source, self.config.extra)
+        if config_authorized is not None:
+            return config_authorized
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must

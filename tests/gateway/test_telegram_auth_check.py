@@ -5,7 +5,7 @@ event building, or response generation occurs.
 """
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -227,6 +227,85 @@ def test_is_user_authorized_from_message_group_allow_from():
     assert adapter._is_user_authorized_from_message(msg) is False
 
 
+def test_config_allowlists_authorize_the_documented_group_union():
+    """Global users, group users, and allowed chats are independent grants."""
+    adapter = _make_adapter(
+        allow_from=["global-user"],
+        group_allow_from=["group-user"],
+        group_allowed_chats=["-100"],
+    )
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="global-user", chat_id=-200, chat_type="group")
+    ) is True
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="group-user", chat_id=-200, chat_type="group")
+    ) is True
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="unlisted-user", chat_id=-100, chat_type="group")
+    ) is True
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="unlisted-user", chat_id=-200, chat_type="group")
+    ) is False
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id="group-user", chat_id=123, chat_type="private")
+    ) is False
+
+
+def test_runner_config_authorization_matches_telegram_intake_union(monkeypatch):
+    """YAML-config and environment allowlists produce the same intake result."""
+    from gateway.run import GatewayRunner
+
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter(
+        allow_from=["global-user"],
+        group_allow_from=["group-user"],
+        group_allowed_chats=["-100"],
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    cases = (
+        (_make_message(from_user_id="global-user", chat_id=-200, chat_type="group"), True),
+        (_make_message(from_user_id="group-user", chat_id=-200, chat_type="group"), True),
+        (_make_message(from_user_id="unlisted-user", chat_id=-100, chat_type="group"), True),
+        (_make_message(from_user_id="unlisted-user", chat_id=-200, chat_type="group"), False),
+        (_make_message(from_user_id="group-user", chat_id=123, chat_type="private"), False),
+    )
+    config_intake = []
+    for message, expected in cases:
+        source = adapter._source_from_message_for_auth(message)
+        config_intake.append(adapter._is_user_authorized_from_message(message))
+        assert runner._is_user_authorized(source) is expected
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "global-user")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "group-user")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100")
+    env_adapter = _make_adapter()
+    env_runner = object.__new__(GatewayRunner)
+    env_runner.adapters = {Platform.TELEGRAM: env_adapter}
+    env_runner.pairing_store = MagicMock()
+    env_runner.pairing_store.is_approved.return_value = False
+    env_adapter._message_handler = env_runner._is_user_authorized
+
+    env_intake = [
+        env_adapter._is_user_authorized_from_message(message)
+        for message, _expected in cases
+    ]
+    assert config_intake == env_intake
+
+
 def test_is_user_authorized_from_message_wildcard():
     """_is_user_authorized_from_message should accept wildcard '*'."""
     adapter = _make_adapter(allow_from=["*"])
@@ -370,7 +449,7 @@ async def test_unmentioned_group_text_from_removed_user_not_observed():
     adapter = _make_adapter(
         group_allow_from=["222"],
         allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
+        group_allowed_chats=["-200"],
         require_mention=True,
         observe_unmentioned_group_messages=True,
     )
@@ -391,7 +470,7 @@ async def test_unmentioned_group_location_from_removed_user_not_observed():
     adapter = _make_adapter(
         group_allow_from=["222"],
         allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
+        group_allowed_chats=["-200"],
         require_mention=True,
         observe_unmentioned_group_messages=True,
     )

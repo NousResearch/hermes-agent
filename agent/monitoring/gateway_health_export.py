@@ -72,6 +72,20 @@ def _safe_resource_attributes(raw: Any) -> Dict[str, str]:
     return attrs
 
 
+def _runtime_resource_attributes(
+    config: Dict[str, Any], *, telemetry_scope: str
+) -> Dict[str, str]:
+    """Build the safe OTLP resource shared by metrics and diagnostic logs."""
+    gh = _gateway_health_config(config)
+    attrs = _safe_resource_attributes(gh.get("resource_attributes"))
+    from agent.monitoring.gateway_health import _safe_instance_id
+
+    attrs["service.name"] = "hermes-gateway"
+    attrs["service.instance.id"] = _safe_instance_id(_install_id(config))
+    attrs["telemetry.scope"] = telemetry_scope
+    return attrs
+
+
 def _diagnostic_log_attributes(event: Dict[str, Any]) -> Dict[str, Any]:
     attrs: Dict[str, Any] = {}
     for key in _DIAGNOSTIC_ATTRIBUTE_KEYS:
@@ -299,9 +313,9 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
     exporter = sdk["OTLPMetricExporter"](endpoint=endpoint, headers=headers or None)
     interval_ms = max(5, int(gh.get("export_interval_seconds", 60))) * 1000
     reader = sdk["PeriodicExportingMetricReader"](exporter, export_interval_millis=interval_ms)
-    resource_attrs = _safe_resource_attributes(gh.get("resource_attributes"))
-    resource_attrs["service.name"] = "hermes-gateway"
-    resource_attrs["telemetry.scope"] = "gateway_health"
+    resource_attrs = _runtime_resource_attributes(
+        config, telemetry_scope="gateway_health"
+    )
     provider = sdk["MeterProvider"](
         metric_readers=[reader],
         resource=sdk["Resource"].create(resource_attrs),
@@ -354,12 +368,11 @@ class GatewayDiagnosticLogStreamer:
 
     def __init__(self, config: Dict[str, Any], sdk: Dict[str, Any]):
         otlp = _otlp_config(config)
-        gh = _gateway_health_config(config)
         headers = _resolve_headers(otlp.get("headers_env"))
         endpoint = _logs_endpoint(str(otlp.get("endpoint")))
-        resource_attrs = _safe_resource_attributes(gh.get("resource_attributes"))
-        resource_attrs["service.name"] = "hermes-gateway"
-        resource_attrs["telemetry.scope"] = "gateway_diagnostics"
+        resource_attrs = _runtime_resource_attributes(
+            config, telemetry_scope="gateway_diagnostics"
+        )
         self._provider = sdk["LoggerProvider"](resource=sdk["Resource"].create(resource_attrs))
         self._processor = sdk["BatchLogRecordProcessor"](
             sdk["OTLPLogExporter"](endpoint=endpoint, headers=headers or None)

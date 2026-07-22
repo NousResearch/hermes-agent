@@ -115,12 +115,20 @@ def build_exporter(config: Dict[str, Any]):
     return sdk["OTLPSpanExporter"](endpoint=endpoint, headers=headers or None)
 
 
+def _resource_attributes(config: Dict[str, Any]) -> Dict[str, str]:
+    from agent.monitoring.gateway_health import _safe_instance_id
+    from agent.monitoring.policy import ensure_install_id
+
+    return {
+        "service.name": "hermes-gateway",
+        "service.instance.id": _safe_instance_id(ensure_install_id(config)),
+        "telemetry.scope": "gateway_monitoring",
+    }
+
+
 def _make_provider(config: Dict[str, Any]):
     sdk = _require_sdk()
-    resource = sdk["Resource"].create({
-        "service.name": "hermes-gateway",
-        "telemetry.scope": "gateway_monitoring",
-    })
+    resource = sdk["Resource"].create(_resource_attributes(config))
     provider = sdk["TracerProvider"](resource=resource)
     processor = sdk["BatchSpanProcessor"](build_exporter(config))
     provider.add_span_processor(processor)

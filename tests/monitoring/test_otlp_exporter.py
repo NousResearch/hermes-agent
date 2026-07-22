@@ -76,6 +76,18 @@ def test_is_enabled_requires_endpoint_and_flag():
     assert not OE.is_enabled({})
 
 
+def test_trace_resource_includes_stable_hashed_instance():
+    attrs = OE._resource_attributes(
+        {"monitoring": {"install_id": "private-install-id"}}
+    )
+
+    assert attrs["service.name"] == "hermes-gateway"
+    assert attrs["service.instance.id"].startswith("sha256:")
+    assert len(attrs["service.instance.id"]) == len("sha256:") + 24
+    assert "private-install-id" not in str(attrs)
+    assert attrs["telemetry.scope"] == "gateway_monitoring"
+
+
 def test_export_otlp_feature_specs_match_pyproject():
     from tools.lazy_deps import LAZY_DEPS
     import re

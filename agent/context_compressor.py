@@ -4193,16 +4193,39 @@ This compaction should PRIORITISE preserving all information related to the focu
                     summary_body and _NO_USER_TASK_SENTINEL in summary_body
                 )
             summary_indices = {idx for idx, _ in summary_hits}
+            # Summary rows are excluded from the summarizer input (their
+            # bodies already ride _previous_summary), BUT a merged handoff
+            # carries genuine prior-tail user content before the delimiter —
+            # unwrap it (via the strip helper) into the window instead of
+            # dropping it (#47274 interplay with the multi-fossil scan).
+            def _window_row(idx: int, msg: Dict[str, Any]):
+                if idx not in summary_indices:
+                    return msg
+                stripped = self._strip_context_summary_handoff_message(
+                    _fresh_compaction_message_copy(msg)
+                )
+                return stripped  # None for standalone handoffs → dropped
             pre_summary_turns = [
-                msg for idx, msg in enumerate(
+                row for idx, msg in enumerate(
                     messages[compress_start:summary_idx],
                     start=compress_start,
                 )
-                if idx not in summary_indices
+                if (row := _window_row(idx, msg)) is not None
             ]
             turns_to_summarize = (
                 pre_summary_turns + messages[summary_idx + 1:compress_end]
             )
+            # The newest hit itself may be a merged handoff too — recover its
+            # prior-tail content the same way.
+            _newest_stripped = self._strip_context_summary_handoff_message(
+                _fresh_compaction_message_copy(messages[summary_idx])
+            )
+            if _newest_stripped is not None:
+                turns_to_summarize = (
+                    pre_summary_turns
+                    + [_newest_stripped]
+                    + messages[summary_idx + 1:compress_end]
+                )
             if summary_idx >= compress_end:
                 tail_start = summary_idx + 1
         elif self._previous_summary:

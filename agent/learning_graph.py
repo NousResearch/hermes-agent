@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 
 @dataclass
@@ -127,7 +128,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
     nodes: dict[str, SkillNode] = {}
 
     for source, skill_md in _iter_skill_files(skill_roots):
-        if any(p in {".archive", ".hub", "node_modules", ".git"} for p in skill_md.parts):
+        if is_excluded_skill_path(skill_md):
             continue
         try:
             fm = _frontmatter(skill_md.read_text(encoding="utf-8")[:4000])

@@ -4435,11 +4435,12 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running|ready -> done`` and record ``result``.
+    """Transition a manually-completed task to ``done`` and record ``result``.
 
-    Accepts a task that is merely ``ready`` too, so a manual CLI
-    completion (``hermes kanban complete <id>``) works without requiring
-    a claim/start/complete sequence.
+    Manual dashboard/CLI completion accepts every non-terminal status. The
+    ``expected_run_id`` worker branch below remains restricted to claimed
+    worker states and requires the matching run id, so a stale worker cannot
+    complete a reclaimed task.
 
     ``summary`` and ``metadata`` are stored on the closing run (if any)
     and surfaced to downstream children via :func:`build_worker_context`.
@@ -4509,7 +4510,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status NOT IN ('done', 'archived')
                 """,
                 (result, now, task_id),
             )

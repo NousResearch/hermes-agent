@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import concurrent.futures
 import contextlib
 import itertools
 import json
 import logging
 import os
+import threading
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1603,6 +1605,7 @@ class TestRunJobSessionPersistence:
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
 
         class FakeAgent:
             def __init__(self, *args, **kwargs):
@@ -1610,6 +1613,7 @@ class TestRunJobSessionPersistence:
 
             def run_conversation(self, *args, **kwargs):
                 from gateway.session_context import get_session_env
+                seen["cron_session_during_run"] = os.environ.get("HERMES_CRON_SESSION")
                 seen["platform"] = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") or None
                 seen["chat_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or None
                 seen["thread_id"] = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID") or None
@@ -1634,6 +1638,7 @@ class TestRunJobSessionPersistence:
         assert final_response == "ok"
         assert "ok" in output
         assert seen == {
+            "cron_session_during_run": "1",
             "platform": "telegram",
             "chat_id": "-2002",
             "thread_id": None,
@@ -1641,7 +1646,83 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
+        assert os.getenv("HERMES_CRON_SESSION") is None
         fake_db.close.assert_called_once()
+
+    def test_run_job_keeps_cron_marker_until_last_overlapping_job_exits(
+        self, tmp_path, monkeypatch
+    ):
+        """Parallel jobs must not clear cron approval mode out from under peers."""
+        import cron.scheduler as scheduler
+
+        jobs = [
+            {"id": "overlap-a", "name": "overlap-a", "prompt": "hello"},
+            {"id": "overlap-b", "name": "overlap-b", "prompt": "hello"},
+        ]
+        fake_db = MagicMock()
+        both_running = threading.Barrier(2)
+        agents_started = threading.Event()
+        release_first = threading.Event()
+        release_second = threading.Event()
+        run_index = itertools.count()
+        started_index = itertools.count()
+
+        monkeypatch.setenv("HERMES_CRON_SESSION", "interactive-marker")
+        monkeypatch.setattr(scheduler, "_active_cron_session_count", 0)
+        monkeypatch.setattr(scheduler, "_cron_session_prior_value", None)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                index = next(run_index)
+                both_running.wait(timeout=5)
+                if next(started_index) == 1:
+                    agents_started.set()
+                if index == 0:
+                    assert release_first.wait(timeout=5)
+                else:
+                    assert release_second.wait(timeout=5)
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent), \
+             concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(run_job, job) for job in jobs]
+
+            # The agents-only barrier opens after both jobs have entered their
+            # execution, so the process-global marker must now be leased twice.
+            assert agents_started.wait(timeout=5)
+            assert os.environ["HERMES_CRON_SESSION"] == "1"
+
+            release_first.set()
+            done, pending = concurrent.futures.wait(
+                futures, timeout=5, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            assert len(done) == 1
+            assert len(pending) == 1
+            assert os.environ["HERMES_CRON_SESSION"] == "1"
+
+            release_second.set()
+            for future in futures:
+                success, _output, final_response, error = future.result(timeout=5)
+                assert success is True
+                assert final_response == "ok"
+                assert error is None
+
+        assert os.getenv("HERMES_CRON_SESSION") == "interactive-marker"
+        assert scheduler._active_cron_session_count == 0
 
     @pytest.mark.parametrize("timeout_value", ["600", "0"])
     def test_run_job_heartbeats_oneshot_claim_in_both_wait_modes(

@@ -1574,6 +1574,13 @@ def compress_context(
                 )
 
         messages_before_compression = copy.deepcopy(messages)
+        # Reset the per-pass status flag so a stale "noop" from a previous
+        # pass cannot suppress a legitimate split on this pass.  The engine
+        # contract asks plugins to report per-pass; the host-side reset makes
+        # the gate self-defending when a plugin forgets to clear it.
+        for _attr in ("last_compression_status", "_last_compression_status"):
+            if hasattr(agent.context_compressor, _attr):
+                setattr(agent.context_compressor, _attr, "")
         _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
         compressed = compress_fn(messages, **compress_kwargs)
     except BaseException as _compress_exc:

@@ -343,13 +343,20 @@ class TestCompressionBoundaryHook:
             # would pass without ever exercising the status-based no-op branch
             # this PR adds.  A distinct object forces the ``last_compression_status
             # == "noop"`` path to be the thing that prevents session rotation.
-            compressor.compress.return_value = list(messages)
+            #
+            # The host resets last_compression_status before calling compress(),
+            # so the engine must set it DURING compress() — use a side-effect
+            # to simulate a real plugin engine reporting per-pass status.
+            def _compress_noop(msgs, **kw):
+                compressor.last_compression_status = "noop"
+                return list(msgs)
+            compressor.compress.side_effect = _compress_noop
             compressor.compression_count = 0
             compressor.last_prompt_tokens = 0
             compressor.last_completion_tokens = 0
             compressor._last_summary_error = None
             compressor._last_compress_aborted = False
-            compressor.last_compression_status = "noop"
+            compressor.last_compression_status = ""
             agent.context_compressor = compressor
 
             original_sid = agent.session_id
@@ -367,6 +374,18 @@ class TestCompressionBoundaryHook:
                 if c.kwargs.get("boundary_reason") == "compression"
             ]
             assert not comp_calls
+            # Verify no child session was created in the DB (matches PR
+            # description: "no DB child session is created").
+            import sqlite3
+            conn = sqlite3.connect(str(Path(tmpdir) / "test.db"))
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?",
+                    (original_sid,),
+                ).fetchone()
+                assert row[0] == 0, f"Expected no child session, found {row[0]}"
+            finally:
+                conn.close()
 
     def test_plugin_noop_private_field_fallback_does_not_rotate(self):
         """The legacy ``_last_compression_status`` private field is honored.
@@ -384,7 +403,12 @@ class TestCompressionBoundaryHook:
 
             messages = [{"role": "user", "content": "tail-only pressure"}]
             compressor = MagicMock()
-            compressor.compress.return_value = list(messages)
+            # Host resets _last_compression_status before compress(); the
+            # engine must set it DURING compress() via side-effect.
+            def _compress_noop_private(msgs, **kw):
+                compressor._last_compression_status = "noop"
+                return list(msgs)
+            compressor.compress.side_effect = _compress_noop_private
             compressor.compression_count = 0
             compressor.last_prompt_tokens = 0
             compressor.last_completion_tokens = 0
@@ -392,7 +416,7 @@ class TestCompressionBoundaryHook:
             compressor._last_compress_aborted = False
             # Public attribute absent; only the legacy private field set.
             del compressor.last_compression_status
-            compressor._last_compression_status = "noop"
+            compressor._last_compression_status = ""
             agent.context_compressor = compressor
 
             original_sid = agent.session_id

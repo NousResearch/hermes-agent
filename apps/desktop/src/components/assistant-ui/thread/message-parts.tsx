@@ -4,6 +4,7 @@ import {
   useAuiState,
   useMessagePartReasoning
 } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
@@ -21,6 +22,7 @@ import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
   const { args, result } = props
@@ -103,10 +105,9 @@ const ThinkingDisclosure: FC<{
   timerKey: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
   const { t } = useI18n()
-  // `null` = no explicit user toggle yet, defer to the streaming default.
-  // The default is "auto-open while streaming, auto-collapse when done" so
-  // reasoning surfaces a live preview without manual interaction. The first
-  // explicit toggle wins from then on.
+  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  // `null` = no explicit user toggle yet. Live reasoning remains visible by
+  // default, unless the user opts into the low-jitter collapsed presentation.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const thoughtFor = useMeasuredDuration(pending, timerKey)
@@ -114,8 +115,8 @@ const ThinkingDisclosure: FC<{
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
 
-  const open = userOpen ?? pending
-  const isPreview = pending && userOpen === null
+  const open = userOpen ?? (pending && !reasoningCollapsedByDefault)
+  const isPreview = pending && userOpen === null && !reasoningCollapsedByDefault
 
   // Three ways a finished block can report itself. With a measured duration it
   // says so, unless the timer's whole seconds round it to "0s" — accurate and

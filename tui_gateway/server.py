@@ -5101,6 +5101,16 @@ def _make_agent(
     except Exception:
         pass
 
+    # Register declarative shell hooks (parity with cli.py and gateway/run.py).
+    # Without this, hooks like post_llm_call never fire in the TUI path.
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        pass
+
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))

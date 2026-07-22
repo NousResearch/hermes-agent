@@ -1061,9 +1061,9 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
     )
     assert second == {"K1": "cached"}
     assert calls["n"] == 2
-    assert warnings == [
-        "Using stale encrypted Bitwarden cache after network fetching BWS secrets"
-    ]
+    assert len(warnings) == 1
+    assert "stale ENCRYPTED disk cache" in warnings[0]
+    assert "bws live fetch failed" in warnings[0]
 
 
 def test_encrypted_cache_does_not_fallback_on_auth_failure(monkeypatch, tmp_path):

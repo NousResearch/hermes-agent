@@ -449,6 +449,12 @@ compression:
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
 
+  # After this many compactions, Hermes warns that accuracy may degrade and
+  # suggests /new. Set to 0 to disable the repeated-compression warning entirely.
+  # Default 2 (warn starting at the 2nd compaction). Takes effect on the next
+  # agent construction — restart the gateway or start a new session after editing.
+  warn_after_compressions: 2
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

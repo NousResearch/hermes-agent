@@ -169,6 +169,20 @@ class TestAgentConfigSignature:
         )
         assert sig_on != sig_off
 
+    def test_warn_after_compressions_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.warn_after_compressions": 2},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.warn_after_compressions": 5},
+        )
+        assert sig1 != sig2
+
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
         from gateway.run import GatewayRunner
@@ -232,6 +246,7 @@ class TestExtractCacheBustingConfig:
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
+                    "warn_after_compressions": 5,
                     "some_other_key": "ignored",
                 }
             }
@@ -242,6 +257,7 @@ class TestExtractCacheBustingConfig:
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
+        assert out["compression.warn_after_compressions"] == 5
 
     def test_reads_checkpoint_subkeys(self):
         from gateway.run import GatewayRunner

@@ -1528,6 +1528,8 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "warn_after_compressions": 2, # Show "Session compressed N times…" after this
+                                      # many compactions (0 = disable the warning).
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

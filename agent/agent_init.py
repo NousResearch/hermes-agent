@@ -1677,6 +1677,13 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=False
     )
+    try:
+        compression_warn_after_compressions = max(
+            0, int(_compression_cfg.get("warn_after_compressions", 2))
+        )
+    except (TypeError, ValueError):
+        compression_warn_after_compressions = 2
+    
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"
     ).lower()
@@ -1941,6 +1948,7 @@ def init_agent(
             pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    agent.compression_warn_after_compressions = compression_warn_after_compressions
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
 
     # Reject models whose context window is below the minimum required

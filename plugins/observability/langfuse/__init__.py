@@ -28,6 +28,7 @@ import os
 import re
 import threading
 import time
+import atexit
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -701,6 +702,28 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
         _debug(f"end observation failed: {exc}")
 
 
+def _close_root_context(state: TraceState) -> None:
+    """Exit a manually-entered Langfuse root context exactly once.
+
+    The plugin keeps the root observation open across multiple request/tool
+    hooks by calling ``root_ctx.__enter__()`` directly in ``_start_root_trace``.
+    Ending the Langfuse span is not the same as exiting the context manager:
+    ``__exit__`` also detaches OpenTelemetry's active span context.  If that
+    generator context is left for interpreter shutdown, OpenTelemetry module
+    globals may already be torn down and Python can print a noisy ignored
+    exception from ``opentelemetry.trace.use_span``.
+    """
+
+    root_ctx = getattr(state, "root_ctx", None)
+    if root_ctx is None:
+        return
+    state.root_ctx = None
+    try:
+        root_ctx.__exit__(None, None, None)
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug(f"close root context failed: {exc}")
+
+
 def _merge_trace_output(output: Any, state: TraceState) -> Any:
     if not state.turn_tool_calls:
         return output
@@ -760,8 +783,41 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
     finally:
+        _close_root_context(state)
         try:
             client.flush()
+        except Exception:
+            pass
+
+
+def _shutdown_active_traces() -> None:
+    """Best-effort cleanup for traces still open when Hermes exits."""
+
+    client = _LANGFUSE_CLIENT if _LANGFUSE_CLIENT is not _INIT_FAILED else None
+    with _STATE_LOCK:
+        states = list(_TRACE_STATE.values())
+        _TRACE_STATE.clear()
+
+    for state in states:
+        try:
+            for observation in state.generations.values():
+                _end_observation(observation)
+            for observation in state.tools.values():
+                _end_observation(observation)
+            for queue in state.pending_tools_by_name.values():
+                for observation in queue:
+                    _end_observation(observation)
+            if getattr(state, "root_span", None) is not None:
+                state.root_span.end()
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug(f"shutdown trace cleanup failed: {exc}")
+        finally:
+            _close_root_context(state)
+
+    flush = getattr(client, "flush", None) if client is not None else None
+    if callable(flush):
+        try:
+            flush()
         except Exception:
             pass
 
@@ -1135,3 +1191,6 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+
+
+atexit.register(_shutdown_active_traces)

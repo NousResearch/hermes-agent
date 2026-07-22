@@ -54,7 +54,12 @@ def _validate_bundle_path(label: str, value: str, *, require_substantial: bool =
         ctx = ssl.create_default_context(cafile=str(path))
     except Exception as exc:
         raise _ssl_err(f"{label} CA bundle at {value} cannot be loaded: {exc}") from exc
-    if not ctx.get_ca_certs():
+    try:
+        ca_certs = ctx.get_ca_certs()
+    except NotImplementedError:
+        logger.debug("%s CA bundle loaded but get_ca_certs() is unavailable", label)
+        return
+    if not ca_certs:
         raise _ssl_err(f"{label} CA bundle at {value} did not load any certificates")
 
 

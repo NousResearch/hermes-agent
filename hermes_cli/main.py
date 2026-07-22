@@ -7563,12 +7563,12 @@ def _run_install_with_heartbeat(
     know ``hermes update`` is still progressing even if pip/uv itself is silent.
     """
     done = threading.Event()
-    start = _time.time()
+    start = _time.monotonic()
 
     def _heartbeat() -> None:
         # Wait first, then print, so short installs don't emit noise.
         while not done.wait(heartbeat_interval_seconds):
-            elapsed = int(_time.time() - start)
+            elapsed = int(_time.monotonic() - start)
             print(
                 f"  … still installing dependencies ({elapsed}s elapsed)"
                 " — compiling Rust/C extensions can take several minutes",

@@ -2659,7 +2659,7 @@ class MatrixAdapter(BasePlatformAdapter):
             #    room can deliver events spanning hours/days — those skews
             #    will be all over the place and reset the counter.
             if not self._clock_skew_warned and (
-                time.time() - self._startup_ts > 30
+                time.monotonic() - self._startup_ts > 30
             ):
                 skew = self._startup_ts - event_ts
                 # Sanity bound: malformed events with negative or absurd

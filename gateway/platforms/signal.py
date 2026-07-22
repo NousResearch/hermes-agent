@@ -501,7 +501,7 @@ class SignalAdapter(BasePlatformAdapter):
             if not self._running:
                 break
 
-            elapsed = time.time() - self._last_sse_activity
+            elapsed = time.monotonic() - self._last_sse_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
                 logger.warning("Signal: SSE idle for %.0fs, checking daemon health", elapsed)
                 try:

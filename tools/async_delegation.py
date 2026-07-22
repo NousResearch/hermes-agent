@@ -536,7 +536,7 @@ def dispatch_async_delegation(
                 "summary": None,
                 "error": f"{type(exc).__name__}: {exc}",
                 "api_calls": 0,
-                "duration_seconds": round(time.time() - dispatched_at, 2),
+                "duration_seconds": round(time.monotonic() - dispatched_at, 2),
             }
             status = "error"
         finally:
@@ -739,7 +739,7 @@ def dispatch_async_delegation_batch(
             combined = {
                 "results": [],
                 "error": f"{type(exc).__name__}: {exc}",
-                "total_duration_seconds": round(time.time() - dispatched_at, 2),
+                "total_duration_seconds": round(time.monotonic() - dispatched_at, 2),
             }
             status = "error"
         finally:

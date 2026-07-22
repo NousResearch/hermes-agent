@@ -424,6 +424,15 @@ compression:
   #   "claude-sonnet": 0.35
   #   "gpt-5": 0.30
 
+  # Optional absolute token cap for the compression trigger (default: null = disabled).
+  # When set, compression fires at the LOWER of the ratio-based threshold and this
+  # absolute token count — first-fires-wins. It never fires later than this count
+  # regardless of which model is active (useful when switching between models with
+  # very different context windows). Clamped to the model's context length at
+  # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
+  # Survives model switches and fallback activations.
+  # threshold_tokens: 200000
+
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true

@@ -3306,6 +3306,67 @@ class TestThresholdTokensCap:
             )
             assert comp_str.threshold_tokens_cap is None
 
+    def test_should_compress_fires_at_cap_below_ratio_threshold(self):
+        """Behavioral: with a cap below the ratio-based threshold,
+        should_compress() fires once usage crosses the cap — even though
+        the percentage threshold has not been reached (first-fires-wins)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=200_000,
+            )
+        # Ratio-based would be 500K; cap pulls the trigger down to 200K.
+        assert comp.should_compress(150_000) is False   # below cap
+        assert comp.should_compress(200_000) is True    # at cap (below 500K pct)
+        assert comp.should_compress(250_000) is True    # above cap
+
+    def test_default_config_disabled_and_no_behavior_change(self):
+        """DEFAULT_CONFIG ships threshold_tokens=None (disabled) and both
+        None and 0 leave the ratio-based trigger byte-identical."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["compression"]["threshold_tokens"] is None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            baseline = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+            )
+            comp_none = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=None,
+            )
+            comp_zero = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=0,
+            )
+        assert comp_none.threshold_tokens == baseline.threshold_tokens
+        assert comp_zero.threshold_tokens == baseline.threshold_tokens
+        # And after a model switch, still identical to baseline.
+        baseline.update_model("model-b", context_length=200_000)
+        comp_none.update_model("model-b", context_length=200_000)
+        comp_zero.update_model("model-b", context_length=200_000)
+        assert comp_none.threshold_tokens == baseline.threshold_tokens
+        assert comp_zero.threshold_tokens == baseline.threshold_tokens
+
+    def test_pct_floor_unaffected_by_cap(self):
+        """The small-context pct floor (raise-only to 0.75 under 512K) is
+        computed independently of the cap: the cap clamps the resulting
+        token threshold but never changes threshold_percent, and a
+        cap-free small-context model keeps the floored pct."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=100_000,
+            )
+        # Floor raised pct to 0.75 (200K < 512K) regardless of the cap.
+        assert comp.threshold_percent == 0.75
+        # Cap clamps the token trigger below the floored pct value (150K).
+        assert comp.threshold_tokens == 100_000
+        # Switching to a large-context model drops the pct back to the
+        # configured 0.50 — cap presence doesn't perturb the re-derivation.
+        comp.update_model("model-b", context_length=1_000_000)
+        assert comp.threshold_percent == 0.50
+        assert comp.threshold_tokens == 100_000  # cap still wins over 500K
+
 
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.

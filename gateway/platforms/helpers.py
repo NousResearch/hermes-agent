@@ -182,6 +182,7 @@ class TextBatchAggregator:
 # ─── Markdown Stripping ──────────────────────────────────────────────────────
 
 # Pre-compiled regexes for performance
+_RE_IMAGE = re.compile(r"!\[([^\]]*)\]\([^\)]*\)")  # must precede _RE_LINK
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
 _RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
@@ -190,6 +191,8 @@ _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _RE_LINK = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
+_RE_BLOCKQUOTE = re.compile(r"^>\s?", re.MULTILINE)
+_RE_STRIKETHROUGH = re.compile(r"~~(.+?)~~", re.DOTALL)
 _RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
 
 
@@ -199,6 +202,7 @@ def strip_markdown(text: str) -> str:
     Replaces the identical ``_strip_markdown()`` functions previously
     duplicated in sms.py, bluebubbles.py, and feishu.py.
     """
+    text = _RE_IMAGE.sub(r"\1", text)       # ![alt](url) → alt  (before links)
     text = _RE_BOLD.sub(r"\1", text)
     text = _RE_ITALIC_STAR.sub(r"\1", text)
     text = _RE_BOLD_UNDER.sub(r"\1", text)
@@ -207,6 +211,8 @@ def strip_markdown(text: str) -> str:
     text = _RE_INLINE_CODE.sub(r"\1", text)
     text = _RE_HEADING.sub("", text)
     text = _RE_LINK.sub(r"\1", text)
+    text = _RE_BLOCKQUOTE.sub("", text)
+    text = _RE_STRIKETHROUGH.sub(r"\1", text)
     text = _RE_MULTI_NEWLINE.sub("\n\n", text)
     return text.strip()
 

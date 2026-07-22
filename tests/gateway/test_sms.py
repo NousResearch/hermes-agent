@@ -107,6 +107,20 @@ class TestSmsFormatAndTruncate:
         result = adapter.format_message("a\n\n\n\nb")
         assert result == "a\n\nb"
 
+    def test_standalone_strip_markdown_does_not_raise(self):
+        """``_strip_markdown_for_sms`` runs in the registered standalone sender
+        (``_standalone_send``) on every agent-initiated / cron SMS. It uses the
+        ``re`` module, so a missing import makes every such send raise
+        NameError before the message is sent. Exercise it directly — the
+        ``format_message`` tests above only cover the separate adapter path."""
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        out = _strip_markdown_for_sms(
+            "Hello **bold** and *italic* and `code` and [link](https://x.com)"
+        )
+        assert out == "Hello bold and italic and code and link"
+        assert _strip_markdown_for_sms("## Title\nbody") == "Title\nbody"
+
 
 # ── Echo prevention ────────────────────────────────────────────────
 

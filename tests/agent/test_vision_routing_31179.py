@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import tempfile
 
 import pytest
@@ -61,12 +60,15 @@ def _write_config(home: str, text: str) -> None:
 
 
 def _fresh_modules():
-    """Drop cached hermes modules so each test reloads against current env."""
-    for mod in list(sys.modules.keys()):
-        if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
-                           "tools.vision_tools", "tools.browser_tool",
-                           "hermes_cli.config")):
-            del sys.modules[mod]
+    """Reset process-local routing state without duplicating plugin classes."""
+    from agent import auxiliary_client
+    from hermes_cli import config
+
+    auxiliary_client.clear_runtime_main()
+    auxiliary_client._reset_aux_unhealthy_cache()
+    auxiliary_client.shutdown_cached_clients()
+    config._LOAD_CONFIG_CACHE.clear()
+    config._RAW_CONFIG_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,10 @@ model:
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda *_args: False,
+        )
 
         from agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
@@ -174,6 +180,10 @@ model:
 """)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         _fresh_modules()
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda *_args: True,
+        )
 
         from agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
@@ -244,6 +254,10 @@ model:
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda *_args: False,
+        )
 
         from tools.vision_tools import check_vision_requirements
         assert check_vision_requirements() is False
@@ -259,6 +273,10 @@ model:
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda *_args: False,
+        )
 
         import tools.browser_tool
         # Force the browser side to True so we exercise the vision-gating part.

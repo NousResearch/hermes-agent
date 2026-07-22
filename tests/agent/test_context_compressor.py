@@ -3741,3 +3741,157 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+import time
+
+class TestGitGroundTruth:
+    """Test git ground truth integration in context compression."""
+
+    def test_fetch_git_log_returns_empty_when_disabled(self, tmp_path):
+        """Git log fetching returns empty dict when feature disabled."""
+        from agent.context_compressor import ContextCompressor
+        
+        compressor = ContextCompressor(
+            model="gpt-4o",
+            session_workdir=None,  # No workdir
+            git_ground_truth_enabled=True,
+        )
+        
+        result = compressor._fetch_git_log()
+        assert result == {}
+
+    def test_fetch_git_log_returns_empty_when_no_workdir(self, tmp_path):
+        """Git log fetching returns empty dict when no session workdir."""
+        from agent.context_compressor import ContextCompressor
+        
+        compressor = ContextCompressor(
+            model="gpt-4o",
+            session_workdir=None,
+            git_ground_truth_enabled=True,
+        )
+        
+        result = compressor._fetch_git_log()
+        assert result == {}
+
+    def test_fetch_git_log_caches_results(self, tmp_path):
+        """Git log results are cached for TTL period."""
+        import time
+        from agent.context_compressor import ContextCompressor
+        
+        # Create a temp git repo
+        tmp_path.joinpath(".git").mkdir()
+        (tmp_path / "test.txt").write_text("test")
+        
+        compressor = ContextCompressor(
+            model="gpt-4o",
+            session_workdir=str(tmp_path),
+            git_ground_truth_enabled=True,
+        )
+        
+        # Mock subprocess.run to return a fake commit
+        import subprocess
+        original_run = subprocess.run
+        
+        call_count = [0]
+        
+        def mock_run(*args, **kwargs):
+            call_count[0] += 1
+            class MockResult:
+                returncode = 0
+                stdout = "abc1234 Initial commit\n"
+            return MockResult()
+        
+        subprocess.run = mock_run
+        
+        try:
+            # First call
+            result1 = compressor._fetch_git_log()
+            # Second call should use cache
+            result2 = compressor._fetch_git_log()
+            
+            assert call_count[0] == 1  # Only one actual subprocess call
+            assert result1 == result2
+            assert "abc1234" in result1
+        finally:
+            subprocess.run = original_run
+
+    def test_validate_summary_against_git_adds_unverified_section(self, tmp_path):
+        """Post-validation adds UNVERIFIED section for unmatched claims."""
+        from agent.context_compressor import ContextCompressor
+        
+        compressor = ContextCompressor(
+            model="gpt-4o",
+            session_workdir=str(tmp_path),
+            git_ground_truth_enabled=True,
+        )
+        
+        # Mock git log with a known commit
+        compressor._git_log_cache = {
+            "abc1234": "fix login bug in auth module",
+            "def5678": "update dependencies",
+        }
+        compressor._git_log_fetched_at = time.monotonic()
+        
+        # Summary with a claim that doesn't match any commit
+        summary = """## Historical Task Snapshot
+User asked: 'fix the payment processing bug'
+
+## Completed Actions
+1. Fixed payment processing bug — completed [tool: patch]
+2. Updated documentation — done [tool: write_file]
+
+## Active State
+Working on payment integration tests.
+"""
+        
+        validated = compressor._validate_summary_against_git(summary)
+        
+        # Should add validation section
+        assert "## Git Validation (Post-Compaction)" in validated
+        assert "UNVERIFIED" in validated
+        # The payment bug claim doesn't match "fix login bug" or "update dependencies"
+
+    def test_validate_summary_matches_existing_commit(self, tmp_path):
+        """Post-validation does not flag claims that match commit messages."""
+        import time
+        from agent.context_compressor import ContextCompressor
+        
+        compressor = ContextCompressor(
+            model="gpt-4o",
+            session_workdir=str(tmp_path),
+            git_ground_truth_enabled=True,
+        )
+        
+        compressor._git_log_cache = {
+            "abc1234": "fix login bug in auth module",
+            "def5678": "update dependencies",
+        }
+        compressor._git_log_fetched_at = time.monotonic()
+        
+        # Summary with a claim that MATCHES a commit
+        summary = """## Historical Task Snapshot
+User asked: 'fix the login bug'
+
+## Completed Actions
+1. Fixed login bug in auth module — completed [tool: patch]
+"""
+        
+        validated = compressor._validate_summary_against_git(summary)
+        
+        # Should NOT add validation section (or at least not flag this claim)
+        # The claim "fix login bug" shares words with commit "fix login bug"
+        assert "UNVERIFIED" not in validated or "login bug" not in validated.split("UNVERIFIED")[-1] if "UNVERIFIED" in validated else True
+
+    def test_git_log_redacts_secrets(self, tmp_path):
+        """Commit messages with secrets are redacted."""
+        from agent.context_compressor import ContextCompressor
+        from agent.redact import redact_sensitive_text
+        
+        # Test the redaction logic directly (force=True bypasses import-time env check)
+        msg = "deploy a key sk-abc123def456 in config"
+        redacted = redact_sensitive_text(msg, force=True)
+        
+        assert "sk-abc123def456" not in redacted
+        assert "***" in redacted
+

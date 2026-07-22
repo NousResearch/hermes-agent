@@ -71,6 +71,14 @@ def compose_user_api_content(
             injections.append(fenced)
     if plugin_user_context:
         injections.append(plugin_user_context)
+    # Auto-load skills based on trigger keywords in user input
+    try:
+        from agent.skill_trigger_index import auto_load_skills_for_turn
+        skill_context = auto_load_skills_for_turn(content)
+        if skill_context:
+            injections.append(skill_context)
+    except Exception:
+        pass  # Never break the conversation on skill auto-load failure
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)

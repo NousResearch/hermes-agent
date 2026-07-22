@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { copyPath, revealPath } from '@/store/projects'
@@ -39,14 +40,16 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
 // "+" affordance shared by repo and worktree headers — reveals on header hover.
 export function WorkspaceAddButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button
-      aria-label={label}
-      className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-      onClick={onClick}
-      type="button"
-    >
-      <Codicon name="add" size="0.75rem" />
-    </button>
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 
@@ -64,14 +67,16 @@ export function WorkspaceShowMoreButton({
   const text = t.sidebar.showMoreIn(count, label)
 
   return (
-    <button
-      aria-label={text}
-      className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
-      onClick={onClick}
-      type="button"
-    >
-      <Codicon name="ellipsis" size="0.75rem" />
-    </button>
+    <Tip label={text}>
+      <button
+        aria-label={text}
+        className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="ellipsis" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 
@@ -84,16 +89,18 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          aria-label={p.menu}
-          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
-          onClick={event => event.stopPropagation()}
-          type="button"
-        >
-          <Codicon name="kebab-vertical" size="0.75rem" />
-        </button>
-      </DropdownMenuTrigger>
+      <Tip label={p.menu}>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label={p.menu}
+            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
+            onClick={event => event.stopPropagation()}
+            type="button"
+          >
+            <Codicon name="kebab-vertical" size="0.75rem" />
+          </button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
         <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
           <Codicon name="folder-opened" size="0.875rem" />
@@ -125,14 +132,16 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
 
   return (
     <>
-      <button
-        aria-label={p.startWork}
-        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
-        onClick={() => setOpen(true)}
-        type="button"
-      >
-        <Codicon name="git-branch" size="0.75rem" />
-      </button>
+      <Tip label={p.startWork}>
+        <button
+          aria-label={p.startWork}
+          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
+          <Codicon name="git-branch" size="0.75rem" />
+        </button>
+      </Tip>
       <WorktreeDialog onOpenChange={setOpen} onStarted={onStarted} open={open} repoPath={repoPath} />
     </>
   )

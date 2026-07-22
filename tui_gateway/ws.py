@@ -329,10 +329,8 @@ async def handle_ws(ws: Any) -> None:
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation.
             server._ensure_skin_watcher()
-            # Track this peer so session-less global broadcasts (skin.changed
-            # from the background watcher) actually reach it — they carry no
-            # session id and the watcher thread has no contextvar-bound
-            # transport, so without this they'd never land on a WS client.
+            # Track this peer for session-less global broadcasts (skin.changed
+            # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"

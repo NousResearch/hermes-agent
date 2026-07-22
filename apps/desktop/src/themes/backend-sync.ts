@@ -29,19 +29,12 @@ export const $backendThemes = atom<Record<string, DesktopTheme>>({})
 /** One-shot skin name the ThemeProvider should switch to (it clears this). */
 export const $pendingSkinApply = atom<string | null>(null)
 
-// The last skin name we synced from the backend, plus whether we ever actually
-// APPLIED it (vs merely recorded it at connect time). Guards two things:
-// re-applying the same skin on every repeat event, and snapping back after a
-// manual desktop-side switch — once applied, only a name CHANGE applies again.
-//
-// `applied` matters for the recovery path: the connect seed records the
-// baseline without painting (so a fresh connect never stomps the user's
-// persisted desktop theme). If the activation event was missed (backend
-// restart, or the skin was activated while disconnected), the desktop believes
-// it is synced while visibly not themed. A later explicit `skin.changed` for
-// that SAME name — Hermes re-running `hermes config set display.skin X`, or
-// `hermes skin set` recoloring the active skin — is an intentional apply and
-// must repaint, not no-op against the seed.
+// Last skin name synced from the backend + whether it was ever APPLIED (vs
+// merely seeded at connect). Once applied, only a name change applies again —
+// no re-apply on repeat events, no snap-back after a manual desktop switch.
+// A `skin.changed` matching a seed-only baseline still applies: the seed
+// records without painting, so if the activation event was missed (backend
+// restart / disconnected), an explicit re-affirm must repaint, not no-op.
 let lastSynced: { applied: boolean; name: string } | null = null
 
 /** Test-only: reset the module's apply guard + registry between cases. */
@@ -85,9 +78,8 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   }
 
   if (!apply) {
-    // Connect-time seed: record the baseline WITHOUT painting. Keep an earlier
-    // real apply's flag if a reconnect re-seeds the same name, so a post-
-    // reconnect repeat event doesn't re-apply over a manual desktop switch.
+    // Connect-time seed: record without painting. A reconnect re-seed keeps an
+    // earlier real apply's flag so repeat events can't override a manual switch.
     if (lastSynced?.name !== name || !lastSynced.applied) {
       lastSynced = { applied: false, name }
     }

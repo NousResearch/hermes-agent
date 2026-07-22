@@ -1687,6 +1687,12 @@ def init_agent(
             codex_app_server_auto_compaction,
         )
         codex_app_server_auto_compaction = "native"
+    compression_defer_while_aux_inflight = str(
+        _compression_cfg.get("defer_while_aux_inflight", False)
+    ).lower() in {"true", "1", "yes"}
+    compression_defer_hard_ceiling = float(
+        _compression_cfg.get("defer_hard_ceiling", 0.95)
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1932,6 +1938,8 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
+            defer_while_aux_inflight=compression_defer_while_aux_inflight,
+            defer_hard_ceiling=compression_defer_hard_ceiling,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

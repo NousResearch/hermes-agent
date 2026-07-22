@@ -40,8 +40,10 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import collections
 import contextlib
 import contextvars
+import functools
 import hashlib
 import inspect
 import json
@@ -6906,6 +6908,216 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
     return value
 
 
+# ---------------------------------------------------------------------------
+# In-flight auxiliary call tracking
+# ---------------------------------------------------------------------------
+#
+# Process-wide registry of auxiliary LLM calls currently in flight, keyed by
+# task name.  Consumers (e.g. ContextCompressor with
+# ``compression.defer_while_aux_inflight``) use it to avoid scheduling heavy
+# auxiliary work — such as a large compression prefill — while other auxiliary
+# calls are running, because on single-accelerator local deployments
+# concurrent requests time-slice the GPU and can push each other past their
+# timeouts.  Counts span all sessions in the process (gateway included);
+# tracking covers the entire call, retries and fallbacks included.  Calls made
+# without a task name (``task=None``: plugin LLM helpers, trajectory
+# compressor) are tracked under an internal sentinel — the sentinel is a
+# registry key only and is never forwarded to the call, so task-based
+# provider/model routing is unaffected.  When ``call_llm`` returns a raw
+# stream (``stream=True``), the registry entry stays alive until that stream
+# is exhausted, closed, or errors — the GPU is busy for as long as the stream
+# is being consumed, not just until the iterator object is handed back.
+
+_INFLIGHT_AUX_LOCK = threading.Lock()
+_INFLIGHT_AUX_TASKS: Dict[str, int] = {}
+
+# Registry key for calls with no task name.  Angle brackets keep it out of any
+# real task namespace; it is never passed to the wrapped function.
+_INFLIGHT_UNTASKED = "<untasked>"
+
+# Decrements deposited by _InflightTrackedStream.__del__.  A finalizer must
+# NEVER acquire _INFLIGHT_AUX_LOCK: cyclic GC can run it on a thread that is
+# already inside the locked region (dict mutation under the lock allocates),
+# and the lock is not reentrant — that would deadlock the whole process.
+# deque.append is atomic under the GIL, so the finalizer only deposits here;
+# every locked entry point drains the queue before doing its own work.
+_INFLIGHT_PENDING_ENDS: "collections.deque[str]" = collections.deque()
+
+
+def _drain_pending_ends_locked() -> None:
+    """Apply finalizer-deposited decrements.  Caller holds _INFLIGHT_AUX_LOCK."""
+    while True:
+        try:
+            key = _INFLIGHT_PENDING_ENDS.popleft()
+        except IndexError:
+            return
+        count = _INFLIGHT_AUX_TASKS.get(key, 0) - 1
+        if count > 0:
+            _INFLIGHT_AUX_TASKS[key] = count
+        else:
+            _INFLIGHT_AUX_TASKS.pop(key, None)
+
+
+def _inflight_aux_begin(task: str) -> None:
+    if not task:
+        return
+    with _INFLIGHT_AUX_LOCK:
+        _drain_pending_ends_locked()
+        _INFLIGHT_AUX_TASKS[task] = _INFLIGHT_AUX_TASKS.get(task, 0) + 1
+
+
+def _inflight_aux_end(task: str) -> None:
+    if not task:
+        return
+    with _INFLIGHT_AUX_LOCK:
+        _drain_pending_ends_locked()
+        count = _INFLIGHT_AUX_TASKS.get(task, 0) - 1
+        if count > 0:
+            _INFLIGHT_AUX_TASKS[task] = count
+        else:
+            _INFLIGHT_AUX_TASKS.pop(task, None)
+
+
+def inflight_aux_count(exclude_tasks: Tuple[str, ...] = ()) -> int:
+    """Number of auxiliary LLM calls currently in flight, excluding ``exclude_tasks``.
+
+    No task is excluded by default.  In particular, ``compression`` counts:
+    a session checking ``should_compress()`` can never see its *own*
+    summarizer call (check and call are sequential within a turn), so any
+    in-flight compression belongs to another session — and concurrent
+    compression prefills are the heaviest contention source there is, the
+    primary thing the deferral gate exists to serialize.
+    """
+    with _INFLIGHT_AUX_LOCK:
+        _drain_pending_ends_locked()
+        return sum(
+            count for task, count in _INFLIGHT_AUX_TASKS.items()
+            if task not in exclude_tasks
+        )
+
+
+class _InflightTrackedStream:
+    """Iterator proxy that ends its in-flight registry entry exactly once.
+
+    ``call_llm(stream=True)`` hands the raw SDK stream back to the caller and
+    returns immediately — but the accelerator stays busy for as long as the
+    stream is consumed (the MoA aggregator path).  This proxy keeps the
+    registry entry alive until the stream is exhausted, closed, or errors,
+    whichever comes first.  Attribute access is delegated to the wrapped
+    stream so SDK surface (``response``, context-manager use, ...) keeps
+    working.
+    """
+
+    def __init__(self, inner, registry_key):
+        self._inner = inner
+        self._inner_iter = None
+        self._registry_key = registry_key
+        self._end_lock = threading.Lock()
+        self._ended = False
+
+    def _end(self, *, deferred: bool = False) -> None:
+        with self._end_lock:
+            if self._ended:
+                return
+            self._ended = True
+        if deferred:
+            # Finalizer path — must not touch _INFLIGHT_AUX_LOCK (see
+            # _INFLIGHT_PENDING_ENDS).  deque.append is atomic under the GIL.
+            _INFLIGHT_PENDING_ENDS.append(self._registry_key)
+        else:
+            _inflight_aux_end(self._registry_key)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._inner_iter is None:
+            self._inner_iter = iter(self._inner)
+        try:
+            return next(self._inner_iter)
+        except BaseException:  # StopIteration included: stream is done either way
+            self._end()
+            raise
+
+    def close(self):
+        try:
+            close = getattr(self._inner, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._end()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def __getattr__(self, name):
+        # Guard against recursion if looked up before __init__ finished
+        # (e.g. from __del__ on a half-built instance).
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    def __del__(self):
+        # Last-resort: the consumer abandons a stream without close() on
+        # interrupt/supersede, so an abandoned stream must not pin the
+        # registry entry for the life of the process.  deferred=True keeps
+        # the finalizer away from the registry lock (deadlock hazard when
+        # cyclic GC fires inside the locked region).
+        try:
+            self._end(deferred=True)
+        except Exception:
+            pass
+
+
+def _track_inflight_aux_sync(func):
+    @functools.wraps(func)
+    def wrapper(task: str = None, **kwargs):
+        key = task or _INFLIGHT_UNTASKED
+        _inflight_aux_begin(key)
+        handed_off = False
+        try:
+            result = func(task, **kwargs)
+            # Hand the registry entry off to the stream's lifetime ONLY for a
+            # true stream.  Discriminate on the shape of the RESULT, not the
+            # request flag: several in-tree producers accept stream=True but
+            # still return a completed response object (MoA openai-codex
+            # aggregator, Bedrock Converse shim, copilot-acp) — the same
+            # ``choices`` test the streaming consumer itself applies.  For
+            # those, the call is over when the frame returns.
+            if (
+                kwargs.get("stream")
+                and result is not None
+                and not hasattr(result, "choices")
+            ):
+                proxy = _InflightTrackedStream(result, key)
+                handed_off = True
+                return proxy
+            return result
+        finally:
+            if not handed_off:
+                _inflight_aux_end(key)
+    return wrapper
+
+
+def _track_inflight_aux_async(func):
+    # No stream hand-off here: async_call_llm has no ``stream`` parameter.
+    # If one is added, mirror the sync wrapper with an async iterator proxy.
+    @functools.wraps(func)
+    async def wrapper(task: str = None, **kwargs):
+        key = task or _INFLIGHT_UNTASKED
+        _inflight_aux_begin(key)
+        try:
+            return await func(task, **kwargs)
+        finally:
+            _inflight_aux_end(key)
+    return wrapper
+
+
+@_track_inflight_aux_sync
 def call_llm(
     task: str = None,
     *,
@@ -7573,6 +7785,7 @@ def extract_content_or_reasoning(response) -> str:
     return ""
 
 
+@_track_inflight_aux_async
 async def async_call_llm(
     task: str = None,
     *,

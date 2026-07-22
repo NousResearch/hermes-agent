@@ -1528,6 +1528,20 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "defer_while_aux_inflight": False,  # When True, auto-compression is postponed
+                                      # while other auxiliary LLM calls (web_extract,
+                                      # vision, other sessions' compressions, ...)
+                                      # are in flight. Useful on single-accelerator
+                                      # local deployments where a large compression
+                                      # prefill time-slices the GPU with in-flight
+                                      # auxiliary calls and can push them past their
+                                      # timeouts. Bounded by defer_hard_ceiling and
+                                      # by at most 3 consecutively deferred checks.
+                                      # Manual /compress is never deferred.
+        "defer_hard_ceiling": 0.95,   # Fraction of context_length past which a
+                                      # deferred compression fires anyway — running
+                                      # out of context is worse than contention.
+                                      # Only relevant with defer_while_aux_inflight.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

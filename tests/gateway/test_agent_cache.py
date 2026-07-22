@@ -232,6 +232,8 @@ class TestExtractCacheBustingConfig:
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
+                    "defer_while_aux_inflight": True,
+                    "defer_hard_ceiling": 0.85,
                     "some_other_key": "ignored",
                 }
             }
@@ -242,6 +244,8 @@ class TestExtractCacheBustingConfig:
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
+        assert out["compression.defer_while_aux_inflight"] is True
+        assert out["compression.defer_hard_ceiling"] == 0.85
 
     def test_reads_checkpoint_subkeys(self):
         from gateway.run import GatewayRunner

@@ -7000,11 +7000,239 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Toolsets:   {', '.join(self.enabled_toolsets) if self.enabled_toolsets else 'all'}")
         print(f"  Verbose:    {self.verbose}")
         print()
+        print("  -- Display --")
+        display = self.config.get("display", {})
+        print(f"  Personality:  {display.get('personality') or 'none'}")
+        print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
+        print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+        print(f"  Compact:      {'on' if self.compact else 'off'}")
+        print(f"  Tool progress: {self.tool_progress_mode}")
+        print()
+        print("  -- Compression --")
+        compression = self.config.get("compression", {})
+        comp_enabled = compression.get("enabled", True)
+        print(f"  Enabled:      {'yes' if comp_enabled else 'no'}")
+        if comp_enabled:
+            print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+            target = compression.get("target_ratio", 0.20)
+            print(f"  Target ratio: {target * 100:.0f}% of threshold preserved")
+            print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        print()
+        print("  -- Timezone --")
+        tz = self.config.get("timezone", "")
+        print(f"  Timezone:     {tz or '(server-local)'}")
+        # Auxiliary model overrides
+        auxiliary = self.config.get("auxiliary", {})
+        has_aux_overrides = False
+        for task_key in ("vision", "web_extract", "compression"):
+            task_cfg = auxiliary.get(task_key, {})
+            if task_cfg.get("provider", "auto") != "auto" or task_cfg.get("model", ""):
+                has_aux_overrides = True
+                break
+        if has_aux_overrides:
+            print()
+            print("  -- Auxiliary Models (overrides) --")
+            for label, task_key in [("Vision", "vision"), ("Web extract", "web_extract"), ("Compression", "compression")]:
+                task_cfg = auxiliary.get(task_key, {})
+                prov = task_cfg.get("provider", "auto")
+                mdl = task_cfg.get("model", "")
+                if prov != "auto" or mdl:
+                    parts = [f"provider={prov}"]
+                    if mdl:
+                        parts.append(f"model={mdl}")
+                    print(f"  {label:14s} {', '.join(parts)}")
+        print()
         print("  -- Session --")
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  Config File: {config_path} {config_status}")
         print()
+        print("  Tip: Use /config set <key.path> <value> to change settings")
+        print("       Use /config get <key.path> to read a single value")
+        print()
     
+    def _config_set_value(self, key_path: str, value: str) -> None:
+        """Set a config value from /config set <key> <value>.
+
+        Persists to disk and applies live where safe.  Keys that require
+        a restart are flagged so the user knows.
+        """
+        # Validate that the key path resolves to an existing config section
+        # or is a recognized leaf key.  Prevents silent orphan writes from
+        # typos like "disploy.bell" or "model.defualt".
+        parts = key_path.split(".")
+        cfg = self.config
+        for i, part in enumerate(parts[:-1]):
+            if not isinstance(cfg, dict) or part not in cfg:
+                _cprint(f"\033[1;31m  ✗ Unknown config section: {'.'.join(parts[:i + 1])}\033[0m")
+                _cprint(f"  Tip: Run /config to see available settings")
+                return
+            cfg = cfg[part]
+        # Final segment may not exist yet (user setting a new value), but the
+        # parent must be a dict. We do NOT hard-reject unknown leaves because
+        # some sections (custom_providers, plugin-specific keys) accept new
+        # entries at runtime — but typos like ``display.bel_on_complete`` are
+        # common, so emit a yellow warning that makes the new-key write
+        # visible without blocking it. Users who INTENDED the new key see the
+        # warning and proceed; users with a typo get a visible signal.
+        if not isinstance(cfg, dict):
+            _cprint(f"\033[1;31m  ✗ {'.'.join(parts[:-1])} is not a section (cannot set sub-keys)\033[0m")
+            return
+        if parts[-1] not in cfg:
+            _cprint(f"  \033[33m⚠ {key_path}: creating new key (typo? existing keys: {', '.join(sorted(cfg.keys()))})\033[0m")
+
+        # Keys that can safely live-apply without restart. ``compression.*``
+        # is NOT in this set: the active ContextCompressor is constructed
+        # from these values during agent init (agent/agent_init.py:1606)
+        # with constructor-time threshold_percent / protect_first_n /
+        # protect_last_n / target_ratio parameters and runtime state
+        # (``threshold_tokens``). Live-applying changes to all of them
+        # safely is non-trivial and risks token-tracking drift mid-session,
+        # so compression.* is treated as restart-required and the user is
+        # told to restart.
+        _LIVE_PREFIXES = ("display.", "timezone")
+        # Everything else needs a restart (conservative)
+        _RESTART_PREFIXES = ("terminal.", "model.", "agent.", "mcp_servers.",
+                             "browser.", "memory.", "delegation.", "approvals.",
+                             "auxiliary.", "compression.")
+
+        needs_restart = any(key_path.startswith(p) for p in _RESTART_PREFIXES)
+        can_live = any(key_path.startswith(p) for p in _LIVE_PREFIXES)
+
+        # Coerce common string values to bool/int where appropriate
+        coerced = self._coerce_config_value(key_path, value)
+
+        if not save_config_value(key_path, coerced):
+            _cprint(f"\033[1;31m  ✗ Failed to save {key_path}\033[0m")
+            return
+
+        # Live-apply by mutating self.config in-memory
+        if can_live or not needs_restart:
+            target = self.config
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = coerced
+
+            # Propagate well-known keys to live agent attributes so the
+            # running session picks up the change immediately.
+            self._propagate_config_live(key_path, coerced)
+
+        # Mask credential-shaped leaves before printing so /config set
+        # never echoes raw secrets into terminal scrollback. Falls through
+        # to redact_config_value for dict/list values that may carry nested
+        # api_key/token entries (custom providers, custom_providers blocks).
+        display_value = self._format_config_value_for_display(key_path, coerced)
+        if needs_restart:
+            _cprint(f"  ✓ Set {key_path} = {display_value}  \033[33m(requires restart)\033[0m")
+        else:
+            _cprint(f"  ✓ Set {key_path} = {display_value}")
+
+    @staticmethod
+    def _format_config_value_for_display(key_path: str, value):
+        """Return ``value`` formatted for terminal display with credentials masked.
+
+        Three cases:
+        1. The leaf key (last segment of ``key_path``) is credential-shaped
+           and the value is a non-empty string — mask via ``mask_secret``
+           so a literal ``api_key`` set never prints the raw token.
+        2. ``value`` is a dict/list — run through ``redact_config_value``
+           so any nested ``api_key`` / ``token`` / ``password`` entries
+           are masked (covers custom_providers blocks set via nested keys).
+        3. Anything else — return unchanged.
+
+        ``redact_config_value`` and ``_SECRET_CONFIG_KEYS`` are the same
+        canonical helpers ``hermes config show`` / ``hermes status`` /
+        ``hermes dump`` use, so the mask format stays consistent across
+        CLI surfaces.
+        """
+        from hermes_cli.config import _SECRET_CONFIG_KEYS, redact_config_value, redact_key
+
+        leaf = key_path.rsplit(".", 1)[-1] if key_path else ""
+        if (
+            isinstance(leaf, str)
+            and leaf.lower() in _SECRET_CONFIG_KEYS
+            and isinstance(value, str)
+            and value
+        ):
+            return redact_key(value)
+        if isinstance(value, (dict, list)):
+            return redact_config_value(value)
+        return value
+
+    def _propagate_config_live(self, key_path: str, value) -> None:
+        """Push an in-memory config change to live agent/session attributes."""
+        # Session-level display attributes — always propagate regardless of
+        # whether an agent is active (these are TUI display prefs, not agent
+        # runtime state).
+        if key_path == "display.show_reasoning":
+            self.show_reasoning = bool(value)
+        elif key_path == "display.bell_on_complete":
+            self.bell_on_complete = bool(value)
+        elif key_path == "display.compact":
+            self.compact = bool(value)
+        elif key_path == "display.tool_progress":
+            self.tool_progress_mode = "off" if value is False else str(value)
+            # Sync the active agent's tool_progress_mode too — without
+            # this, ``/config set display.tool_progress new`` updates the
+            # CLI's cycle state but the running agent keeps emitting in
+            # the OLD mode. Mirrors the sync pattern in ``_toggle_verbose``
+            # (cli.py:8983-8986) so the tool_executor rendering path
+            # reflects the new mode this turn without waiting for an
+            # agent rebuild. Guarded with ``hasattr`` to stay defensive
+            # against agent variants that may not expose the attribute
+            # (test stubs, lightweight agent types).
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "tool_progress_mode"):
+                agent.tool_progress_mode = self.tool_progress_mode
+
+    @staticmethod
+    def _coerce_config_value(key_path: str, value: str):
+        """Coerce a string value to bool/int/float where obvious."""
+        if value.lower() in ("true", "yes", "on"):
+            return True
+        if value.lower() in ("false", "no", "off"):
+            return False
+        # Integers
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        # Floats
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        return value
+
+    def _config_get_value(self, key_path: str) -> None:
+        """Display a single config value."""
+        parts = key_path.split(".")
+        cfg = self.config
+        for part in parts:
+            if isinstance(cfg, dict):
+                cfg = cfg.get(part)
+            else:
+                cfg = None
+                break
+        if cfg is None:
+            _cprint(f"  {key_path}: (not set)")
+        elif isinstance(cfg, dict):
+            _cprint(f"  {key_path}:")
+            # Run the section through structural redaction so a
+            # `model.api_key` style nested leaf never echoes its raw
+            # token into terminal scrollback. ``_format_config_value_for_display``
+            # handles dict/list values by masking any credential-shaped
+            # keys (api_key, token, password, etc.) and passing scalars
+            # through unchanged.
+            from hermes_cli.config import redact_config_value
+            safe_cfg = redact_config_value(cfg)
+            for k, v in safe_cfg.items():
+                _cprint(f"    {k}: {v}")
+        else:
+            # Scalar value — mask if the leaf key is credential-shaped so
+            # ``/config get model.api_key`` never prints the raw token.
+            display_value = self._format_config_value_for_display(key_path, cfg)
+            _cprint(f"  {key_path}: {display_value}")
+
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
@@ -8856,7 +9084,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "toolsets":
             self.show_toolsets()
         elif canonical == "config":
-            self.show_config()
+            # Parse subcommands: /config set <key> <value>, /config get <key>
+            rest = cmd_original.split(None, 1)
+            args_str = rest[1].strip() if len(rest) > 1 else ""
+            if args_str:
+                args_parts = args_str.split(None, 2)
+                subcmd = args_parts[0].lower()
+                if subcmd == "set" and len(args_parts) >= 3:
+                    self._config_set_value(args_parts[1], args_parts[2])
+                elif subcmd == "set":
+                    _cprint("  Usage: /config set <key.path> <value>")
+                    _cprint("  Example: /config set display.bell_on_complete true")
+                elif subcmd == "get" and len(args_parts) >= 2:
+                    self._config_get_value(args_parts[1])
+                elif subcmd == "get":
+                    _cprint("  Usage: /config get <key.path>")
+                else:
+                    _cprint(f"  Unknown /config subcommand: {subcmd}")
+                    _cprint("  Usage: /config [set <key> <value> | get <key>]")
+            else:
+                self.show_config()
         elif canonical == "redraw":
             # Manual recovery for terminal buffer drift from multiplexer
             # tab switches, subshell ``clear``, SSH window restores, etc.
@@ -9455,7 +9702,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # Expand the prefix to the full command name, preserving arguments.
                     # Guard against redispatching the same token to avoid infinite
                     # recursion when the expanded name still doesn't hit an exact branch
-                    # (e.g. /config with extra args that are not yet handled above).
+                    # (e.g. /config with subcommands handled above).
                     full_name = matches[0]
                     if full_name == typed_base:
                         # Already an exact token — no expansion possible; fall through

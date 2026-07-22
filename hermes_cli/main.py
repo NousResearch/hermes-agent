@@ -64,6 +64,23 @@ except ModuleNotFoundError:
 import os
 import sys
 
+# ── Startup fast-path bootstrap ─────────────────────────────────────────
+# Two lines of inline path math so ``python hermes_cli/main.py`` (script
+# mode — sys.path[0] is hermes_cli/, not the repo root) can import the
+# canonical helpers; everything else lives in hermes_cli._startup_fast.
+_bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _bootstrap_root not in sys.path:
+    sys.path.insert(0, _bootstrap_root)
+from hermes_cli import _startup_fast  # noqa: E402
+
+
+def _project_root_str_fast() -> str:
+    return _startup_fast.project_root_str()
+
+
+def _ensure_project_root_on_path_fast() -> None:
+    _startup_fast.ensure_project_root_on_path()
+
 
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.
@@ -328,64 +345,53 @@ _suppress_mouse_residue_early()
 
 def _is_termux_startup_environment_fast() -> bool:
     """Tiny Termux check for pre-import startup shortcuts."""
-    prefix = os.environ.get("PREFIX", "")
-    return bool(
-        os.environ.get("TERMUX_VERSION")
-        or "com.termux/files/usr" in prefix
-        or prefix.startswith("/data/data/com.termux/")
-    )
+    return _startup_fast.is_termux_env()
 
 
 def _is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"], ["version"])
+    return _startup_fast.is_termux_fast_version_argv(argv)
+
+
+def _is_global_fast_version_argv(argv: list[str]) -> bool:
+    return _startup_fast.is_global_fast_version_argv(argv)
+
+
+def _is_container_startup_environment_fast() -> bool:
+    return _startup_fast.is_container_startup_environment()
+
+
+def _active_profile_may_override_home_fast(hermes_root: str) -> bool:
+    return _startup_fast.active_profile_may_override_home(hermes_root)
+
+
+def _container_mode_may_be_active_fast() -> bool:
+    return _startup_fast.container_mode_may_be_active()
 
 
 def _read_openai_version_fast() -> str | None:
     """Read OpenAI SDK version without importing ``importlib.metadata``."""
-    for base in sys.path:
-        if not base:
-            base = os.getcwd()
-        version_file = os.path.join(base, "openai", "_version.py")
-        try:
-            with open(version_file, encoding="utf-8") as handle:
-                for line in handle:
-                    stripped = line.strip()
-                    if not stripped.startswith("__version__"):
-                        continue
-                    _key, _sep, value = stripped.partition("=")
-                    value = value.split("#", 1)[0].strip().strip("\"'")
-                    return value or None
-        except OSError:
-            continue
-    return None
+    return _startup_fast.read_openai_version()
 
 
 def _print_fast_version_info() -> None:
-    from hermes_cli import __release_date__, __version__
+    _startup_fast.print_fast_version_info()
 
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
-    print(f"Install directory: {PROJECT_ROOT}")
 
-    print(f"Python: {sys.version.split()[0]}")
-
-    openai_version = _read_openai_version_fast()
-    print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
+def _try_ultrafast_version() -> bool:
+    """Handle ``hermes --version`` before config/logging imports."""
+    return _startup_fast.try_fast_version()
 
 
 def _try_termux_ultrafast_version() -> bool:
-    """Handle ``hermes --version`` before config/logging imports on Termux."""
-    if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
-        return False
+    """Backward-compatible test hook for the Termux startup fast path."""
     if not _is_termux_startup_environment_fast():
         return False
-    if not _is_termux_fast_version_argv(sys.argv[1:]):
-        return False
-
-    _print_fast_version_info()
-    return True
+    return _try_ultrafast_version()
 
 
-if _try_termux_ultrafast_version():
+_ensure_project_root_on_path_fast()
+
+if _try_ultrafast_version():
     raise SystemExit(0)
 
 import argparse
@@ -460,8 +466,8 @@ def _require_tty(command_name: str) -> None:
 
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(_project_root_str_fast())
+_ensure_project_root_on_path_fast()
 
 
 # ---------------------------------------------------------------------------

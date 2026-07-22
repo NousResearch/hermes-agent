@@ -134,12 +134,13 @@ def _node_symlink_candidate_dirs() -> "list[Path]":
 def remove_node_symlinks(hermes_home: Path) -> list:
     """Remove the node/npm/npx symlinks the installer placed on PATH.
 
-    The POSIX installer (``scripts/install.sh`` / ``scripts/lib/node-bootstrap.sh``)
-    symlinks node/npm/npx into the same directory as the ``hermes`` command:
+    Current POSIX installers keep node/npm/npx private for user-scoped installs,
+    but root FHS installs still expose them and older user-scoped installs may
+    have left legacy links:
 
     - ``/usr/local/bin/`` on root FHS installs (Linux, uid 0)
-    - ``$PREFIX/bin/`` on Termux
-    - ``~/.local/bin/`` otherwise (the common non-root case)
+    - ``~/.local/bin/`` for legacy non-root installs
+    - ``$PREFIX/bin/`` for legacy Termux installs
 
     We check all candidate directories so that uninstall works regardless of
     how the install was done (e.g. a root FHS install that placed links in

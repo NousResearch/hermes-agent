@@ -745,6 +745,28 @@ def test_strip_slash_enum_none_returns_zero():
     assert stripped == 0
 
 
+def test_invalid_type_string_replaced_with_object():
+    """Non-standard type strings (e.g., "custom", "undefined") are replaced with "object".
+    
+    This addresses the bug where MCP servers emit tool schemas with non-primitive
+    type values in nested properties. Anthropic's API validates against the JSON Schema
+    metaschema and rejects any type value not in the primitive set, returning HTTP 400.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"type": "custom"},  # <-- invalid, should become "object"
+            "config": {"type": "undefined"},  # <-- invalid, should become "object"
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload["type"] == "object"
+    config = out[0]["function"]["parameters"]["properties"]["config"]
+    assert config["type"] == "object"
+
+
+
 def test_strip_slash_enum_ignores_non_string_enum_values():
     """Integer/boolean enum values can't contain '/' — leave them alone."""
     tools = [_tool("t", {
@@ -759,3 +781,24 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+def test_invalid_type_string_replaced_with_object():
+    """Non-standard type strings (e.g., "custom", "undefined") are replaced with "object".
+    
+    This addresses the bug where MCP servers emit tool schemas with non-primitive
+    type values in nested properties. Anthropic's API validates against the JSON Schema
+    metaschema and rejects any type value not in the primitive set, returning HTTP 400.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"type": "custom"},  # <-- invalid, should become "object"
+            "config": {"type": "undefined"},  # <-- invalid, should become "object"
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload["type"] == "object"
+    config = out[0]["function"]["parameters"]["properties"]["config"]
+    assert config["type"] == "object"
+
+

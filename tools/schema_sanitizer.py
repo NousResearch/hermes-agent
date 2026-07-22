@@ -304,6 +304,19 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # otherwise an empty/garbage array → object fallback.
             out["type"] = "null" if has_null else "object"
             continue
+        
+        # Validate and sanitize type strings (e.g., "custom", "undefined").
+        # Anthropic and other strict providers reject non-primitive types.
+        if key == "type" and isinstance(value, str):
+            valid_types = {"object", "string", "number", "integer", "boolean", "array", "null"}
+            if value not in valid_types:
+                logger.debug(
+                    "schema_sanitizer[%s]: replacing invalid type %r with 'object'",
+                    path, value,
+                )
+                out["type"] = "object"
+                continue
+
 
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
             out[key] = {

@@ -510,6 +510,28 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-07",
     ),
+    (
+        "deepseek",
+        "deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.07"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.006"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-05-12",
+    ),
+    # StepFun
+    (
+        "stepfun",
+        "step-3.7-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.80"),
+        source="official_docs_snapshot",
+        source_url="https://platform.stepfun.com/docs/pricing",
+        pricing_version="stepfun-pricing-2026-06",
+    ),
     # Google Gemini
     (
         "google",
@@ -925,6 +947,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "stepfun" or model.startswith("stepfun/"):
+        return BillingRoute(provider="stepfun", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # Vertex AI hosts the same Gemini models as Google AI Studio; price them
     # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
     # the OpenAI-compat endpoint requires so the pricing key matches.
@@ -994,6 +1018,19 @@ def _normalize_anthropic_model_name(model: str) -> str:
     # Normalize dots to dashes in version numbers (e.g. 4.7 → 4-7, 4.6 → 4-6)
     # But preserve the rest of the name structure
     name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    return name
+
+
+def _normalize_stepfun_model_name(model: str) -> str:
+    """Normalize StepFun model name variants to canonical form.
+
+    Handles:
+      - Vendor prefix: stepfun/step-3.7-flash → step-3.7-flash
+      - Dot notation: step-3.7-flash → step-3.7-flash
+    """
+    name = model.lower().strip()
+    if "/" in name:
+        name = name.split("/", 1)[-1]
     return name
 
 
@@ -1166,6 +1203,10 @@ def normalize_usage(
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )
+        if not cache_write_tokens:
+            cache_write_tokens = _to_int(
+                getattr(details, "cache_creation_tokens", 0) if details else 0
+            )
         if not cache_write_tokens:
             cache_write_tokens = _to_int(
                 getattr(response_usage, "cache_creation_input_tokens", 0)

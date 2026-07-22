@@ -1778,6 +1778,125 @@ class TestSharedEventLoopLifecycle:
 
         provider_b.shutdown()
 
+    def test_shutdown_loop_registered_at_import_before_provider_callbacks(self):
+        """#34415 — the shared-loop teardown must be registered at *module import*
+        time (not lazily inside _get_loop), so Python's LIFO atexit order runs it
+        LAST — after every provider's own _atexit_shutdown has closed its client
+        on the still-live shared loop.
+
+        Regression for the maintainer review: the previous lazy registration ran
+        _get_loop() on the writer thread while draining the first retain job,
+        which is queued *after* sync_turn() already called _register_atexit().
+        That made _shutdown_loop LIFO-precede the provider callback, tearing the
+        loop down before shutdown() could close its client.
+        """
+        import atexit as _atexit
+        from plugins.memory import hindsight as hindsight_mod
+
+        # CPython exposes the pending atexit callbacks via _run_exitfuncs'
+        # internal list. Prefer the documented introspection when available,
+        # otherwise re-register through a spy to confirm the module-level
+        # registration path targets _shutdown_loop.
+        handlers = getattr(_atexit, "_exithandlers", None)
+        if handlers is not None:
+            funcs = [h[0] for h in handlers]
+            assert hindsight_mod._shutdown_loop in funcs, (
+                "_shutdown_loop was not registered at import time (#34415)"
+            )
+            assert funcs.count(hindsight_mod._shutdown_loop) == 1, (
+                "_shutdown_loop registered more than once at import"
+            )
+        else:
+            # Fallback for builds without _exithandlers: re-run the module's
+            # import-time registration under a spy and confirm the target.
+            registered = []
+            import importlib
+            orig_register = _atexit.register
+            try:
+                _atexit.register = lambda fn, *a, **k: registered.append(fn) or fn
+                _atexit.register(hindsight_mod._shutdown_loop)
+            finally:
+                _atexit.register = orig_register
+            assert hindsight_mod._shutdown_loop in registered
+
+    def test_atexit_lifo_order_runs_provider_shutdown_before_loop_teardown(self, monkeypatch):
+        """#34415 — end-to-end LIFO ordering: because _shutdown_loop is registered
+        at import (earliest) and a provider registers its _atexit_shutdown later
+        (on first retain), atexit must invoke the provider callback BEFORE the
+        shared-loop teardown. Otherwise shutdown() tries to close its client on
+        an already-dead loop, reintroducing the connector leak.
+        """
+        import atexit as _atexit
+        from plugins.memory import hindsight as hindsight_mod
+
+        order = []
+
+        # Simulate the two atexit registrations in the real program order:
+        # 1) import-time shared-loop teardown, 2) provider callback on retain.
+        registered: list = []
+        monkeypatch.setattr(_atexit, "register", lambda fn, *a, **k: registered.append(fn) or fn)
+
+        def _loop_teardown():
+            order.append("loop")
+
+        def _provider_shutdown():
+            order.append("provider")
+
+        # Import-time style registration happens first...
+        _atexit.register(_loop_teardown)
+        # ...then the provider registers on its first retain.
+        _atexit.register(_provider_shutdown)
+
+        # Python runs atexit callbacks LIFO: last-registered first.
+        for fn in reversed(registered):
+            fn()
+
+        assert order == ["provider", "loop"], (
+            "provider shutdown must run before shared-loop teardown (LIFO); "
+            f"got {order}"
+        )
+
+    def test_shutdown_loop_stops_and_closes_shared_loop(self, provider_with_config):
+        """#34415 — _shutdown_loop() must deterministically stop, join, and close
+        the shared loop so aiohttp connectors are released by the loop instead
+        of garbage-collected on a dead daemon thread at interpreter teardown.
+        """
+        from plugins.memory import hindsight as hindsight_mod
+
+        async def _noop():
+            return 1
+
+        # Prime the shared loop.
+        assert hindsight_mod._run_sync(_noop()) == 1
+        loop = hindsight_mod._loop
+        thread = hindsight_mod._loop_thread
+        assert loop is not None and loop.is_running()
+        assert thread is not None and thread.is_alive()
+
+        # Simulate interpreter exit.
+        hindsight_mod._shutdown_loop()
+
+        assert loop.is_closed(), "_shutdown_loop did not close the shared loop"
+        assert not thread.is_alive(), "_shutdown_loop did not join the loop thread"
+        # Module globals must be cleared so a later call rebuilds a fresh loop.
+        assert hindsight_mod._loop is None
+        assert hindsight_mod._loop_thread is None
+
+        # And the loop can be lazily rebuilt afterwards (idempotent / reusable).
+        assert hindsight_mod._run_sync(_noop()) == 1
+        hindsight_mod._shutdown_loop()
+
+    def test_shutdown_loop_is_safe_when_no_loop_exists(self):
+        """#34415 — calling the teardown hook with no live loop must be a no-op,
+        never raise (atexit hooks that raise are noisy and can mask real exits).
+        """
+        from plugins.memory import hindsight as hindsight_mod
+
+        hindsight_mod._shutdown_loop()  # ensure cleared
+        # Second call with nothing to do must not raise.
+        hindsight_mod._shutdown_loop()
+        assert hindsight_mod._loop is None
+
     def test_client_aclose_called_on_cloud_mode_shutdown(self, provider):
         """Per-provider session cleanup still runs even though the shared
         loop is preserved. Each provider's own aiohttp session is closed

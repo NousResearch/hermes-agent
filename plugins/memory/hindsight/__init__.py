@@ -268,7 +268,80 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 
         _loop_thread = threading.Thread(target=_run, daemon=True, name="hindsight-loop")
         _loop_thread.start()
+
         return _loop
+
+
+def _shutdown_loop(timeout: float = 5.0) -> None:
+    """Stop and join the shared Hindsight event loop, draining it cleanly.
+
+    Runs once at interpreter exit (registered in :func:`_get_loop`). Per-provider
+    ``shutdown()`` already closes each provider's Hindsight client via
+    ``aclose()``; this hook then shuts down the loop deterministically so any
+    residual aiohttp ``ClientSession`` / ``TCPConnector`` owned by the loop is
+    released by the loop itself rather than garbage-collected on a dead daemon
+    thread (which is what produced the "Unclosed client session" /
+    "Unclosed connector" warnings, then a SIGKILL'd gateway, in #34415).
+    """
+    global _loop, _loop_thread
+    with _loop_lock:
+        loop = _loop
+        thread = _loop_thread
+        _loop = None
+        _loop_thread = None
+
+    if loop is None:
+        return
+
+    async def _drain() -> None:
+        # Close any async generators (aiohttp uses these internally) so their
+        # finalizers run on the loop while it is still alive.
+        try:
+            await loop.shutdown_asyncgens()
+        except Exception:
+            pass
+
+    try:
+        if loop.is_running():
+            # Drain async generators on the loop, then stop it.
+            fut = asyncio.run_coroutine_threadsafe(_drain(), loop)
+            try:
+                fut.result(timeout=timeout)
+            except Exception:
+                fut.cancel()
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=timeout)
+    except Exception:
+        pass
+    finally:
+        # Close the loop so its transports/connectors are released. Guard
+        # against closing a still-running loop (raises RuntimeError).
+        try:
+            if not loop.is_running():
+                loop.close()
+        except Exception:
+            pass
+
+
+# Register the shared-loop teardown at *module import* time -- deliberately
+# before any HindsightMemoryProvider instance registers its per-instance
+# _atexit_shutdown (that happens later, on the first sync_turn()/retain).
+# Python runs atexit callbacks in LIFO order, so registering _shutdown_loop
+# first guarantees it runs LAST -- after every provider callback has already
+# invoked shutdown() and closed its client on the still-live shared loop.
+#
+# The earlier lazy registration inside _get_loop() was ordered backwards:
+# _get_loop() first runs on the writer thread while draining the initial
+# retain job, which is queued *after* sync_turn() has already called
+# _register_atexit(). That made _shutdown_loop LIFO-precede the provider
+# callback, so the loop was torn down before shutdown() could close its
+# client -- reintroducing the "Unclosed client session" / "Unclosed
+# connector" GC-at-exit warnings from #10865 / #11923 / #34415.
+#
+# _shutdown_loop is a no-op when no loop was ever created, so registering it
+# unconditionally at import costs nothing for providers that never retain.
+atexit.register(_shutdown_loop)
 
 
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):

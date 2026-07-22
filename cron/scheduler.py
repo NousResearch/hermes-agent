@@ -277,13 +277,22 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    advance_next_run,
+    claim_dispatch,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    quarantine_context_free_fixture_job,
+    save_job_output,
+)
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
 
 # Canonical silence tokens recognized in cron output.  Cron's contract is
 # intentionally looser than the gateway's exact-whole-response rule: the cron
@@ -3727,6 +3736,57 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     if not execution_id:
         execution_id = create_execution(job["id"], source="direct")["id"]
     try:
+        # Re-read the persisted job under the store lock before admission. A
+        # due-job snapshot can race a user edit; the current record is the
+        # authority for both quarantine and execution.
+        current_job, fixture_reason, quarantined_now = (
+            quarantine_context_free_fixture_job(job["id"])
+        )
+        if current_job is not None:
+            current_execution_id = job.get("execution_id")
+            job = dict(current_job)
+            if current_execution_id:
+                job["execution_id"] = current_execution_id
+
+        if fixture_reason:
+            mark_execution_running(execution_id)
+            if quarantined_now:
+                paused_reason = job.get("paused_reason") or (
+                    f"auto-quarantined by cron admission fuse: {fixture_reason}"
+                )
+                job_name = str(
+                    job.get("name") or job.get("prompt") or job["id"] or "cron job"
+                )
+                quarantined_doc = (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job['id']}\n"
+                    f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    "**Status:** QUARANTINED\n\n"
+                    f"{paused_reason}. No session or agent was constructed.\n"
+                )
+                save_job_output(job["id"], quarantined_doc)
+                _notify_provider_jobs_changed()
+                logger.warning(
+                    "Job '%s' (ID: %s): %s",
+                    job_name,
+                    job["id"],
+                    paused_reason,
+                )
+            finish_execution(execution_id, success=True, error=None)
+            return True
+
+        # A stale due snapshot can also race a manual pause. Do not execute a
+        # current record that is already inactive.
+        if current_job is not None and (
+            not job.get("enabled", True) or job.get("state") == "paused"
+        ):
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Job was paused or disabled before execution started.",
+            )
+            return True
+
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
         # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot

@@ -101,6 +101,33 @@ _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# Exact name/prompt pairs used by historical cron unit fixtures. A July 2026
+# isolation regression left recurring copies in a live store; each copy had no
+# task context yet constructed SessionDB/AIAgent and spent model tokens every
+# day. Pairing the prompt with its fixture name avoids quarantining a legitimate
+# concise job whose user-visible instruction happens to be ``build`` or ``x``.
+_CONTEXT_FREE_FIXTURE_PAIRS = frozenset(
+    {
+        ("claim job", "x"),
+        ("paused job", "x"),
+        ("daily build", "build"),
+        ("hourly build", "build"),
+        ("w", "echo hi"),
+    }
+)
+_CONTEXT_FIELDS = (
+    "script",
+    "skills",
+    "skill",
+    "workdir",
+    "context_from",
+    "origin",
+    "model",
+    "provider",
+    "base_url",
+    "enabled_toolsets",
+)
+
 
 @dataclass(frozen=True)
 class _CronStorePaths:
@@ -1429,6 +1456,57 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             save_jobs(jobs)
             return _normalize_job_record(jobs[i])
     return None
+
+
+def context_free_fixture_reason(job: Dict[str, Any]) -> Optional[str]:
+    """Return a quarantine reason for a known trivial prompt with no contract."""
+    if not isinstance(job, dict) or job.get("no_agent"):
+        return None
+    name = " ".join(str(job.get("name") or "").strip().lower().split())
+    prompt = " ".join(str(job.get("prompt") or "").strip().lower().split())
+    if (name, prompt) not in _CONTEXT_FREE_FIXTURE_PAIRS:
+        return None
+    if any(job.get(field) for field in _CONTEXT_FIELDS):
+        return None
+    return (
+        f"context-free fixture prompt {prompt!r} has no script, skill, workdir, "
+        "upstream context, origin, explicit model/provider, or narrowed toolset"
+    )
+
+
+def quarantine_context_free_fixture_job(
+    job_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], bool]:
+    """Atomically reload and pause a context-free fixture job.
+
+    Returns ``(current_job, reason, changed)``. The reload and predicate check
+    happen under the jobs lock so a stale due-job snapshot cannot pause a job
+    that the user has since edited into a meaningful task.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for index, raw_job in enumerate(jobs):
+            if raw_job.get("id") != job_id:
+                continue
+            current = _normalize_job_record(raw_job)
+            reason = context_free_fixture_reason(current)
+            if not reason:
+                return current, None, False
+            if not current.get("enabled", True) or current.get("state") == "paused":
+                return current, reason, False
+            updated = copy.deepcopy(raw_job)
+            updated.update(
+                {
+                    "enabled": False,
+                    "state": "paused",
+                    "paused_at": _hermes_now().isoformat(),
+                    "paused_reason": f"auto-quarantined by cron admission fuse: {reason}",
+                }
+            )
+            jobs[index] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(updated), reason, True
+    return None, None, False
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:

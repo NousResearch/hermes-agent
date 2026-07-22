@@ -9,6 +9,7 @@ from tools.url_safety import (
     is_always_blocked_url,
     normalize_url_for_request,
     redirect_target_from_response,
+    sensitive_query_param_name,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -713,3 +714,31 @@ class TestRedirectTargetFromResponse:
     def test_no_location_no_next_request_returns_none(self):
         resp = _FakeResponse(is_redirect=True)
         assert redirect_target_from_response(resp) is None
+
+
+class TestSensitiveQueryParamName:
+    @pytest.mark.parametrize("url,expected", [
+        ("https://example.com/a?token=abc", "token"),
+        # ``code`` is not sensitive; ``access_token`` is the first match.
+        ("https://example.com/cb?code=1&access_token=xyz", "access_token"),
+        # First sensitive parameter in query order wins.
+        ("https://example.com/a?token=1&password=2", "token"),
+        # Matching is case-insensitive but the original key casing is returned.
+        ("https://example.com/a?API_KEY=xyz", "API_KEY"),
+    ])
+    def test_detects_sensitive_param(self, url, expected):
+        assert sensitive_query_param_name(url) == expected
+
+    @pytest.mark.parametrize("url", [
+        "https://example.com/path",           # no query string
+        "https://example.com/a?foo=1&bar=2",  # no sensitive params
+        "not a url",                          # no "?"
+        "ftp://example.com/a?token=abc",       # non-http(s) scheme
+        "https://example.com/a?token=",        # sensitive key but empty value
+    ])
+    def test_returns_none_when_no_sensitive_param(self, url):
+        assert sensitive_query_param_name(url) is None
+
+    def test_non_string_returns_none(self):
+        assert sensitive_query_param_name(None) is None
+        assert sensitive_query_param_name(12345) is None

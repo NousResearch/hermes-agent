@@ -1562,6 +1562,26 @@ class TestInternalHelpers:
         root = _get_profiles_root()
         assert root == docker_home / "profiles"
 
+    def test_profiles_root_custom_profiles_dir_not_nested(self, tmp_path, monkeypatch):
+        """Custom HERMES_HOME paths ending in profiles stay single-level."""
+        custom_profiles_root = tmp_path / "opt" / "hermes" / "profiles"
+        custom_profiles_root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(custom_profiles_root))
+        root = _get_profiles_root()
+        assert root == custom_profiles_root
+
+    def test_create_profile_custom_profiles_dir_not_nested(self, tmp_path, monkeypatch):
+        """Named profiles under a custom profiles root do not get profiles/profiles."""
+        custom_profiles_root = tmp_path / "opt" / "hermes" / "profiles"
+        custom_profiles_root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(custom_profiles_root))
+
+        profile_dir = create_profile("coder", no_alias=True)
+
+        assert profile_dir == custom_profiles_root / "coder"
+
     def test_default_hermes_home_docker(self, tmp_path, monkeypatch):
         """In Docker, _get_default_hermes_home() returns HERMES_HOME itself."""
         docker_home = tmp_path / "opt" / "data"

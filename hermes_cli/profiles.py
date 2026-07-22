@@ -269,10 +269,15 @@ def _get_profiles_root() -> Path:
     can see all profiles.
 
     In Docker/custom deployments where HERMES_HOME points outside
-    ``~/.hermes``, profiles live under ``HERMES_HOME/profiles/`` so
-    they persist on the mounted volume.
+    ``~/.hermes``, profiles normally live under ``HERMES_HOME/profiles/`` so
+    they persist on the mounted volume. If ``HERMES_HOME`` itself is an
+    explicitly chosen shared profiles root (for example ``/opt/hermes/profiles``),
+    reuse it directly instead of nesting ``profiles/profiles``.
     """
-    return _get_default_hermes_home() / "profiles"
+    root = _get_default_hermes_home()
+    if root.name == "profiles":
+        return root
+    return root / "profiles"
 
 
 def _get_default_hermes_home() -> Path:

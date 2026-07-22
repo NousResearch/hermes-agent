@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -235,6 +237,30 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 
 class TestCheckSystemdTimingAlignment:
+    def _mock_systemd_unit(self, monkeypatch, unit_name="hermes-gateway.service"):
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return io.StringIO(f"0::/user.slice/app.slice/{unit_name}\n")
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr(sf, "open", fake_open, raising=False)
+
+    def _mock_systemctl_show(self, monkeypatch, responses):
+        calls = []
+        responses_iter = iter(responses)
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            try:
+                response = next(responses_iter)
+            except StopIteration:
+                response = responses[-1]
+            returncode, stdout = response
+            return SimpleNamespace(returncode=returncode, stdout=stdout)
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        return calls
+
     def test_returns_none_when_not_under_systemd(self, monkeypatch):
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         result = sf.check_systemd_timing_alignment(180.0)
@@ -248,3 +274,76 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def test_reads_timeout_only_when_unit_is_loaded(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        self._mock_systemd_unit(monkeypatch)
+        calls = self._mock_systemctl_show(
+            monkeypatch,
+            [(0, "LoadState=loaded\nTimeoutStopUSec=210000000\n")],
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result == {
+            "unit": "hermes-gateway.service",
+            "timeout_stop_sec": 210.0,
+            "drain_timeout": 180.0,
+            "expected_min": 210.0,
+            "mismatch": False,
+        }
+        assert "--property=LoadState" in calls[0]
+        assert "--property=TimeoutStopUSec" in calls[0]
+
+    def test_ignores_not_found_user_unit_and_tries_system_manager(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        self._mock_systemd_unit(monkeypatch)
+        calls = self._mock_systemctl_show(
+            monkeypatch,
+            [
+                (0, "LoadState=not-found\nTimeoutStopUSec=1000000\n"),
+                (0, "LoadState=loaded\nTimeoutStopUSec=240000000\n"),
+            ],
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["timeout_stop_sec"] == 240.0
+        assert result["mismatch"] is False
+        assert calls[0][:2] == ["systemctl", "--user"]
+        assert calls[1][:2] == ["systemctl", "show"]
+
+    @pytest.mark.parametrize(
+        "load_state",
+        ["not-found", "error", "masked", "bad-setting", "generated"],
+    )
+    def test_returns_none_for_non_loaded_unit_states(self, monkeypatch, load_state):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        self._mock_systemd_unit(monkeypatch)
+        self._mock_systemctl_show(
+            monkeypatch,
+            [
+                (0, f"LoadState={load_state}\nTimeoutStopUSec=1000000\n"),
+                (0, f"LoadState={load_state}\nTimeoutStopUSec=1000000\n"),
+            ],
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is None
+
+    def test_returns_none_when_load_state_is_missing(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        self._mock_systemd_unit(monkeypatch)
+        self._mock_systemctl_show(
+            monkeypatch,
+            [
+                (0, "TimeoutStopUSec=1000000\n"),
+                (0, "TimeoutStopUSec=1000000\n"),
+            ],
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is None

@@ -39,7 +39,8 @@ import time
 import uuid
 import textwrap
 from collections import deque
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
@@ -2934,7 +2935,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
         try:
             parsed = urlparse(token)
             if parsed.scheme == "file":
-                expanded = unquote(parsed.path or "")
+                expanded = url2pathname(parsed.path or "")
                 if parsed.netloc and os.name == "nt":
                     expanded = f"//{parsed.netloc}{expanded}"
         except Exception:

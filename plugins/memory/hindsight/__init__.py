@@ -1607,6 +1607,9 @@ class HindsightMemoryProvider(MemoryProvider):
         that drains an in-memory queue. Once shutdown() has been called,
         further sync_turn() calls are dropped — this prevents post-exit
         retains from reaching aiohttp after interpreter shutdown begins.
+        The drop is not permanent on a long-lived process: the next
+        on_session_switch() clears the latch, because a fresh session is
+        proof the interpreter is not tearing down.
         """
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
@@ -1815,6 +1818,16 @@ class HindsightMemoryProvider(MemoryProvider):
         new_id = str(new_session_id or "").strip()
         if not new_id:
             return
+
+        # 0. Un-latch a prior shutdown(). _shutting_down is meant to stop
+        # retains racing interpreter teardown, but on a long-lived process
+        # (gateway) the same provider instance serves many sessions: after
+        # one shutdown() the sync_turn()/queue_prefetch() gates dropped every
+        # later session's writes forever, while reads kept working — silent
+        # memory loss. A session switch is affirmative proof the process is
+        # NOT tearing down (atexit never starts new sessions), so revive
+        # here; _ensure_writer() starts a fresh writer on the next retain.
+        self._shutting_down.clear()
 
         # 1. Flush any buffered turns under the OLD identifiers. Snapshot
         # everything before mutating self._* so metadata + tags + doc_id

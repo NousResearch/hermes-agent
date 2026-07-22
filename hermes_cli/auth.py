@@ -3915,19 +3915,14 @@ def _pool_codex_access_token() -> str:
     """Return the most-recent usable access_token from the openai-codex pool.
 
     Used as a fallback by ``resolve_codex_runtime_credentials`` when the
-    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
-    directly from auth.json and picks the first non-empty access_token,
-    preferring entries that are not currently in an exhaustion cooldown.
+    singleton has no creds.  Reads through ``read_credential_pool`` instead of
+    directly from the active profile store so named profiles with an empty
+    local Codex pool still inherit the global-root credential pool.
     Returns ``""`` when no usable entry is found (caller handles by raising
     the original AuthError).
     """
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return ""
-        entries = pool.get("openai-codex")
+        entries = read_credential_pool("openai-codex")
         if not isinstance(entries, list):
             return ""
 

@@ -320,6 +320,7 @@ class EbbinghausMemoryStore:
             )
 
         self._time_fn = time_fn or time.time
+        # In-process cache of dream previews; durable copy lives in dream_previews.
         self._preview_registry: dict[str, dict[str, Any]] = {}
         self._negative_prefetch_suppressed_count = 0
         self._conn = sqlite3.connect(
@@ -327,6 +328,7 @@ class EbbinghausMemoryStore:
         )
         self._conn.row_factory = sqlite3.Row
         self._init_db()
+        self._hydrate_preview_registry()
 
     # ------------------------------------------------------------------
     # DB initialisation & migration
@@ -395,6 +397,70 @@ class EbbinghausMemoryStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    def _hydrate_preview_registry(self) -> None:
+        """Load durable dream preview payloads after reopen (best-effort)."""
+        try:
+            rows = self._conn.execute(
+                "SELECT cluster_id, payload FROM dream_previews"
+            ).fetchall()
+        except sqlite3.Error:
+            return
+        for row in rows:
+            cluster_id = str(row["cluster_id"] or "")
+            if not cluster_id or "\x00" in cluster_id:
+                continue
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                self._preview_registry[cluster_id] = payload
+
+    def _persist_preview(self, cluster_id: str, payload: dict[str, Any], *, now: float) -> None:
+        """Write preview ledger to SQLite so apply survives process restart."""
+        if not cluster_id or "\x00" in cluster_id or len(cluster_id) > 128:
+            raise ValueError(f"invalid dream cluster_id: {cluster_id!r}")
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if "\x00" in encoded:
+            raise ValueError("dream preview payload must not contain NUL bytes")
+        self._conn.execute(
+            """
+            INSERT INTO dream_previews (cluster_id, payload, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cluster_id) DO UPDATE SET
+                payload = excluded.payload,
+                created_at = excluded.created_at
+            """,
+            (cluster_id, encoded, now),
+        )
+        self._preview_registry[cluster_id] = payload
+
+    def _load_preview(self, cluster_id: str) -> dict[str, Any] | None:
+        cached = self._preview_registry.get(cluster_id)
+        if isinstance(cached, dict):
+            return cached
+        row = self._conn.execute(
+            "SELECT payload FROM dream_previews WHERE cluster_id = ?",
+            (cluster_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        self._preview_registry[cluster_id] = payload
+        return payload
+
+    def _drop_preview(self, cluster_id: str) -> None:
+        self._preview_registry.pop(cluster_id, None)
+        self._conn.execute(
+            "DELETE FROM dream_previews WHERE cluster_id = ?",
+            (cluster_id,),
+        )
 
     def _now(self) -> float:
         return float(self._time_fn())
@@ -1315,10 +1381,13 @@ class EbbinghausMemoryStore:
                     "valence": 0.0,
                 },
             }
-            # Preview must not mutate SQLite — keep ledger in process memory only.
-            self._preview_registry[cluster_id] = payload
+            # Persist preview ledger so apply works after process restart.
+            # Memories table itself remains unchanged by preview.
+            self._persist_preview(cluster_id, payload, now=now)
             clusters.append(payload)
 
+        if clusters:
+            self._conn.commit()
         return {"mode": "dream_preview", "enabled": True, "clusters": clusters}
 
     def _find_semantic_by_source_set(self, source_ids: Sequence[int]) -> int | None:
@@ -1370,7 +1439,38 @@ class EbbinghausMemoryStore:
                 if not content or len(content) < 8:
                     raise ValueError(f"invalid dream summary for cluster {cluster_id!r}")
 
-                preview = self._preview_registry.get(cluster_id)
+                preview = self._load_preview(cluster_id)
+                provided_raw = dream.get("source_memory_ids") or dream.get("source_ids") or []
+
+                # Idempotency first: same content OR same source-set already consolidated.
+                # This path stays valid even after the durable preview row is dropped.
+                early_source_ids = (
+                    _as_positive_int_ids(provided_raw) if provided_raw else []
+                )
+                existing = self._conn.execute(
+                    """
+                    SELECT memory_id FROM memories
+                    WHERE content = ? AND memory_type = 'semantic'
+                    """,
+                    (content,),
+                ).fetchone()
+                by_sources = (
+                    self._find_semantic_by_source_set(early_source_ids)
+                    if early_source_ids
+                    else None
+                )
+                if existing or by_sources is not None:
+                    semantic_id = int(
+                        existing["memory_id"] if existing else by_sources  # type: ignore[index]
+                    )
+                    results.append({
+                        "cluster_id": cluster_id,
+                        "status": "idempotent",
+                        "semantic_memory_id": semantic_id,
+                        "archived_sources": [],
+                    })
+                    continue
+
                 if preview is None:
                     raise ValueError(f"unknown dream preview cluster_id: {cluster_id}")
 
@@ -1379,7 +1479,6 @@ class EbbinghausMemoryStore:
                     or preview.get("source_ids")
                     or []
                 )
-                provided_raw = dream.get("source_memory_ids") or dream.get("source_ids") or []
                 provided_ids = (
                     _as_positive_int_ids(provided_raw) if provided_raw else list(expected_ids)
                 )
@@ -1405,27 +1504,6 @@ class EbbinghausMemoryStore:
 
                 if preview.get("contains_strong_negative_valence") and valence < dp.negative_summary_max_valence:
                     valence = dp.negative_summary_max_valence
-
-                # Idempotency: same content OR same source-set already consolidated.
-                existing = self._conn.execute(
-                    """
-                    SELECT memory_id FROM memories
-                    WHERE content = ? AND memory_type = 'semantic'
-                    """,
-                    (content,),
-                ).fetchone()
-                by_sources = self._find_semantic_by_source_set(source_ids)
-                if existing or by_sources is not None:
-                    semantic_id = int(
-                        existing["memory_id"] if existing else by_sources  # type: ignore[index]
-                    )
-                    results.append({
-                        "cluster_id": cluster_id,
-                        "status": "idempotent",
-                        "semantic_memory_id": semantic_id,
-                        "archived_sources": [],
-                    })
-                    continue
 
                 encoded = _encode_memory(content, tags)
                 cur = self._conn.execute(
@@ -1474,6 +1552,9 @@ class EbbinghausMemoryStore:
                     "semantic_memory_id": semantic_id,
                     "archived_sources": archived_sources,
                 })
+                # Drop durable preview after successful apply (idempotent re-apply
+                # still works via content / source-set provenance checks).
+                self._drop_preview(cluster_id)
             self._conn.execute("COMMIT")
         except Exception:
             self._conn.execute("ROLLBACK")

@@ -336,11 +336,14 @@ def test_dream_preview_apply_provenance(tmp_path):
     preview = store.dream_preview()
     assert preview["mode"] == "dream_preview"
     assert preview["clusters"]
-    # Preview must not mutate memories rows (in-memory ledger only).
+    # Preview must not mutate memories rows (ledger goes to dream_previews only).
     assert store.stats()["count"] == before_count
     preview2 = store.dream_preview()
     assert store.stats()["count"] == before_count
     assert len(preview2["clusters"]) <= 8
+    # Durable preview ledger for apply-after-reopen.
+    ledger = store._conn.execute("SELECT COUNT(*) AS c FROM dream_previews").fetchone()
+    assert int(ledger["c"]) >= 1
 
     cluster = preview["clusters"][0]
     applied = store.dream_apply(
@@ -711,6 +714,92 @@ def test_dream_apply_rolls_back_on_bad_source_and_clamps_valence(tmp_path):
     )
     semantic = store.get(applied["applied"][0]["semantic_memory_id"])
     assert semantic["valence"] >= -0.20
+    store.close()
+
+
+def test_dream_preview_survives_store_reopen(tmp_path):
+    db = tmp_path / "dream_persist.db"
+    store = EbbinghausMemoryStore(db)
+    a = store.remember("Episode A about consent boundary.", tags="consent", salience=0.8, valence=-0.7)
+    b = store.remember("Episode B about consent boundary.", tags="consent", salience=0.75, valence=-0.65)
+    store._conn.execute(
+        "UPDATE memories SET dream_candidate = 1 WHERE memory_id IN (?, ?)",
+        (a["memory_id"], b["memory_id"]),
+    )
+    store._conn.commit()
+    preview = store.dream_preview()
+    cluster = preview["clusters"][0]
+    store.close()
+
+    store2 = EbbinghausMemoryStore(db)
+    applied = store2.dream_apply(
+        [
+            {
+                "cluster_id": cluster["cluster_id"],
+                "source_memory_ids": cluster["source_memory_ids"],
+                "summary": "Confirm consent before irreversible edits.",
+                "tags": ["dream-summary", "semantic", "consent"],
+                "salience": 0.8,
+                "valence": -0.1,
+            }
+        ]
+    )
+    assert applied["applied"][0]["status"] == "applied"
+    again = store2.dream_apply(
+        [
+            {
+                "cluster_id": cluster["cluster_id"],
+                "source_memory_ids": cluster["source_memory_ids"],
+                "summary": "Confirm consent before irreversible edits.",
+                "tags": ["dream-summary", "semantic", "consent"],
+                "salience": 0.8,
+                "valence": -0.1,
+            }
+        ]
+    )
+    assert again["applied"][0]["status"] == "idempotent"
+    store2.close()
+
+
+def test_provenance_blocks_purge_of_sole_source(tmp_path):
+    from plugins.memory.ebbinghaus.policies import CapacityPolicy, EbbinghausPolicies
+
+    clock = {"now": 1_700_000_000.0}
+    policies = EbbinghausPolicies(
+        capacity=CapacityPolicy(
+            max_active_memories=50,
+            max_archived_memories=1,
+            archive_retention_days=1,
+        )
+    )
+    store = EbbinghausMemoryStore(
+        tmp_path / "prov.db", time_fn=lambda: clock["now"], policies=policies
+    )
+    src = store.remember("Raw episodic detail for provenance.", tags="consent", salience=0.7)
+    semantic = store.remember(
+        "Reusable consent lesson from dream apply path.",
+        tags="dream-summary,semantic",
+        salience=0.7,
+    )
+    store._conn.execute(
+        "UPDATE memories SET memory_type = 'semantic' WHERE memory_id = ?",
+        (semantic["memory_id"],),
+    )
+    store._conn.execute(
+        """
+        INSERT INTO memory_provenance
+            (semantic_memory_id, source_memory_id, relation, created_at)
+        VALUES (?, ?, 'dream-derived', ?)
+        """,
+        (semantic["memory_id"], src["memory_id"], clock["now"]),
+    )
+    store._archive_memory(src["memory_id"], reason="dream-consolidated", now=clock["now"])
+    store._conn.commit()
+    # Force purge pressure: old archive + over archive cap.
+    clock["now"] += 10 * 86400
+    purged = store._purge_old_archives(clock["now"])
+    assert src["memory_id"] not in purged
+    assert store.get(src["memory_id"])["state"] == "archived"
     store.close()
 
 

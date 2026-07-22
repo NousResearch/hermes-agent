@@ -435,6 +435,7 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.proactive import build_proactive_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -13098,7 +13099,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
-        "project", "proxy",
+        "project", "proactive", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
@@ -13548,6 +13549,31 @@ def cmd_insights(args):
         db.close()
     except Exception as e:
         print(f"Error generating insights: {e}")
+
+
+def cmd_proactive(args):
+    db = None
+    try:
+        from hermes_state import SessionDB
+        from agent.proactive import ProactiveEngine, dumps_report
+
+        db = SessionDB()
+        engine = ProactiveEngine(db)
+        report = engine.generate(
+            days=args.days,
+            source=args.source,
+            limit=args.limit,
+            min_messages=args.min_messages,
+        )
+        print(dumps_report(report) if args.json else engine.format_terminal(report))
+    except Exception as e:
+        print(f"Error generating proactive opportunities: {e}")
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def cmd_skills(args):
@@ -15353,6 +15379,11 @@ def main():
     # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+
+    # =========================================================================
+    # proactive command  (parser built in hermes_cli/subcommands/proactive.py)
+    # =========================================================================
+    build_proactive_parser(subparsers, cmd_proactive=cmd_proactive)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)

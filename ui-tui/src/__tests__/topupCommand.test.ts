@@ -245,7 +245,7 @@ describe('/billing slash command (overlay-driven)', () => {
       getOverlayState().billing!.ctx.charge('100')
       await vi.runAllTimersAsync()
       const out = printed(sys)
-      expect(out).toContain('需要先启用终端计费')
+      expect(out).toContain('需要远程消费授权')
       expect(out).toContain('上一笔扣款结果尚未确认')
       expect(out).not.toContain('Remote spending scope is missing')
     } finally {
@@ -396,8 +396,8 @@ describe('/billing slash command (overlay-driven)', () => {
   // ── CF-4: revoked-terminal UX (kill the "15-minute zombie button") ──
 
   it.each([
-    ['admin', 'An admin stopped remote spending for this terminal'],
-    ['self', 'You stopped remote spending for this terminal']
+    ['admin', 'An admin stopped Remote Spending for this terminal'],
+    ['self', 'You stopped Remote Spending for this terminal']
   ])(
     'ctx.charge remote_spending_revoked (%s) → clears the overlay (no zombie button) + actor copy',
     async (actor, copy) => {
@@ -472,7 +472,7 @@ describe('/billing slash command (overlay-driven)', () => {
     await Promise.resolve()
     await Promise.resolve()
     const out = printed(sys)
-    expect(out).toContain('Remote spending is off for this account')
+    expect(out).toContain('Remote Spending is off for this account')
     // Account-wide switch is NOT a per-terminal revoke — overlay stays open.
     expect(getOverlayState().billing).toBeTruthy()
   })

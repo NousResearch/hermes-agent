@@ -5,6 +5,7 @@ export type Locale = keyof typeof registry.locales
 export interface LocaleMetadata {
   name: string
   triggerLabel: string
+  intlTag?: string
 }
 
 const hasOwn = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key)
@@ -12,6 +13,11 @@ const hasOwn = (value: object, key: string) => Object.prototype.hasOwnProperty.c
 export const LOCALES = Object.freeze(Object.keys(registry.locales) as Locale[])
 export const DEFAULT_LOCALE = registry.default as Locale
 export const LOCALE_METADATA = registry.locales as Record<Locale, LocaleMetadata>
+
+/** BCP-47 tag for Intl APIs; language-specific compatibility stays in the registry. */
+export function localeIntlTag(locale: Locale): string {
+  return LOCALE_METADATA[locale].intlTag ?? locale
+}
 
 const isLocale = (value: string): value is Locale => hasOwn(registry.locales, value)
 

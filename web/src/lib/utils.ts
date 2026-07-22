@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { localeIntlTag } from "@hermes/shared/locale-registry";
 
 import type { Locale } from "@/i18n/types";
 
@@ -16,17 +17,10 @@ export const themedBody = "font-mondwest normal-case";
 /** Mondwest brand chrome — uppercase section headers and nav labels. */
 export const themedChrome = "font-mondwest text-display";
 
-/** Locale tag used only at the Intl compatibility boundary. */
-export function intlLocale(locale: Locale): string {
-  if (locale === "zh") return "zh-Hans";
-  if (locale === "zh-hant") return "zh-Hant";
-  return locale;
-}
-
 /** Relative time from a Unix epoch timestamp (seconds). */
 export function timeAgo(ts: number, locale: Locale = "en"): string {
   const delta = Date.now() / 1000 - ts;
-  const relative = new Intl.RelativeTimeFormat(intlLocale(locale), {
+  const relative = new Intl.RelativeTimeFormat(localeIntlTag(locale), {
     numeric: "auto",
     style: "narrow",
   });
@@ -55,7 +49,7 @@ export function formatDateTime(
     timeStyle: "short",
   },
 ): string {
-  return new Intl.DateTimeFormat(intlLocale(locale), options).format(
+  return new Intl.DateTimeFormat(localeIntlTag(locale), options).format(
     value instanceof Date ? value : new Date(value),
   );
 }

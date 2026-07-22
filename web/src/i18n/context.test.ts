@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { localeIntlTag } from "@hermes/shared/locale-registry";
 
 import { api } from "../lib/api";
 import { en } from "./en";
@@ -97,6 +98,12 @@ describe("Dashboard i18n framework", () => {
     expect(normalizeLocale("zh-TW")).toBe("zh-hant");
     expect(normalizeLocale("zh_HK")).toBe("zh-hant");
     expect(normalizeLocale("zh-MO")).toBe("zh-hant");
+  });
+
+  it("sources Intl compatibility tags from shared locale metadata", () => {
+    expect(localeIntlTag("zh")).toBe("zh-Hans");
+    expect(localeIntlTag("zh-hant")).toBe("zh-Hant");
+    expect(localeIntlTag("de")).toBe("de");
   });
 
   it("deep-merges locale overrides onto the complete English source", () => {

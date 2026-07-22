@@ -7255,7 +7255,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self.agent:
                 try:
                     self.agent._flush_messages_to_session_db(
-                        self.conversation_history
+                        self.conversation_history,
+                        conversation_history=self.conversation_history,
                     )
                 except Exception:
                     pass  # best-effort

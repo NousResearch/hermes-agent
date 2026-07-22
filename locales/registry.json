@@ -2,8 +2,8 @@
   "default": "en",
   "locales": {
     "en": { "name": "English", "triggerLabel": "EN" },
-    "zh": { "name": "简体中文", "triggerLabel": "简体中文" },
-    "zh-hant": { "name": "繁體中文", "triggerLabel": "繁體中文" },
+    "zh": { "name": "简体中文", "triggerLabel": "简体中文", "intlTag": "zh-Hans" },
+    "zh-hant": { "name": "繁體中文", "triggerLabel": "繁體中文", "intlTag": "zh-Hant" },
     "ja": { "name": "日本語", "triggerLabel": "日本語" },
     "de": { "name": "Deutsch", "triggerLabel": "Deutsch" },
     "es": { "name": "Español", "triggerLabel": "Español" },

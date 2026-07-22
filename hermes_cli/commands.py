@@ -127,6 +127,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+    CommandDef("set-workspace", "Change the working directory (cwd) for terminal/file tools",
+               "Session", cli_only=True, aliases=("setworkspace", "workspace", "cd"),
+               args_hint="<path>"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

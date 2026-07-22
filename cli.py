@@ -6947,6 +6947,127 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print()
     
 
+    def _handle_set_workspace_command(self, cmd_original: str):
+        """Change the working directory (cwd) used by terminal/file/code-exec tools.
+
+        Updates ``TERMINAL_CWD`` env var (single source of truth), ``os.chdir()``
+        for the local backend (so ``os.getcwd()`` fallbacks stay aligned — matches
+        the ``_restore_session_cwd`` pattern), and the current session's cached
+        terminal env / file_ops ``.cwd``.  Effect is immediate -- no ``/reset``
+        needed -- because tools re-read these on each call.
+
+        Notes:
+        - For the ``local`` backend: full host-local validation and ``os.chdir()``
+          so the process cwd agrees with ``TERMINAL_CWD``.
+        - For docker/ssh/etc.: we set ``TERMINAL_CWD`` (so file_tools' relative-
+          path base changes) but skip host-local ``isdir``/``access`` checks
+          because the path lives on the remote host.  ``cd`` should ideally
+          happen via the terminal tool inside the remote session for shell-state
+          correctness.
+        - The change is session-scoped; it does NOT write to ``config.yaml``.
+        - Cache updates are scoped to the current session's ``"default"`` task
+          to avoid retargeting another session's workspace.
+        """
+        parts = cmd_original.split(maxsplit=1)
+        current = os.getenv("TERMINAL_CWD", os.getcwd())
+        is_local = os.getenv("TERMINAL_ENV", "local") == "local"
+
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint(f"  {_DIM}Current workspace:{_RST} {current}")
+            _cprint(f"  {_DIM}Usage:{_RST} /set-workspace <path>")
+            return
+
+        raw = parts[1].strip()
+        # Strip surrounding quotes for paths with spaces: /set-workspace "~/My Stuff"
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+            raw = raw[1:-1]
+
+        # Expand ~ and $VARS, then resolve relative paths against current cwd.
+        expanded = os.path.expanduser(os.path.expandvars(raw))
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(current, expanded)
+
+        if is_local:
+            # Full host-local validation (path must exist and be accessible here).
+            try:
+                new_cwd = os.path.realpath(expanded)
+            except OSError as e:
+                _cprint(f"  {_DIM}✗ Could not resolve path:{_RST} {e}")
+                return
+
+            if not os.path.isdir(new_cwd):
+                _cprint(f"  {_DIM}✗ Not a directory:{_RST} {new_cwd}")
+                return
+            if not os.access(new_cwd, os.R_OK | os.X_OK):
+                _cprint(f"  {_DIM}✗ Not readable/searchable:{_RST} {new_cwd}")
+                return
+        else:
+            # Non-local backend: path lives on the remote host, so skip host-
+            # local isdir/access checks.  Still normalise to an absolute path.
+            try:
+                new_cwd = os.path.realpath(expanded)
+            except OSError as e:
+                _cprint(f"  {_DIM}✗ Could not resolve path:{_RST} {e}")
+                return
+
+        if new_cwd == current:
+            _cprint(f"  {_DIM}Workspace unchanged:{_RST} {new_cwd}")
+            return
+
+        # For the local backend, also chdir the process so os.getcwd() fallbacks
+        # stay aligned with TERMINAL_CWD (matches _restore_session_cwd pattern).
+        if is_local:
+            try:
+                os.chdir(new_cwd)
+            except OSError as e:
+                _cprint(f"  {_DIM}✗ Could not enter directory:{_RST} {e}")
+                return
+
+        # 1) Single source of truth for everything that reads via os.getenv.
+        os.environ["TERMINAL_CWD"] = new_cwd
+
+        # 2) Update the current session's terminal environment only.
+        #    Scoped to "default" (the CLI session's task key) to avoid
+        #    retargeting another session's workspace.  The cwd-marker
+        #    mechanism normally updates this on every ``cd`` -- here we
+        #    force-sync because the user is changing it out-of-band.
+        synced = False
+        try:
+            from tools.terminal_tool import _active_environments, _env_lock
+            with _env_lock:
+                env = _active_environments.get("default")
+                if env is not None:
+                    try:
+                        env.cwd = new_cwd
+                        synced = True
+                    except Exception:
+                        # Remote backends may reject arbitrary cwds; skip.
+                        pass
+        except Exception:
+            # terminal_tool not loaded yet -- nothing to sync, env var alone wins.
+            pass
+
+        # 3) Refresh the current session's file_ops fallback cwd.
+        #    ShellFileOperations prefers env.cwd (already updated above) but
+        #    uses self.cwd as fallback when the env doesn't track cwd.
+        try:
+            from tools.file_tools import _file_ops_lock, _file_ops_cache
+            with _file_ops_lock:
+                fops = _file_ops_cache.get("default")
+                if fops is not None:
+                    try:
+                        fops.cwd = new_cwd
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        _cprint(f"  {_DIM}✓ Workspace changed{_RST}")
+        _cprint(f"    {_DIM}from:{_RST} {current}")
+        _cprint(f"    {_DIM}to:  {_RST} {new_cwd}")
+        if is_local:
+            _cprint(f"    {_DIM}(process cwd synced){_RST}")
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -8863,6 +8984,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # See issue #8688 (cmux). Ctrl+L is bound to the same helper.
             self._force_full_redraw()
             _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
+        elif canonical == "set-workspace":
+            self._handle_set_workspace_command(cmd_original)
         elif canonical == "clear":
             if self._confirm_destructive_slash(
                 "clear",

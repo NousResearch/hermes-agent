@@ -3832,7 +3832,8 @@ def _current_profile_name() -> str:
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 # v4: session.create fast=false is an explicit per-session normal-tier override.
-DESKTOP_BACKEND_CONTRACT = 4
+# v5: every Desktop prompt.submit is bound to its durable stored session.
+DESKTOP_BACKEND_CONTRACT = 5
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -9608,6 +9609,22 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # A Desktop runtime id is only a volatile transport handle. Bind every
+    # submit to the durable conversation the composer intended before touching
+    # transport, busy queues, history, or persistence. This is the server-side
+    # fence for stale/cross-wired Desktop runtime caches (#54527).
+    expected_key_present = "expected_stored_session_id" in params
+    expected_key = str(params.get("expected_stored_session_id") or "").strip()
+    actual_key = str(session.get("session_key") or "").strip()
+    if not expected_key_present or not expected_key:
+        if _session_source(session) == "desktop":
+            return _err(
+                rid,
+                4260,
+                "Desktop upgrade required: prompt.submit must include its durable session target",
+            )
+    elif expected_key != actual_key:
+        return _err(rid, 4091, "prompt target mismatch; reload the conversation and retry")
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps

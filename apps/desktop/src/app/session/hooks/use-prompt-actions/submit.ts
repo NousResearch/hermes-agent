@@ -449,6 +449,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
+        const expectedStoredSessionId = options?.storedSessionId ?? startingStoredSessionId
+
+        // Every Desktop submit is durably pinned as well as runtime-routed. The
+        // gateway rejects a stale runtime→stored binding before it can queue,
+        // truncate, persist, or start a turn (#54527).
+        if (!expectedStoredSessionId) {
+          return abortForSessionSwitch(sessionId)
+        }
+
+        const submitParams = (runtimeSessionId: string) => ({
+          expected_stored_session_id: expectedStoredSessionId,
+          session_id: runtimeSessionId,
+          text
+        })
 
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. Detect this,
@@ -457,7 +471,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         try {
           await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
@@ -485,7 +499,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }
 
               await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               )
             } else {
               submitErr = firstErr

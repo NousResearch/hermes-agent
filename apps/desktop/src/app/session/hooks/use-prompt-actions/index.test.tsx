@@ -321,6 +321,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       session_id: RUNTIME_SESSION_ID
     })
     expect(calls[1]?.params).toEqual({
+      expected_stored_session_id: RUNTIME_SESSION_ID,
       session_id: RUNTIME_SESSION_ID,
       text: 'write the implementation plan'
     })
@@ -524,6 +525,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'hello after a stop'
       },
@@ -553,6 +555,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
       },
@@ -588,6 +591,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: 'stored-session-a',
         session_id: 'rt-session-a',
         text: 'queued for background session'
       },
@@ -604,8 +608,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
     // A stale-session 404 must not strand the queued entry: submitPrompt returns
     // false on failure so the composer keeps it, and the edge-independent
-    // auto-drain re-attempts once the session is idle again. storedSessionId is
-    // null so the session.resume recovery path is skipped and the error surfaces.
+    // auto-drain re-attempts once the session is idle again while the durable
+    // session target remains pinned across both attempts.
     let attempt = 0
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -626,7 +630,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
-        storedSessionId={null}
+        storedSessionId={RUNTIME_SESSION_ID}
       />
     )
 
@@ -638,6 +642,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'please send me'
       },
@@ -988,6 +993,7 @@ describe('usePromptActions file attachment sync', () => {
       data_url: 'data:text/plain;base64,aGVsbG8='
     })
     expect(calls[1]?.params).toEqual({
+      expected_stored_session_id: RUNTIME_SESSION_ID,
       session_id: RUNTIME_SESSION_ID,
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
@@ -1068,7 +1074,11 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[0]?.params).not.toHaveProperty('data_url')
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
+      params: {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
+        session_id: RUNTIME_SESSION_ID,
+        text: '@file:data/report.txt\n\nsummarize'
+      }
     })
   })
 })
@@ -1190,7 +1200,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RECOVERED_SESSION_ID,
+      text: 'message after wake'
+    })
   })
 
   it('background queue resume uses the queued stored id and leaves foreground runtime selected', async () => {
@@ -1237,11 +1251,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
     })
@@ -1421,6 +1437,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
     })
@@ -1539,7 +1556,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'follow-up while the profile route is rebinding'
+      },
       1_800_000
     )
   })
@@ -1576,7 +1597,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'stay in the routed profile session'
+      },
       1_800_000
     )
   })
@@ -1607,7 +1632,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'normal follow-up'
+      },
       1_800_000
     )
   })
@@ -1664,13 +1693,18 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('retry after recovery')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'retry after recovery'
+      },
       1_800_000
     )
   })
 
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
 
     // Mirror the real createBackendSessionForSend: a successful create
     // re-homes the active runtime ref to the session it minted BEFORE
@@ -1678,6 +1712,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // regression ship green.
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = RUNTIME_SESSION_ID
 
       return RUNTIME_SESSION_ID
     })
@@ -1699,6 +1734,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={null}
       />
     )

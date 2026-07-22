@@ -412,7 +412,11 @@ async function build3D(viewport, data, S, onSelect) {
   // remember base emissive for highlight restore
   for (const m of meshes) m.userData.baseEmissive = m.material.emissive?.getHex?.() ?? 0x000000;
 
-  const setLayer = (id, on) => { if (groups[id]) groups[id].visible = on; };
+  let hdActive = false; // true once a high-detail GLB replaces the procedural body
+  const setLayer = (id, on) => {
+    if (hdActive) { for (const m of meshes) if (m.userData.layer === id) m.visible = on; }
+    else if (groups[id]) groups[id].visible = on;
+  };
   const HOT = new THREE.Color("#4fd1ff");
   const highlight = (ids) => {
     const set = new Set(ids);
@@ -438,7 +442,7 @@ async function build3D(viewport, data, S, onSelect) {
     ptr.x = ((x - rect.left) / rect.width) * 2 - 1;
     ptr.y = -((y - rect.top) / rect.height) * 2 + 1;
     ray.setFromCamera(ptr, camera);
-    const hits = ray.intersectObjects(meshes.filter((m) => m.parent.visible), false);
+    const hits = ray.intersectObjects(meshes.filter((m) => m.visible !== false && m.parent?.visible !== false), false);
     if (hits.length) { const id = hits[0].object.userData.structure; highlight([id]); onSelect(id); }
   };
   dom.addEventListener("pointerdown", (e) => { onDown(e.clientX, e.clientY); dom.setPointerCapture?.(e.pointerId); });
@@ -479,22 +483,32 @@ async function build3D(viewport, data, S, onSelect) {
       if (!status.available) { report?.("No high-detail model installed. See ANATOMY.md to add one."); return false; }
       report?.("Loading high-detail model…");
       const { GLTFLoader } = await import("../vendor/three/GLTFLoader.js");
-      const gltf = await new GLTFLoader().loadAsync(MODEL_URL);
-      // replace procedural body; map named nodes to structures + layers
-      pivot.clear(); for (const l of data.layers) { groups[l.id] = new THREE.Group(); pivot.add(groups[l.id]); }
+      const gltf = await new GLTFLoader().loadAsync(status.url || MODEL_URL);
+      const hd = gltf.scene;
+      // auto-fit: centre at origin and scale to the procedural body's height,
+      // so a GLB in any units/position frames correctly with no Blender fuss.
+      const box = new THREE.Box3().setFromObject(hd);
+      const size = box.getSize(new THREE.Vector3());
+      const centre = box.getCenter(new THREE.Vector3());
+      const scl = 3.4 / (size.y || 1);
+      hd.scale.setScalar(scl);
+      hd.position.set(-centre.x * scl, -centre.y * scl, -centre.z * scl);
+      // hide the procedural body, index the GLB meshes by structure + layer
+      for (const g of Object.values(groups)) g.visible = false;
       meshes.length = 0;
-      gltf.scene.traverse((o) => {
+      hd.traverse((o) => {
         if (!o.isMesh) return;
         const id = (o.name || "").toLowerCase();
         const st = data.byId[id];
-        const layer = st ? st.layer : "organ";
         o.userData.structure = st ? id : (o.name || "structure");
-        o.userData.baseEmissive = 0x000000;
-        (groups[layer] || groups.organ).add(o); meshes.push(o);
+        o.userData.layer = st ? st.layer : "organ";
+        o.userData.baseEmissive = o.material?.emissive?.getHex?.() ?? 0x000000;
+        meshes.push(o);
       });
-      pivot.add(gltf.scene);
+      pivot.add(hd);
+      hdActive = true;
       for (const l of data.layers) setLayer(l.id, !!S.layers[l.id]);
-      report?.("High-detail model loaded.");
+      report?.(`High-detail model loaded (${meshes.length} parts).`);
       return true;
     } catch (err) {
       report?.(`Couldn't load model: ${err.message}`);

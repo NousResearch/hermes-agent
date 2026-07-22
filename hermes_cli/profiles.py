@@ -874,6 +874,38 @@ def write_profile_meta(
 # CRUD operations
 # ---------------------------------------------------------------------------
 
+def list_profile_homes() -> List[Tuple[str, Path]]:
+    """Return ``(name, HERMES_HOME)`` for all profiles — the LIGHTWEIGHT listing.
+
+    ``list_profiles()`` is built for the Profiles settings page: per profile it
+    parses config.yaml (pure-Python PyYAML over ~17KB files), probes whether a
+    gateway process is running (process-table scans), and rglobs the skills
+    tree. Hot read paths that only need each profile's name + home directory
+    (the session-list aggregator, cron listings) were paying that entire cost
+    on EVERY sidebar refresh — py-spy showed ~70% of a 10s
+    /api/profiles/sessions call inside yaml.safe_load/_check_gateway_running/
+    _count_skills for fields the response never uses. This helper is just the
+    directory scan: default home + each valid profile dir. No YAML, no process
+    probes, no globbing.
+    """
+    homes: List[Tuple[str, Path]] = []
+    default_home = _get_default_hermes_home()
+    if default_home.is_dir():
+        homes.append(("default", default_home))
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            homes.append((name, entry))
+    return homes
+
+
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []

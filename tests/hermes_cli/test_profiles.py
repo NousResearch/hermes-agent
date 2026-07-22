@@ -26,6 +26,7 @@ from hermes_cli.profiles import (
     create_profile,
     delete_profile,
     list_profiles,
+    list_profile_homes,
     set_active_profile,
     get_active_profile,
     get_active_profile_name,
@@ -703,6 +704,40 @@ class TestListProfiles:
         profiles = list_profiles()
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
+
+
+class TestListProfileHomes:
+    """Tests for list_profile_homes() — the lightweight (name, home) listing.
+
+    Behavior contract: it must agree with list_profiles() on WHICH profiles
+    exist and WHERE they live (same names, same paths) — it just skips the
+    expensive per-profile metadata (config.yaml parse, gateway probe, skills
+    rglob) that hot read paths like /api/profiles/sessions never use.
+    """
+
+    def test_matches_list_profiles_names_and_paths(self, profile_env):
+        create_profile("alpha", no_alias=True)
+        create_profile("beta", no_alias=True)
+        heavy = {(p.name, str(p.path)) for p in list_profiles()}
+        light = {(name, str(home)) for name, home in list_profile_homes()}
+        assert light == heavy
+
+    def test_includes_default_first(self, profile_env):
+        create_profile("alpha", no_alias=True)
+        homes = list_profile_homes()
+        assert homes[0][0] == "default"
+
+    def test_skips_invalid_profile_dir_names(self, profile_env, tmp_path):
+        create_profile("alpha", no_alias=True)
+        # A junk dir that doesn't match the profile-id pattern must be ignored,
+        # matching list_profiles() behavior.
+        from hermes_cli.profiles import _get_profiles_root
+
+        junk = _get_profiles_root() / "Not A Profile!"
+        junk.mkdir(parents=True, exist_ok=True)
+        names = [name for name, _ in list_profile_homes()]
+        assert "Not A Profile!" not in names
+        assert "alpha" in names
 
 
 # ===================================================================

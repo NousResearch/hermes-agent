@@ -317,18 +317,22 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
     event_loop_thread = threading.get_ident()
     profile_scan_threads = SimpleQueue()
     worker_threads = SimpleQueue()
-    original_profile_dicts = web_server._cron_profile_dicts
+    # The list path scans profiles via the lightweight _cron_profile_names()
+    # (name-only listing); the find path still resolves through it too. Spy on
+    # that — the contract under test is unchanged: the profile scan must run
+    # OFF the event loop.
+    original_profile_names = web_server._cron_profile_names
     original_find = web_server._find_cron_job_profile
 
-    def tracking_profile_dicts():
+    def tracking_profile_names():
         profile_scan_threads.put(threading.get_ident())
-        return original_profile_dicts()
+        return original_profile_names()
 
     def tracking_find(job_id):
         worker_threads.put(threading.get_ident())
         return original_find(job_id)
 
-    monkeypatch.setattr(web_server, "_cron_profile_dicts", tracking_profile_dicts)
+    monkeypatch.setattr(web_server, "_cron_profile_names", tracking_profile_names)
     monkeypatch.setattr(web_server, "_find_cron_job_profile", tracking_find)
 
     jobs = await web_server.list_cron_jobs(profile="all")

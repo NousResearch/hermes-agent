@@ -12,6 +12,8 @@ from hermes_cli.webhook import (
     _load_subscriptions,
     _save_subscriptions,
     _subscriptions_path,
+    _is_webhook_enabled,
+    _get_webhook_config,
 )
 
 
@@ -236,3 +238,92 @@ class TestWebhookEnabledGate:
         )
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is True
+
+
+class TestGetWebhookConfigEnvOverrides:
+    # Regression tests for #13240: CLI must honor WEBHOOK_* env overrides so it
+    # agrees with the gateway runtime's effective config. Tests bypass the
+    # autouse _is_webhook_enabled patch by calling _get_webhook_config directly.
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch):
+        for key in ("WEBHOOK_ENABLED", "WEBHOOK_PORT", "WEBHOOK_SECRET"):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_yaml_only_disabled(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert _get_webhook_config() == {}
+
+    def test_yaml_only_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"platforms": {"webhook": {"enabled": True, "extra": {"port": 9999}}}},
+        )
+        cfg = _get_webhook_config()
+        assert cfg["enabled"] is True
+        assert cfg["extra"]["port"] == 9999
+
+    def test_env_enables_when_yaml_absent(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+        monkeypatch.setenv("WEBHOOK_PORT", "8644")
+        monkeypatch.setenv("WEBHOOK_SECRET", "s3cret")
+        cfg = _get_webhook_config()
+        assert cfg["enabled"] is True
+        assert cfg["extra"]["port"] == 8644
+        assert cfg["extra"]["secret"] == "s3cret"
+
+    def test_env_overrides_yaml_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"platforms": {"webhook": {"enabled": False}}},
+        )
+        monkeypatch.setenv("WEBHOOK_ENABLED", "1")
+        assert _get_webhook_config()["enabled"] is True
+
+    def test_env_on_enables_when_yaml_absent(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("WEBHOOK_ENABLED", "on")
+        assert _get_webhook_config()["enabled"] is True
+
+    def test_env_secret_overrides_yaml_secret(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "platforms": {"webhook": {"enabled": True, "extra": {"secret": "yaml-secret", "port": 8000}}}
+            },
+        )
+        monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+        monkeypatch.setenv("WEBHOOK_SECRET", "env-secret")
+        cfg = _get_webhook_config()
+        assert cfg["extra"]["secret"] == "env-secret"
+        # Port left untouched because WEBHOOK_PORT is unset — mirrors gateway behavior.
+        assert cfg["extra"]["port"] == 8000
+
+    def test_env_invalid_port_ignored(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"platforms": {"webhook": {"extra": {"port": 8000}}}},
+        )
+        monkeypatch.setenv("WEBHOOK_ENABLED", "yes")
+        monkeypatch.setenv("WEBHOOK_PORT", "not-a-number")
+        assert _get_webhook_config()["extra"]["port"] == 8000
+
+    def test_env_disabled_does_not_flip_yaml_enabled(self, monkeypatch):
+        # Gateway's _apply_env_overrides() only *enables* from env; it never
+        # disables. This asymmetry is preserved so both sides behave identically.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"platforms": {"webhook": {"enabled": True}}},
+        )
+        monkeypatch.setenv("WEBHOOK_ENABLED", "false")
+        assert _get_webhook_config()["enabled"] is True
+
+    def test_load_config_exception_falls_back_to_env(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("yaml broken")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", _boom)
+        monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+        cfg = _get_webhook_config()
+        assert cfg["enabled"] is True

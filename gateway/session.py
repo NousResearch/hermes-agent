@@ -1109,7 +1109,11 @@ class SessionStore:
         # Primary: state.db gateway_routing table. getattr: some tests build
         # partially-initialized stores without __init__ (same pattern as
         # _prune_stale_sessions_locked).
-        loaded_entries: Dict[str, SessionEntry] = {}
+        # Preserve entries already seeded by the live runtime (for example,
+        # background-process origin metadata cached before the first lazy load).
+        # Canonical rows below overwrite the same keys; this is not legacy-disk
+        # fallback and remains available even when the canonical table is empty.
+        loaded_entries: Dict[str, SessionEntry] = dict(self._entries)
         canonical_read_succeeded = False
         _db = getattr(self, "_db", None)
         if _db:

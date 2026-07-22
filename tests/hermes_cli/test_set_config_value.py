@@ -451,6 +451,53 @@ class TestSecretRedactionInDisplay:
         # Exact-match only — substrings like token_count must NOT be masked.
         assert out == cfg
 
+    def test_redact_config_value_masks_dashboard_credentials(self):
+        from hermes_cli.config import redact_config_value
+
+        cfg = {
+            "dashboard": {
+                "basic_auth": {
+                    "username": "admin",
+                    "password": "plain-secret",
+                    "password_hash": "scrypt$secret-hash",
+                    "secret": "session-signing-secret",
+                }
+            }
+        }
+
+        out = redact_config_value(cfg)
+
+        rendered = str(out)
+        assert out["dashboard"]["basic_auth"]["username"] == "admin"
+        assert "plain-secret" not in rendered
+        assert "secret-hash" not in rendered
+        assert "session-signing-secret" not in rendered
+
+    def test_show_config_yaml_prints_all_user_config_redacted(
+        self, _isolated_hermes_home, capsys
+    ):
+        from hermes_cli.config import show_config_yaml
+
+        config_lines = ["custom:"]
+        config_lines.extend(f"  setting_{index}: value_{index}" for index in range(300))
+        config_lines.extend([
+            "  tail_marker: visible_after_line_250",
+            "dashboard:",
+            "  basic_auth:",
+            "    secret: session-signing-secret",
+            "    password_hash: scrypt$secret-hash",
+        ])
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "\n".join(config_lines) + "\n"
+        )
+
+        show_config_yaml()
+
+        output = capsys.readouterr().out
+        assert "tail_marker: visible_after_line_250" in output
+        assert "session-signing-secret" not in output
+        assert "secret-hash" not in output
+
     def test_set_echo_masks_secret_value(self, _isolated_hermes_home, capsys):
         secret = "cfut_ANOTHERSECRET0987654321zyxwvu"
         set_config_value("model.api_key", secret)

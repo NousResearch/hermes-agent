@@ -212,6 +212,26 @@ run_update_failure_case() {
   assert_log update-recreate-failure "$expected"
 }
 
+run_status_failure_case() {
+  local expected="$1"
+  local status
+  printf 'TEST status-failure\n'
+  : > "$LOG_FILE"
+  export DOCKTER_TEST_FAIL_MATCH='ps'
+  export DOCKTER_TEST_FAIL_STATUS=42
+  set +e
+  dockter-hermes-status >/dev/null 2>&1
+  status=$?
+  set -e
+  unset DOCKTER_TEST_FAIL_MATCH DOCKTER_TEST_FAIL_STATUS
+
+  if [[ $status -ne 42 ]]; then
+    printf 'Expected status exit 42, got %s\n' "$status" >&2
+    return 1
+  fi
+  assert_log status-failure "$expected"
+}
+
 run_dashboard_failure_case() {
   local expected="$1"
   local output status
@@ -387,7 +407,9 @@ run_case help-windows run_windows_help
 run_case config dockter-hermes-config
 run_case config-windows run_windows_config
 run_case data-dir-windows run_windows_data_dir
-run_case show-config dockter-hermes-show-config
+run_logged_case show-config \
+  "$(compose_line run --rm -T gateway config show --yaml)" \
+  dockter-hermes-show-config
 run_case cd dockter-hermes-cd
 run_case home dockter-hermes-home
 run_case workspace dockter-hermes-workspace
@@ -402,6 +424,7 @@ run_logged_case logs-default "$(compose_line logs -f gateway)" dockter-hermes-lo
 run_logged_case logs-dashboard "$(compose_line logs -f dashboard --tail 5)" dockter-hermes-logs dashboard --tail 5
 run_logged_case status "$(compose_line ps)
 $(command_line docker ps -a --filter name=hermes --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}')" dockter-hermes-status
+run_status_failure_case "$(compose_line ps)"
 
 run_logged_case shell "$(compose_line exec gateway bash)" dockter-hermes-shell gateway
 run_logged_case exec "$(compose_line exec gateway hermes --version)" dockter-hermes-exec gateway hermes --version

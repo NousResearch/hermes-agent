@@ -22,7 +22,14 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 
     # config show (default)
-    config_subparsers.add_parser("show", help="Show current configuration")
+    config_show = config_subparsers.add_parser(
+        "show", help="Show current configuration"
+    )
+    config_show.add_argument(
+        "--yaml",
+        action="store_true",
+        help="Print all user-authored configuration as redacted YAML",
+    )
 
     # config edit
     config_subparsers.add_parser("edit", help="Open config file in editor")

@@ -383,7 +383,7 @@ dockter-hermes-logs() {
 }
 
 dockter-hermes-status() {
-  _dockter_hermes_compose ps
+  _dockter_hermes_compose ps || return $?
   echo ""
   echo -e "${_HD_CLR_BOLD}Hermes-looking Docker containers:${_HD_CLR_RESET}"
   _dockter_hermes_docker ps -a \
@@ -452,7 +452,7 @@ dockter-hermes-show-config() {
 
   if [[ -f "${hermes_home}/config.yaml" ]]; then
     echo -e "${_HD_CLR_BOLD}${hermes_home}/config.yaml${_HD_CLR_RESET}"
-    sed -n '1,220p' "${hermes_home}/config.yaml"
+    _dockter_hermes_compose run --rm -T gateway config show --yaml || return $?
   else
     echo -e "${_HD_CLR_YELLOW}No ${hermes_home}/config.yaml found${_HD_CLR_RESET}"
   fi

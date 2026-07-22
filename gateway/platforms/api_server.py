@@ -5491,19 +5491,32 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from hermes_cli.auth import has_usable_secret
-            if not has_usable_secret(self._api_key, min_length=16):
-                logger.error(
-                    "[%s] Refusing to start: API_SERVER_KEY is a "
-                    "placeholder or too short (<16 chars). This endpoint "
-                    "dispatches terminal-capable agent work — a guessable "
-                    "key is remote code execution. Generate a strong secret "
-                    "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
-                    "before starting the API server on %s.",
-                    self.name, self._host,
-                )
-                return False
-        except ImportError:
-            pass
+        except Exception as exc:
+            # Fail CLOSED. This guard is the only thing between a guessable
+            # key and a terminal-capable endpoint, so "the check could not be
+            # run" must not resolve to "start anyway" — the same posture
+            # tools/credential_files.py takes when its deny-list cannot be
+            # consulted.
+            logger.error(
+                "[%s] Refusing to start: API_SERVER_KEY strength could not be "
+                "verified (%s: %s), and this endpoint dispatches "
+                "terminal-capable agent work. Repair the installation before "
+                "starting the API server on %s.",
+                self.name, type(exc).__name__, exc, self._host,
+            )
+            return False
+
+        if not has_usable_secret(self._api_key, min_length=16):
+            logger.error(
+                "[%s] Refusing to start: API_SERVER_KEY is a "
+                "placeholder or too short (<16 chars). This endpoint "
+                "dispatches terminal-capable agent work — a guessable "
+                "key is remote code execution. Generate a strong secret "
+                "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                "before starting the API server on %s.",
+                self.name, self._host,
+            )
+            return False
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:

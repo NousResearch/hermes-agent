@@ -46,6 +46,30 @@ class TestGetToolset:
         assert ts is not None
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
+    def test_merges_aliased_registry_tools_into_builtin_toolset(self, monkeypatch):
+        # An MCP server named identically to a static toolset (e.g. "browser")
+        # registers its tools under the canonical alias target ("mcp-browser")
+        # and records the alias "browser" -> "mcp-browser". get_toolset("browser")
+        # must resolve the alias and merge those tools, not just the ones whose
+        # toolset literally equals "browser".
+        reg = ToolRegistry()
+        reg.register(
+            name="browser_mcp_extra",
+            toolset="mcp-browser",
+            schema=_make_schema("browser_mcp_extra", "Aliased MCP browser tool"),
+            handler=_dummy_handler,
+        )
+        reg.register_toolset_alias("browser", "mcp-browser")
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        ts = get_toolset("browser")
+        assert ts is not None
+        # Static built-in browser tools are still present...
+        assert "browser_navigate" in ts["tools"]
+        # ...and the aliased MCP tool is now merged in.
+        assert "browser_mcp_extra" in ts["tools"]
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 

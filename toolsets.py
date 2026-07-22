@@ -626,9 +626,17 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         return toolset if toolset else None
 
     if toolset:
+        # Resolve ``name`` to its canonical registry toolset before querying
+        # for registry-owned tools. When a static toolset name collides with
+        # an MCP server name (e.g. an MCP server literally named "browser"),
+        # the registry records the tools under the canonical alias target
+        # (``mcp-browser``) and an alias ``browser -> mcp-browser``. Querying
+        # by the original name would miss those tools, so honour the alias.
+        registry_toolset = registry.get_toolset_alias_target(name) or name
         merged_tools = sorted(
             set(toolset.get("tools", []))
             | set(registry.get_tool_names_for_toolset(name))
+            | set(registry.get_tool_names_for_toolset(registry_toolset))
         )
         return {**toolset, "tools": merged_tools}
 

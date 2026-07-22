@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 import plugins.image_gen.openai as openai_plugin
@@ -119,6 +120,33 @@ class TestModelResolution:
         model_id, meta = openai_plugin._resolve_model()
         assert model_id == "gpt-image-2-high"
         assert meta["quality"] == "high"
+
+    def test_custom_base_url_ignores_macos_system_proxy(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example/v1")
+        # Clear explicit proxy env vars so the test specifically verifies
+        # system-proxy bypass, not env-var-level masking.  Mirrors the
+        # pattern in tests/agent/test_auxiliary_client_proxy_env.py.
+        for key in (
+            "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+            "https_proxy", "http_proxy", "all_proxy",
+            "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        with patch(
+            "urllib.request.getproxies",
+            return_value={"https": "http://127.0.0.1:7897"},
+        ):
+            kwargs = openai_plugin._openai_client_kwargs()
+
+        http_client = kwargs["http_client"]
+        assert kwargs["base_url"] == "https://proxy.example/v1"
+        assert isinstance(http_client, httpx.Client)
+        assert not any(
+            type(mount._pool).__name__ == "HTTPProxy"
+            for mount in http_client._mounts.values()
+            if mount is not None and hasattr(mount, "_pool")
+        )
+        http_client.close()
 
 
 # ── Generate ────────────────────────────────────────────────────────────────

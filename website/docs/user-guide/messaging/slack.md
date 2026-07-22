@@ -501,6 +501,21 @@ slack:
   # auto-engagement. Opt-in; default off. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
   ignore_other_user_mentions: false
 
+  # Require an explicit @mention for THREAD replies, while leaving
+  # top-level channel messages governed by require_mention /
+  # free_response_channels. Narrower than strict_mention: use it when a
+  # free-response bot should not join every follow-up in busy threads.
+  # Opt-in; default off. Env: SLACK_THREAD_REQUIRE_MENTION.
+  thread_require_mention: false
+
+  # Per-channel force-mention override — the opposite direction of
+  # free_response_channels. Channels listed here ALWAYS require an
+  # explicit @mention, even when require_mention is false globally.
+  # Ongoing conversations still auto-follow (mentioned threads, active
+  # sessions, bot-authored threads). Comma-separated IDs or a list.
+  # Env: SLACK_REQUIRE_MENTION_CHANNELS.
+  require_mention_channels: ""
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:

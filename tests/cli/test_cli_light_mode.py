@@ -174,3 +174,45 @@ class TestSkinConfigHook:
         cli_mod._LIGHT_MODE_CACHE = False
         skin = SkinConfig(name="test", colors={"banner_text": "#FFF8DC"})
         assert skin.get_color("banner_text") == "#FFF8DC"
+
+
+class TestResponseBodyUsesRawSkinText:
+    def test_response_body_helpers_do_not_pin_light_mode_remap(self, cli_mod):
+        """Response prose should use raw skin text, not cached remapped black.
+
+        The light-mode cache can remap banner_text to black. If response body
+        text reuses that remapped skin color, an already-running Hermes process
+        can become unreadable after the terminal/cmux flips to a dark theme.
+        """
+        from hermes_cli.skin_engine import set_active_skin
+
+        set_active_skin("default")
+        cli_mod._LIGHT_MODE_CACHE = True
+        assert cli_mod._maybe_remap_for_light_mode("#FFF8DC") == "#1A1A1A"
+        assert cli_mod._response_body_style() == "#FFF8DC"
+        assert cli_mod._response_body_ansi() == "\033[38;2;255;248;220m"
+
+    def test_streaming_response_body_uses_raw_skin_text(self, cli_mod, monkeypatch):
+        from hermes_cli.skin_engine import set_active_skin
+
+        set_active_skin("default")
+        cli_mod._LIGHT_MODE_CACHE = True
+        printed = []
+        monkeypatch.setattr(cli_mod, "_cprint", printed.append)
+
+        cli = cli_mod.HermesCLI.__new__(cli_mod.HermesCLI)
+        cli.show_reasoning = False
+        cli.show_timestamps = False
+        cli.final_response_markdown = "strip"
+        cli._reasoning_box_opened = False
+        cli._stream_box_opened = False
+        cli._stream_buf = ""
+        cli._stream_table_buf = []
+        cli._in_stream_table = False
+        cli._close_reasoning_box = lambda: None
+        cli._scrollback_box_width = lambda: 80
+
+        cli._emit_stream_text("hello\n")
+
+        assert cli._stream_text_ansi == "\033[38;2;255;248;220m"
+        assert "    \033[38;2;255;248;220mhello\033[0m" in printed

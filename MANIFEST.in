@@ -1,6 +1,7 @@
 graft skills
 graft optional-skills
 graft optional-mcps
+graft hermes_cli/web_dist
 graft locales
 # Bundled plugin manifests (plugin.yaml / plugin.yml). Without these the
 # PluginManager scan (hermes_cli/plugins.py) finds zero plugins on installs

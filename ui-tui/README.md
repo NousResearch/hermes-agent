@@ -225,7 +225,7 @@ The following commands are handled directly by the TUI client. Unrecognized comm
 
 ### Core (`core.ts`)
 `/help`, `/quit` (alias `/exit`), `/update`, `/clear` (alias `/new`),
-`/compact`, `/copy`, `/paste`, `/details` (alias `/detail`),
+`/density`, `/copy`, `/paste`, `/details` (alias `/detail`),
 `/statusbar` (alias `/sb`), `/queue` (alias `/q`), `/logs`, `/history`,
 `/save`, `/undo`, `/retry`, `/steer`, `/mouse` (alias `/scroll`),
 `/status`, `/title`, `/fortune`, `/redraw`, `/terminal-setup`

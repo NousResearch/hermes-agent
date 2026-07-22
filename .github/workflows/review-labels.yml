@@ -27,6 +27,10 @@ on:
         description: Whether the MCP catalog / installer changed.
         type: boolean
         default: false
+      supply_chain:
+        description: Whether the critical supply-chain scan found a risk requiring review.
+        type: boolean
+        default: false
     outputs:
       ci_reviewed:
         description: Whether the ci-reviewed label is present. Empty when neither input was true.
@@ -42,7 +46,7 @@ permissions:
 jobs:
   check:
     name: Review label gate
-    if: inputs.ci_review || inputs.mcp_catalog
+    if: inputs.ci_review || inputs.mcp_catalog || inputs.supply_chain
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -75,15 +79,17 @@ jobs:
         env:
           CI_REVIEW: ${{ inputs.ci_review }}
           MCP_CATALOG: ${{ inputs.mcp_catalog }}
+          SUPPLY_CHAIN: ${{ inputs.supply_chain }}
           LABEL_PRESENT: ${{ steps.label-check.outputs.ci_reviewed }}
         run: |
           set -euo pipefail
-          ARGS=""
-          if [ "$CI_REVIEW" = "true" ]; then ARGS="$ARGS --ci-review"; fi
-          if [ "$MCP_CATALOG" = "true" ]; then ARGS="$ARGS --mcp-catalog"; fi
-          if [ "$LABEL_PRESENT" = "true" ]; then ARGS="$ARGS --label-present"; fi
+          args=()
+          if [ "$CI_REVIEW" = "true" ]; then args+=(--ci-review); fi
+          if [ "$MCP_CATALOG" = "true" ]; then args+=(--mcp-catalog); fi
+          if [ "$SUPPLY_CHAIN" = "true" ]; then args+=(--supply-chain); fi
+          if [ "$LABEL_PRESENT" = "true" ]; then args+=(--label-present); fi
 
-          python3 scripts/ci/emit_review_status.py $ARGS --output "$GITHUB_OUTPUT"
+          python3 scripts/ci/emit_review_status.py "${args[@]}" --output "$GITHUB_OUTPUT"
 
       - name: Fail on missing label
         if: steps.label-check.outputs.ci_reviewed != 'true'

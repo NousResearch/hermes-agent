@@ -142,6 +142,54 @@ class TestApplyAnthropicCacheControl:
         assert isinstance(sys_content, list)
         assert sys_content[0]["cache_control"]["type"] == "ephemeral"
 
+    def test_static_system_prefix_gets_its_own_marker(self):
+        messages = [
+            {"role": "system", "content": "stable prefix\n\nper-session context"},
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old response"},
+            {"role": "user", "content": "new request"},
+        ]
+
+        result = apply_anthropic_cache_control(
+            messages,
+            static_system_prefix="stable prefix",
+        )
+
+        system_blocks = result[0]["content"]
+        assert system_blocks == [
+            {
+                "type": "text",
+                "text": "stable prefix",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": "\n\nper-session context",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+        assert result[1]["content"] == "old request"
+        assert result[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert result[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_mismatched_static_prefix_uses_legacy_system_breakpoint(self):
+        messages = [
+            {"role": "system", "content": "current system prompt"},
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old response"},
+            {"role": "user", "content": "new request"},
+        ]
+
+        result = apply_anthropic_cache_control(
+            messages,
+            static_system_prefix="stale system prompt",
+        )
+
+        assert len(result[0]["content"]) == 1
+        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert result[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert result[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
     def test_last_3_non_system_get_markers(self):
         msgs = [
             {"role": "system", "content": "System"},

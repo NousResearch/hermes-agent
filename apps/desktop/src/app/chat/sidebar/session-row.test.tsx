@@ -16,7 +16,15 @@ afterEach(cleanup)
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
+      messaging: {
+        platformNames: {
+          telegram: 'Telegram'
+        }
+      },
       sidebar: {
+        projects: {
+          reorder: (title: string) => `Reorder ${title}`
+        },
         row: {
           actionsFor: (title: string) => `Actions for ${title}`,
           ageMin: 'm',

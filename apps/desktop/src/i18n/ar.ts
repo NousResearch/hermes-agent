@@ -3954,7 +3954,8 @@ export const ar: Translations = {
     proNeedsSubscription: 'تحتاج النماذج الاحترافية إلى اشتراك Nous مدفوع.',
     free: 'مجاني',
     freeTier: 'الفئة المجانية',
-    priceTitle: 'سعر الإدخال والإخراج لكل مليون توكن'
+    priceTitle: 'سعر الإدخال والإخراج لكل مليون توكن',
+    wasPrice: 'كان'
   },
 
   modelVisibility: {

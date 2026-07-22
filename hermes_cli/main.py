@@ -10172,6 +10172,39 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _run_hermes_arabic_post_update_hook() -> bool:
+    """Let an installed Arabic layer prepare the bundle before desktop relaunch."""
+    manager = get_hermes_home() / "hermes-arabic" / "hermes_arabic.py"
+    if not manager.is_file():
+        return False
+
+    try:
+        from hermes_constants import with_hermes_node_path
+
+        result = subprocess.run(
+            [sys.executable, str(manager), "prepare-update", "--quiet"],
+            cwd=PROJECT_ROOT,
+            env=with_hermes_node_path(),
+            capture_output=True,
+            text=True,
+            timeout=20 * 60,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning("Hermes Arabic post-update hook failed to start: %s", exc)
+        return False
+
+    if result.returncode == 0:
+        print("  ✓ Arabic desktop layer prepared for relaunch")
+        return True
+
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    print("  ⚠ Arabic desktop layer could not be prepared")
+    if detail:
+        print(f"    {detail[-1]}")
+    return False
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -10796,6 +10829,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(f"  Full build log: {_dhh()}/logs/update.log")
             else:
                 print("  ✓ Desktop app up to date")
+
+        if has_desktop_app:
+            _run_hermes_arabic_post_update_hook()
 
         print()
         print("✓ Code updated!")

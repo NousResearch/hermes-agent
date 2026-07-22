@@ -2,6 +2,7 @@
 
 import importlib
 import socket
+import sys
 
 
 
@@ -101,6 +102,92 @@ class TestApplyIPv4Preference:
         # Should have tried AF_INET first, then fallen back to AF_UNSPEC
         assert call_families == [socket.AF_INET, 0]
         assert result[0][0] == socket.AF_INET6
+
+
+class TestApplyConfiguredIPv4Preference:
+    """Tests for apply_configured_ipv4_preference()."""
+
+    def test_returns_false_when_config_missing(self, monkeypatch, tmp_path):
+        hermes_constants = _reload_constants()
+        calls = []
+        monkeypatch.setattr(
+            hermes_constants,
+            "apply_ipv4_preference",
+            lambda force=False: calls.append(force),
+        )
+
+        assert hermes_constants.apply_configured_ipv4_preference(tmp_path) is False
+        assert calls == []
+
+    def test_reads_force_ipv4_from_config(self, monkeypatch, tmp_path):
+        hermes_constants = _reload_constants()
+        (tmp_path / "config.yaml").write_text("network:\n  force_ipv4: true\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(
+            hermes_constants,
+            "apply_ipv4_preference",
+            lambda force=False: calls.append(force),
+        )
+
+        assert hermes_constants.apply_configured_ipv4_preference(tmp_path) is True
+        assert calls == [True]
+
+    def test_ignores_invalid_network_section(self, monkeypatch, tmp_path):
+        hermes_constants = _reload_constants()
+        (tmp_path / "config.yaml").write_text("network: enabled\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(
+            hermes_constants,
+            "apply_ipv4_preference",
+            lambda force=False: calls.append(force),
+        )
+
+        assert hermes_constants.apply_configured_ipv4_preference(tmp_path) is False
+        assert calls == []
+
+
+class TestBootstrapWiring:
+    """Entry points should apply the config-driven IPv4 preference on import."""
+
+    def setup_method(self):
+        self._saved = {name: sys.modules.get(name) for name in ("cli", "run_agent")}
+
+    def teardown_method(self):
+        for name, module in self._saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    def test_run_agent_bootstrap_applies_configured_ipv4(self, monkeypatch):
+        import hermes_constants
+
+        calls = []
+        monkeypatch.setattr(
+            hermes_constants,
+            "apply_configured_ipv4_preference",
+            lambda hermes_home=None: calls.append(hermes_home),
+        )
+        sys.modules.pop("run_agent", None)
+
+        run_agent = importlib.import_module("run_agent")
+
+        assert calls == [run_agent._hermes_home]
+
+    def test_cli_bootstrap_applies_configured_ipv4(self, monkeypatch):
+        import hermes_constants
+
+        calls = []
+        monkeypatch.setattr(
+            hermes_constants,
+            "apply_configured_ipv4_preference",
+            lambda hermes_home=None: calls.append(hermes_home),
+        )
+        sys.modules.pop("cli", None)
+
+        cli = importlib.import_module("cli")
+
+        assert calls == [cli._hermes_home]
 
 
 class TestConfigDefault:

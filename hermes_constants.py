@@ -1248,6 +1248,30 @@ def apply_ipv4_preference(force: bool = False) -> None:
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 
+def apply_configured_ipv4_preference(hermes_home: Path | None = None) -> bool:
+    """Apply ``network.force_ipv4`` from ``config.yaml`` when enabled."""
+    try:
+        import yaml
+    except Exception:
+        return False
+
+    config_path = (hermes_home or get_hermes_home()) / "config.yaml"
+    try:
+        with config_path.open(encoding="utf-8") as fh:
+            config = yaml.safe_load(fh) or {}
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+    network_cfg = config.get("network", {})
+    if not isinstance(network_cfg, dict):
+        return False
+    force = bool(network_cfg.get("force_ipv4"))
+    apply_ipv4_preference(force=force)
+    return force
+
+
 # ─── Streaming Response Constants ────────────────────────────────────────────
 
 # Response ID for partial stream stubs used during error recovery

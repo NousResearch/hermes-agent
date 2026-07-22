@@ -215,7 +215,11 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import (
+    apply_configured_ipv4_preference,
+    display_hermes_home,
+    get_hermes_home,
+)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     is_browser_debug_ready,
@@ -226,6 +230,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches, fast_safe_load
 
 _hermes_home = get_hermes_home()
+apply_configured_ipv4_preference(hermes_home=_hermes_home)
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 

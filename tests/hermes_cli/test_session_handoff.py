@@ -58,6 +58,17 @@ class TestHandoffStateDB:
             "error": None,
         }
 
+    def test_request_handoff_persists_explicit_discord_initiator(self, db):
+        sid = "sess-discord-initiator"
+        self._make_session(db, sid)
+
+        assert db.request_handoff(sid, "discord", user_id="123456789") is True
+
+        row = db.get_session(sid)
+        assert row["user_id"] == "123456789"
+        pending = db.list_pending_handoffs()
+        assert pending[0]["user_id"] == "123456789"
+
     def test_request_handoff_rejects_in_flight(self, db):
         sid = "sess-2"
         self._make_session(db, sid)

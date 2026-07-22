@@ -6338,6 +6338,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        user_ids: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Create a Discord thread under a text channel for a handoff.
 
@@ -6377,6 +6379,41 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
 
+        async def add_explicit_users(thread) -> None:
+            """Add only the explicitly requested users to the new thread."""
+            if not user_ids:
+                return
+            guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
+            if guild is None:
+                logger.warning(
+                    "[%s] Handoff thread: cannot resolve guild for explicit users",
+                    self.name,
+                )
+                return
+            add_user = getattr(thread, "add_user", None)
+            if add_user is None:
+                return
+            for raw_user_id in user_ids:
+                try:
+                    user_id = int(raw_user_id)
+                    member = guild.get_member(user_id)
+                    if member is None:
+                        fetch_member = getattr(guild, "fetch_member", None)
+                        if fetch_member is not None:
+                            member = await fetch_member(user_id)
+                    if member is not None:
+                        await add_user(member)
+                    else:
+                        logger.warning(
+                            "[%s] Handoff thread: Discord member %s not found",
+                            self.name, raw_user_id,
+                        )
+                except Exception:
+                    logger.warning(
+                        "[%s] Handoff thread: failed to add explicit user %s",
+                        self.name, raw_user_id, exc_info=True,
+                    )
+
         # First try: create a thread directly on the channel.
         try:
             create = getattr(parent, "create_thread", None)
@@ -6386,6 +6423,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
+                await add_explicit_users(thread)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -6404,6 +6442,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=1440,
                 reason=reason,
             )
+            await add_explicit_users(thread)
             return str(thread.id)
         except Exception as fallback_error:
             logger.warning(

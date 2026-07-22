@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 
 
 def _ensure_discord_mock():
@@ -445,3 +445,113 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_adds_explicit_discord_initiator():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    member = SimpleNamespace(id=123)
+    guild = SimpleNamespace(get_member=lambda user_id: member if user_id == 123 else None)
+    thread = SimpleNamespace(id=555, guild=guild, add_user=AsyncMock())
+    parent = SimpleNamespace(id=999, guild=guild, create_thread=AsyncMock(return_value=thread))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: parent,
+        fetch_channel=AsyncMock(),
+        get_user=lambda _user_id: None,
+    )
+
+    thread_id = await adapter.create_handoff_thread("999", "queued handoff", user_ids=["123"])
+
+    assert thread_id == "555"
+    thread.add_user.assert_awaited_once_with(member)
+
+
+@pytest.mark.asyncio
+async def test_process_handoff_passes_cli_discord_initiator_to_adapter():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="999",
+                    name="Discord home",
+                ),
+            )
+        }
+    )
+    adapter = MagicMock()
+    adapter.create_handoff_thread = AsyncMock(return_value="555")
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner.session_store = MagicMock()
+    async_session_store = MagicMock()
+    async_session_store._store = runner.session_store
+    async_session_store.get_or_create_session = AsyncMock()
+    async_session_store.switch_session = AsyncMock(return_value=object())
+    runner._async_session_store = async_session_store
+    runner._evict_cached_agent = MagicMock()
+    runner._release_running_agent_state = MagicMock()
+    runner._handle_message = AsyncMock(return_value="handoff response")
+
+    await runner._process_handoff(
+        {
+            "id": "cli-session",
+            "title": "CLI work",
+            "handoff_platform": "discord",
+            "user_id": "123456789",
+        }
+    )
+
+    adapter.create_handoff_thread.assert_awaited_once_with(
+        "999", "Hermes — CLI work", user_ids=["123456789"]
+    )
+    runner._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_handoff_does_not_pass_discord_kwargs_to_other_adapters():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="999",
+                    name="Telegram home",
+                ),
+            )
+        }
+    )
+    adapter = MagicMock()
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.session_store = MagicMock()
+    async_session_store = MagicMock()
+    async_session_store._store = runner.session_store
+    async_session_store.get_or_create_session = AsyncMock()
+    async_session_store.switch_session = AsyncMock(return_value=object())
+    runner._async_session_store = async_session_store
+    runner._evict_cached_agent = MagicMock()
+    runner._release_running_agent_state = MagicMock()
+    runner._handle_message = AsyncMock(return_value=None)
+
+    await runner._process_handoff(
+        {
+            "id": "cli-session",
+            "title": "CLI work",
+            "handoff_platform": "telegram",
+            "user_id": "123456789",
+        }
+    )
+
+    adapter.create_handoff_thread.assert_awaited_once_with("999", "Hermes — CLI work")

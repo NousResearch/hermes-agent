@@ -520,7 +520,7 @@ class CLICommandsMixin:
         print()
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
-        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
+        """Handle ``/handoff <platform> [discord_user_id]`` — transfer this CLI session to a gateway platform.
 
         Flow:
           1. Validate platform name + the gateway has a home channel for it.
@@ -541,12 +541,25 @@ class CLICommandsMixin:
 
         parts = cmd_original.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /handoff <platform>")
+            _cprint("  Usage: /handoff <platform> [discord_user_id]")
             _cprint("  Hands the current session off to that platform's home channel.")
             _cprint("  The CLI session ends here; resume it later with /resume.")
             return True
 
-        platform_name = parts[1].strip().lower()
+        handoff_args = parts[1].split()
+        platform_name = handoff_args[0].lower()
+        initiator_user_id = None
+        if len(handoff_args) > 2:
+            _cprint("  Usage: /handoff <platform> [discord_user_id]")
+            return True
+        if len(handoff_args) == 2:
+            if platform_name != "discord":
+                _cprint("  A Discord user ID may only be specified for a Discord handoff.")
+                return True
+            initiator_user_id = handoff_args[1]
+            if not initiator_user_id.isascii() or not initiator_user_id.isdigit() or int(initiator_user_id) <= 0:
+                _cprint("  Discord user ID must be a positive numeric Snowflake.")
+                return True
 
         # Validate platform name + home channel via the live gateway config.
         try:
@@ -624,7 +637,11 @@ class CLICommandsMixin:
             session_title = self.session_id[:8]
 
         # Mark pending — gateway watcher will pick this up.
-        ok = self._session_db.request_handoff(self.session_id, platform_name)
+        ok = self._session_db.request_handoff(
+            self.session_id,
+            platform_name,
+            user_id=initiator_user_id,
+        )
         if not ok:
             _cprint("  Session is already in flight for handoff. Wait for it to settle, then retry.")
             return True

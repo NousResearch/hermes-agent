@@ -8085,8 +8085,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Give freshly connected platform adapters a brief moment to settle
         # before sending restart/startup lifecycle messages. In practice this
         # helps Discord thread deliveries right after reconnect.
+        #
+        # Telegram adapters gate their send path (_send_path_degraded) until
+        # the first getUpdates cycle succeeds after polling starts. On networks
+        # where that first cycle takes >1s (IPv6 fallback → DoH → sticky IPv4),
+        # a fixed 1.0s sleep races the degraded-state clear. Wait up to 15s for
+        # every Telegram adapter to exit degraded mode before proceeding, then
+        # allow a brief settle window for non-Telegram adapters (#66589).
         if connected_count > 0:
-            await asyncio.sleep(1.0)
+            _telegram_degraded_deadline = asyncio.get_running_loop().time() + 15.0
+            for _adapter in self.adapters.values():
+                if not hasattr(_adapter, "_send_path_degraded"):
+                    continue
+                while asyncio.get_running_loop().time() < _telegram_degraded_deadline:
+                    if not getattr(_adapter, "_send_path_degraded", False):
+                        break
+                    await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)  # brief settle for non-Telegram adapters
 
         # Notify the chat that initiated /restart that the gateway is back.
         chat_restart_notification_pending = _restart_notification_pending()
@@ -8101,17 +8116,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        # channels.  Previously this was gated on planned restarts only
+        # (terminal/SIGUSR1/service paths), which meant crash recovery, cold
+        # starts, and post-update restarts never notified.  Chat-originated
+        # /restart already has a precise reply target in .restart_notify.json,
+        # so keep THAT lifecycle in the originating chat/topic instead of also
+        # leaking it to the configured home channel (#62512).
+        if not _restart_notification_pending():
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,
                 )
-            finally:
-                _clear_planned_restart_notification()
+            except Exception:
+                logger.warning(
+                    "Home-channel startup notification failed", exc_info=True,
+                )
+        if planned_restart_notification_pending:
+            _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

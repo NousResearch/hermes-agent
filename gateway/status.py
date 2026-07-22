@@ -1023,6 +1023,15 @@ def write_runtime_status(
     _write_json_file(path, payload)
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Return True if a process with the given PID exists."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """Read the persisted gateway runtime health/status information.
 
@@ -1030,8 +1039,27 @@ def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]
     profile's state file (e.g. the dashboard enumerating every profile)
     can do so without mutating ``HERMES_HOME`` in-process.  Defaults to
     the active profile's ``gateway_state.json``.
+
+    When the persisted state claims the gateway is running but the
+    corresponding PID is dead, the state is amended to reflect the real
+    situation so dashboards, desktop, and health probes don't report a
+    false-positive green light (#62512).
     """
-    return _read_json_file(path or _get_runtime_status_path())
+    record = _read_json_file(path or _get_runtime_status_path())
+    if not isinstance(record, dict):
+        return record
+
+    gw_state = record.get("gateway_state")
+    if gw_state not in ("running", "starting", "draining"):
+        return record
+
+    pid = record.get("pid")
+    if pid is not None and not _pid_is_alive(pid):
+        record = dict(record)
+        record["gateway_state"] = "stopped"
+        record["exit_reason"] = record.get("exit_reason") or "pid_not_found"
+
+    return record
 
 
 # Max age of a persisted ``gateway_state.json`` snapshot before its liveness

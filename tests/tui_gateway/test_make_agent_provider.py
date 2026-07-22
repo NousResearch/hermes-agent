@@ -237,6 +237,62 @@ def test_make_agent_honors_tui_launch_env_flags():
         assert kwargs["skip_memory"] is True
 
 
+def test_make_agent_honors_checkpoint_config(tmp_path, monkeypatch):
+    """A real config.yaml must propagate checkpoint settings to AIAgent."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """\
+agent:
+  system_prompt: ""
+model:
+  default: glm-5
+checkpoints:
+  enabled: true
+  max_snapshots: 37
+  max_total_size_mb: 123
+  max_file_size_mb: 4
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_TUI_CHECKPOINTS", "0")
+
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_mtime", None)
+    monkeypatch.setattr(server, "_cfg_path", None)
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    with (
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-cp-config", "key-cp-config")
+
+        kwargs = mock_agent.call_args.kwargs
+        assert kwargs["checkpoints_enabled"] is True
+        assert kwargs["checkpoint_max_snapshots"] == 37
+        assert kwargs["checkpoint_max_total_size_mb"] == 123
+        assert kwargs["checkpoint_max_file_size_mb"] == 4
+
+
 def test_probe_config_health_flags_null_sections():
     """Bare YAML keys (`agent:` with no value) parse as None and silently
     drop nested settings; probe must surface them so users can fix."""

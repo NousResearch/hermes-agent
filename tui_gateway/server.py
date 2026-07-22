@@ -2177,6 +2177,9 @@ _INDICATOR_DEFAULT = "kaomoji"
 _DASHBOARD_TURN_ISOLATION_DEFAULT = False
 _DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT = 15
 _DASHBOARD_COMPUTE_HOST_RESPAWN_MAX_DEFAULT = 3
+_CHECKPOINT_MAX_SNAPSHOTS_DEFAULT = 20
+_CHECKPOINT_MAX_TOTAL_SIZE_MB_DEFAULT = 500
+_CHECKPOINT_MAX_FILE_SIZE_MB_DEFAULT = 10
 
 
 def _coerce_int_config_value(value: Any, default: int, *, min_value: int) -> int:
@@ -2185,6 +2188,36 @@ def _coerce_int_config_value(value: Any, default: int, *, min_value: int) -> int
     except (TypeError, ValueError):
         return default
     return coerced if coerced >= min_value else default
+
+
+def _load_checkpoint_config(cfg: dict | None = None) -> dict[str, Any]:
+    """Return checkpoint settings for TUI-created agents."""
+    root = _load_cfg() if cfg is None else cfg
+    checkpoints = root.get("checkpoints", {}) if isinstance(root, dict) else {}
+    if isinstance(checkpoints, bool):
+        checkpoints = {"enabled": checkpoints}
+    elif not isinstance(checkpoints, dict):
+        checkpoints = {}
+
+    return {
+        "enabled": is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS"))
+        or is_truthy_value(checkpoints.get("enabled"), default=False),
+        "max_snapshots": _coerce_int_config_value(
+            checkpoints.get("max_snapshots"),
+            _CHECKPOINT_MAX_SNAPSHOTS_DEFAULT,
+            min_value=1,
+        ),
+        "max_total_size_mb": _coerce_int_config_value(
+            checkpoints.get("max_total_size_mb"),
+            _CHECKPOINT_MAX_TOTAL_SIZE_MB_DEFAULT,
+            min_value=0,
+        ),
+        "max_file_size_mb": _coerce_int_config_value(
+            checkpoints.get("max_file_size_mb"),
+            _CHECKPOINT_MAX_FILE_SIZE_MB_DEFAULT,
+            min_value=0,
+        ),
+    }
 
 
 def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[str, Any]:
@@ -5196,6 +5229,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    checkpoint_cfg = _load_checkpoint_config(cfg)
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -5236,7 +5270,10 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=checkpoint_cfg["enabled"],
+        checkpoint_max_snapshots=checkpoint_cfg["max_snapshots"],
+        checkpoint_max_total_size_mb=checkpoint_cfg["max_total_size_mb"],
+        checkpoint_max_file_size_mb=checkpoint_cfg["max_file_size_mb"],
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),

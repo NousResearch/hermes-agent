@@ -180,6 +180,20 @@ class HolographicMemoryProvider(MemoryProvider):
         )
         self._session_id = session_id
 
+        # Warn if numpy is missing — HRR operations silently disabled (#17350)
+        try:
+            from . import holographic as _hrr
+            self._hrr_available = _hrr._HAS_NUMPY
+        except ImportError:
+            self._hrr_available = False
+
+        if not self._hrr_available:
+            logger.warning(
+                "Holographic memory: numpy not found. HRR vector operations disabled. "
+                "Only FTS5 keyword search will be available. "
+                "Install numpy to enable compositional retrieval (probe/reason/contradict)."
+            )
+
     def system_prompt_block(self) -> str:
         if not self._store:
             return ""
@@ -189,18 +203,29 @@ class HolographicMemoryProvider(MemoryProvider):
             ).fetchone()[0]
         except Exception:
             total = 0
+
+        hrr_status = ""
+        if not self._hrr_available:
+            hrr_status = (
+                "\nWARNING: numpy not installed — HRR vector operations disabled. "
+                "Only keyword search works. probe/reason/contradict will use FTS5 fallback. "
+                "Install numpy for full compositional retrieval."
+            )
+
         if total == 0:
             return (
                 "# Holographic Memory\n"
                 "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
                 "Use fact_feedback to rate facts after using them (trains trust scores)."
+                + hrr_status
             )
         return (
             f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
             f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
             f"Use fact_feedback to rate facts after using them (trains trust scores)."
+            + hrr_status
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:

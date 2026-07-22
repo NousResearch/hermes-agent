@@ -1117,9 +1117,9 @@ class SlackAdapter(BasePlatformAdapter):
         Uses the ``_slash_user_id`` ContextVar (set in ``_handle_slash_command``)
         to match the exact ``(channel_id, user_id)`` key.  This prevents a
         concurrent slash command from a different user on the same channel from
-        stealing another user's ephemeral context.  Falls back to a
-        channel-only scan when the ContextVar is unset (e.g. send() called
-        from a non-slash code path — should not match anything).
+        stealing another user's ephemeral context. When the ContextVar is
+        unset (e.g. send() called from a non-slash code path), do not match
+        anything — otherwise normal sends can steal a pending slash reply.
         """
         now = time.monotonic()
         # Clean up stale entries on every lookup — dict is small.
@@ -1136,16 +1136,7 @@ class SlackAdapter(BasePlatformAdapter):
         if uid:
             return self._slash_command_contexts.pop((chat_id, uid), None)
 
-        # Fallback: channel-only scan (only reachable when ContextVar is
-        # unset, i.e. send() called outside a slash-command async context).
-        match_key = None
-        for key in list(self._slash_command_contexts):
-            if key[0] == chat_id:
-                match_key = key
-                break
-        if match_key is None:
-            return None
-        return self._slash_command_contexts.pop(match_key)
+        return None
 
     async def _send_slash_ephemeral(
         self,

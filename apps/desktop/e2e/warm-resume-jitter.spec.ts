@@ -194,78 +194,17 @@ test.afterAll(async () => {
   fixture = null
 })
 
-test('warm-route resume paints transcript exactly once (no jitter)', async ({}, testInfo) => {
-  const page = fixture!.page
-
-  // Wait for the sidebar to populate with our seeded session.
-  const sessionRow = page
-    .locator('[data-slot="sidebar"] button')
-    .filter({ hasText: SESSION_TITLE })
-    .first()
-  await sessionRow.waitFor({ state: 'visible', timeout: 60_000 })
-
-  // Step 1: Cold resume — click the session row to load it.
-  // This populates the warm cache (runtimeIdByStoredSessionId + sessionStateByRuntimeId).
-  await sessionRow.click()
-
-  // Wait for the transcript to appear — the first user message text confirms
-  // the cold-path prefetch painted.
-  await page.waitForFunction(
-    (text: string) =>
-      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
-      false,
-    FIRST_USER_MSG,
-    { timeout: 30_000 },
-  )
-
-  // Wait for the session to fully settle (cold-path RPC + reconciliation).
-  await page.waitForTimeout(2_000)
-
-  // Step 2: Navigate away to a new chat — this does NOT evict the warm cache.
-  // The "New session" button is in the sidebar header with aria-label "New session".
-  const newSessionButton = page
-    .locator('[data-slot="sidebar"] button[aria-label="New session"]')
-    .first()
-  await newSessionButton.click()
-
-  // Wait for the new-chat empty state (composer cleared, no transcript).
-  await page.waitForFunction(
-    (firstMsg: string) => {
-      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-      if (!viewport) return false
-      // The new-chat state has no message content in the viewport.
-      const text = viewport.textContent ?? ''
-      return !text.includes(firstMsg)
-    },
-    FIRST_USER_MSG,
-    { timeout: 15_000 },
-  )
-
-  await page.waitForTimeout(500)
-
-  // Step 3: Install a MutationObserver on the thread viewport BEFORE
-  // clicking back, so we capture every DOM mutation burst during the
-  // warm-route resume.
-  //
-  // The observer groups mutations into "bursts" using a 30ms coalescing
-  // window: mutations arriving within 30ms of each other are one burst
-  // (a single render pass), while mutations separated by >30ms are
-  // separate bursts (separate render passes = the jitter bug).
-  //
-  // Only bursts that ADD nodes are counted — the expected setMessages([])
-  // clear at the start of resumeSession() only removes nodes, so it
-  // doesn't register as a spurious re-render.
-  //
-  // Bursts that have BOTH additions and removals (e.g. 50→50 message
-  // reconcile where React unmounts old key'd components and mounts new
-  // ones) ARE counted — the addedNodes filter catches the mount phase.
-  //
-  // Additionally, we instrument the $messages nanostore atom to count
-  // setMessages calls directly. This catches the case where React
-  // reconciles by key without DOM additions/removals (same message IDs
-  // → no unmount/remount → no MutationObserver burst), but the atom was
-  // still set twice — a state-level re-render that the user perceives
-  // as a visual flicker.
+/**
+ * Install a MutationObserver + text-content poll on the thread viewport
+ * to detect re-renders after the initial paint. Returns nothing — call
+ * `readRenderCount` to stop and collect results.
+ *
+ * - MutationObserver: counts additive childList bursts (5ms coalescing).
+ * - Text-content poll: counts "reconciles" — first-message text changes
+ *   after the initial paint, catching key-based reconciles that don't
+ *   add/remove nodes.
+ */
+async function installRenderCounter(page: import('@playwright/test').Page): Promise<void> {
   await page.evaluate(() => {
     const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) {
@@ -310,14 +249,13 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
       characterData: false,
     })
 
-    // We also poll the first message's text content every 2ms. The
-    // MutationObserver above only catches childList additions; React may
-    // reconcile by key without adding/removing nodes (same keys → in-place
-    // prop update → no childList mutation). The poll catches a full
-    // transcript repaint (where all message components re-render with new
-    // props) by detecting text content changes in the first message after
-    // the initial paint. Metadata-only changes (model name, busy indicator)
-    // don't affect message text, so they don't produce false positives.
+    // Poll the first message's text content every 2ms. The MutationObserver
+    // only catches childList additions; React may reconcile by key without
+    // adding/removing nodes (same keys → in-place prop update → no childList
+    // mutation). The poll catches this by detecting text content changes in
+    // the first message after the initial paint. Metadata-only changes (model
+    // name, busy indicator) don't affect message text, so they don't produce
+    // false positives.
     const contentEl = viewport.querySelector('[data-slot="aui_thread-content"]') ?? viewport
     let lastFirstMsgText = ''
     let hasMessages = false
@@ -326,7 +264,6 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
         clearInterval(pollInterval)
         return
       }
-      // Get the first message element's text content.
       const firstMsg = contentEl.querySelector('[data-role="message"], [data-message-id]')
       const firstMsgText = firstMsg?.textContent ?? ''
       if (firstMsgText && firstMsgText !== lastFirstMsgText) {
@@ -338,40 +275,16 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
       }
     }, 2)
   })
+}
 
-  // Step 4: Click the session row again — this triggers the WARM route
-  // (takeWarmCache() finds the cached runtime id + state).
-  await sessionRow.click()
-
-  // Wait for the transcript to reappear (the warm cache paint).
-  await page.waitForFunction(
-    (text: string) =>
-      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
-      false,
-    FIRST_USER_MSG,
-    { timeout: 30_000 },
-  )
-
-  // Wait for the warm-route RPC + reconciliation to settle.
-  // After the last burst, wait 1 second with no new bursts before reading.
-  await page.waitForFunction(
-    () => {
-      const w = window as unknown as { __RENDER_COUNT__?: { bursts: number; timeline: number[] } }
-      const rc = w.__RENDER_COUNT__
-      if (!rc || rc.bursts === 0) return false
-      // Check that at least 1 second has passed since the observer was
-      // installed and no new bursts are arriving. We approximate by checking
-      // the burst count is stable over a 1s poll.
-      return true
-    },
-    undefined,
-    { timeout: 10_000 },
-  )
-  // Extra settle time for the async RPC + persisted transcript reconciliation.
-  await page.waitForTimeout(2_000)
-
-  // Stop the observer and read results.
-  const result = await page.evaluate(() => {
+/** Stop the render counter and return the recorded burst/reconcile counts. */
+async function readRenderCount(page: import('@playwright/test').Page): Promise<{
+  bursts: number
+  mutations: number
+  timeline: number[]
+  reconciles: number
+} | null> {
+  return page.evaluate(() => {
     type RenderCount = { bursts: number; mutations: number; timeline: number[]; stopped: boolean; reconciles: number }
     const w = window as unknown as { __RENDER_COUNT__?: RenderCount }
     const rc = w.__RENDER_COUNT__
@@ -380,15 +293,10 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
     }
     return rc ? { bursts: rc.bursts, mutations: rc.mutations, timeline: rc.timeline, reconciles: rc.reconciles } : null
   })
+}
 
-  // Take a screenshot at the assertion point.
-  await page.screenshot({ path: testInfo.outputPath('warm-resume-settled.png') })
-
-  // Assert: exactly 1 additive burst + 0 reconciles means the transcript
-  // painted once and was never re-rendered. The warm path's first paint
-  // (warm cache → DOM) produces 1 burst. The second paint (RPC reconcile)
-  // produces >0 reconciles because React updates the DOM (innerHTML changes)
-  // even when reconciling by key without adding/removing nodes.
+/** Assert the render counter shows exactly one paint with no re-renders. */
+function assertNoJitter(result: { bursts: number; mutations: number; timeline: number[]; reconciles: number } | null): void {
   expect(result, 'MutationObserver should have recorded render data').toBeTruthy()
   expect(
     result!.bursts,
@@ -401,4 +309,171 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
       `This means the warm-route resume re-rendered the transcript after the initial paint ` +
       `— the "warm resume jitter" bug is present.`,
   ).toBe(0)
+}
+
+test('warm-route resume paints transcript exactly once (no jitter)', async ({}, testInfo) => {
+  const page = fixture!.page
+
+  // Wait for the sidebar to populate with our seeded session.
+  const sessionRow = page
+    .locator('[data-slot="sidebar"] button')
+    .filter({ hasText: SESSION_TITLE })
+    .first()
+  await sessionRow.waitFor({ state: 'visible', timeout: 60_000 })
+
+  // Step 1: Cold resume — click the session row to load it.
+  // This populates the warm cache (runtimeIdByStoredSessionId + sessionStateByRuntimeId).
+  await sessionRow.click()
+
+  // Wait for the transcript to appear — the first user message text confirms
+  // the cold-path prefetch painted.
+  await page.waitForFunction(
+    (text: string) =>
+      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
+      false,
+    FIRST_USER_MSG,
+    { timeout: 30_000 },
+  )
+
+  // Wait for the session to fully settle (cold-path RPC + reconciliation).
+  await page.waitForTimeout(2_000)
+
+  // Step 2: Navigate away to a new chat — this does NOT evict the warm cache.
+  const newSessionButton = page
+    .locator('[data-slot="sidebar"] button[aria-label="New session"]')
+    .first()
+  await newSessionButton.click()
+
+  // Wait for the new-chat empty state.
+  await page.waitForFunction(
+    (firstMsg: string) => {
+      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+      if (!viewport) return false
+      const text = viewport.textContent ?? ''
+      return !text.includes(firstMsg)
+    },
+    FIRST_USER_MSG,
+    { timeout: 15_000 },
+  )
+
+  await page.waitForTimeout(500)
+
+  // Step 3: Install render counter, click back (warm resume), wait, assert.
+  await installRenderCounter(page)
+  await sessionRow.click()
+
+  await page.waitForFunction(
+    (text: string) =>
+      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
+      false,
+    FIRST_USER_MSG,
+    { timeout: 30_000 },
+  )
+
+  // Wait for at least 1 burst, then settle.
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as { __RENDER_COUNT__?: { bursts: number } }
+      return Boolean(w.__RENDER_COUNT__ && w.__RENDER_COUNT__.bursts > 0)
+    },
+    undefined,
+    { timeout: 10_000 },
+  )
+  await page.waitForTimeout(2_000)
+
+  const result = await readRenderCount(page)
+  await page.screenshot({ path: testInfo.outputPath('warm-resume-idle.png') })
+  assertNoJitter(result)
+})
+
+test('warm-route resume after background inference completes (no jitter)', async ({}, testInfo) => {
+  const page = fixture!.page
+  const { mock } = fixture!
+
+  // Wait for the sidebar to populate with our seeded session.
+  const sessionRow = page
+    .locator('[data-slot="sidebar"] button')
+    .filter({ hasText: SESSION_TITLE })
+    .first()
+  await sessionRow.waitFor({ state: 'visible', timeout: 60_000 })
+
+  // Step 1: Cold resume — populate the warm cache.
+  await sessionRow.click()
+  await page.waitForFunction(
+    (text: string) =>
+      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
+      false,
+    FIRST_USER_MSG,
+    { timeout: 30_000 },
+  )
+  await page.waitForTimeout(2_000)
+
+  // Step 2: Send a message — triggers inference via the mock server.
+  const PROMPT = 'E2E post-inference warm resume test prompt'
+  const composer = page.locator('[contenteditable="true"]').first()
+  await composer.click()
+  await composer.type(PROMPT, { delay: 10 })
+  await page.keyboard.press('Enter')
+
+  // Wait for the mock response to appear in the transcript, confirming
+  // the turn completed and message.complete fired (which updates the warm
+  // cache via updateSessionState).
+  await page.waitForFunction(
+    () => {
+      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+      return viewport?.textContent?.includes('mock inference server') ?? false
+    },
+    undefined,
+    { timeout: 60_000 },
+  )
+  // Extra settle for message.complete → updateSessionState → cache write.
+  await page.waitForTimeout(2_000)
+
+  // Verify the prompt was received by the mock server.
+  expect(mock.receivedPrompts).toContain(PROMPT)
+
+  // Step 3: Navigate away — the warm cache retains the updated messages.
+  const newSessionButton = page
+    .locator('[data-slot="sidebar"] button[aria-label="New session"]')
+    .first()
+  await newSessionButton.click()
+  await page.waitForFunction(
+    (prompt: string) => {
+      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+      if (!viewport) return false
+      return !(viewport.textContent ?? '').includes(prompt)
+    },
+    PROMPT,
+    { timeout: 15_000 },
+  )
+  await page.waitForTimeout(500)
+
+  // Step 4: Install render counter, click back (warm resume), wait, assert.
+  await installRenderCounter(page)
+  await sessionRow.click()
+
+  // Wait for the transcript to reappear — the warm cache should already
+  // have the completed turn (updated by message.complete events).
+  await page.waitForFunction(
+    (text: string) =>
+      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
+      false,
+    FIRST_USER_MSG,
+    { timeout: 30_000 },
+  )
+
+  // Wait for at least 1 burst, then settle.
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as { __RENDER_COUNT__?: { bursts: number } }
+      return Boolean(w.__RENDER_COUNT__ && w.__RENDER_COUNT__.bursts > 0)
+    },
+    undefined,
+    { timeout: 10_000 },
+  )
+  await page.waitForTimeout(2_000)
+
+  const result = await readRenderCount(page)
+  await page.screenshot({ path: testInfo.outputPath('warm-resume-post-inference.png') })
+  assertNoJitter(result)
 })

@@ -46,6 +46,29 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
 )
 DEFAULT_LANGUAGE = "en"
 
+# Last-resort strings for high-traffic gateway commands that should stay
+# readable even when a packaged install cannot find the locale catalog.
+_BUILTIN_EN_FALLBACKS: dict[str, str] = {
+    "gateway.usage.rate_limits": "Rate Limits: {state}",
+    "gateway.usage.header_session": "**Session Token Usage**",
+    "gateway.usage.label_model": "Model: `{model}`",
+    "gateway.usage.label_input_tokens": "Input tokens: {count}",
+    "gateway.usage.label_cache_read": "Cache read tokens: {count}",
+    "gateway.usage.label_cache_write": "Cache write tokens: {count}",
+    "gateway.usage.label_output_tokens": "Output tokens: {count}",
+    "gateway.usage.label_total": "Total: {count}",
+    "gateway.usage.label_api_calls": "API calls: {count}",
+    "gateway.usage.label_cost": "Cost: {prefix}${amount}",
+    "gateway.usage.label_cost_included": "Cost: included",
+    "gateway.usage.label_context": "Context: {used} / {total} ({pct}%)",
+    "gateway.usage.label_compressions": "Compressions: {count}",
+    "gateway.usage.header_session_info": "**Session Info**",
+    "gateway.usage.label_messages": "Messages: {count}",
+    "gateway.usage.label_estimated_context": "Estimated context: ~{count} tokens",
+    "gateway.usage.detailed_after_first": "(Detailed usage available after the first agent response)",
+    "gateway.usage.no_data": "No usage data available for this session.",
+}
+
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
@@ -274,6 +297,9 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     if value is None and target != DEFAULT_LANGUAGE:
         # Fall through to English rather than showing a key path to the user.
         value = _load_catalog(DEFAULT_LANGUAGE).get(key)
+
+    if value is None:
+        value = _BUILTIN_EN_FALLBACKS.get(key)
 
     if value is None:
         # Last-ditch: return the key itself.  A broken catalog should not

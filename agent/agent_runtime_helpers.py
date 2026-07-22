@@ -1624,7 +1624,9 @@ _REQUEST_DUMP_SENSITIVE_KEY_PARTS = (
 
 
 def _request_dump_key_is_sensitive(key: Any) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    key_text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    key_text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", key_text)
+    normalized = re.sub(r"[^a-z0-9]+", "_", key_text.lower()).strip("_")
     if normalized in _REQUEST_DUMP_SENSITIVE_EXACT_KEYS:
         return True
     return any(part in normalized for part in _REQUEST_DUMP_SENSITIVE_KEY_PARTS)

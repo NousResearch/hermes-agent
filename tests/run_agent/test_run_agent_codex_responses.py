@@ -2896,6 +2896,9 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
     opaque_token_secret = "opaque-token-without-known-prefix"
     opaque_cookie_secret = "opaque-session-cookie-without-known-prefix"
     opaque_x_authorization_secret = "opaque-x-authorization-without-known-prefix"
+    opaque_access_token_secret = "opaque-camel-access-token"
+    opaque_refresh_token_secret = "opaque-camel-refresh-token"
+    opaque_private_key_secret = "opaque-camel-private-key"
     error = SimpleNamespace(
         status_code=401,
         body={"api_key": prefixed_key},
@@ -2922,9 +2925,12 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
             },
             "extra_body": {
                 "api_key": [opaque_key_list_secret],
+                "accessToken": opaque_access_token_secret,
                 "client_secret": "plain-secret-value-without-known-prefix",
                 "max_tokens": 4096,
                 "nested": [f"github_pat_{'b' * 40}"],
+                "privateKey": opaque_private_key_secret,
+                "refreshToken": opaque_refresh_token_secret,
                 "session_cookie": opaque_cookie_secret,
                 "token": opaque_token_secret,
             },
@@ -2942,6 +2948,9 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
     assert opaque_cookie_secret not in raw_dump
     assert opaque_token_secret not in raw_dump
     assert opaque_x_authorization_secret not in raw_dump
+    assert opaque_access_token_secret not in raw_dump
+    assert opaque_refresh_token_secret not in raw_dump
+    assert opaque_private_key_secret not in raw_dump
     assert "plain-secret-value-without-known-prefix" not in raw_dump
     assert f"github_pat_{'b' * 40}" not in raw_dump
 
@@ -2952,11 +2961,14 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
     assert payload["request"]["body"]["extra_headers"]["X-Authorization"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_headers"]["X-Trace"] == "trace-ok"
     assert payload["request"]["body"]["extra_body"]["api_key"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_body"]["accessToken"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_body"]["client_secret"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_body"]["max_tokens"] == 4096
+    assert payload["request"]["body"]["extra_body"]["privateKey"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_body"]["refreshToken"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_body"]["session_cookie"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_body"]["token"] == "[REDACTED]"
-    assert "[REDACTED]" in payload["error"]["body"]["api_key"]
+    assert payload["error"]["body"]["api_key"] == "[REDACTED]"
 
 
 def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, tmp_path, capsys):

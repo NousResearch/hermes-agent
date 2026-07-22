@@ -417,6 +417,19 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_includes_local_daemon_hindsight_api_overrides(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai_compatible",
+            "llm_model": "local-model",
+            "consolidation_llm_max_retries": 0,
+            "consolidation_max_attempts": 1,
+            "llm_timeout": 600,
+        })
+
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_MAX_RETRIES"] == "0"
+        assert env["HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS"] == "1"
+        assert env["HINDSIGHT_API_LLM_TIMEOUT"] == "600"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

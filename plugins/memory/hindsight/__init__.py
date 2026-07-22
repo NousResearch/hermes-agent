@@ -539,6 +539,27 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Local embedded Hindsight runs a standalone daemon whose configuration is
+    # read from this profile env file. Pass through a small allow-list of
+    # daemon-side Hindsight API knobs so local/private profiles can tune long
+    # structured-output jobs without leaking credentials or changing the global
+    # shell environment.
+    api_env_overrides = {
+        "llm_timeout": "HINDSIGHT_API_LLM_TIMEOUT",
+        "llm_max_retries": "HINDSIGHT_API_LLM_MAX_RETRIES",
+        "llm_initial_backoff": "HINDSIGHT_API_LLM_INITIAL_BACKOFF",
+        "llm_max_backoff": "HINDSIGHT_API_LLM_MAX_BACKOFF",
+        "retain_llm_max_retries": "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES",
+        "consolidation_llm_max_retries": "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_RETRIES",
+        "consolidation_max_attempts": "HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS",
+        "consolidation_llm_initial_backoff": "HINDSIGHT_API_CONSOLIDATION_LLM_INITIAL_BACKOFF",
+        "consolidation_llm_max_backoff": "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_BACKOFF",
+    }
+    for config_key, env_key in api_env_overrides.items():
+        value = config.get(config_key)
+        if value is not None and value != "":
+            env_values[env_key] = str(value)
     return env_values
 
 

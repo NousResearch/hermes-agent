@@ -177,7 +177,7 @@ class MemoryStore:
     def _ensure_fts_schema(self) -> None:
         """Migrate/repair the FTS index so it matches this process's capabilities.
 
-        Three situations force a full FTS rebuild:
+        Four situations force a full FTS rebuild:
 
         1. Legacy schema — facts_fts was an external-content table kept in
            sync by SQL triggers, which index raw (unsegmented) text and
@@ -186,11 +186,16 @@ class MemoryStore:
         2. Mode change — the index was built with a different segmentation
            mode than this process would use (jieba installed or removed
            since; recorded in PRAGMA user_version).
-        3. Drift — row count mismatch between facts and facts_fts. Happens
-           when a process running pre-migration code (no triggers anymore,
-           no Python-side indexing yet) wrote facts after the migration.
-           Cheap to detect, so checked on every open — the index self-heals
-           on the next restart instead of silently dropping facts forever.
+        3. Count drift — row count mismatch between facts and facts_fts.
+           Happens when a process running pre-migration code (no triggers
+           anymore, no Python-side indexing yet) wrote facts after the
+           migration.
+        4. Content drift — rows exist in both tables but the indexed copy
+           is stale. Happens when a legacy process UPDATEs an existing fact
+           after migration removed the triggers (counts match but the
+           standalone FTS row was never refreshed). Detected by spot-
+           checking sampled rows so the index self-heals instead of
+           silently serving wrong content forever.
         """
         desired = textseg.current_fts_mode()
         current = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
@@ -216,15 +221,48 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 n_fts = -1
             drift = n_facts != n_fts
+            # COUNT equality alone doesn't catch stale UPDATEs by a
+            # legacy process (content changed, rowid unchanged). Spot-
+            # check sampled rows so a content-level mismatch also
+            # triggers a rebuild.
+            if not drift:
+                drift = self._verify_fts_integrity()
 
         if legacy or current != desired or drift:
             self._rebuild_fts(desired)
             # A segmentation-mode change also invalidates stored HRR
             # vectors (encode_text tokenizes differently now), so recompute
-            # them from source text. Drift-only heals skip this — vectors
-            # are keyed to content, not to the FTS index.
+            # them from source text. Content-drift-only heals skip this —
+            # vectors are keyed to content, not to the FTS index.
             if legacy or current != desired:
                 self.rebuild_all_vectors()
+
+    def _verify_fts_integrity(self) -> bool:
+        """Spot-check: verify indexed content equals segmented source content.
+
+        Returns True if any FTS row is stale (a rebuild is needed).
+
+        When migration removes the legacy triggers, an already-running
+        pre-migration process that UPDATEs an existing fact leaves the
+        standalone FTS row unchanged — COUNT equality passes but the
+        indexed copy is wrong. Sampling catches this without a full table
+        scan on every open.
+        """
+        rows = self._conn.execute(
+            "SELECT fact_id, content, tags FROM facts ORDER BY fact_id LIMIT 20"
+        ).fetchall()
+        for r in rows:
+            fts_row = self._conn.execute(
+                "SELECT content, tags FROM facts_fts WHERE rowid = ?",
+                (r["fact_id"],),
+            ).fetchone()
+            if fts_row is None:
+                return True
+            want_content = textseg.segment_for_index(r["content"] or "")
+            want_tags = textseg.segment_for_index(r["tags"] or "")
+            if fts_row["content"] != want_content or fts_row["tags"] != want_tags:
+                return True
+        return False
 
     def _rebuild_fts(self, mode: int) -> None:
         """Drop and rebuild facts_fts from the facts table, segmenting content."""

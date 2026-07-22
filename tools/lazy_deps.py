@@ -150,6 +150,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # instance and the provider silently reports itself unavailable.
     "memory.supermemory": ("supermemory==3.50.0",),
     "memory.mem0": ("mem0ai==2.0.10",),
+    # Holographic CJK segmentation — pure-Python jieba. Optional: the
+    # provider still works (whitespace-only) without it. Pre-1.0 ceiling
+    # per repo policy: <0.(current_minor + 2).
+    "memory.holographic": ("jieba>=0.42.1,<0.44",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),

@@ -157,6 +157,15 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home
+
+        # Lazily install jieba for CJK segmentation when available.
+        # The provider works without it (whitespace-only fallback), so
+        # treat a missing optional dep as non-fatal.
+        try:
+            from tools.lazy_deps import ensure
+            ensure("memory.holographic")
+        except Exception:
+            pass
         _hermes_home = str(get_hermes_home())
         _default_db = _hermes_home + "/memory_store.db"
         db_path = self._config.get("db_path", _default_db)

@@ -313,3 +313,56 @@ def test_mode_flip_reindexes_on_reopen(tmp_path, monkeypatch):
         assert retriever.search("帮我更新mihomo的订阅")
     finally:
         store2.close()
+
+
+def test_stale_update_detected_by_content_spot_check(tmp_path):
+    """A legacy UPDATE that changes fact content but not the FTS row must
+    trigger a rebuild on next open (COUNT equality passes, content mismatch
+    caught by the spot-check)."""
+    db = tmp_path / "stale.db"
+    store = MemoryStore(str(db))
+    fid = store.add_fact(content="Original content about the deployment tool", category="tool")
+    # Verify clean state
+    n_facts = store._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+    n_fts = store._conn.execute("SELECT COUNT(*) FROM facts_fts").fetchone()[0]
+    assert n_facts == n_fts == 1
+
+    # Simulate a legacy process that UPDATEs the fact row directly,
+    # bypassing _fts_index_fact. The FTS row now holds stale content.
+    new_content = "Updated content about the new deployment pipeline"
+    store._conn.execute(
+        "UPDATE facts SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
+        (new_content, fid),
+    )
+    store._conn.commit()
+    # COUNT still matches — the naive drift check would pass.
+    n_facts2 = store._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+    n_fts2 = store._conn.execute("SELECT COUNT(*) FROM facts_fts").fetchone()[0]
+    assert n_facts2 == n_fts2 == 1
+    # FTS still has the OLD content
+    fts_before = store._conn.execute(
+        "SELECT content FROM facts_fts WHERE rowid = ?", (fid,)
+    ).fetchone()[0]
+    assert "Original" in fts_before
+    assert "Updated" not in fts_before
+    store.close()
+
+    # Reopen — the content spot-check must detect the mismatch and rebuild.
+    store2 = MemoryStore(str(db))
+    try:
+        fts_after = store2._conn.execute(
+            "SELECT content FROM facts_fts WHERE rowid = ?", (fid,)
+        ).fetchone()[0]
+        want_segmented = textseg.segment_for_index(new_content)
+        assert fts_after == want_segmented, (
+            f"FTS row must be rebuilt after stale update detected.\n"
+            f"  expected: {want_segmented!r}\n"
+            f"  got:      {fts_after!r}"
+        )
+        # The fact itself should still retain the updated content
+        src = store2._conn.execute(
+            "SELECT content FROM facts WHERE fact_id = ?", (fid,)
+        ).fetchone()[0]
+        assert src == new_content
+    finally:
+        store2.close()

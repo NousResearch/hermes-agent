@@ -215,6 +215,40 @@ class TestWebhookHostConfig:
             adapter = SmsAdapter(pc)
             assert adapter._webhook_url == "https://example.com/webhooks/twilio"
 
+    def test_default_port_is_8080(self):
+        from plugins.platforms.sms.adapter import DEFAULT_WEBHOOK_PORT
+        assert DEFAULT_WEBHOOK_PORT == 8080
+
+    def test_port_from_env(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_PORT": "3000",
+        }
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._webhook_port == 3000
+
+    def test_malformed_port_falls_back_to_default(self):
+        """A typo'd SMS_WEBHOOK_PORT must fall back to the default, not crash
+        adapter init (env_int parity with other platforms)."""
+        from plugins.platforms.sms.adapter import SmsAdapter, DEFAULT_WEBHOOK_PORT
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_PORT": "not-a-port",
+        }
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._webhook_port == DEFAULT_WEBHOOK_PORT
+
 
 # ── Startup guard (fail-closed) ────────────────────────────────────
 

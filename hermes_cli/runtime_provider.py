@@ -1893,13 +1893,31 @@ def resolve_runtime_provider(
         }
 
     if provider == "cursor":
+        # Prefer resolved live env; never pass unresolved op:// refs to the SDK.
+        from hermes_cli.auth import has_usable_secret
+
         api_key = (_getenv("CURSOR_API_KEY", "") or "").strip()
+        if not has_usable_secret(api_key):
+            try:
+                from hermes_cli.config import get_env_value_prefer_dotenv
+
+                api_key = (get_env_value_prefer_dotenv("CURSOR_API_KEY") or "").strip()
+            except Exception:
+                api_key = ""
+        if not has_usable_secret(api_key):
+            raise AuthError(
+                "No usable CURSOR_API_KEY found. Set CURSOR_API_KEY to a Cursor "
+                "Dashboard user API key (or resolve op:// via op run / "
+                "secrets.onepassword).",
+                provider="cursor",
+                code="missing_api_key",
+            )
         return {
             "provider": "cursor",
             "api_mode": "chat_completions",
             "base_url": "cursor://agent",
             "api_key": api_key,
-            "source": "env:CURSOR_API_KEY" if api_key else "missing",
+            "source": "env:CURSOR_API_KEY",
             "requested_provider": requested_provider,
         }
 

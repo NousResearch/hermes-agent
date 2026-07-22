@@ -8216,17 +8216,34 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     that, under an active profile scope (multiplexed gateway turn), this read
     is scope-checked rather than leaking another profile's raw ``os.environ``
     value — matching the credential-pool seeding path's behaviour.
+
+    Unresolved secret-manager references (``op://…``, ``bw://…``, ``${…}``)
+    in ``.env`` are skipped so a resolved live env / 1Password injection wins
+    instead of returning a literal reference string that APIs reject as
+    ``Invalid User API Key``.
     """
     env_vars = load_env()
     val = env_vars.get(key)
     if val:
-        return val
+        cleaned = str(val).strip()
+        if cleaned and not cleaned.startswith(("op://", "bw://", "${")):
+            return cleaned
     try:
         from agent.secret_scope import get_secret as _get_secret
 
-        return _get_secret(key)
+        scoped = _get_secret(key)
+        if scoped:
+            cleaned = str(scoped).strip()
+            if cleaned and not cleaned.startswith(("op://", "bw://", "${")):
+                return cleaned
     except Exception:
-        return os.environ.get(key)
+        pass
+    live = os.environ.get(key)
+    if live:
+        cleaned = str(live).strip()
+        if cleaned and not cleaned.startswith(("op://", "bw://", "${")):
+            return cleaned
+    return None
 
 
 # =============================================================================

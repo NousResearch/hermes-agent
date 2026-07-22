@@ -562,6 +562,9 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
         return False
     if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
         return False
+    # Unresolved secret-manager references are not usable credentials.
+    if cleaned.startswith(("op://", "bw://", "${")):
+        return False
     return True
 
 

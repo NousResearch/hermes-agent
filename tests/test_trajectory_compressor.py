@@ -13,6 +13,7 @@ from trajectory_compressor import (
     TrajectoryMetrics,
     AggregateMetrics,
     TrajectoryCompressor,
+    _effective_temperature_for_model,
 )
 
 
@@ -628,3 +629,121 @@ class TestCompressionToolPairIntegrity:
             {"from": "tool", "value": "<tool_response>a</tool_response>"},
         ]
         assert tc._snap_boundary(trajectory, 1, 0, 1) == 0
+
+
+# ---------------------------------------------------------------------------
+# Coverage for small pure/static helpers flagged by issue #36610.
+# These guard turn-pairing and summary-normalization invariants and were
+# previously exercised only indirectly (or not at all).
+# ---------------------------------------------------------------------------
+class TestIsBoundaryClean:
+    def test_boundary_on_non_tool_turn_is_clean(self):
+        trajectory = [{"from": "gpt"}, {"from": "human"}, {"from": "system"}]
+        # gpt / human / system turns are all valid split points.
+        assert TrajectoryCompressor._is_boundary_clean(trajectory, 0) is True
+        assert TrajectoryCompressor._is_boundary_clean(trajectory, 1) is True
+        assert TrajectoryCompressor._is_boundary_clean(trajectory, 2) is True
+
+    def test_boundary_on_tool_turn_is_not_clean(self):
+        # A boundary that lands on a 'tool' turn cuts a tool call from its
+        # response.
+        trajectory = [{"from": "gpt"}, {"from": "tool"}]
+        assert TrajectoryCompressor._is_boundary_clean(trajectory, 1) is False
+
+    def test_boundary_at_or_past_end_is_clean(self):
+        trajectory = [{"from": "gpt"}, {"from": "tool"}]
+        # idx == len and idx > len both count as the trajectory tail.
+        assert TrajectoryCompressor._is_boundary_clean(trajectory, 2) is True
+        assert TrajectoryCompressor._is_boundary_clean(trajectory, 99) is True
+
+    def test_missing_from_key_treated_as_clean(self):
+        # A turn with no 'from' key is not a 'tool' turn, so it's a clean split.
+        assert TrajectoryCompressor._is_boundary_clean([{}], 0) is True
+
+
+class TestCoerceSummaryContent:
+    def test_string_is_stripped(self):
+        assert TrajectoryCompressor._coerce_summary_content("  hi  ") == "hi"
+
+    def test_none_becomes_empty(self):
+        assert TrajectoryCompressor._coerce_summary_content(None) == ""
+
+    def test_empty_string_stays_empty(self):
+        assert TrajectoryCompressor._coerce_summary_content("") == ""
+
+    def test_non_string_truthy_is_stringified(self):
+        assert TrajectoryCompressor._coerce_summary_content(123) == "123"
+
+    def test_non_string_falsy_becomes_empty(self):
+        # Falsy non-strings (0, False, []) collapse to "" rather than "0"/"False".
+        assert TrajectoryCompressor._coerce_summary_content(0) == ""
+        assert TrajectoryCompressor._coerce_summary_content(False) == ""
+        assert TrajectoryCompressor._coerce_summary_content([]) == ""
+
+
+class TestEnsureSummaryPrefix:
+    def test_prefix_added_when_missing(self):
+        assert (
+            TrajectoryCompressor._ensure_summary_prefix("hello")
+            == "[CONTEXT SUMMARY]: hello"
+        )
+
+    def test_prefix_not_duplicated(self):
+        already = "[CONTEXT SUMMARY]: existing text"
+        assert TrajectoryCompressor._ensure_summary_prefix(already) == already
+
+    def test_empty_input_yields_bare_prefix(self):
+        assert TrajectoryCompressor._ensure_summary_prefix("") == "[CONTEXT SUMMARY]:"
+        assert TrajectoryCompressor._ensure_summary_prefix(None) == "[CONTEXT SUMMARY]:"
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        assert (
+            TrajectoryCompressor._ensure_summary_prefix("  spaced  ")
+            == "[CONTEXT SUMMARY]: spaced"
+        )
+
+
+class TestEffectiveTemperatureForModel:
+    def test_unknown_model_passes_requested_temperature_through(self):
+        # A model with no fixed-temperature contract returns the request as-is.
+        assert _effective_temperature_for_model("some-unknown-model", 0.7) == 0.7
+        assert (
+            _effective_temperature_for_model(
+                "another-model", 0.3, "https://api.example.com"
+            )
+            == 0.3
+        )
+
+    def test_import_failure_falls_back_to_requested(self, monkeypatch):
+        # If the auxiliary_client lookup can't be imported, the helper must
+        # degrade to the requested temperature rather than raising.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _boom(name, *args, **kwargs):
+            if name == "agent.auxiliary_client":
+                raise ImportError("simulated missing module")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _boom)
+        assert _effective_temperature_for_model("any-model", 0.55) == 0.55
+
+    def test_omit_temperature_contract_returns_none(self, monkeypatch):
+        # When the model manages temperature server-side, the helper signals
+        # "omit" by returning None.
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(
+            aux, "_fixed_temperature_for_model", lambda model, base_url: aux.OMIT_TEMPERATURE
+        )
+        assert _effective_temperature_for_model("kimi-model", 0.7) is None
+
+    def test_fixed_temperature_contract_overrides_request(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(
+            aux, "_fixed_temperature_for_model", lambda model, base_url: 0.0
+        )
+        # The fixed contract wins over the caller's requested 0.9.
+        assert _effective_temperature_for_model("fixed-temp-model", 0.9) == 0.0

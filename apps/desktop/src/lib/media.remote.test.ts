@@ -102,20 +102,27 @@ describe('resolveMediaDisplaySrc', () => {
   })
 
   it('leaves web, data, and relative markdown image sources unchanged', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
+
     await expect(resolveMediaDisplaySrc('https://example.com/a.png')).resolves.toBe('https://example.com/a.png')
     await expect(resolveMediaDisplaySrc('data:image/png;base64,ZHVtbXk=')).resolves.toBe(
       'data:image/png;base64,ZHVtbXk='
     )
     await expect(resolveMediaDisplaySrc('images/a.png')).resolves.toBe('images/a.png')
+    await expect(resolveMediaDisplaySrc('./images/a.png')).resolves.toBe('./images/a.png')
+    await expect(resolveMediaDisplaySrc('../images/a.png')).resolves.toBe('../images/a.png')
+    expect(api).not.toHaveBeenCalled()
   })
 
   it('reads remote gateway-local file paths through the desktop fs bridge', async () => {
     vi.stubGlobal('window', { hermesDesktop: { api } })
-    $connection.set({ mode: 'remote' } as never)
+    $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
 
     await expect(resolveMediaDisplaySrc('/Users/me/project/a b.png')).resolves.toBe('data:image/png;base64,ZHVtbXk=')
     expect(api).toHaveBeenCalledWith({
-      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Fa%20b.png'
+      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Fa%20b.png',
+      profile: 'remote-work'
     })
   })
 

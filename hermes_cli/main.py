@@ -6932,9 +6932,10 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
 
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
+    # Refresh Python dependencies: hash-verified `uv sync --locked --inexact`
+    # from uv.lock first, falling back to `uv pip install -e .[all]`. If one
+    # optional extra breaks on this machine, keep base deps and reinstall the
+    # remaining extras individually so update does not strip capabilities.
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -6948,7 +6949,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = _project_uv_install_env()
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7741,7 +7742,7 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = _project_uv_install_env()
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -8203,8 +8204,9 @@ def _refresh_active_lazy_features() -> None:
 
     When pyproject.toml's ``[all]`` extra was slimmed down (May 2026), most
     optional backends moved to ``tools/lazy_deps.py`` and only install on
-    first use. ``hermes update`` runs ``uv pip install -e .[all]`` which
-    leaves those packages untouched — so if we bump a pin in
+    first use. ``hermes update`` refreshes deps with ``uv sync --inexact``
+    (or the ``uv pip install -e .[all]`` fallback) — both of which
+    leave those packages untouched — so if we bump a pin in
     :data:`LAZY_DEPS` (CVE response, transitive bug fix), users who already
     activated the backend keep the stale version forever.
 
@@ -8266,6 +8268,87 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _project_uv_install_env(
+    env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a sanitized environment for Hermes-owned project uv commands.
+
+    Source installers and the Windows update guards share the managed
+    ``PROJECT_ROOT / "venv"`` layout. Keep every uv update tier on that same
+    target rather than partially supporting ``.venv`` in the sync subprocess
+    while quarantine and recovery still protect ``venv``.
+
+    An inherited ``UV_PYTHON`` can otherwise redirect either ``uv sync`` or its
+    ``uv pip`` fallback to a different interpreter. Pin it to the managed
+    environment's interpreter when that exists; remove it while the environment
+    is being created so uv performs its normal interpreter selection.
+    """
+    env_dir = PROJECT_ROOT / "venv"
+    install_env = {**(env if env is not None else os.environ)}
+    install_env["UV_PROJECT_ENVIRONMENT"] = str(env_dir)
+    install_env["VIRTUAL_ENV"] = str(env_dir)
+    env_python = (
+        env_dir
+        / ("Scripts" if _is_windows() else "bin")
+        / ("python.exe" if _is_windows() else "python")
+    )
+    if env_python.exists():
+        install_env["UV_PYTHON"] = str(env_python)
+    else:
+        install_env.pop("UV_PYTHON", None)
+    return install_env
+
+
+def _sync_project_dependencies_from_lockfile(
+    uv_bin: str,
+    *,
+    env: dict[str, str] | None,
+    group: str,
+    scripts_dir: Path | None,
+) -> dict[str, str] | None:
+    """Primary dependency tier for updates: hash-verified ``uv sync`` from uv.lock.
+
+    Mirrors the installers' primary tier (``uv sync --extra all --locked``
+    pointed at the managed env via ``UV_PROJECT_ENVIRONMENT``): the lockfile
+    records SHA256 hashes for every wheel/sdist, so syncing from it installs
+    the exact audited dependency set, whereas ``uv pip install -e .[all]``
+    re-resolves transitives fresh from PyPI on every update (the
+    "dependency got worm-poisoned overnight" failure mode the installers
+    already guard against).
+
+    Two flags are load-bearing:
+
+    - ``--inexact`` — plain ``uv sync`` prunes packages that aren't in the
+      lockfile, which would uninstall lazy-installed backends
+      (``tools/lazy_deps.py``), memory-provider SDKs, and anything users
+      added with ``uv pip install``. ``--inexact`` only adds/upgrades.
+    - ``--locked`` — fail fast when uv.lock is stale (e.g. a fork with a
+      modified pyproject.toml) instead of silently re-locking; the caller
+      then falls back to the editable-install cascade.
+
+    Returns the environment the sync ran with on success, so follow-up
+    verification targets the env that was actually written to. Returns
+    ``None`` — never raises — when the sync tier is unavailable or fails,
+    so the caller can fall back to the proven ``uv pip install -e`` cascade.
+    """
+    if not (PROJECT_ROOT / "uv.lock").is_file():
+        return None
+
+    sync_env = _project_uv_install_env(env)
+
+    cmd = [uv_bin, "sync", "--locked", "--inexact", "--extra", group]
+    print("  → Syncing dependencies from uv.lock (hash-verified)...")
+    try:
+        _run_quarantined_install(cmd, env=sync_env, scripts_dir=scripts_dir)
+    except (subprocess.CalledProcessError, OSError):
+        print(
+            "  ⚠ Lockfile sync failed or unavailable — falling back to "
+            "editable install..."
+        )
+        return None
+    return sync_env
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -8274,24 +8357,63 @@ def _install_python_dependencies_with_optional_fallback(
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports.
 
-    By default this targets ``.[all]``; Termux callers can pass
-    ``group='termux-all'`` to use the curated Android-compatible profile.
+    uv-capable callers (prefix ``[<uv>, "pip"]``) first get a hash-verified
+    ``uv sync --locked --inexact`` from uv.lock; on any failure — or for
+    plain ``python -m pip`` prefixes — this falls back to the editable
+    ``pip install`` cascade below. By default that targets ``.[all]``;
+    Termux callers can pass ``group='termux-all'`` to use the curated
+    Android-compatible profile.
 
     On Windows, pre-renames live ``hermes.exe`` / ``hermes-gateway.exe`` shims
     in the venv Scripts dir before each install attempt so uv can write fresh
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
     """
+    uv_caller = (
+        len(install_cmd_prefix) == 2 and install_cmd_prefix[1] == "pip"
+    )
+    install_env = _project_uv_install_env(env) if uv_caller else env
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
         _run_quarantined_install(
-            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
+            install_cmd_prefix + args,
+            env=install_env,
+            scripts_dir=scripts_dir,
         )
+
+    # Primary tier: hash-verified lockfile sync. Every uv-capable call site
+    # passes exactly ``[<uv-binary>, "pip"]``; plain ``python -m pip``
+    # prefixes skip straight to the editable cascade. Termux stays on the
+    # proven pip cascade: its update path prebuilds an Android-compatible
+    # psutil (see ``_install_psutil_android_compat``) that an exact
+    # ``--locked`` sync could fight.
+    if uv_caller and not _is_termux_env(install_env):
+        sync_env = _sync_project_dependencies_from_lockfile(
+            install_cmd_prefix[0],
+            env=install_env,
+            group=group,
+            scripts_dir=scripts_dir,
+        )
+        if sync_env is not None:
+            # Belt-and-suspenders on the new mechanism: verify base deps
+            # actually landed (same rationale as the cascade's tail below)
+            # and that entry-point shims survived on Windows. Use the env the
+            # sync actually ran with, so verification (and any repair
+            # reinstall) targets the environment that was just written to —
+            # including when the caller inherited conflicting uv settings.
+            _verify_core_dependencies_installed(
+                install_cmd_prefix, env=sync_env, group=group
+            )
+            _verify_console_scripts_installed(install_cmd_prefix, env=sync_env)
+            return
 
     try:
         _install(["install", "-e", f".[{group}]"])
-        _verify_console_scripts_installed(install_cmd_prefix, env=env)
+        _verify_console_scripts_installed(
+            install_cmd_prefix,
+            env=install_env,
+        )
         return
     except subprocess.CalledProcessError:
         print(
@@ -8328,8 +8450,15 @@ def _install_python_dependencies_with_optional_fallback(
     # stage. Reinstall with --reinstall to force resolution if anything is
     # missing, then re-verify so the failure surfaces here instead of
     # downstream.
-    _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
-    _verify_console_scripts_installed(install_cmd_prefix, env=env)
+    _verify_core_dependencies_installed(
+        install_cmd_prefix,
+        env=install_env,
+        group=group,
+    )
+    _verify_console_scripts_installed(
+        install_cmd_prefix,
+        env=install_env,
+    )
 
 
 def _load_console_script_names() -> list[str]:
@@ -10643,13 +10772,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 ).exists()
                 if venv_python_missing and repair_uv:
                     print("→ Recreating virtual environment...")
+                    repair_env = _project_uv_install_env()
                     subprocess.run(
                         [repair_uv, "venv", "venv"],
                         cwd=PROJECT_ROOT,
                         check=False,
+                        env=repair_env,
                     )
                 if repair_uv:
-                    repair_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                    repair_env = _project_uv_install_env()
                     _install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )
@@ -10792,9 +10923,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-        # breaks on this machine, keep base deps and reinstall the remaining extras
-        # individually so update does not silently strip working capabilities.
+        # Refresh Python dependencies: hash-verified `uv sync --locked
+        # --inexact` from uv.lock first, falling back to `uv pip install -e
+        # .[all]`. If one optional extra breaks on this machine, keep base
+        # deps and reinstall the remaining extras individually so update
+        # does not strip capabilities.
         #
         # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
         # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
@@ -10816,7 +10949,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = _project_uv_install_env()
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)
@@ -13176,11 +13309,24 @@ def cmd_dashboard(args):
         import uvicorn  # noqa: F401
     except ImportError as e:
         print("Web UI dependencies not installed (need fastapi + uvicorn).")
+        # Prefer a hash-verified lockfile sync pinned at this interpreter's
+        # environment; only suggest it when we're actually inside a venv so
+        # UV_PROJECT_ENVIRONMENT can't point uv at a system prefix.
+        in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+        if in_venv:
+            repair_lines = (
+                f"  UV_PROJECT_ENVIRONMENT={sys.prefix} "
+                "uv sync --locked --inexact --extra web\n"
+                f"  (fallback: {sys.executable} -m pip install -e '.[web]')"
+            )
+        else:
+            repair_lines = (
+                f"  {sys.executable} -m pip install -e '.[web]'\n"
+                "If `pip` is missing in this venv, use:  uv pip install -e '.[web]'"
+            )
         print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
+            f"Install the web extra into this interpreter's environment:\n"
+            f"  cd {PROJECT_ROOT}\n" + repair_lines
         )
         print(f"Import error: {e}")
         sys.exit(1)

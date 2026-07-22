@@ -33,6 +33,23 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+def _clean_surfaced_text(text):
+    """Strip ANSI/terminal escape sequences from stored text before it is surfaced
+    to the model in search / browse / scroll results.
+
+    Message content is stored raw on disk (paste-to-analyze); this cleans only the
+    copy returned to the model, so real ANSI control bytes can't re-enter the model
+    context — the same rationale tools/ansi_strip.py applies to command output.
+    strip_ansi only matches genuine ESC-anchored / C1 sequences, so ordinary text
+    (including text that merely *describes* escape codes) is left untouched.
+    None-safe; a no-op on text without ESC/C1 bytes.
+    """
+    if not text:
+        return text
+    from tools.ansi_strip import strip_ansi
+    return strip_ansi(text)
+
+
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
 # delegate subagent runs are tagged "subagent" — neither belongs in the
@@ -125,7 +142,7 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": _clean_surfaced_text(m.get("content")),
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
@@ -243,7 +260,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
             "when": _format_timestamp(meta.get("started_at")),
             "source": meta.get("source"),
             "model": meta.get("model"),
-            "title": meta.get("title"),
+            "title": _clean_surfaced_text(meta.get("title")),
         },
         "message_count": total,
         "truncated": truncated,
@@ -278,12 +295,12 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 continue
             results.append({
                 "session_id": sid,
-                "title": s.get("title") or None,
+                "title": _clean_surfaced_text(s.get("title")) or None,
                 "source": s.get("source", ""),
                 "started_at": s.get("started_at", ""),
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
-                "preview": s.get("preview", ""),
+                "preview": _clean_surfaced_text(s.get("preview", "")),
             })
             if len(results) >= limit:
                 break
@@ -412,7 +429,7 @@ def _scroll(
             "when": _format_timestamp(session_meta.get("started_at")),
             "source": session_meta.get("source"),
             "model": session_meta.get("model"),
-            "title": session_meta.get("title"),
+            "title": _clean_surfaced_text(session_meta.get("title")),
         },
         "window": window,
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
@@ -592,10 +609,10 @@ def _discover(
             ),
             "source": session_meta.get("source") or match_info.get("source", "unknown"),
             "model": session_meta.get("model") or match_info.get("model") or "unknown",
-            "title": session_meta.get("title") or None,
+            "title": _clean_surfaced_text(session_meta.get("title")) or None,
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
-            "snippet": match_info.get("snippet") or "",
+            "snippet": _clean_surfaced_text(match_info.get("snippet") or ""),
             "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
             "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
             "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],

@@ -577,6 +577,7 @@ def main(argv: list[str]) -> int:
             REPO_ROOT / "scripts",
             REPO_ROOT / "acp_adapter",
             REPO_ROOT / "acp_registry",
+            REPO_ROOT / "tui_gateway",
         ]
         roots = [r for r in roots if r.exists()]
     elif args.diff:

@@ -3062,7 +3062,7 @@ def test_concurrent_providers_claim_unlocked_pending_owner_once(
         provider._pending_sessions = _scan_together
 
     recovery_threads = [
-        threading.Thread(target=provider._recover_pending_sessions, args=("new-sid",))
+        threading.Thread(target=provider._recover_pending_sessions)
         for provider in providers
     ]
     for thread in recovery_threads:

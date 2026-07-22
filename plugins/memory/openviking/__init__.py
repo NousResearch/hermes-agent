@@ -1837,6 +1837,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._deferred_commit_lock = threading.Lock()
         self._committed_session_ids: Set[str] = set()
         self._committed_session_lock = threading.Lock()
+        self._pending_marked_sids: Set[str] = set()
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._memory_write_lock = threading.Lock()
@@ -2108,7 +2109,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         self._client = client
-        self._recover_pending_sessions(self._session_id)
+        self._recover_pending_sessions()
         _emit_runtime_status(
             f"Local OpenViking server at {endpoint} is reachable; OpenViking memory is active for later turns.",
             status_callback,
@@ -2202,7 +2203,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._client = None
 
         if self._client:
-            self._recover_pending_sessions(session_id)
+            self._recover_pending_sessions()
 
         # Register as the last active provider for atexit safety net
         global _last_active_provider
@@ -2502,8 +2503,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             lock_file = path.open("a+", encoding="utf-8")
-            self._run_lock_path = path
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._run_lock_path = path
             self._run_lock_file = lock_file
         except Exception as e:
             if lock_file is not None:
@@ -2565,10 +2566,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
             lock_file = path.open("a+", encoding="utf-8")
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True, lock_file
-        except BlockingIOError:
-            if lock_file is not None:
-                lock_file.close()
-            return False, None
         except OSError as e:
             if lock_file is not None:
                 lock_file.close()
@@ -2598,8 +2595,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self,
         owner_run_id: str,
         lock_file: Optional[Any],
-        *,
-        cleanup: bool,
     ) -> None:
         if lock_file is not None:
             try:
@@ -2611,8 +2606,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 lock_file.close()
             except Exception:
                 pass
-        if cleanup:
-            self._cleanup_owner_run_lock(owner_run_id)
+        self._cleanup_owner_run_lock(owner_run_id)
 
     def _cleanup_owner_run_lock(self, owner_run_id: str) -> None:
         owner_run_id = str(owner_run_id or "").strip()
@@ -2629,6 +2623,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _mark_session_pending(self, sid: str) -> None:
         if not sid or self._has_committed_session(sid):
             return
+        if sid in self._pending_marked_sids:
+            return
         path = self._pending_session_marker_path(sid)
         if path is None:
             return
@@ -2642,10 +2638,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 {"session_id": sid, "owner_run_id": self._run_id},
                 mode=0o600,
             )
+            self._pending_marked_sids.add(sid)
         except Exception as e:
             logger.debug("Could not mark OpenViking session %s pending: %s", sid, e)
 
     def _clear_pending_session(self, sid: str) -> None:
+        self._pending_marked_sids.discard(sid)
         path = self._pending_session_marker_path(sid)
         if path is None:
             return
@@ -2674,7 +2672,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 sessions.append((sid, owner_run_id))
         return sessions
 
-    def _recover_pending_sessions(self, current_sid: str) -> None:
+    def _recover_pending_sessions(self) -> None:
         if not self._client:
             return
         pending_by_owner: Dict[str, List[str]] = {}
@@ -2718,7 +2716,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._release_owner_run_claim(
                         pending_owner_run_id,
                         pending_owner_lock_file,
-                        cleanup=True,
                     )
                     with self._deferred_commit_lock:
                         if holder:

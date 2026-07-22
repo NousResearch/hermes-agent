@@ -21,7 +21,7 @@ import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
-import { defaultThemeForCurrentBackground, detectLightMode, fromSkin, type Theme } from '../theme.js'
+import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -45,8 +45,10 @@ const themeForSkin = (s: GatewaySkin) => {
   // can ship a fills-only `light_colors` (flip the dark navy menu/status fills
   // to light on a light terminal) while its vivid foreground golds keep coming
   // from `colors` and render raw through fromSkin's shim. A full paired block
-  // still works — it just overrides every key it lists.
-  const paired = detectLightMode() ? s.light_colors : s.dark_colors
+  // still works — it just overrides every key it lists. Polarity follows the
+  // skin's authored background when it has one (the skin paints the terminal
+  // with it), else the host's.
+  const paired = skinIsLight(s.colors ?? {}) ? s.light_colors : s.dark_colors
 
   const colors = paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
 

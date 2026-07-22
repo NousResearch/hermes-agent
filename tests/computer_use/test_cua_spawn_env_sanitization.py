@@ -31,6 +31,8 @@ def _capture_run(captured, stdout=""):
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
+        captured["encoding"] = kwargs.get("encoding")
+        captured["errors"] = kwargs.get("errors")
         return _fake_completed_process(stdout)
     return fake_run
 
@@ -43,6 +45,11 @@ def _assert_sanitized(captured):
     assert env.get("PATH") == "/usr/bin:/bin"
     # Confirms the telemetry helper still ran (default: telemetry disabled).
     assert env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
+
+
+def _assert_utf8(captured):
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
 
 
 def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
@@ -61,6 +68,7 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     cmd, args = cua_backend._resolve_mcp_invocation("cua-driver")
     assert cmd == "cua-driver"
     _assert_sanitized(captured)
+    _assert_utf8(captured)
 
 
 def test_update_check_sanitizes_env(monkeypatch):
@@ -82,6 +90,7 @@ def test_update_check_sanitizes_env(monkeypatch):
 
     cua_backend.cua_driver_update_check(timeout=1.0)
     _assert_sanitized(captured)
+    _assert_utf8(captured)
 
 
 def test_permissions_run_sanitizes_env(monkeypatch):

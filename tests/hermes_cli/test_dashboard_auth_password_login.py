@@ -418,6 +418,16 @@ class TestRateLimit:
 
 
 class TestLoginPageRender:
+    def test_single_password_provider_html_load_renders_login_not_auth_redirect(self, gated_app):
+        # Regression: auto-SSO is only valid for redirect/OAuth providers.
+        # A password-only provider must send unauthenticated HTML navigations to
+        # /login so the credential form is rendered; /auth/login would call
+        # start_login() on the password provider and raise NotImplementedError.
+        resp = gated_app.get("/sessions", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"].startswith("/login")
+        assert "/auth/login" not in resp.headers["location"]
+
     def test_password_provider_renders_credential_form_and_script(self):
         clear_providers()
         register_provider(PasswordProvider())

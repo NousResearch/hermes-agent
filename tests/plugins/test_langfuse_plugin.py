@@ -147,6 +147,109 @@ class TestRuntimeGate:
 
 
 # ---------------------------------------------------------------------------
+# Runtime metadata joins Langfuse traces back to OA/Hermes operators.
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeMetadata:
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def test_runtime_metadata_omits_empty_values(self, monkeypatch):
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_RUN", raising=False)
+
+        plugin = self._fresh_plugin()
+
+        assert plugin._runtime_metadata() == {}
+
+    def test_runtime_metadata_includes_profile_and_kanban_ids(self, monkeypatch):
+        monkeypatch.setenv("HERMES_PROFILE", "oa-builder")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_d27b9bac")
+        monkeypatch.setenv("HERMES_KANBAN_RUN", "1030")
+
+        plugin = self._fresh_plugin()
+
+        assert plugin._runtime_metadata() == {
+            "profile": "oa-builder",
+            "kanban_task_id": "t_d27b9bac",
+            "kanban_run_id": "1030",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Root spans are closed via their context manager, not just span.end().
+# Regression for the interpreter-shutdown "Exception ignored ... isinstance()"
+# noise at the end of every Kanban worker log: the generator-based context
+# from start_as_current_observation was never __exit__'d.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCtx:
+    def __init__(self, fail: bool = False):
+        self.exited = False
+        self.fail = fail
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.fail:
+            raise RuntimeError("boom")
+        self.exited = True
+        return False
+
+
+class _FakeSpan:
+    def __init__(self):
+        self.ended = False
+
+    def end(self):
+        self.ended = True
+
+
+class TestRootSpanClosure:
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def _state(self, plugin, ctx):
+        return plugin.TraceState(trace_id="t", root_ctx=ctx, root_span=_FakeSpan())
+
+    def test_close_root_exits_context_manager(self):
+        plugin = self._fresh_plugin()
+        ctx = _FakeCtx()
+        state = self._state(plugin, ctx)
+
+        plugin._close_root(state)
+
+        assert ctx.exited is True
+
+    def test_close_root_falls_back_to_span_end_on_ctx_failure(self):
+        plugin = self._fresh_plugin()
+        ctx = _FakeCtx(fail=True)
+        state = self._state(plugin, ctx)
+
+        plugin._close_root(state)
+
+        assert state.root_span.ended is True
+
+    def test_shutdown_traces_drains_state_and_closes_roots(self):
+        plugin = self._fresh_plugin()
+        ctx_a, ctx_b = _FakeCtx(), _FakeCtx()
+        with plugin._STATE_LOCK:
+            plugin._TRACE_STATE["a"] = self._state(plugin, ctx_a)
+            plugin._TRACE_STATE["b"] = self._state(plugin, ctx_b)
+
+        plugin._shutdown_traces()
+
+        assert plugin._TRACE_STATE == {}
+        assert ctx_a.exited is True
+        assert ctx_b.exited is True
+
+
+# ---------------------------------------------------------------------------
 # Hooks are inert when the client is unavailable.
 # ---------------------------------------------------------------------------
 
@@ -736,10 +839,13 @@ class TestToolCallOutputBackfill:
 
         ended = {}
 
-        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None,
+                                 cost_details=None, level=None, status_message=None):
             ended["observation"] = obs
             ended["output"] = output
             ended["metadata"] = metadata
+            ended["level"] = level
+            ended["status_message"] = status_message
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
 
@@ -758,6 +864,54 @@ class TestToolCallOutputBackfill:
         assert state.turn_tool_calls[0]["output"] == {
             "results": [{"url": "https://example.com", "content": "Example Domain"}]
         }
+        # Un résultat sain ne marque pas d'erreur.
+        assert ended["level"] is None
+        assert ended["metadata"]["is_error"] is False
+
+    def test_post_tool_call_marks_error_level_on_failed_result(self, monkeypatch):
+        """Un résultat d'outil en échec -> observation level=ERROR (mesure d'approximation)."""
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        observation = object()
+        state = mod.TraceState(trace_id="trace-2", root_ctx=None, root_span=None)
+        state.tools["call-err"] = observation
+        task_key = mod._trace_key("task-2", "session-2")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        ended = {}
+
+        def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None,
+                                 cost_details=None, level=None, status_message=None):
+            ended["level"] = level
+            ended["status_message"] = status_message
+            ended["metadata"] = metadata
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
+
+        mod.on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "ls /nope"},
+            result='{"error": "No such file or directory", "exit_code": 2}',
+            task_id="task-2",
+            session_id="session-2",
+            tool_call_id="call-err",
+        )
+
+        assert ended["level"] == "ERROR"
+        assert "No such file" in ended["status_message"]
+        assert ended["metadata"]["is_error"] is True
+
+    def test_detect_tool_error_structured_only(self):
+        mod = importlib.import_module("plugins.observability.langfuse")
+        assert mod._detect_tool_error({"error": "boom"}) == "boom"
+        assert mod._detect_tool_error({"exit_code": 1}) == "exit_code=1"
+        assert mod._detect_tool_error({"is_error": True}) == "is_error"
+        assert mod._detect_tool_error({"status": "failed"}) == "failed"
+        # Succès et faux positifs de contenu -> pas d'erreur.
+        assert mod._detect_tool_error({"exit_code": 0, "stdout": "error in log"}) is None
+        assert mod._detect_tool_error("plain text mentioning error") is None
+        assert mod._detect_tool_error({"content": "1| x", "total_lines": 1}) is None
 
     def test_serialize_messages_keeps_tool_name_and_call_id(self):
         sys.modules.pop("plugins.observability.langfuse", None)

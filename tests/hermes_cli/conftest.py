@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
-    """Pretend every assignee maps to a real Hermes profile.
+    """Pretend synthetic dispatcher assignees have profiles and bundled skills.
 
     Most dispatcher tests use synthetic assignees ("alice", "bob") that
     don't correspond to actual profile directories on disk. Without this
@@ -16,7 +16,9 @@ def all_assignees_spawnable(monkeypatch):
     would break tests that assert spawn behavior.
     """
     from hermes_cli import profiles
+    from hermes_cli import kanban_db
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setattr(kanban_db, "_task_skills_loadable", lambda *_a, **_k: [])
 
 
 @pytest.fixture(autouse=True)

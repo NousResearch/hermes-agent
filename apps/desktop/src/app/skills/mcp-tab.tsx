@@ -1335,7 +1335,7 @@ function CatalogTag({ children }: { children: string }) {
 // The Nous-approved MCP catalog: one-click installs of curated servers, with an
 // inline prompt for any required credentials (never shows stored values). On
 // install the parent refetches config + catalog and reloads live sessions.
-function McpCatalog({
+export function McpCatalog({
   entries,
   loading,
   onInstalled
@@ -1349,6 +1349,29 @@ function McpCatalog({
   const [installing, setInstalling] = useState<null | string>(null)
   const [envDrafts, setEnvDrafts] = useState<Record<string, Record<string, string>>>({})
   const [envOpenFor, setEnvOpenFor] = useState<null | string>(null)
+
+  const connectAfterInstall = async (entry: McpCatalogEntry) => {
+    try {
+      const flow = await completeMcpDesktopOAuth({
+        serverName: entry.name,
+        start: authMcpServer,
+        status: getMcpOAuthFlow,
+        openExternal: url => window.hermesDesktop.openExternal(url)
+      })
+
+      notify({
+        kind: 'success',
+        title: m.authenticatedTitle,
+        message: m.authenticatedMessage(entry.name, flow.tools?.length ?? 0)
+      })
+      // OAuth persists post-install auth config, so reconcile catalog/config
+      // once more after approval without holding the install lifecycle open.
+      onInstalled()
+    } catch {
+      // Never fail the install over an auth hiccup: it already succeeded.
+      notify({ kind: 'info', title: m.catalogConnectPending(entry.name), message: '' })
+    }
+  }
 
   const install = async (entry: McpCatalogEntry) => {
     const required = entry.required_env.filter(env => env.required)
@@ -1394,7 +1417,22 @@ function McpCatalog({
 
       notify({ kind: 'success', title: m.catalogInstallStarted(entry.name), message: '' })
       setEnvOpenFor(null)
+
+      // Refresh installed catalog/config immediately and release the row. The
+      // browser OAuth handoff can remain authorization_required for minutes.
       onInstalled()
+
+      // An OAuth-over-HTTP connector isn't usable straight after install — the
+      // catalog install only writes config/env, it never mints a token. Chain
+      // straight into the SAME desktop OAuth flow the Servers tab uses for
+      // re-auth (see `authenticate`), so "Install" actually connects. Run it as
+      // a non-blocking follow-up so closing the browser cannot strand the row.
+      // The strict `=== 'http'` / `=== 'oauth'` checks are inherently version-skew
+      // safe: a missing/renamed field on an older runtime's catalog just fails the
+      // predicate, so the chain no-ops rather than crashing.
+      if (entry.auth_type === 'oauth' && entry.transport === 'http') {
+        void connectAfterInstall(entry)
+      }
     } catch (err) {
       notifyError(err, m.catalogInstallFailed(entry.name))
     } finally {
@@ -1463,6 +1501,15 @@ function McpCatalog({
                       </label>
                     ))}
                   </div>
+                )}
+                {/* Post-install setup notes (e.g. "grant scopes in the provider
+                    console"). Mirrors the web dashboard's McpPage render. Guarded
+                    for the version-skew case: older runtimes omit `post_install`. */}
+                {entry.post_install && (
+                  <details className="mt-1.5 text-[0.66rem] text-muted-foreground/70">
+                    <summary className="cursor-pointer select-none">{m.catalogSetupNotes}</summary>
+                    <p className="mt-1 whitespace-pre-wrap">{entry.post_install.trim()}</p>
+                  </details>
                 )}
               </div>
               <Button

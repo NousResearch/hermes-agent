@@ -396,6 +396,57 @@ async def test_windows_detached_restart_uses_pythonw_for_watcher(monkeypatch, tm
     assert kwargs["creationflags"] == 0x08000008
 
 
+@pytest.mark.asyncio
+async def test_windows_detached_restart_retries_without_breakaway(monkeypatch, tmp_path):
+    """When CREATE_BREAKAWAY_FROM_JOB is denied (gateway inside a job
+    object that disallows breakaway, e.g. Task Scheduler), the watcher
+    spawn must retry without the breakaway flag.  Without the retry the
+    helper never launches and the gateway stops for the restart but
+    never comes back."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "executable", r"C:\venv\Scripts\python.exe")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0x09000008},  # includes CREATE_BREAKAWAY_FROM_JOB
+    )
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_flags_without_breakaway",
+        lambda: 0x08000008,
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        if len(popen_calls) == 1:
+            # CreateProcess -> ERROR_ACCESS_DENIED surfaces as PermissionError
+            raise PermissionError(5, "Access is denied")
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 2
+    first_cmd, first_kwargs = popen_calls[0]
+    second_cmd, second_kwargs = popen_calls[1]
+    assert first_kwargs["creationflags"] == 0x09000008
+    assert second_kwargs["creationflags"] == 0x08000008
+    assert first_cmd == second_cmd
+
+
 # ── Shutdown notification tests ──────────────────────────────────────
 
 

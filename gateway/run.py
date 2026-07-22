@@ -6792,13 +6792,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if watcher_env.get("PYTHONPATH"):
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-            subprocess.Popen(
-                [watcher_python, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                **windows_detach_popen_kwargs(),
-            )
+            watcher_argv = [watcher_python, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv]
+            try:
+                subprocess.Popen(
+                    watcher_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    **windows_detach_popen_kwargs(),
+                )
+            except OSError:
+                # CREATE_BREAKAWAY_FROM_JOB can fail with "access denied"
+                # when the gateway's job object doesn't permit breakaway
+                # (e.g. Task Scheduler jobs). Retry without the breakaway
+                # flag — same fallback as gateway_windows._spawn_detached.
+                # Without this retry the helper never launches and the
+                # gateway stops for the restart but never comes back.
+                from hermes_cli._subprocess_compat import (
+                    windows_detach_flags_without_breakaway,
+                )
+                subprocess.Popen(
+                    watcher_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    creationflags=windows_detach_flags_without_breakaway(),
+                )
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)

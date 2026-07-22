@@ -12607,6 +12607,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         width=self._scrollback_box_width(),
                     ))
 
+                # Durable, provider-agnostic billing CTA below the response. The
+                # response panel carries the full guidance; this pins the single
+                # action to take (Nous → /topup, other providers → their billing
+                # page) so it stays visible instead of scrolling away as prose.
+                if result and result.get("failure_reason") == "billing":
+                    _bb = result.get("billing_block") or {}
+                    _prov_label = _bb.get("provider_label") or "your provider"
+                    if _bb.get("is_nous"):
+                        _cta_lines = [
+                            "Run [bold]/topup[/] to add credits, or "
+                            "[bold]/subscription[/] to change plan.",
+                        ]
+                    else:
+                        _url = _bb.get("billing_url")
+                        _cta_lines = [
+                            f"Add credits with {_prov_label}"
+                            + (f": [bold]{_url}[/]" if _url else ".")
+                        ]
+                    _cta_lines.append(
+                        "Or switch providers with "
+                        "[bold]/model <model> --provider <provider>[/]."
+                    )
+                    try:
+                        ChatConsole().print(Panel(
+                            "\n".join(_cta_lines),
+                            title="[#CD7F32 bold]⚡ Out of credits[/]",
+                            title_align="left",
+                            border_style="#CD7F32",
+                            box=rich_box.HORIZONTALS,
+                            padding=(1, 4),
+                            width=self._scrollback_box_width(),
+                        ))
+                    except Exception:
+                        pass
+
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.

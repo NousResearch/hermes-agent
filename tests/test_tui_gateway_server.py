@@ -7050,6 +7050,54 @@ def test_prompt_submit_truncate_fails_closed_when_fresh_read_fails(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncate_fails_closed_when_replace_fails(monkeypatch):
+    """A failed authoritative write must leave memory unchanged and start no turn."""
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    class _StubDb:
+        def get_messages_as_conversation(self, session_id):
+            return list(history)
+
+        def replace_messages(self, session_id, messages):
+            raise RuntimeError("database is read-only")
+
+    server._sessions["sid"] = _session(history=list(history))
+
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: _StubDb())
+        monkeypatch.setattr(
+            server,
+            "_start_agent_build",
+            lambda *args, **kwargs: pytest.fail("must not start a turn"),
+        )
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited second",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 5000
+        assert "failed to truncate session history" in resp["error"]["message"]
+        assert server._sessions["sid"]["history"] == history
+        assert server._sessions["sid"]["history_version"] == 0
+        assert server._sessions["sid"]["running"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ---------------------------------------------------------------------------
 # session.interrupt must only cancel pending prompts owned by the calling
 # session — it must not blast-resolve clarify/sudo/secret prompts on

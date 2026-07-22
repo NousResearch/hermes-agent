@@ -817,6 +817,40 @@ class TestMattermostFileUpload:
         assert result.success is True
         assert result.message_id == "post_with_file"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "file_name"),
+        [
+            ("send_image_file", "missing-image.png"),
+            ("send_document", "missing-document.pdf"),
+            ("send_voice", "missing-voice.ogg"),
+            ("send_video", "missing-video.mp4"),
+        ],
+    )
+    async def test_missing_local_file_fails_without_upload_or_post(
+        self,
+        tmp_path,
+        method_name,
+        file_name,
+    ):
+        missing_path = tmp_path / "private" / "attachments" / file_name
+        self.adapter._upload_file = AsyncMock()
+        self.adapter._thread_root_for_send = AsyncMock()
+        self.adapter._post_preserving_thread = AsyncMock()
+
+        result = await getattr(self.adapter, method_name)(
+            "channel_1",
+            str(missing_path),
+        )
+
+        assert result.success is False
+        assert result.message_id is None
+        assert result.error == f"Local file not found: {file_name}"
+        assert str(missing_path.parent) not in result.error
+        self.adapter._upload_file.assert_not_awaited()
+        self.adapter._thread_root_for_send.assert_not_awaited()
+        self.adapter._post_preserving_thread.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Dedup cache

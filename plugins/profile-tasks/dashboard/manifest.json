@@ -1,0 +1,14 @@
+{
+  "name": "profile-tasks",
+  "label": "Profile Tasks",
+  "description": "Read-only Kanban task dashboard grouped by local Hermes profile",
+  "icon": "Activity",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/profile-tasks",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

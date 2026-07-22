@@ -384,8 +384,14 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                if quiet_mode:
+                    logger.warning(
+                        "Unknown toolset in enabled_toolsets: %s",
+                        toolset_name,
+                    )
+                else:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
@@ -432,8 +438,14 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                if quiet_mode:
+                    logger.warning(
+                        "Unknown toolset in disabled_toolsets: %s",
+                        toolset_name,
+                    )
+                else:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

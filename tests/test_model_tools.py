@@ -1,6 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+import logging
 from unittest.mock import ANY, call, patch
 
 
@@ -587,3 +588,55 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+class TestUnknownToolsetDiagnostics:
+    def test_enabled_unknown_logs_in_quiet_mode(self, caplog):
+        from model_tools import _compute_tool_definitions
+
+        with (
+            patch("model_tools.registry.get_definitions", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=["definitely-missing-toolset"],
+                quiet_mode=True,
+            )
+
+        assert (
+            "Unknown toolset in enabled_toolsets: definitely-missing-toolset"
+            in caplog.messages
+        )
+
+    def test_disabled_unknown_logs_in_quiet_mode(self, caplog):
+        from model_tools import _compute_tool_definitions
+
+        with (
+            patch("model_tools.registry.get_definitions", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=[],
+                disabled_toolsets=["definitely-missing-toolset"],
+                quiet_mode=True,
+            )
+
+        assert (
+            "Unknown toolset in disabled_toolsets: definitely-missing-toolset"
+            in caplog.messages
+        )
+
+    def test_known_toolsets_do_not_log_unknown_warning(self, caplog):
+        from model_tools import _compute_tool_definitions
+
+        with (
+            patch("model_tools.registry.get_definitions", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="model_tools"),
+        ):
+            _compute_tool_definitions(
+                enabled_toolsets=["terminal"],
+                disabled_toolsets=["file"],
+                quiet_mode=True,
+            )
+
+        assert not any("Unknown toolset" in message for message in caplog.messages)

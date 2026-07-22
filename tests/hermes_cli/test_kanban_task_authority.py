@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -106,3 +107,43 @@ def test_restricted_worker_bundle_exposes_only_own_task_lifecycle(monkeypatch):
         "terminal",
         "memory",
     } & names
+
+
+def test_fixed_authority_worker_cannot_read_or_comment_on_foreign_task(
+    authority_board, monkeypatch
+):
+    from tools import kanban_tools
+
+    with kb.connect() as conn:
+        own_id = kb.create_task(conn, title="own task")
+        foreign_id = kb.create_task(conn, title="foreign task")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own_id)
+    monkeypatch.setenv("HERMES_KANBAN_TASK_AUTHORITY", kb.TASK_AUTHORITY_CONTRACT)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+
+    for result in (
+        kanban_tools._handle_show({"task_id": foreign_id}),
+        kanban_tools._handle_comment({"task_id": foreign_id, "body": "cross-task"}),
+        kanban_tools._handle_attachments({"task_id": foreign_id}),
+        kanban_tools._handle_show({"task_id": own_id, "board": "other-board"}),
+    ):
+        payload = json.loads(result)
+        assert "fixed-authority worker is scoped" in payload["error"]
+
+    own = json.loads(kanban_tools._handle_show({"task_id": own_id}))
+    assert own["task"]["id"] == own_id
+
+
+def test_legacy_worker_cross_task_read_behavior_is_unchanged(authority_board, monkeypatch):
+    from tools import kanban_tools
+
+    with kb.connect() as conn:
+        own_id = kb.create_task(conn, title="legacy own task")
+        foreign_id = kb.create_task(conn, title="legacy foreign task")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own_id)
+    monkeypatch.delenv("HERMES_KANBAN_TASK_AUTHORITY", raising=False)
+
+    foreign = json.loads(kanban_tools._handle_show({"task_id": foreign_id}))
+    assert foreign["task"]["id"] == foreign_id

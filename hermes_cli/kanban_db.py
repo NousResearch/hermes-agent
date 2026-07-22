@@ -8376,6 +8376,7 @@ def _default_spawn(
         # are not inherited. ``--ignore-rules`` maps to skip_context_files and
         # skip_memory on AIAgent while still allowing explicitly pinned skills.
         worker_toolsets = [*task.toolsets, "kanban_worker"]
+        env["HERMES_KANBAN_TASK_AUTHORITY"] = TASK_AUTHORITY_CONTRACT
         cmd.extend(["--toolsets", ",".join(worker_toolsets), "--ignore-rules"])
     else:
         worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))

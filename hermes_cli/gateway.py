@@ -4094,6 +4094,14 @@ def launchd_plist_is_current() -> bool:
     ) == _normalize_launchd_plist_for_comparison(expected)
 
 
+# Opt-out token for user-customised service definitions (conventionally an XML
+# comment: <!-- hermes-plist: unmanaged -->). When it appears anywhere in an
+# installed launchd plist, refresh machinery leaves the file untouched — the
+# user owns it. Without this, every `hermes update` per-label refresh silently
+# reverts hand-built units (e.g. a worker-only profile) to the generated shape.
+LAUNCHD_PLIST_UNMANAGED_MARKER = "hermes-plist: unmanaged"
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
@@ -4102,7 +4110,12 @@ def refresh_launchd_plist_if_needed() -> bool:
     bootstrap to make launchd re-read the updated plist immediately.
     """
     plist_path = get_launchd_plist_path()
-    if not plist_path.exists() or launchd_plist_is_current():
+    if not plist_path.exists():
+        return False
+    if LAUNCHD_PLIST_UNMANAGED_MARKER in plist_path.read_text(encoding="utf-8"):
+        print(f"  ℹ {get_launchd_label()}: plist marked unmanaged — leaving as-is")
+        return False
+    if launchd_plist_is_current():
         return False
 
     new_plist = generate_launchd_plist()
@@ -4533,6 +4546,9 @@ def refresh_launchd_plist_for_label_if_needed(label: str) -> bool:
     if not plist_path.exists():
         return False
     installed = plist_path.read_text(encoding="utf-8")
+    if LAUNCHD_PLIST_UNMANAGED_MARKER in installed:
+        print(f"  ℹ {label}: plist marked unmanaged — leaving as-is")
+        return False
     home = _launchd_home_from_plist(installed)
     if home is None:
         return False

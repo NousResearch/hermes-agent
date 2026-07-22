@@ -3980,3 +3980,70 @@ class TestLaunchdPlistProfileWorkingDirectory:
         data = plistlib.loads(plist.encode("utf-8"))
         assert data["EnvironmentVariables"]["HERMES_HOME"] == str(profile_home.resolve())
         assert data["WorkingDirectory"] == str(profile_home.resolve())
+
+
+class TestLaunchdPlistUnmanagedMarker:
+    def _write_marked_plist(self, path, label, home):
+        path.write_text(
+            f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<!-- hermes-plist: unmanaged -->
+<dict>
+    <key>Label</key><string>{label}</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>HERMES_HOME</key><string>{home}</string></dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+
+    def test_named_profile_refresh_skips_unmanaged_plist(self, tmp_path, monkeypatch):
+        """A user-customised plist (e.g. a worker-only profile) opts out of the
+        post-update refresh with the unmanaged marker. The refresher must not
+        rewrite the file and must not bootout/bootstrap the service — the
+        2026-07-22 update silently reverted a hand-built worker-only unit."""
+        label = "ai.hermes.gateway-bingo"
+        profile_home = tmp_path / ".hermes" / "profiles" / "bingo"
+        profile_home.mkdir(parents=True)
+        plist_path = tmp_path / f"{label}.plist"
+        self._write_marked_plist(plist_path, label, profile_home)
+        original = plist_path.read_text(encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_launchd_plist_path_for_label", lambda label: plist_path)
+        monkeypatch.setattr(
+            gateway_cli, "_generate_launchd_plist_for_home", lambda home: "<plist>would differ</plist>"
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "run",
+            lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.refresh_launchd_plist_for_label_if_needed(label) is False
+        assert plist_path.read_text(encoding="utf-8") == original
+        assert calls == []
+
+    def test_default_profile_refresh_skips_unmanaged_plist(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._write_marked_plist(plist_path, "ai.hermes.gateway", home)
+        original = plist_path.read_text(encoding="utf-8")
+        calls = []
+
+        # Force the full rewrite path: stale plist, non-temp generated content,
+        # write guard open — only the unmanaged marker may stop the rewrite.
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "<plist>would differ</plist>")
+        monkeypatch.setattr(gateway_cli, "_refuse_temp_home_service_write", lambda *a, **kw: False)
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "run",
+            lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+        assert plist_path.read_text(encoding="utf-8") == original
+        assert calls == []

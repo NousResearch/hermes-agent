@@ -13306,7 +13306,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "start", "status", "stop", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13986,6 +13986,17 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+
+    # Convenience aliases: `hermes stop` / `hermes start` redirect to
+    # `hermes gateway stop` / `hermes gateway start` (#68247).
+    for _alias, _gw_cmd in [("stop", "stop"), ("start", "start")]:
+        _alias_parser = subparsers.add_parser(
+            _alias,
+            help=f"Alias for 'hermes gateway {_gw_cmd}'",
+        )
+        _alias_parser.set_defaults(func=lambda args, _cmd=_gw_cmd: cmd_gateway(
+            argparse.Namespace(gateway_command=_cmd, verbose=0, quiet=False, replace=False, force=False, no_supervise=False)
+        ))
 
     # =========================================================================
     # lsp command

@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -67,6 +67,14 @@ import {
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
+import {
+  desktopPublicKeyFingerprint,
+  desktopTextHash,
+  generateDesktopSigningIdentity,
+  signDesktopPayload,
+  TrustedGestureLedger
+} from './desktop-provenance'
+import type { DesktopPromptPayload } from './desktop-provenance'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -541,6 +549,10 @@ const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-sta
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+const DIRECT_ACTION_IDENTITY_PATH = path.join(app.getPath('userData'), 'direct-action-identity.json')
+const DIRECT_ACTION_PUBLIC_KEY_PATH = path.join(app.getPath('userData'), 'direct-action-public.pem')
+const DIRECT_ACTION_APP_INSTANCE_ID = crypto.randomUUID()
+const directActionGestures = new TrustedGestureLedger()
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -6234,6 +6246,270 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
+let directActionAppIdentityCache = null
+
+function directActionAppIdentity() {
+  if (directActionAppIdentityCache) {
+    return directActionAppIdentityCache
+  }
+
+  const allowDevelopment = process.env.HERMES_MEDCLOUD_DIRECT_ALLOW_DEV === '1'
+
+  if (!IS_PACKAGED && !allowDevelopment) {
+    throw new Error('desktop direct-action provenance is disabled for development builds')
+  }
+
+  if (!IS_MAC && !allowDevelopment) {
+    throw new Error('desktop direct-action provenance requires verified macOS code signing')
+  }
+
+  let signingIdentity = ''
+
+  if (IS_MAC) {
+    const bundlePath = path.resolve(path.dirname(process.execPath), '../..')
+
+    const verified = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundlePath], {
+      encoding: 'utf8',
+      timeout: 5_000
+    })
+
+    const result = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', bundlePath], {
+      encoding: 'utf8',
+      timeout: 5_000
+    })
+
+    const details = `${result.stdout || ''}\n${result.stderr || ''}`
+    const identifier = details.match(/^Identifier=(.+)$/m)?.[1]?.trim() || ''
+    const team = details.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim() || ''
+
+    if (verified.status === 0 && identifier && team && team !== 'not set') {
+      signingIdentity = `${team}:${identifier}`
+    } else if (!allowDevelopment) {
+      throw new Error('desktop application signing identity is unavailable')
+    }
+  }
+
+  if (!signingIdentity) {
+    signingIdentity = `development:${app.getName()}`
+  }
+
+  // The installation signing key is the revocable enrollment credential. Keep the
+  // code-signing identity stable across normal app updates so in-flight status
+  // deliveries remain claimable after an upgrade.
+  directActionAppIdentityCache = signingIdentity
+
+  return directActionAppIdentityCache
+}
+
+function readOrCreateDirectActionIdentity() {
+  let stored = null
+
+  try {
+    const identityInfo = fs.lstatSync(DIRECT_ACTION_IDENTITY_PATH)
+
+    if (
+      !identityInfo.isFile() ||
+      identityInfo.size > 65_536 ||
+      (identityInfo.mode & 0o077) !== 0 ||
+      (typeof process.getuid === 'function' && identityInfo.uid !== process.getuid())
+    ) {
+      throw new Error('desktop direct-action identity is unreadable')
+    }
+
+    stored = JSON.parse(fs.readFileSync(DIRECT_ACTION_IDENTITY_PATH, 'utf8'))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error('desktop direct-action identity is unreadable')
+    }
+  }
+
+  if (stored) {
+    if (
+      stored.version !== 1 ||
+      typeof stored.installationId !== 'string' ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(stored.installationId) ||
+      typeof stored.publicKeyPem !== 'string' ||
+      stored.publicKeyPem.length > 8_192 ||
+      typeof stored.privateKeyEncrypted !== 'string' ||
+      stored.privateKeyEncrypted.length > 32_768 ||
+      !safeStorage.isEncryptionAvailable()
+    ) {
+      throw new Error('desktop direct-action identity is invalid')
+    }
+
+    const privateKeyPem = safeStorage.decryptString(Buffer.from(stored.privateKeyEncrypted, 'base64'))
+
+    const derivedPublicKeyPem = crypto.createPublicKey(privateKeyPem).export({ type: 'spki', format: 'pem' }).toString()
+
+    if (
+      !privateKeyPem ||
+      desktopPublicKeyFingerprint(stored.publicKeyPem) !== desktopPublicKeyFingerprint(derivedPublicKeyPem)
+    ) {
+      throw new Error('desktop direct-action identity is invalid')
+    }
+
+    let publishedPublicKey = ''
+
+    try {
+      publishedPublicKey = fs.readFileSync(DIRECT_ACTION_PUBLIC_KEY_PATH, 'utf8')
+    } catch {
+      publishedPublicKey = ''
+    }
+
+    if (publishedPublicKey !== stored.publicKeyPem) {
+      writeFileAtomic(DIRECT_ACTION_PUBLIC_KEY_PATH, stored.publicKeyPem)
+      fs.chmodSync(DIRECT_ACTION_PUBLIC_KEY_PATH, 0o644)
+    }
+
+    return { ...stored, privateKeyPem }
+  }
+
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('OS-protected desktop credential storage is unavailable')
+  }
+
+  const keys = generateDesktopSigningIdentity()
+
+  const identity = {
+    version: 1,
+    installationId: crypto.randomUUID(),
+    publicKeyPem: keys.publicKeyPem,
+    privateKeyEncrypted: safeStorage.encryptString(keys.privateKeyPem).toString('base64')
+  }
+
+  fs.mkdirSync(path.dirname(DIRECT_ACTION_IDENTITY_PATH), { recursive: true })
+  const identityTempPath = `${DIRECT_ACTION_IDENTITY_PATH}.${process.pid}.${crypto.randomUUID()}.tmp`
+
+  try {
+    fs.writeFileSync(identityTempPath, JSON.stringify(identity, null, 2), {
+      flag: 'wx',
+      mode: 0o600
+    })
+    fs.chmodSync(identityTempPath, 0o600)
+    fs.renameSync(identityTempPath, DIRECT_ACTION_IDENTITY_PATH)
+  } finally {
+    try {
+      fs.unlinkSync(identityTempPath)
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        rememberLog(`[direct-action] identity temp cleanup failed: ${error?.message || error}`)
+      }
+    }
+  }
+
+  writeFileAtomic(DIRECT_ACTION_PUBLIC_KEY_PATH, keys.publicKeyPem)
+  fs.chmodSync(DIRECT_ACTION_PUBLIC_KEY_PATH, 0o644)
+
+  return { ...identity, privateKeyPem: keys.privateKeyPem }
+}
+
+function directActionOsAccount() {
+  const numeric = typeof process.getuid === 'function' ? process.getuid() : null
+  const account = numeric === null ? os.userInfo().username : String(numeric)
+
+  return `${process.platform}:${account}`
+}
+
+function directActionPublicIdentity(profile = primaryProfileKey()) {
+  const identity = readOrCreateDirectActionIdentity()
+
+  return {
+    version: 1,
+    surface: 'desktop',
+    surfaceAccount: identity.installationId,
+    surfacePrincipal: directActionOsAccount(),
+    chatOrWindow: `desktop:${identity.installationId}`,
+    appIdentity: directActionAppIdentity(),
+    profile,
+    publicKeyFingerprint: desktopPublicKeyFingerprint(identity.publicKeyPem),
+    publicKeyPath: DIRECT_ACTION_PUBLIC_KEY_PATH,
+    publicKeyPem: identity.publicKeyPem
+  }
+}
+
+function trustedDirectActionFrame(event) {
+  const frame = event?.senderFrame
+  const rawUrl = String(frame?.url || '')
+
+  if (!frame || frame.parent !== null || !rawUrl) {
+    return false
+  }
+
+  try {
+    const actual = new URL(rawUrl)
+
+    if (DEV_SERVER) {
+      if (process.env.HERMES_MEDCLOUD_DIRECT_ALLOW_DEV !== '1') {
+        return false
+      }
+
+      return actual.origin === new URL(DEV_SERVER).origin
+    }
+
+    const expected = new URL(pathToFileURL(resolveRendererIndex()).toString())
+
+    return actual.protocol === 'file:' && actual.pathname === expected.pathname
+  } catch {
+    return false
+  }
+}
+
+function mintDirectActionPrompt(event, request) {
+  if (!trustedDirectActionFrame(event) || !request || typeof request !== 'object') {
+    return null
+  }
+
+  const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : ''
+  const text = typeof request.text === 'string' ? request.text : ''
+  const requestedProfile = typeof request.profile === 'string' ? request.profile.trim() : ''
+  const profile = requestedProfile || primaryProfileKey()
+
+  if (
+    !sessionId ||
+    sessionId.length > 190 ||
+    !text ||
+    text.length > 8_192 ||
+    (profile !== 'default' && !PROFILE_NAME_RE.test(profile)) ||
+    (profile !== primaryProfileKey() && !backendPool.has(profile))
+  ) {
+    return null
+  }
+
+  const textHash = desktopTextHash(text)
+  const eventId = directActionGestures.eventIdFor(event.sender.id, textHash, profile)
+
+  if (!eventId) {
+    return null
+  }
+
+  const identity = readOrCreateDirectActionIdentity()
+  const win = BrowserWindow.fromWebContents(event.sender)
+
+  const payload: DesktopPromptPayload = {
+    version: 1,
+    event_id: eventId,
+    issued_at: new Date().toISOString(),
+    installation_id: identity.installationId,
+    os_account: directActionOsAccount(),
+    app_identity: directActionAppIdentity(),
+    app_instance_id: DIRECT_ACTION_APP_INSTANCE_ID,
+    profile,
+    window_id: String(win?.id || ''),
+    session_id: sessionId,
+    text_hash: textHash
+  }
+
+  if (!payload.window_id) {
+    return null
+  }
+
+  return {
+    payload,
+    public_key_fingerprint: desktopPublicKeyFingerprint(identity.publicKeyPem),
+    signature: signDesktopPayload(identity.privateKeyPem, payload)
+  }
+}
+
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote
@@ -8389,6 +8665,41 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+ipcMain.on('hermes:direct-action:trusted-gesture', (event, payload) => {
+  const text = payload && typeof payload.text === 'string' ? payload.text : ''
+
+  if (trustedDirectActionFrame(event) && text && text.length <= 8_192) {
+    directActionGestures.note(event.sender.id, desktopTextHash(text))
+  }
+})
+ipcMain.handle('hermes:direct-action:identity', async (event, profile) => {
+  if (!trustedDirectActionFrame(event)) {
+    return null
+  }
+
+  const requested = typeof profile === 'string' ? profile.trim() : ''
+  const resolved = requested || primaryProfileKey()
+
+  if (
+    (resolved !== 'default' && !PROFILE_NAME_RE.test(resolved)) ||
+    (resolved !== primaryProfileKey() && !backendPool.has(resolved))
+  ) {
+    return null
+  }
+
+  try {
+    return directActionPublicIdentity(resolved)
+  } catch {
+    return null
+  }
+})
+ipcMain.handle('hermes:direct-action:mint-prompt', async (event, request) => {
+  try {
+    return mintDirectActionPrompt(event, request)
+  } catch {
+    return null
+  }
+})
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer

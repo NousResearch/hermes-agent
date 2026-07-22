@@ -704,6 +704,12 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # Gateway-owned, per-turn ingress context. It contains only
+            # sanitized identifiers and ordered source-message provenance;
+            # adapters never pass raw SDK objects through this boundary.
+            surface_context=dict(
+                getattr(agent, "_gateway_event_context", None) or {}
+            ),
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

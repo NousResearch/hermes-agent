@@ -102,8 +102,24 @@ export function useGatewayRequest() {
         throw new Error('Hermes gateway unavailable')
       }
 
+      let requestParams = params
+
+      if (method === 'prompt.submit' && typeof params.session_id === 'string' && typeof params.text === 'string') {
+        const provenance = await window.hermesDesktop
+          ?.mintDirectActionPrompt?.({
+            profile: $activeGatewayProfile.get(),
+            sessionId: params.session_id,
+            text: params.text
+          })
+          .catch(() => null)
+
+        if (provenance) {
+          requestParams = { ...params, desktop_provenance: provenance }
+        }
+      }
+
       try {
-        return await gateway.request<T>(method, params, timeoutMs, signal)
+        return await gateway.request<T>(method, requestParams, timeoutMs, signal)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
 
@@ -129,7 +145,7 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        return recovered.request<T>(method, requestParams, timeoutMs, signal)
       }
     },
     [ensureGatewayOpen]

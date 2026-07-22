@@ -1212,11 +1212,89 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _emit(event: str, sid: str, payload: dict | None = None):
+def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
-    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    return write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def emit_plugin_event_to_session_key(
+    session_key: str, event: str, payload: dict
+) -> bool:
+    """Emit one bounded plugin event to the exact live durable session.
+
+    Plugins never receive a transport or runtime-session selector.  The core
+    resolves the durable key to the currently attached runtime and only permits
+    the namespaced event family, preventing a plugin from impersonating core
+    stream/lifecycle frames through this seam.
+    """
+    if (
+        not isinstance(session_key, str)
+        or not session_key
+        or not isinstance(event, str)
+        or not event.startswith("plugin.")
+        or len(event) > 96
+        or not isinstance(payload, dict)
+    ):
+        return False
+    try:
+        if len(json.dumps(payload, ensure_ascii=True, allow_nan=False)) > 65536:
+            return False
+    except (TypeError, ValueError):
+        return False
+    live = _find_live_session_by_key(session_key)
+    if live is None:
+        return False
+    sid, _session = live
+    return _emit(event, sid, payload)
+
+
+def _schedule_plugin_session_events(sid: str, *, delay: float = 0.1) -> None:
+    """Replay plugin-owned durable UI state after create/resume has flushed.
+
+    The delayed callback prevents an event racing ahead of the RPC response
+    that teaches the client its runtime session id.  Results are deliberately
+    closed and bounded; malformed plugin output is ignored.
+    """
+
+    def _run() -> None:
+        session = _sessions.get(sid)
+        if session is None or session.get("_finalized"):
+            return
+        task_id = _session_lookup_key(session, fallback=sid)
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            results = invoke_hook(
+                "on_tui_session_attached",
+                session_id=sid,
+                task_id=task_id,
+            )
+        except Exception:
+            return
+        for result in results:
+            if not isinstance(result, dict) or set(result) != {"events"}:
+                continue
+            events = result.get("events")
+            if not isinstance(events, list) or len(events) > 100:
+                continue
+            for item in events:
+                if not isinstance(item, dict) or set(item) != {"type", "payload"}:
+                    continue
+                event = item.get("type")
+                payload = item.get("payload")
+                if (
+                    isinstance(event, str)
+                    and event.startswith("plugin.")
+                    and len(event) <= 96
+                    and isinstance(payload, dict)
+                ):
+                    emit_plugin_event_to_session_key(task_id, event, payload)
+
+    timer = threading.Timer(delay, _run)
+    timer.daemon = True
+    timer.start()
 
 
 _compute_host_supervisor = None
@@ -1260,7 +1338,13 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         return _compute_host_supervisor
 
 
-def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _compute_host_turn_frame(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    surface_context: dict | None = None,
+) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -1281,6 +1365,7 @@ def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> di
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
         "attached_images": attached_images,
+        "surface_context": dict(surface_context or {}),
     }
 
 
@@ -1351,9 +1436,15 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     _drain_queued_prompt(rid, sid, session)
 
 
-def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _submit_prompt_to_compute_host(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    surface_context: dict | None = None,
+) -> dict:
     cfg = _load_dashboard_process_isolation_config()
-    frame = _compute_host_turn_frame(rid, sid, session, text)
+    frame = _compute_host_turn_frame(rid, sid, session, text, surface_context)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure through the callback
@@ -5602,7 +5693,36 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+def _merge_surface_context(
+    previous: dict | None, current: dict | None, combined_text: Any
+) -> dict | None:
+    """Merge two authenticated source sets only when their static provenance matches."""
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return None
+    excluded = {"accepted_text", "source_messages"}
+    if {
+        key: value for key, value in previous.items() if key not in excluded
+    } != {key: value for key, value in current.items() if key not in excluded}:
+        return None
+    sources = [
+        *(previous.get("source_messages") or []),
+        *(current.get("source_messages") or []),
+    ]
+    if not 1 <= len(sources) <= 16 or not all(isinstance(item, dict) for item in sources):
+        return None
+    return {
+        **{key: value for key, value in previous.items() if key not in excluded},
+        "accepted_text": combined_text if isinstance(combined_text, str) else "",
+        "source_messages": sources,
+    }
+
+
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    surface_context: dict | None = None,
+) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
@@ -5619,7 +5739,14 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     ):
         prev = existing["text"]
         text = f"{prev}\n\n{text}" if prev and text else (prev or text)
-    session["queued_prompt"] = {"text": text, "transport": transport}
+        surface_context = _merge_surface_context(
+            existing.get("surface_context"), surface_context, text
+        )
+    session["queued_prompt"] = {
+        "text": text,
+        "transport": transport,
+        "surface_context": surface_context,
+    }
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -5658,7 +5785,12 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    surface_context: dict | None = None,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -5681,7 +5813,12 @@ def _handle_busy_submit(
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+    if (
+        mode == "steer"
+        and surface_context is None
+        and agent is not None
+        and hasattr(agent, "steer")
+    ):
         try:
             if agent.steer(text):
                 with session["history_lock"]:
@@ -5695,7 +5832,7 @@ def _handle_busy_submit(
     with session["history_lock"]:
         if not session.get("running"):
             return None
-        _enqueue_prompt(session, text, transport)
+        _enqueue_prompt(session, text, transport, surface_context)
         session["last_active"] = time.time()
 
     if mode != "queue":
@@ -5720,7 +5857,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["transport"] = queued["transport"]
     try:
         if _session_uses_compute_host(session):
-            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+            resp = _submit_prompt_to_compute_host(
+                rid,
+                sid,
+                session,
+                queued["text"],
+                queued.get("surface_context"),
+            )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
                 with session["history_lock"]:
@@ -5728,7 +5871,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     _clear_inflight_turn(session)
                 _emit("error", sid, {"message": message})
         else:
-            _run_prompt_submit(rid, sid, session, queued["text"])
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                queued["text"],
+                surface_context=queued.get("surface_context"),
+            )
     except Exception as exc:
         print(
             f"[tui_gateway] queued prompt dispatch failed: "
@@ -5890,6 +6039,7 @@ def _(rid, params: dict) -> dict:
     # without requiring the user to submit a first prompt.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+    _schedule_plugin_session_events(sid)
 
     return _ok(
         rid,
@@ -6248,6 +6398,7 @@ def _(rid, params: dict) -> dict:
         if session.get("agent") is None and _child_run_active(target):
             payload["running"] = True
             payload["status"] = "streaming"
+        _schedule_plugin_session_events(sid)
         return payload
 
     # Fast path: if the session is already live, reuse it under the lock.
@@ -6298,6 +6449,7 @@ def _(rid, params: dict) -> dict:
         )
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
             return _ok(rid, _reuse_live_payload(*live))
+        _schedule_plugin_session_events(sid)
         # A delegated child mid-run emits no session events of its own — report
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
@@ -6383,6 +6535,7 @@ def _(rid, params: dict) -> dict:
 
         _schedule_agent_build(sid)
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+        _schedule_plugin_session_events(sid)
 
         messages = _history_to_messages(display_history)
         return _ok(
@@ -6484,6 +6637,7 @@ def _(rid, params: dict) -> dict:
                 transport=current_transport() or _stdio_transport,
             )
             payload["resumed"] = target
+            _schedule_plugin_session_events(other_sid)
             return _ok(rid, payload)
         try:
             init_home_token = (
@@ -6522,6 +6676,7 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
+    _schedule_plugin_session_events(sid)
     return _ok(
         rid,
         {
@@ -9399,6 +9554,39 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _prompt_surface_context(
+    params: dict, *, sid: str, session: dict, text: Any
+) -> dict | None:
+    provenance = params.get("desktop_provenance")
+    if not isinstance(provenance, dict) or not isinstance(text, str):
+        return None
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        results = invoke_hook(
+            "pre_prompt_submit",
+            provenance=dict(provenance),
+            session_id=sid,
+            task_id=str(session.get("session_key") or sid),
+            user_message=text,
+            platform="desktop",
+        )
+    except Exception:
+        return None
+    contexts = []
+    for result in results:
+        if not isinstance(result, dict) or set(result) != {"surface_context"}:
+            continue
+        context = result.get("surface_context")
+        if (
+            isinstance(context, dict)
+            and context.get("accepted_text") == text
+            and isinstance(context.get("source_messages"), list)
+        ):
+            contexts.append(dict(context))
+    return contexts[0] if len(contexts) == 1 else None
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -9410,6 +9598,9 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    surface_context = _prompt_surface_context(
+        params, sid=sid, session=session, text=text
+    )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps
@@ -9428,7 +9619,14 @@ def _(rid, params: dict) -> dict:
                 busy_transport = t or session.get("transport")
             else:
                 break
-        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+        busy_response = _handle_busy_submit(
+            rid,
+            sid,
+            session,
+            text,
+            busy_transport,
+            surface_context,
+        )
         if busy_response is not None:
             return busy_response
         # The old turn finished between the two lock acquisitions. Retry the
@@ -9471,7 +9669,9 @@ def _(rid, params: dict) -> dict:
         _start_inflight_turn(session, text)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(
+            rid, sid, session, text, surface_context
+        )
         if not isolated_response.get("error"):
             return isolated_response
         logger.warning(
@@ -9508,7 +9708,9 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(
+            rid, sid, session, text, surface_context=surface_context
+        )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -9923,7 +10125,14 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    surface_context: dict | None = None,
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -10099,7 +10308,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
-            result = agent.run_conversation(run_message, **run_kwargs)
+            agent._gateway_event_context = dict(surface_context or {})
+            try:
+                result = agent.run_conversation(run_message, **run_kwargs)
+            finally:
+                agent._gateway_event_context = None
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.

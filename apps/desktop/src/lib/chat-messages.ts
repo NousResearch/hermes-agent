@@ -19,6 +19,8 @@ export type ChatMessage = {
   hidden?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** Monotonic direct-action transition used to reject delayed status regressions. */
+  medcloudTransitionId?: number
 }
 
 export type GatewayEventPayload = {
@@ -76,6 +78,11 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // plugin.medcloud.status — durable direct-action transition replay.
+  operation_id?: string
+  delivery_id?: number
+  transition_id?: number
+  state?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string

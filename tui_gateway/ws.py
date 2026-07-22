@@ -40,6 +40,8 @@ _log = logging.getLogger(__name__)
 # threads from a wedged socket.
 _WS_WRITE_TIMEOUT_S = 10.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
+_plugin_lifecycle_lock = threading.Lock()
+_plugin_lifecycle_started = False
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on
 # a short timer instead of waking the event loop once per token. A model reply
@@ -280,6 +282,22 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
+def _start_plugin_lifecycle_once() -> None:
+    """Start process-scoped TUI plugin sidecars exactly once."""
+    global _plugin_lifecycle_started
+    with _plugin_lifecycle_lock:
+        if _plugin_lifecycle_started:
+            return
+        from hermes_cli.plugins import discover_plugins, invoke_hook
+
+        discover_plugins()
+        invoke_hook(
+            "on_tui_gateway_start",
+            emit_event=server.emit_plugin_event_to_session_key,
+        )
+        _plugin_lifecycle_started = True
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -315,6 +333,14 @@ async def handle_ws(ws: Any) -> None:
             logger=_log,
             thread_name="tui-ws-mcp-discovery",
         )
+
+        # Start trusted plugin sidecar runtimes once the WS loop is live.  The
+        # emitter accepts only plugin.* events and resolves a durable session
+        # key inside core, so plugins cannot retain or select raw transports.
+        try:
+            _start_plugin_lifecycle_once()
+        except Exception:
+            _log.exception("tui plugin lifecycle start failed")
 
         ready_ok = await transport.write_async(
             {

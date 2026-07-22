@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -8172,6 +8173,27 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        # Resolve DM-topic recovery before the durable receipt seam so the
+        # recorded thread and the eventual session lane cannot disagree.
+        await asyncio.to_thread(self._apply_topic_recovery, event)
+        self._attach_platform_event_member(event)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            # The callback may durably record a receipt. Keep synchronous
+            # plugin/database work off Telegram's event loop while preserving
+            # the strict before-enqueue ordering.
+            await asyncio.to_thread(
+                _invoke_hook,
+                "pre_platform_event_enqueue",
+                event=event,
+                adapter=self,
+            )
+        except Exception as exc:
+            # Hooks are observational and authority consumers fail closed when
+            # a matching receipt is absent. Transport delivery itself remains
+            # available if an unrelated plugin is broken.
+            logger.warning("pre_platform_event_enqueue invocation failed: %s", exc)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -8247,6 +8269,61 @@ class TelegramAdapter(BasePlatformAdapter):
     # Text message aggregation (handles Telegram client-side splits)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _attach_platform_event_member(event: MessageEvent) -> None:
+        """Attach one sanitized, ordered provenance member to ``event``.
+
+        ``raw_message`` is intentionally excluded: it may contain credentials,
+        unrelated Telegram state, and mutable library objects.  The cleartext
+        chunk remains in process memory only so a post-auth hook can prove the
+        accepted aggregate matches this exact ordered source set. A durable
+        receipt plugin is expected to persist only the hash and identifiers.
+        """
+        timestamp = event.timestamp
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+        text = event.text or ""
+        bot = self._bot
+        event.metadata["platform_account"] = str(
+            getattr(bot, "id", None)
+            or self.config.extra.get("account_id")
+            or ""
+        )
+        event.metadata["platform_event_members"] = [
+            {
+                "raw_event_id": str(
+                    "" if event.platform_update_id is None else event.platform_update_id
+                ),
+                "message_id": str("" if event.message_id is None else event.message_id),
+                "occurred_at": timestamp.isoformat(timespec="microseconds"),
+                "text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            }
+        ]
+        # Cleartext split chunks are transient runtime data, not free-form
+        # metadata that may be serialized by queue/session infrastructure.
+        event._platform_event_member_texts = [text]  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _merge_platform_event_members(existing: MessageEvent, event: MessageEvent) -> None:
+        """Preserve every raw member when Telegram debounce combines chunks."""
+        incoming = event.metadata.get("platform_event_members")
+        if not isinstance(incoming, list) or not incoming:
+            return
+        current = existing.metadata.get("platform_event_members")
+        if not isinstance(current, list):
+            current = []
+            existing.metadata["platform_event_members"] = current
+        current.extend(dict(member) for member in incoming if isinstance(member, dict))
+        current_texts = getattr(existing, "_platform_event_member_texts", None)
+        incoming_texts = getattr(event, "_platform_event_member_texts", None)
+        if not isinstance(current_texts, list):
+            current_texts = []
+            existing._platform_event_member_texts = current_texts  # type: ignore[attr-defined]
+        if isinstance(incoming_texts, list):
+            current_texts.extend(str(text) for text in incoming_texts)
+
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching.
 
@@ -8285,6 +8362,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            self._merge_platform_event_members(existing, event)
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             # Merge any media that might be attached
             if event.media_urls:

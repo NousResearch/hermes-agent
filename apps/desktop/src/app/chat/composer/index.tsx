@@ -852,6 +852,7 @@ export function ChatBar({
               : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
             dragging && 'cursor-grabbing select-none touch-none'
           )}
+          data-direct-action-eligible={!busy && hasText && attachments.length === 0 ? 'true' : undefined}
           data-drag-active={dragActive ? '' : undefined}
           data-popped-out={poppedOut ? '' : undefined}
           data-slot="composer-root"

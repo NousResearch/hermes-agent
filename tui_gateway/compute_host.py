@@ -376,7 +376,17 @@ class ComputeHost:
             except Exception:
                 pass
             text = frame.get("text") if "text" in frame else frame.get("prompt", "")
-            server._run_prompt_submit(request_id, sid, session, text)
+            server._run_prompt_submit(
+                request_id,
+                sid,
+                session,
+                text,
+                surface_context=(
+                    dict(frame.get("surface_context"))
+                    if isinstance(frame.get("surface_context"), dict)
+                    else None
+                ),
+            )
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 run_thread.join()

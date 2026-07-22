@@ -65,6 +65,7 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
 //           or reference identity the runtime already guarantees.
 //   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
+//   medcloudTransitionId — ordering guard; the visible status text lives in parts
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -74,7 +75,7 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
-const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
+const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'medcloudTransitionId', 'parts'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.

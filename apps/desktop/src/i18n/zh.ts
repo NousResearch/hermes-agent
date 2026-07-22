@@ -402,6 +402,11 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      sessionDensityTitle: '会话列表密度',
+      sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
+      sessionDensityCompact: '紧凑',
+      sessionDensityComfortable: '舒适',
+      sessionDensityDetailed: '详细',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',

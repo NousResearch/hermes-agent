@@ -329,6 +329,11 @@ export interface Translations {
       toolViewDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      sessionDensityTitle: string
+      sessionDensityDesc: string
+      sessionDensityCompact: string
+      sessionDensityComfortable: string
+      sessionDensityDetailed: string
       translucencyTitle: string
       translucencyDesc: string
       backdropTitle: string

@@ -413,6 +413,11 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+      sessionDensityTitle: 'Session List Density',
+      sessionDensityDesc: 'Choose how much context appears beneath session titles in the sidebar.',
+      sessionDensityCompact: 'Compact',
+      sessionDensityComfortable: 'Comfortable',
+      sessionDensityDetailed: 'Detailed',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       backdropTitle: 'Chat Backdrop',

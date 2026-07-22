@@ -1066,6 +1066,22 @@ def run_conversation(
                 new_tcs.append(tc)
             am["tool_calls"] = new_tcs
 
+        # Strip thought_signature (extra_content) from tool_calls when sending
+        # Gemini models through OpenAI-compatible proxies (e.g. Venice, #69208).
+        # The proxy strips the Google-specific extra_content field before
+        # forwarding to Gemini. Gemini 3.6 strictly enforces signature replay
+        # on historical tool calls, so the stripped request fails with HTTP 400.
+        # Proactively removing extra_content prevents the mismatch — the model
+        # never sees a signature to enforce on replay.
+        if agent.api_mode == "chat_completions" and "gemini" in (agent.model or "").lower():
+            for am in api_messages:
+                tcs = am.get("tool_calls")
+                if not tcs:
+                    continue
+                for tc in tcs:
+                    if isinstance(tc, dict) and "extra_content" in tc:
+                        tc.pop("extra_content", None)
+
         # Proactively strip any surrogate characters before the API call.
         # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside

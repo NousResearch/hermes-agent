@@ -1984,7 +1984,7 @@ Setting `approvals.mode: off` disables all safety checks for terminal commands. 
 
 ### Deny rules
 
-`approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
+`approvals.deny` is the historical command-deny list: glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`.
 
 ```yaml
 approvals:
@@ -1993,7 +1993,20 @@ approvals:
     - "*curl*|*sh*"
 ```
 
-Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
+`permissions.deny` is the broader deny-policy namespace. `permissions.deny.commands` is an alias for command-deny rules, and `permissions.deny.paths` blocks matching paths from file tools (`read_file`, `write_file`, `patch`, and `search_files`) before content is read or written. Recursive searches are rejected before backend enumeration when their root is denied or may overlap a denied descendant:
+
+```yaml
+permissions:
+  deny:
+    paths:
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "C:/Users/*/obsidian/Private/**"
+    commands:
+      - "git push --force*"
+```
+
+Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). Local path checks retain both the lexical path and its canonical filesystem identity; non-local backends are not rewritten through host `realpath`. If deny policy loading or validation fails, the affected file or command operation is blocked until the configuration is fixed. See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny--permissionsdeny) for details.
 
 ## Checkpoints
 

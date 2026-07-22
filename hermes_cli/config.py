@@ -2685,8 +2685,21 @@ DEFAULT_CONFIG = {
         "destructive_slash_confirm": True,
     },
 
+    # User-defined, deny-wins policy namespace shared by file and command tools.
+    # `permissions.deny.paths` blocks file-tool reads/writes and rejects
+    # recursive searches that may overlap denied descendants before enumeration;
+    # `permissions.deny.commands` is an alias for `approvals.deny` command
+    # globs and is checked before approval bypass modes.
+    "permissions": {
+        "deny": {
+            "paths": [],
+            "commands": [],
+        },
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
 

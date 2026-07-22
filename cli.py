@@ -7346,6 +7346,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.agent.session_start = self.session_start
             self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
+            # Reinitialize the context compressor so it re-reads the context
+            # length from the provider (e.g., LM Studio). Without this, the
+            # compressor retains its old context_length value across /new,
+            # causing the TUI status bar to display stale context window info.
+            # Also clear the in-memory endpoint metadata cache for LM Studio,
+            # since the TTL (300s) means stale values persist across /new.
+            if hasattr(self.agent, "context_compressor") and self.agent.context_compressor is not None:
+                try:
+                    provider = getattr(self.agent, "provider", "") or ""
+                    base_url = getattr(self.agent, "base_url", "") or ""
+                    if provider.lower() == "lmstudio" and base_url:
+                        from agent.model_metadata import (
+                            _endpoint_model_metadata_cache,
+                            _endpoint_model_metadata_cache_time,
+                            _normalize_base_url,
+                        )
+                        normalized = _normalize_base_url(base_url)
+                        if normalized:
+                            _endpoint_model_metadata_cache.pop(normalized, None)
+                            _endpoint_model_metadata_cache_time.pop(normalized, None)
+                    from agent.context_compressor import ContextCompressor
+                    comp = self.agent.context_compressor
+                    self.agent.context_compressor = ContextCompressor(
+                        model=self.model,
+                        threshold_percent=comp.threshold_percent,
+                        protect_first_n=comp.protect_first_n,
+                        protect_last_n=comp.protect_last_n,
+                        summary_target_ratio=comp.summary_target_ratio,
+                        quiet_mode=True,
+                        base_url=getattr(self.agent, "base_url", "") or "",
+                        api_key=getattr(self.agent, "api_key", ""),
+                        config_context_length=None,  # Let it probe from provider
+                        provider=getattr(self.agent, "provider", ""),
+                        api_mode=getattr(self.agent, "api_mode", ""),
+                    )
+                except Exception:
+                    pass  # Non-fatal — user still gets a fresh session
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):

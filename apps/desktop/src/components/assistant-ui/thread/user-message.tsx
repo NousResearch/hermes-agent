@@ -247,8 +247,15 @@ export const UserMessage: FC<{
           // Attachments live BELOW the sticky bubble in normal flow, so they
           // scroll away behind the pinned bubble instead of riding along with
           // it. Image refs render as thumbnails, file refs as chips; no border.
+          //
+          // No negative top margin here: the preceding sibling is the opaque
+          // `sticky z-40` bubble container, whose background extends through its
+          // own `pb-(--conversation-turn-gap)`. Any -mt pulls this row's top up
+          // into that opaque padding, where the pinned bubble paints over the
+          // chips (the clipping bug). Non-negative spacing keeps the row wholly
+          // below the sticky layer, so chips and thumbnails stay fully visible.
           attachmentRefs.length > 0 ? (
-            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
+            <div className="flex flex-wrap gap-1 mb-2">
               <DirectiveContent text={attachmentRefs.join(' ')} />
             </div>
           ) : null

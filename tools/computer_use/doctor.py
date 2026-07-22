@@ -26,14 +26,14 @@ from typing import Any, Dict, List, Optional, Sequence
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver
 # integration test pins. If health_report widens its vocabulary, add here.
 _STATUS_GLYPH = {
-    "pass": "✅",
-    "fail": "❌",
-    "skip": "⏭️",
+    "pass": "\u2705",
+    "fail": "\u274c",
+    "skip": "\u23ed\ufe0f",
 }
 _OVERALL_GLYPH = {
-    "ok":       "✅",
-    "degraded": "⚠️",
-    "failed":   "❌",
+    "ok":       "\u2705",
+    "degraded": "\u26a0\ufe0f",
+    "failed":   "\u274c",
 }
 
 
@@ -184,7 +184,7 @@ def _print_text_report(report: Dict[str, Any], color: bool) -> None:
     driver_v = report.get("driver_version", "?")
     overall = report.get("overall", "?")
 
-    header_glyph = _OVERALL_GLYPH.get(overall, "•")
+    header_glyph = _OVERALL_GLYPH.get(overall, "\u2022")
 
     if color and overall in _OVERALL_GLYPH:
         # No external color library — keep ANSI inline so the doctor
@@ -207,7 +207,7 @@ def _print_text_report(report: Dict[str, Any], color: bool) -> None:
     for check in report.get("checks", []):
         name = check.get("name", "?")
         status = check.get("status", "?")
-        glyph = _STATUS_GLYPH.get(status, "•")
+        glyph = _STATUS_GLYPH.get(status, "\u2022")
         message = check.get("message") or ""
         if color:
             status_col = {
@@ -218,7 +218,7 @@ def _print_text_report(report: Dict[str, Any], color: bool) -> None:
             print(f"  {glyph} {name}: {message}")
         hint = check.get("hint")
         if hint:
-            print(f"      → {col_dim}{hint}{col_reset}")
+            print(f"      \u2192 {col_dim}{hint}{col_reset}")
         # `data` is the structured payload some checks attach (bundle id,
         # AX permission state, version triple, etc.). Surface when present
         # because users / support staff frequently need it.
@@ -227,6 +227,16 @@ def _print_text_report(report: Dict[str, Any], color: bool) -> None:
             for key, value in data.items():
                 rendered = value if not isinstance(value, (dict, list)) else json.dumps(value)
                 print(f"      {col_dim}{key}={rendered}{col_reset}")
+            # Special case: screen_capture_capability with display_count=0
+            # on macOS means ScreenCaptureKit sees no displays — common on
+            # headless Mac mini setups without a monitor or dummy dongle.
+            if name == "screen_capture_capability" and status == "fail" and data.get("display_count") == 0:
+                print(f"      {col_yellow}\u2192 This usually means no physical display is connected.{col_reset}")
+                print(f"      {col_yellow}\u2192 ScreenCaptureKit requires at least one active display to capture.{col_reset}")
+                print(f"      {col_yellow}\u2192 Solutions:{col_reset}")
+                print(f"      {col_yellow}  1. Connect a monitor or HDMI dummy dongle (e.g. Headless Ghost).{col_reset}")
+                print(f"      {col_yellow}  2. Enable screen sharing / VNC — macOS may create a virtual display.{col_reset}")
+                print(f"      {col_yellow}  3. Use a software virtual display (e.g. BetterDisplay, SwitchResX).{col_reset}")
     _ = schema  # acknowledge field for forward-compat readers
 
 

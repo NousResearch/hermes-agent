@@ -1252,8 +1252,11 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
         z_raw = w.get("z_index")
         z_index = z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0
+        # Multi-key app name lookup (cua-driver version compatibility):
+        # ≤0.7.0 uses "app_name", ≥0.7.1 uses "app", some builds use "name".
+        app_name = w.get("app") or w.get("app_name") or w.get("name") or ""
         windows.append({
-            "app_name": w.get("app_name", ""),
+            "app_name": app_name,
             "pid": pid_int,
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
@@ -1307,7 +1310,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # MCP server instructions.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
 
-    # ── Lifecycle ──────────────────────────────────────────────────
+    # ── Lifecycle ────────────────────────────────────
     def start(self) -> None:
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
@@ -1435,14 +1438,34 @@ class CuaDriverBackend(ComputerUseBackend):
             )
         except Exception as exc:
             logger.error("cua-driver CLI re-fetch for list_windows failed: %s", exc)
-            return []
+            raise RuntimeError(
+                "cua-driver list_windows returned no capturable windows "
+                "(empty inventory after both MCP and CLI transport). "
+                "The daemon session may be tombstoned, or no displays are "
+                "available (e.g. headless Mac without a connected monitor — "
+                "ScreenCaptureKit requires at least one display). "
+                "Run `hermes computer-use doctor` to diagnose."
+            ) from exc
         if cli_out.get("isError") is True:
-            logger.error("cua-driver CLI re-fetch for list_windows returned an error")
             self._clear_active_target()
-            return []
+            raise RuntimeError(
+                "cua-driver list_windows returned no capturable windows "
+                "(CLI re-fetch reported an error). "
+                "No displays may be available (headless Mac without a connected "
+                "monitor — ScreenCaptureKit requires at least one display). "
+                "Run `hermes computer-use doctor` to diagnose."
+            )
         raw_windows = (cli_out.get("structuredContent") or {}).get("windows") or []
         windows = _ingest_windows(raw_windows)
         windows.sort(key=lambda w: w["z_index"], reverse=True)
+        if not windows:
+            raise RuntimeError(
+                "cua-driver list_windows returned no capturable windows "
+                "(empty inventory after both MCP and CLI transport). "
+                "No displays may be available (headless Mac without a connected "
+                "monitor — ScreenCaptureKit requires at least one display). "
+                "Run `hermes computer-use doctor` to diagnose."
+            )
         return windows
 
     def _match_windows_for_app(
@@ -1524,7 +1547,7 @@ class CuaDriverBackend(ComputerUseBackend):
             and app_lower in str(w.get("title", "")).lower()
         ]
 
-    # ── Capture ────────────────────────────────────────────────────
+    # ── Capture ─────────────────────────────────────
     def capture(
         self,
         mode: str = "som",
@@ -1572,8 +1595,6 @@ class CuaDriverBackend(ComputerUseBackend):
             except Exception:
                 self._clear_active_target()
                 raise
-            if not windows:
-                return self._failed_capture(mode)
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of
@@ -1855,653 +1876,3 @@ class CuaDriverBackend(ComputerUseBackend):
             png_bytes_len=png_bytes_len,
             image_mime_type=image_mime_type,
         )
-
-    # ── Pointer ────────────────────────────────────────────────────
-    def _apply_delivery(
-        self,
-        action: str,
-        args: Dict[str, Any],
-        delivery_mode: Optional[str],
-        bring_to_front: bool,
-    ) -> Optional[ActionResult]:
-        """Attach delivery_mode to an input-action args dict.
-
-        Background is the default and never needs a flag. Foreground is only
-        sent when the driver advertises support for it; on an older driver
-        that lacks the capability we refuse with a structured
-        ``foreground_unsupported`` result instead of silently downgrading to
-        background (which would land the input somewhere the model didn't
-        expect). Returns an ActionResult to short-circuit on refusal, or None
-        to proceed. See NousResearch/hermes-agent#67052 phase B.
-        """
-        if not delivery_mode or delivery_mode == "background":
-            return None
-        if delivery_mode != "foreground":
-            return ActionResult(
-                ok=False, action=action, code="bad_delivery_mode",
-                message=f"unknown delivery_mode {delivery_mode!r} — use background|foreground.",
-            )
-        # Foreground requested. Only send it if the driver understands it.
-        if not self._session.supports_capability(
-            "input.delivery_mode", tool=action
-        ):
-            return ActionResult(
-                ok=False, action=action, code="foreground_unsupported",
-                delivery_mode="foreground",
-                message=(
-                    "This cua-driver build does not support foreground "
-                    "delivery (no `input.delivery_mode` capability). Update "
-                    "cua-driver to escalate to the foreground rung."
-                ),
-            )
-        args["delivery_mode"] = "foreground"
-        if bring_to_front:
-            args["bring_to_front"] = True
-        return None
-
-    def click(
-        self,
-        *,
-        element: Optional[int] = None,
-        x: Optional[int] = None,
-        y: Optional[int] = None,
-        button: str = "left",
-        click_count: int = 1,
-        modifiers: Optional[List[str]] = None,
-        delivery_mode: Optional[str] = None,
-        bring_to_front: bool = False,
-    ) -> ActionResult:
-        pid = self._active_pid
-        if pid is None:
-            return ActionResult(ok=False, action="click",
-                                message="No active window — call capture() first.")
-
-        # Choose tool by click_count only — single-vs-double — and pass the
-        # button through to `click`'s `button` enum (Surface 5 of
-        # NousResearch/hermes-agent#47072). cua-driver-rs gained an explicit
-        # `button: "left"|"right"|"middle"` arg on `click` in trycua/cua#1961
-        # which rejects unknown buttons; before that, `middle` was silently
-        # mapped to a left-click via name-routing through `right_click`.
-        # `right_click`/`middle_click` MCP tools are deprecated aliases —
-        # kept around but no longer invoked from here.
-        button_norm = (button or "left").lower()
-        if button_norm not in {"left", "right", "middle"}:
-            return ActionResult(ok=False, action="click",
-                                message=f"unknown button {button!r} — expected left, right, middle.")
-        tool = "double_click" if click_count == 2 else "click"
-
-        args: Dict[str, Any] = {"pid": pid, "button": button_norm}
-        if element is not None:
-            if self._active_window_id is None:
-                return ActionResult(ok=False, action=tool,
-                                    message="No active window_id for element_index click.")
-            args["element_index"] = element
-            args["window_id"] = self._active_window_id
-        elif x is not None and y is not None:
-            if self._active_window_id is None:
-                return ActionResult(ok=False, action=tool,
-                                    message="No active window_id for coordinate click.")
-            args["x"] = x
-            args["y"] = y
-            args["window_id"] = self._active_window_id
-        else:
-            return ActionResult(ok=False, action=tool,
-                                message="click requires element= or x/y.")
-        if modifiers:
-            args["modifier"] = modifiers
-
-        refusal = self._apply_delivery(tool, args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action(tool, args)
-
-    def drag(
-        self,
-        *,
-        from_element: Optional[int] = None,
-        to_element: Optional[int] = None,
-        from_xy: Optional[Tuple[int, int]] = None,
-        to_xy: Optional[Tuple[int, int]] = None,
-        button: str = "left",
-        modifiers: Optional[List[str]] = None,
-        delivery_mode: Optional[str] = None,
-        bring_to_front: bool = False,
-    ) -> ActionResult:
-        pid = self._active_pid
-        if pid is None:
-            return ActionResult(ok=False, action="drag",
-                                message="No active window — call capture() first.")
-        args: Dict[str, Any] = {"pid": pid}
-        if from_element is not None and to_element is not None:
-            if self._active_window_id is None:
-                return ActionResult(ok=False, action="drag",
-                                    message="No active window_id for element-based drag.")
-            args["from_element"] = from_element
-            args["to_element"] = to_element
-            args["window_id"] = self._active_window_id
-        elif from_xy is not None and to_xy is not None:
-            if self._active_window_id is None:
-                return ActionResult(ok=False, action="drag",
-                                    message="No active window_id for coordinate drag.")
-            args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
-            args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
-            args["window_id"] = self._active_window_id
-        else:
-            return ActionResult(ok=False, action="drag",
-                                message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
-        refusal = self._apply_delivery("drag", args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action("drag", args)
-
-    def scroll(
-        self,
-        *,
-        direction: str,
-        amount: int = 3,
-        element: Optional[int] = None,
-        x: Optional[int] = None,
-        y: Optional[int] = None,
-        modifiers: Optional[List[str]] = None,
-        delivery_mode: Optional[str] = None,
-        bring_to_front: bool = False,
-    ) -> ActionResult:
-        pid = self._active_pid
-        if pid is None:
-            return ActionResult(ok=False, action="scroll",
-                                message="No active window — call capture() first.")
-        args: Dict[str, Any] = {
-            "pid": pid,
-            "direction": direction,
-            "amount": max(1, min(50, amount)),
-        }
-        if element is not None and self._active_window_id is not None:
-            args["element_index"] = element
-            args["window_id"] = self._active_window_id
-        elif x is not None and y is not None:
-            if self._active_window_id is None:
-                return ActionResult(ok=False, action="scroll",
-                                    message="No active window_id for coordinate scroll.")
-            # CUA Driver 0.7.1 Linux schema rejects x/y on scroll. Only
-            # include them when the driver explicitly advertises support
-            # for coordinate scrolling; otherwise omit and let the driver
-            # scroll the targeted window (window_id is still sent for
-            # routing).  This is the safe default when capabilities
-            # haven't been discovered yet (older drivers).
-            if self._session.supports_capability(
-                "input.scroll.coordinates", tool="scroll"
-            ):
-                args["x"] = x
-                args["y"] = y
-            args["window_id"] = self._active_window_id
-        refusal = self._apply_delivery("scroll", args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action("scroll", args)
-
-    # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
-                  bring_to_front: bool = False) -> ActionResult:
-        pid = self._active_pid
-        window_id = self._active_window_id
-        if pid is None or window_id is None:
-            return ActionResult(ok=False, action="type_text",
-                                message="No active window — call capture() first.")
-        args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
-        refusal = self._apply_delivery("type_text", args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action("type_text", args)
-
-    def key(self, keys: str, *, delivery_mode: Optional[str] = None,
-            bring_to_front: bool = False) -> ActionResult:
-        pid = self._active_pid
-        window_id = self._active_window_id
-        if pid is None or window_id is None:
-            return ActionResult(ok=False, action="key",
-                                message="No active window — call capture() first.")
-
-        key_name, modifiers = _parse_key_combo(keys)
-        if not key_name:
-            return ActionResult(ok=False, action="key",
-                                message=f"Could not parse key from '{keys}'.")
-
-        if modifiers:
-            # hotkey requires at least one modifier + one key.
-            args: Dict[str, Any] = {"pid": pid, "window_id": window_id,
-                                    "keys": modifiers + [key_name]}
-            refusal = self._apply_delivery("hotkey", args, delivery_mode, bring_to_front)
-            if refusal is not None:
-                return refusal
-            return self._action("hotkey", args)
-        else:
-            args = {"pid": pid, "window_id": window_id, "key": key_name}
-            refusal = self._apply_delivery("press_key", args, delivery_mode, bring_to_front)
-            if refusal is not None:
-                return refusal
-            return self._action("press_key", args)
-
-    # ── Value setter ────────────────────────────────────────────────
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
-        """Set a value on an element. Handles AXPopUpButton selects natively."""
-        pid = self._active_pid
-        window_id = self._active_window_id
-        if pid is None or window_id is None:
-            return ActionResult(ok=False, action="set_value",
-                                message="No active window — call capture() first.")
-        if element is None:
-            return ActionResult(ok=False, action="set_value",
-                                message="set_value requires element= (element index).")
-        args: Dict[str, Any] = {
-            "pid": pid,
-            "window_id": window_id,
-            "element_index": element,
-            "value": value,
-        }
-        return self._action("set_value", args)
-
-    # ── Introspection ──────────────────────────────────────────────
-    def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {"session": self._session_id})
-        structured = out.get("structuredContent")
-        if isinstance(structured, dict) and isinstance(structured.get("apps"), list):
-            return structured["apps"]
-
-        # Older drivers and direct CLI fallbacks may put apps in data instead.
-        data = out.get("data")
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and isinstance(data.get("apps"), list):
-            return data["apps"]
-        # Old text-only drivers retain a small, name/PID-only fallback.
-        if isinstance(data, str):
-            apps = []
-            for line in data.splitlines():
-                m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
-                if m:
-                    apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
-            return apps
-        return []
-
-    def list_windows(self) -> List[Dict[str, Any]]:
-        return self._load_windows()
-
-    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        """Target an app for subsequent actions without stealing system focus.
-
-        cua-driver background-automation never needs to bring a window to the
-        front: capture(app=...) already selects the right window via
-        list_windows. We implement focus_app as a pure window-selector —
-        enumerate on-screen windows, find the best match for *app*, and store
-        its pid/window_id so that subsequent click/type calls hit the right
-        process.
-
-        raise_window=True is intentionally ignored: stealing the user's focus
-        is exactly what this backend is designed to avoid.
-        """
-        try:
-            windows = self._load_windows()
-        except Exception:
-            self._clear_active_target()
-            raise
-
-        matched = self._match_windows_for_app(windows, app)
-        # Don't silently fall back to the frontmost window when the filter
-        # matches nothing — that hides the real failure (often a localized
-        # macOS app name mismatch, e.g. caller passed "Calculator" but
-        # list_windows returns "計算機").
-        target = matched[0] if matched else None
-        if target:
-            self._active_pid = target["pid"]
-            self._active_window_id = target["window_id"]
-            self._snapshot_tokens = {}
-            self._last_app = target["app_name"]  # retained for back-compat diagnostics
-            self._last_target = {
-                "pid": self._active_pid,
-                "window_id": self._active_window_id,
-            }
-            return ActionResult(
-                ok=True, action="focus_app",
-                message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
-                        f"window {self._active_window_id}) without raising window.",
-            )
-        self._clear_active_target()
-        return ActionResult(ok=False, action="focus_app",
-                            message=f"No on-screen window found for app '{app}'.")
-
-    # ── App lifecycle ────────────────────────────────────────────────
-    #
-    # cua-driver exposes launch_app / kill_app / bring_to_front as a
-    # complete set. focus_app() above is a *window-selector* (no
-    # process state change); these methods drive the process layer.
-
-    def launch_app(
-        self,
-        *,
-        bundle_id: Optional[str] = None,
-        name: Optional[str] = None,
-        urls: Optional[List[str]] = None,
-        additional_arguments: Optional[List[str]] = None,
-        creates_new_application_instance: bool = False,
-    ) -> Dict[str, Any]:
-        """Idempotent launch. Returns ``{pid, bundle_id, name, windows[]}``
-        so callers can skip an extra ``list_windows`` round-trip before
-        ``get_window_state``.
-
-        ``creates_new_application_instance=True`` forces a new instance
-        even if the app is already running — use it when concurrent
-        runs may touch the same app so each session gets its own
-        isolated window."""
-        if not bundle_id and not name:
-            raise ValueError("launch_app requires either bundle_id or name")
-        args: Dict[str, Any] = {"session": self._session_id}
-        if bundle_id:
-            args["bundle_id"] = bundle_id
-        if name:
-            args["name"] = name
-        if urls:
-            args["urls"] = list(urls)
-        if additional_arguments:
-            args["additional_arguments"] = list(additional_arguments)
-        if creates_new_application_instance:
-            args["creates_new_application_instance"] = True
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
-
-    def kill_app(self, *, pid: int) -> ActionResult:
-        """Terminate by pid. Equivalent to ``kill -9`` on POSIX,
-        ``taskkill /F`` on Windows."""
-        return self._action("kill_app", {"pid": int(pid)})
-
-    def bring_to_front(self, *, pid: int,
-                       window_id: Optional[int] = None) -> ActionResult:
-        """Activate a window so subsequent foreground-dispatched input
-        lands on it. cua-driver's docstring notes this is the cheaper
-        path than per-call SetForegroundWindow flashes."""
-        args: Dict[str, Any] = {"pid": int(pid)}
-        if window_id is not None:
-            args["window_id"] = int(window_id)
-        return self._action("bring_to_front", args)
-
-    # ── Pointer + display introspection ─────────────────────────────
-
-    def move_cursor(self, x: int, y: int) -> ActionResult:
-        """Move the agent-cursor *overlay* to a screen point. This is a
-        visual hint — it does NOT move the real OS pointer (cua-driver
-        explicitly avoids stealing pointer focus). The overlay glides
-        smoothly to the target, so consumers use it before a click to
-        give a visible "where the agent is going" cue."""
-        return self._action("move_cursor", {"x": int(x), "y": int(y)})
-
-    def get_cursor_position(self) -> Tuple[int, int]:
-        """Return the *real* OS cursor position in screen points
-        (origin top-left)."""
-        out = self._session.call_tool(
-            "get_cursor_position", {"session": self._session_id}
-        )
-        sc = out.get("structuredContent") or {}
-        return int(sc.get("x", 0)), int(sc.get("y", 0))
-
-    def get_screen_size(self) -> Dict[str, Any]:
-        """Return the logical size of the main display in points plus
-        its backing scale factor. Shape:
-        ``{width, height, backing_scale_factor}``."""
-        out = self._session.call_tool(
-            "get_screen_size", {"session": self._session_id}
-        )
-        return out.get("structuredContent") or {}
-
-    def zoom(self, *, window_id: int, x: float, y: float, w: float, h: float,
-             factor: float = 1.0, format: str = "jpeg",
-             quality: int = 85) -> Dict[str, Any]:
-        """Return a JPEG / PNG of a sub-region of a window, optionally
-        scaled. cua-driver supports zoom-to-rect for callers that need
-        a higher-resolution view of a specific element."""
-        return self._session.call_tool("zoom", {
-            "window_id": int(window_id),
-            "x": float(x), "y": float(y), "w": float(w), "h": float(h),
-            "factor": float(factor),
-            "format": format, "quality": int(quality),
-            "session": self._session_id,
-        })
-
-    # ── Agent cursor (overlay) ──────────────────────────────────────
-    #
-    # Sessions (start_session/end_session, wired in start/stop) own the
-    # cursor. These knobs tune its appearance + behavior per-session.
-    # All accept an optional `cursor_id` to address a specific cursor
-    # when the run drives multiple (rare); the default is this run's
-    # session id.
-
-    def set_agent_cursor_enabled(self, enabled: bool, *,
-                                 cursor_id: Optional[str] = None) -> ActionResult:
-        """Toggle the agent cursor overlay's visibility for this run."""
-        args: Dict[str, Any] = {"enabled": bool(enabled)}
-        if cursor_id:
-            args["cursor_id"] = cursor_id
-        return self._action("set_agent_cursor_enabled", args)
-
-    def set_agent_cursor_motion(self, *,
-                                glide_ms: Optional[float] = None,
-                                dwell_ms: Optional[float] = None,
-                                idle_hide_ms: Optional[float] = None,
-                                cursor_id: Optional[str] = None) -> ActionResult:
-        """Tune the overlay's motion timings — glide duration, post-click
-        dwell, idle-hide delay. Each None means "leave at current value"."""
-        args: Dict[str, Any] = {}
-        if glide_ms is not None:
-            args["glide_ms"] = float(glide_ms)
-        if dwell_ms is not None:
-            args["dwell_ms"] = float(dwell_ms)
-        if idle_hide_ms is not None:
-            args["idle_hide_ms"] = float(idle_hide_ms)
-        if cursor_id:
-            args["cursor_id"] = cursor_id
-        return self._action("set_agent_cursor_motion", args)
-
-    def set_agent_cursor_style(self, *,
-                               gradient_colors: Optional[List[str]] = None,
-                               bloom_color: Optional[str] = None,
-                               image_path: Optional[str] = None,
-                               cursor_id: Optional[str] = None) -> ActionResult:
-        """Customise the cursor body. ``gradient_colors`` are CSS hex
-        strings tip→tail; ``bloom_color`` is the radial halo; an
-        ``image_path`` (.svg/.png/.ico) replaces the silhouette
-        entirely. Empty values revert to the palette default."""
-        args: Dict[str, Any] = {}
-        if gradient_colors is not None:
-            args["gradient_colors"] = list(gradient_colors)
-        if bloom_color is not None:
-            args["bloom_color"] = bloom_color
-        if image_path is not None:
-            args["image_path"] = image_path
-        if cursor_id:
-            args["cursor_id"] = cursor_id
-        return self._action("set_agent_cursor_style", args)
-
-    def get_agent_cursor_state(self, *,
-                               cursor_id: Optional[str] = None) -> Dict[str, Any]:
-        """Return ``{x, y, config: {cursor_color, cursor_icon, ...},
-        enabled}`` for this run's cursor (or the named ``cursor_id``)."""
-        args: Dict[str, Any] = {"session": self._session_id}
-        if cursor_id:
-            args["cursor_id"] = cursor_id
-        out = self._session.call_tool("get_agent_cursor_state", args)
-        return out.get("structuredContent") or {}
-
-    # ── Recording / replay ──────────────────────────────────────────
-
-    def start_recording(self, *, output_dir: str,
-                        record_video: bool = False) -> Dict[str, Any]:
-        """Enable trajectory recording (per-turn screenshots + action
-        JSON) to ``output_dir``. ``record_video=True`` ALSO captures
-        the main display to ``<output_dir>/recording.mp4`` (H.264).
-        Recording ownership is keyed by this run's session id so
-        concurrent runs don't fight over the recorder."""
-        out = self._session.call_tool("start_recording", {
-            "output_dir": output_dir,
-            "record_video": bool(record_video),
-            "session": self._session_id,
-        })
-        return out.get("structuredContent") or {}
-
-    def stop_recording(self) -> Dict[str, Any]:
-        """Disable recording and finalise the mp4 (if video was on).
-        Returns the recorder's final state including ``last_video_path``."""
-        out = self._session.call_tool("stop_recording", {
-            "session": self._session_id,
-        })
-        return out.get("structuredContent") or {}
-
-    def get_recording_state(self) -> Dict[str, Any]:
-        """Return the current recorder state without changing it.
-        Shape: ``{recording, enabled, output_dir, next_turn,
-        last_video_path, last_error, owner, video_active}``."""
-        out = self._session.call_tool(
-            "get_recording_state", {"session": self._session_id}
-        )
-        return out.get("structuredContent") or {}
-
-    def replay_trajectory(self, *, trajectory_dir: str,
-                          dry_run: bool = False,
-                          speed_factor: float = 1.0) -> Dict[str, Any]:
-        """Replay a prior recording's turn stream by re-invoking each
-        turn's tool call in lexical order. ``dry_run=True`` logs without
-        actually firing the tools."""
-        return self._session.call_tool("replay_trajectory", {
-            "trajectory_dir": trajectory_dir,
-            "dry_run": bool(dry_run),
-            "speed_factor": float(speed_factor),
-            "session": self._session_id,
-        })
-
-    def install_ffmpeg(self) -> Dict[str, Any]:
-        """Bootstrap ffmpeg for ``start_recording(record_video=True)``
-        on Linux / Windows. macOS records natively via ScreenCaptureKit
-        and doesn't need ffmpeg."""
-        return self._session.call_tool(
-            "install_ffmpeg", {"session": self._session_id}
-        )
-
-    # ── Config ──────────────────────────────────────────────────────
-
-    def get_config(self) -> Dict[str, Any]:
-        """Return the current cua-driver runtime config."""
-        out = self._session.call_tool(
-            "get_config", {"session": self._session_id}
-        )
-        return out.get("structuredContent") or {}
-
-    def set_config(self, **config) -> ActionResult:
-        """Set cua-driver config keys. Common keys include
-        ``max_image_dimension`` (image-output resizing), recording
-        flags, etc. Unknown keys are passed through verbatim — cua-driver
-        validates against its own schema."""
-        return self._action("set_config", dict(config))
-
-    # ── Lower-level introspection ───────────────────────────────────
-
-    def get_accessibility_tree(self) -> Dict[str, Any]:
-        """Return a lightweight snapshot of running regular apps +
-        on-screen visible windows with bounds, z-order, owner pid.
-        Roughly the data ``list_windows`` exposes, in one call. Most
-        callers should prefer ``capture()`` / ``focus_app()`` which
-        already use this shape internally."""
-        out = self._session.call_tool(
-            "get_accessibility_tree", {"session": self._session_id}
-        )
-        return out.get("structuredContent") or {"data": out["data"]}
-
-    # ── Browser page tool ───────────────────────────────────────────
-
-    def page(self, *, pid: int, action: str,
-             **page_args: Any) -> Dict[str, Any]:
-        """Interact with a browser page loaded in a running app (Chrome,
-        Safari, Edge, ...). cua-driver routes through CDP / Apple Events
-        / AX tree depending on the target. ``action`` + ``page_args``
-        shape depends on the requested operation (e.g. ``action="eval"``
-        takes ``js: str``); see cua-driver's ``page`` tool description
-        for the full grammar."""
-        args: Dict[str, Any] = {
-            "pid": int(pid),
-            "action": action,
-            "session": self._session_id,
-        }
-        args.update(page_args)
-        return self._session.call_tool("page", args)
-
-    # ── Generic escape hatch ────────────────────────────────────────
-
-    def call_tool(self, name: str, args: Optional[Dict[str, Any]] = None,
-                  *, timeout: float = 30.0) -> Dict[str, Any]:
-        """Call any cua-driver MCP tool by name with arbitrary args.
-        ``session`` is injected (preserves the caller's explicit one
-        via setdefault). For tools the wrapper doesn't already type-
-        wrap, this is the supported escape hatch — preferred over
-        reaching for ``self._session.call_tool`` directly because it
-        keeps the session-id contract consistent with everything else."""
-        payload = dict(args) if args else {}
-        payload.setdefault("session", self._session_id)
-        return self._session.call_tool(name, payload, timeout=timeout)
-
-    # ── Internal ───────────────────────────────────────────────────
-    def _maybe_attach_element_token(self, tool: str, args: Dict[str, Any]) -> None:
-        """Surface 6: when the wrapper is about to call a token-capable
-        tool with `element_index`, look up the matching `element_token`
-        from the last snapshot and attach it. cua-driver-rs's contract
-        for combined args is documented in trycua/cua#1961:
-
-          "element_token takes precedence over element_index when both
-           supplied. Returns an explicit 'stale' error if the snapshot
-           has been superseded."
-
-        Gated on the per-tool capability claim so we don't send the
-        field to drivers that predate the surface (which would reject
-        the schema with `additionalProperties: false`).
-        """
-        idx = args.get("element_index")
-        if not isinstance(idx, int):
-            return
-        token = self._snapshot_tokens.get(idx)
-        if not token:
-            return
-        if not self._session.supports_capability(
-            "accessibility.element_tokens", tool=tool
-        ):
-            return
-        args["element_token"] = token
-
-    def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
-        # Attach the snapshot's element_token whenever the call carries
-        # an element_index and the target tool advertises support.
-        self._maybe_attach_element_token(name, args)
-        # Carry this run's session id so the cua-driver agent cursor
-        # and per-session state (config overrides, recording ownership)
-        # stay tied to this run. setdefault preserves any explicit
-        # session a caller already supplied.
-        args.setdefault("session", self._session_id)
-        try:
-            out = self._session.call_tool(name, args)
-        except Exception as e:
-            logger.exception("cua-driver %s call failed", name)
-            return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
-        ok = not out["isError"]
-        data = out["data"]
-        structured = out.get("structuredContent") or {}
-        message = ""
-        if isinstance(data, dict):
-            message = str(data.get("message", ""))
-        elif isinstance(data, str):
-            message = data
-        if not message and isinstance(structured, dict):
-            message = str(structured.get("message", ""))
-        # Merge data + structuredContent into meta for debugging, structured
-        # winning on key overlap (it is the canonical verdict surface).
-        meta: Dict[str, Any] = {}
-        if isinstance(data, dict):
-            meta.update(data)
-        if isinstance(structured, dict):
-            meta.update(structured)
-        return _action_result_from(name, ok, message, meta, structured,
-                                   requested_delivery=args.get("delivery_mode"))
-

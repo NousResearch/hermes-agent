@@ -432,7 +432,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 // system message would look like a successful state change.
                 renderSlashOutput(lines.join('\n'))
               }
-              notify({ durationMs: 5_000, id: noticeId, kind: aborted ? 'error' : 'success', message: lines.join('\n') })
+
+              notify({
+                durationMs: 5_000,
+                id: noticeId,
+                kind: aborted ? 'error' : 'success',
+                message: lines.join('\n')
+              })
 
               return
             }

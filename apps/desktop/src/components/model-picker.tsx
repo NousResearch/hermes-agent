@@ -268,9 +268,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
     )
   }
 
-  const onSale =
-    typeof price.discount_percent === 'number' &&
-    Boolean(price.was_input || price.was_output)
+  const onSale = typeof price.discount_percent === 'number' && Boolean(price.was_input || price.was_output)
 
   return (
     <span
@@ -284,9 +282,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
         <span
           className={cn(
             'rounded-sm px-1 py-0.5 text-[0.62rem] font-semibold',
-            isCurrent
-              ? 'bg-primary-foreground/20'
-              : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+            isCurrent ? 'bg-primary-foreground/20' : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
           )}
         >
           -{price.discount_percent}%

@@ -5,6 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
+def is_empty_session_placeholder(row: dict[str, Any]) -> bool:
+    """Return True only for valid, empty, zero-message placeholder rows."""
+    message_count = row.get("message_count")
+    if type(message_count) is not int or message_count != 0:
+        return False
+    title = str(row.get("title") or "").strip()
+    preview = str(row.get("preview") or "").strip()
+    return not title and not preview
+
+
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into listing flags, a resume target, and a search query.
 
@@ -74,6 +84,8 @@ def query_session_listing(
     )
     result: list[dict[str, Any]] = []
     for row in rows:
+        if is_empty_session_placeholder(row):
+            continue
         if current_session_id and row.get("id") == current_session_id:
             continue
         if not include_unnamed and not row.get("title") and not search:

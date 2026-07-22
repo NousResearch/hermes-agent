@@ -427,6 +427,7 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     db = SessionDB()
     try:
         db.create_session("chat-session", source="cli", model="test/model")
+        db.append_message("chat-session", role="user", content="hello")
         db.create_session("tool-session", source="tool", model="test/model")
     finally:
         db.close()
@@ -440,6 +441,28 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     assert "tool-session" not in listed.output
     assert "Total sessions: 2" in stats.output
     assert "Listable sessions: 1" in stats.output
+
+
+def test_sessions_list_hides_only_valid_empty_placeholders(
+    _isolate_hermes_home, monkeypatch
+):
+    from hermes_state import SessionDB
+
+    rows = [
+        {"id": "ghost", "source": "cli", "message_count": 0},
+        {"id": "negative", "source": "cli", "message_count": -1},
+        {"id": "malformed", "source": "cli", "message_count": "invalid"},
+        {"id": "named", "source": "cli", "message_count": 0, "title": "Keep"},
+    ]
+    monkeypatch.setattr(SessionDB, "list_sessions_rich", lambda *_args, **_kwargs: rows)
+
+    result = HermesConsoleEngine().execute("sessions list --limit 10")
+
+    assert result.status == "ok"
+    assert "ghost" not in result.output
+    assert "negative" in result.output
+    assert "malformed" in result.output
+    assert "named" in result.output
 
 
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):

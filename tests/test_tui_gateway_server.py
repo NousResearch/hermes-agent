@@ -8709,6 +8709,44 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     assert resp["result"]["session_id"] is None
 
 
+def test_session_most_recent_skips_empty_placeholder_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(
+            self,
+            *,
+            source=None,
+            limit=200,
+            order_by_last_active=False,
+            compact_rows=False,
+        ):
+            return [
+                {
+                    "id": "ghost",
+                    "source": "tui",
+                    "title": "",
+                    "preview": "",
+                    "message_count": 0,
+                    "started_at": 100,
+                },
+                {
+                    "id": "real",
+                    "source": "tui",
+                    "title": "Real session",
+                    "message_count": 2,
+                    "started_at": 99,
+                },
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "real"
+    assert resp["result"]["title"] == "Real session"
+
+
 def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     """Per contract, errors are folded into the null-result shape so
     callers don't have to special-case JSON-RPC error envelopes for

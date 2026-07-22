@@ -6006,6 +6006,8 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _db_unavailable_error(rid, code=5006)
     try:
+        from hermes_cli.session_listing import is_empty_session_placeholder
+
         # Resume picker should surface human conversation sessions from every
         # user-facing surface — CLI, TUI, all gateway platforms (including new
         # ones not enumerated here), ACP adapter clients, webhook sessions,
@@ -6025,6 +6027,7 @@ def _(rid, params: dict) -> dict:
             s
             for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_last_active=True, compact_rows=True)
             if (s.get("source") or "").strip().lower() not in deny
+            and not is_empty_session_placeholder(s)
         ][:limit]
         return _ok(
             rid,
@@ -6065,6 +6068,8 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
+        from hermes_cli.session_listing import is_empty_session_placeholder
+
         deny = frozenset({"tool"})
         # Over-fetch by a generous bounded amount so heavy sub-agent
         # users (lots of recent ``tool`` rows) don't get a false
@@ -6074,6 +6079,8 @@ def _(rid, params: dict) -> dict:
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
+                continue
+            if is_empty_session_placeholder(row):
                 continue
             return _ok(
                 rid,

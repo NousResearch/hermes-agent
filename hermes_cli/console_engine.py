@@ -1319,6 +1319,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     if ns.limit < 1 or ns.limit > 200:
         raise ConsoleCommandError("sessions list --limit must be between 1 and 200")
 
+    from hermes_cli.session_listing import is_empty_session_placeholder
     from hermes_state import SessionDB
 
     db = SessionDB()
@@ -1328,6 +1329,9 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
             limit=ns.limit,
             order_by_last_active=True,
         )
+        sessions = [
+            row for row in sessions if not is_empty_session_placeholder(row)
+        ]
     finally:
         db.close()
     return _format_sessions(sessions)

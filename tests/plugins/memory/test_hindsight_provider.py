@@ -1435,6 +1435,80 @@ class TestUpdateModeAppendCapability:
         assert kw["document_id"] == "test-session"
         assert kw["items"][0]["update_mode"] == "append"
 
+    def test_session_switch_does_not_reflush_already_appended_turns(
+        self, provider_with_config, monkeypatch
+    ):
+        """Regression: in append mode sync_turn already ships each turn as a
+        delta, so on_session_switch must NOT re-append the whole session.
+
+        With the default retain_every_n_turns=1 every turn is retained the
+        moment it lands and the delta watermark catches up to the buffer.
+        The flush-on-switch then has nothing past the watermark to send, so
+        no retain should fire at all. Before the fix it snapshotted the full
+        _session_turns and re-appended every already-retained turn, silently
+        duplicating them in the stored document on every /resume, /branch,
+        /new, /reset and context compression.
+        """
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        # Every buffered turn is already appended — watermark == buffer len.
+        assert p._last_retained_turn_count == len(p._session_turns) == 2
+
+        p._client.aretain_batch.reset_mock()
+
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        # No turns past the watermark → no flush retain. Without the fix this
+        # would re-ship [turn1, turn2] under update_mode='append'.
+        p._client.aretain_batch.assert_not_called()
+        self._clear_capability_cache()
+
+    def test_session_switch_flush_ships_only_unretained_delta_in_append_mode(
+        self, provider_with_config, monkeypatch
+    ):
+        """When retain_every_n_turns>1 some turns are retained and some are
+        still buffered at switch time. The flush must carry only the buffered
+        delta past the watermark, never the already-appended turns."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        # Turns 1+2 hit the boundary → retained as a delta; watermark = 2.
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        # Turn 3 is buffered, below the next boundary, so not yet retained.
+        p.sync_turn("turn3-user", "turn3-asst")
+        p._retain_queue.join()
+        assert p._last_retained_turn_count == 2
+        assert len(p._session_turns) == 3
+
+        p._client.aretain_batch.reset_mock()
+
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["update_mode"] == "append"
+        # Only the un-retained turn 3 — turns 1+2 were already appended.
+        assert "turn3-user" in item["content"]
+        assert "turn1-user" not in item["content"]
+        assert "turn2-user" not in item["content"]
+        # message_count reflects only the flushed delta (1 turn -> 2 messages).
+        assert item["metadata"]["message_count"] == "2"
+        self._clear_capability_cache()
+
 
 # ---------------------------------------------------------------------------
 # System prompt tests

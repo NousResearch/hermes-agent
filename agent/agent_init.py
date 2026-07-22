@@ -407,6 +407,10 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _compression_in_place_enabled(compression: Dict[str, Any]) -> bool:
+    return is_truthy_value(compression.get("in_place"), default=True)
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1856,9 +1860,7 @@ def init_agent(
     # parent_session_id chain, no `name #N` renumber). See #38763 and
     # agent/conversation_compression.py. Consumed by compress_context(), not the
     # compressor, so it rides on the agent.
-    compression_in_place = is_truthy_value(
-        _compression_cfg.get("in_place"), default=False
-    )
+    compression_in_place = _compression_in_place_enabled(_compression_cfg)
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"
     ).lower()

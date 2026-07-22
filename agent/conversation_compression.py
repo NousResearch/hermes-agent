@@ -909,6 +909,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    force_in_place: Optional[bool] = None,
     defer_context_engine_notification: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
@@ -927,6 +928,10 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        force_in_place: Optional one-shot persistence override. ``None`` follows
+            ``compression.in_place``; ``False`` rotates to a child continuation;
+            ``True`` compacts the current session in place. The agent's config is
+            never mutated.
         defer_context_engine_notification: Delay the existing context-engine
             hook until a manual host commits its outer history transaction.
 
@@ -942,6 +947,9 @@ def compress_context(
         and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None))
     ):
         raise RuntimeError("a compression notification is already pending")
+
+    if force_in_place is not None and not isinstance(force_in_place, bool):
+        raise TypeError("force_in_place must be a boolean or None")
 
     _attempt_started_at = time.monotonic()
     _attempt_id = uuid.uuid4().hex
@@ -965,6 +973,11 @@ def compress_context(
     # the app server does not expose its native summary prompt, so there is no
     # truthful injection point for ``on_pre_compress()`` return text here.
     if getattr(agent, "api_mode", None) == "codex_app_server":
+        if force_in_place is False:
+            raise RuntimeError(
+                "child continuation compression is not supported by the "
+                "Codex app-server runtime"
+            )
         return _compress_context_via_codex_app_server(
             agent,
             messages,
@@ -1013,8 +1026,12 @@ def compress_context(
     # parent_session_id child, no
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
-    # eliminating the session-rotation bug cluster. Default False during rollout.
-    in_place = bool(getattr(agent, "compression_in_place", False))
+    # eliminating the session-rotation bug cluster. An explicit manual override
+    # selects the mode for this one call without mutating the configured default.
+    configured_in_place = bool(getattr(agent, "compression_in_place", True))
+    in_place = (
+        configured_in_place if force_in_place is None else force_in_place
+    )
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False

@@ -181,6 +181,72 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('routes /compress --child without leaking the flag into focus_topic', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ summary: { headline: 'compressed' } }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/compress auth decisions --child')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('session.compress', {
+        focus_topic: 'auth decisions',
+        force_in_place: false,
+        session_id: 'sid-abc'
+      })
+    })
+  })
+
+  it('keeps plain /compress config-driven', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ summary: { headline: 'compressed' } }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/compress auth decisions')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('session.compress', {
+        focus_topic: 'auth decisions',
+        session_id: 'sid-abc'
+      })
+    })
+  })
+
+  it('routes /childcompress through the native compression handler', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ summary: { headline: 'compressed' } }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/childcompress auth decisions')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(rpc).toHaveBeenCalledWith('session.compress', {
+        focus_topic: 'auth decisions',
+        force_in_place: false,
+        session_id: 'sid-abc'
+      })
+    })
+  })
+
+  it.each(['--preview', '--dry-run', '--dryrun'])(
+    'routes /compress --child %s through slash.exec without mutating',
+    async previewFlag => {
+      patchUiState({ sid: 'sid-abc' })
+      const rpc = vi.fn(() => Promise.resolve({ output: 'Preview: no changes made.' }))
+      const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+      expect(createSlashHandler(ctx)(`/compress --child ${previewFlag} auth decisions`)).toBe(true)
+
+      await vi.waitFor(() => {
+        expect(rpc).toHaveBeenCalledWith('slash.exec', {
+          command: `compress --child ${previewFlag} auth decisions`,
+          session_id: 'sid-abc'
+        })
+      })
+      expect(rpc).not.toHaveBeenCalledWith('session.compress', expect.anything())
+    }
+  )
+
   it('keeps typed /model switches session-scoped by default', async () => {
     patchUiState({ sid: 'sid-abc' })
 

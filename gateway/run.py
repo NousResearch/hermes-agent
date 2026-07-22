@@ -11291,6 +11291,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
+        if canonical == "childcompress":
+            return await self._handle_compress_command(
+                event,
+                force_in_place=False,
+            )
+
         if canonical == "usage":
             return await self._handle_usage_command(event)
 

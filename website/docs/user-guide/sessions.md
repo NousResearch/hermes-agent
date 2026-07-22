@@ -241,13 +241,17 @@ hermes sessions rename 20250305_091523_a1b2c3d4 "refactoring auth module"
 
 ### Auto-Lineage on Compression
 
-When a session's context is compressed (manually via `/compress` or automatically), Hermes creates a new continuation session. If the original had a title, the new session automatically gets a numbered title:
+By default, manual and automatic compression follow `compression.in_place` (default: `true`). In-place compression keeps the same session ID. Use `/compress --child` or its `/childcompress` shortcut when you explicitly want a new continuation session, regardless of that setting.
+
+When compression creates a continuation session, the original is retained as its parent. If the original had a title, the continuation automatically gets a numbered title:
 
 ```
 "my project" → "my project #2" → "my project #3"
 ```
 
 When you resume by name (`hermes -c "my project"`), it automatically picks the most recent session in the lineage.
+
+> **Codex app-server:** compaction is owned by the active Codex thread, so explicit child-session compression is not available in this runtime mode. Plain `/compress` continues to use Codex's in-place compaction.
 
 ### /title in Messaging Platforms
 

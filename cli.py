@@ -9135,6 +9135,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
+        elif canonical == "childcompress":
+            self._manual_compress(cmd_original, force_in_place=False)
         elif canonical == "usage":
             self._handle_usage_command(cmd_original)
         elif canonical == "subscription":
@@ -9901,7 +9903,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
         self._flush_reasoning_preview(force=False)
 
-    def _manual_compress(self, cmd_original: str = ""):
+    def _manual_compress(
+        self,
+        cmd_original: str = "",
+        *,
+        force_in_place: Optional[bool] = None,
+    ):
         """Manually trigger context compression on the current conversation.
 
         Two modes:
@@ -9949,9 +9956,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if len(_parts) > 1:
                 raw_args = _parts[1].strip()
 
-        # Strip --preview/--dry-run/--aggressive before positional parsing
+        # Strip global flags before positional parsing
         # so the flags coexist with 'here [N]' / focus-topic forms.
-        raw_args, preview, aggressive = extract_compress_flags(raw_args)
+        raw_args, preview, aggressive, child_requested = extract_compress_flags(
+            raw_args
+        )
+        if child_requested:
+            force_in_place = False
         partial, keep_last, focus_topic = parse_partial_compress_args(raw_args)
         focus_topic = focus_topic or ""
 
@@ -10040,6 +10051,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                     force=True,
+                    force_in_place=force_in_place,
                     defer_context_engine_notification=True,
                 )
                 if partial and tail:

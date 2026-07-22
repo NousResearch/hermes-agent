@@ -423,6 +423,65 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert server._session_info(None, session)["model"] == "host-model"
 
 
+def test_session_compress_compute_host_forwards_child_and_normalizes_result(monkeypatch):
+    class _FakeSupervisor:
+        def __init__(self):
+            self.controls = []
+
+        def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0):
+            self.controls.append((sid, route_name, dict(payload or {}), wait))
+            return {
+                "type": "control.ack",
+                "sid": sid,
+                "route_name": route_name,
+                "output": "Compressed: 8 → 2 messages\nApprox request size: ~1,000 → ~200 tokens",
+                "session_key": "child-key",
+                "history_version": 9,
+                "message_count": 2,
+                "session_info": {
+                    "model": "host-model",
+                    "usage": {"total": 42},
+                },
+            }
+
+    fake = _FakeSupervisor()
+    session = _session(agent=None, agent_ready=threading.Event(), _compute_host_active=True)
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.compress",
+                "params": {
+                    "session_id": "sid",
+                    "focus_topic": "auth decisions",
+                    "force_in_place": False,
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    _, route_name, payload, wait = fake.controls[0]
+    assert route_name == "session.compress"
+    assert wait is True
+    assert payload["command"] == "/compress auth decisions"
+    assert payload["force_in_place"] is False
+    result = resp["result"]
+    assert result["after_messages"] == 2
+    assert result["summary"] == {
+        "headline": "Compressed: 8 → 2 messages",
+        "noop": False,
+        "token_line": "Approx request size: ~1,000 → ~200 tokens",
+        "note": None,
+    }
+    assert result["usage"] == {"total": 42}
+    assert result["info"]["model"] == "host-model"
+
+
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):
@@ -5879,6 +5938,58 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
+def test_session_compress_forwards_explicit_child_override(monkeypatch):
+    agent = types.SimpleNamespace()
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
+    seen = {}
+
+    def _compress(_session, focus_topic=None, **kwargs):
+        seen["focus_topic"] = focus_topic
+        seen.update(kwargs)
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.compress",
+                "params": {
+                    "session_id": "sid",
+                    "focus_topic": "auth decisions",
+                    "force_in_place": False,
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" not in resp
+    assert seen["focus_topic"] == "auth decisions"
+    assert seen["force_in_place"] is False
+
+
+def test_session_compress_rejects_non_boolean_override():
+    server._sessions["sid"] = _session(agent=types.SimpleNamespace())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.compress",
+                "params": {"session_id": "sid", "force_in_place": "false"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4002
+    assert "boolean" in resp["error"]["message"]
+
+
 def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
     compression_state = types.SimpleNamespace(
         _last_compress_aborted=True,
@@ -7563,6 +7674,7 @@ def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monke
         ("/personality default", "personality"),
         ("/prompt", "prompt"),
         ("/compress", "compress"),
+        ("/childcompress", "childcompress"),
     ]:
         warning = server._mirror_slash_side_effects("sid", session, cmd)
         assert (
@@ -7636,6 +7748,54 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert "Compressed:" in warning
     assert "6 → 1 messages" in warning
     assert "tokens" in warning
+
+
+def test_mirror_slash_childcompress_forwards_override_and_strips_alias(monkeypatch):
+    seen = {}
+
+    def _fake_compress(session, focus_topic=None, **kwargs):
+        seen["focus_topic"] = focus_topic
+        seen.update(kwargs)
+        session["history"] = [{"role": "user", "content": "summary"}]
+        return 1, {"total": 0}
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *_a: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *_a: None)
+
+    session = _session(running=False)
+    session["history"] = [{"role": "user", "content": f"m{i}"} for i in range(6)]
+    session["agent"] = types.SimpleNamespace(model="x", _cached_system_prompt="", tools=None)
+
+    output = server._mirror_slash_side_effects(
+        "sid", session, "/childcompress auth decisions"
+    )
+
+    assert seen["focus_topic"] == "auth decisions"
+    assert seen["force_in_place"] is False
+    assert "Compressed:" in output
+
+
+def test_mirror_slash_child_preview_never_compresses(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_compress_session_history",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("preview mutated")),
+    )
+
+    session = _session(running=False)
+    before = [{"role": "user", "content": f"m{i}"} for i in range(6)]
+    session["history"] = list(before)
+    session["agent"] = types.SimpleNamespace(model="x", _cached_system_prompt="", tools=None)
+
+    output = server._mirror_slash_side_effects(
+        "sid", session, "/compress --child --preview auth decisions"
+    )
+
+    assert "Preview — no changes made." in output
+    assert 'Focus topic: "auth decisions"' in output
+    assert session["history"] == before
 
 
 # ---------------------------------------------------------------------------

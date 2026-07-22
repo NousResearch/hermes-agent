@@ -3394,7 +3394,12 @@ class GatewaySlashCommandsMixin:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
-    async def _handle_compress_command(self, event: MessageEvent) -> str:
+    async def _handle_compress_command(
+        self,
+        event: MessageEvent,
+        *,
+        force_in_place: Optional[bool] = None,
+    ) -> str:
         """Handle /compress command -- manually compress conversation context.
 
         Accepts an optional focus topic: ``/compress <focus>`` guides the
@@ -3429,7 +3434,14 @@ class GatewaySlashCommandsMixin:
         _raw_args = (event.get_command_args() or "").strip()
         # Strip --preview/--dry-run/--aggressive before positional parsing
         # so the flags coexist with 'here [N]' / focus-topic forms.
-        _raw_args, _preview, _aggressive = extract_compress_flags(_raw_args)
+        (
+            _raw_args,
+            _preview,
+            _aggressive,
+            _child_requested,
+        ) = extract_compress_flags(_raw_args)
+        if _child_requested:
+            force_in_place = False
         partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
 
         _agg_note = ""
@@ -3560,6 +3572,7 @@ class GatewaySlashCommandsMixin:
                         approx_tokens=approx_tokens,
                         focus_topic=focus_topic,
                         force=True,
+                        force_in_place=force_in_place,
                         defer_context_engine_notification=True,
                     )
                 )

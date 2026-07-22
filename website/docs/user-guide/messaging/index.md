@@ -193,7 +193,8 @@ platform network disconnect as an event-loop failure.
 | `/approve` | Approve a pending dangerous command |
 | `/deny` | Reject a pending dangerous command |
 | `/sethome` | Set this chat as the home channel |
-| `/compress` | Manually compress conversation context |
+| `/compress [--child]` | Manually compress conversation context; `--child` forces a continuation session |
+| `/childcompress` | Shortcut for `/compress --child` |
 | `/title [name]` | Set or show the session title |
 | `/resume [name]` | Resume a previously named session |
 | `/usage` | Show token usage for this session (`/usage reset [--force]` redeems a banked Codex limit reset) |

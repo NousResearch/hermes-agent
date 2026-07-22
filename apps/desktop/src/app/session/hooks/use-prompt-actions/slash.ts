@@ -117,6 +117,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // path that talks to slash.exec / command.dispatch.
       async function runExec(ctx: SlashActionCtx): Promise<void> {
         const { arg, command, name } = ctx
+        const compressionMutation = name === 'compress' || name === 'compact' || name === 'childcompress'
         const resolved = await withSlashOutput(ctx)
 
         if (!resolved) {
@@ -188,10 +189,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         try {
-          const result = await requestGateway<unknown>('slash.exec', {
+          const params = {
             session_id: sessionId,
             command: command.replace(/^\/+/, '')
-          })
+          }
+
+          const result = compressionMutation
+            ? await requestGateway<unknown>('slash.exec', params, 300_000)
+            : await requestGateway<unknown>('slash.exec', params)
 
           const dispatch = parseCommandDispatch(result)
 
@@ -206,7 +211,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch {
+        } catch (err) {
+          if (compressionMutation) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+
+            return
+          }
+
           // Fall back to command.dispatch for skill/send/alias directives.
         }
 

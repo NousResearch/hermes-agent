@@ -382,9 +382,12 @@ def test_compute_host_compress_control_notifies_engine_after_commit(monkeypatch)
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
     events: list[str] = []
+    seen: dict[str, object] = {}
     session = _make_compress_host_session(events)
 
-    def _compress(sess, focus_topic=None, **_kwargs):
+    def _compress(sess, focus_topic=None, **kwargs):
+        seen["focus_topic"] = focus_topic
+        seen.update(kwargs)
         # Simulate agent._compress_context(defer_context_engine_notification=True)
         _queue_context_engine_compression_notification(
             sess["agent"],
@@ -417,7 +420,8 @@ def test_compute_host_compress_control_notifies_engine_after_commit(monkeypatch)
                 "sid": "sid",
                 "request_id": "compress-1",
                 "route_name": "slash.compress",
-                "command": "/compress",
+                "command": "/compress auth decisions",
+                "force_in_place": False,
             }
         )
         ack = _wait_for_frame(
@@ -430,6 +434,8 @@ def test_compute_host_compress_control_notifies_engine_after_commit(monkeypatch)
 
     # Exactly one notification, after the session-key commit.
     assert events == ["sync", "notify"]
+    assert seen["focus_topic"] == "auth decisions"
+    assert seen["force_in_place"] is False
     assert ack["session_key"] == "after-key"
     # Nothing pending leaks onto the agent for a later compress to misfire.
     assert (

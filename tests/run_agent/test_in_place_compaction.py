@@ -5,7 +5,7 @@ message list and rebuilds the system prompt but keeps the SAME ``session_id``:
 no ``end_session``, no ``parent_session_id`` child row, no ``name #N`` title
 renumber, no flush-cursor reset. This eliminates the session-rotation bug
 cluster (#33618 /goal loss, #14238 lost response, #33907 orphans, #45117 search
-gaps, #42228 null cwd). When the flag is False (default), rotation behaves
+gaps, #42228 null cwd). When the flag is False, rotation behaves
 exactly as before.
 """
 
@@ -15,6 +15,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from agent.agent_init import _compression_in_place_enabled
 
 
 def _make_agent(session_db, session_id, *, in_place):
@@ -56,6 +58,18 @@ def _seed(db, sid, title, n=8):
             role="user" if i % 2 == 0 else "assistant",
             content=f"msg {i}",
         )
+
+
+@pytest.mark.parametrize(
+    ("compression", "expected"),
+    [
+        ({}, True),
+        ({"in_place": True}, True),
+        ({"in_place": False}, False),
+    ],
+)
+def test_compression_in_place_config_fallback(compression, expected):
+    assert _compression_in_place_enabled(compression) is expected
 
 
 class TestInPlaceCompaction:
@@ -223,6 +237,34 @@ class TestRotationFallbackWhenFlagOff:
             ]
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
+
+    def test_explicit_child_override_rotates_and_persists_transcript(self, tmp_path):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        db = SessionDB(db_path=tmp_path / "t.db")
+        parent_sid = "20260722_200000_cccccc"
+        _seed(db, parent_sid, "explicit-child")
+        agent = _make_agent(db, parent_sid, in_place=True)
+        messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+
+        result, _ = compress_context(
+            agent,
+            messages,
+            "system",
+            approx_tokens=100_000,
+            force_in_place=False,
+        )
+
+        assert agent.session_id != parent_sid
+        assert db.get_session(parent_sid)["end_reason"] == "compression"
+        child = db.get_session(agent.session_id)
+        assert child["parent_session_id"] == parent_sid
+        persisted = db.get_messages_as_conversation(str(getattr(agent, "session_id")))
+        assert [(m["role"], m.get("content")) for m in persisted] == [
+            (m["role"], m.get("content")) for m in result
+        ]
+        assert getattr(agent, "_last_compaction_in_place", False) is False
 
 
 class TestInPlaceSignalForGateway:

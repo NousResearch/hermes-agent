@@ -1245,6 +1245,19 @@ Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, top
 
 Numeric YAML keys are automatically normalized to strings.
 
+## Per-Channel Working Directories
+
+Give a group or forum topic its own project folder. Without this, a session started from Telegram has no working directory — project context files are not picked up and the terminal sandbox starts in the gateway's launch directory.
+
+```yaml
+telegram:
+  channel_cwds:
+    "-1001234567890": /Users/me/projects/research
+    "42": /Users/me/projects/hermes
+```
+
+Keys are chat IDs or forum topic IDs, resolved exactly like `channel_prompts` — a topic-level entry wins, and a topic with no entry falls back to its group. The folder becomes the session's working directory, so `AGENTS.md` / `HERMES.md` in it load as context files, the terminal tool starts there, and the session groups by workspace in Hermes Desktop. Paths that do not exist are ignored with a warning, and resolution continues, so a stale topic entry still inherits a valid group folder. Numeric YAML keys are normalized to strings.
+
 ## Troubleshooting
 
 | Problem | Solution |

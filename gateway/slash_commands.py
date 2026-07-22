@@ -2349,6 +2349,7 @@ class GatewaySlashCommandsMixin:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            channel_cwd=event.channel_cwd,
         )
         
         # Let the normal message handler process it

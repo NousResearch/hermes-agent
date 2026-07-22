@@ -690,6 +690,19 @@ slack:
 
 Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Per-Channel Working Directories
+
+Give a channel its own project folder. Without this, a session started from Slack has no working directory — project context files are not picked up and the terminal sandbox starts in the gateway's launch directory.
+
+```yaml
+slack:
+  channel_cwds:
+    "C01RESEARCH": /Users/me/projects/research
+    "C02ENGINEERING": /Users/me/projects/hermes
+```
+
+Keys are Slack channel IDs, same as `channel_prompts`. The folder becomes the session's working directory, so `AGENTS.md` / `HERMES.md` in it load as context files, the terminal tool starts there, and the session groups by workspace in Hermes Desktop. Paths that do not exist are ignored with a warning. `channel_prompts` and `channel_cwds` are independent — set either or both on the same channel.
+
 ## Per-Channel Skill Bindings
 
 Auto-load a skill whenever a new session starts in a specific channel or DM. Unlike per-channel prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.

@@ -5,6 +5,7 @@ import stat
 import sys
 import time
 import types
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -3020,6 +3021,132 @@ class TestMatrixLinkSanitization:
         result = MatrixAdapter._sanitize_link_url('http://x"y')
         assert '"' not in result
         assert "&quot;" in result
+
+
+# ---------------------------------------------------------------------------
+# Dynamic room names
+# ---------------------------------------------------------------------------
+
+
+class TestMatrixDynamicRoomNames:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._reactions_enabled = False
+        self.adapter._dynamic_room_name_enabled = True
+        self.adapter._client = MagicMock()
+        self.adapter._client.send_state_event = AsyncMock(return_value="$room-name")
+
+    @staticmethod
+    def _event(chat_type="dm"):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        source.chat_type = chat_type
+        return MessageEvent(
+            text="add dynamic Matrix room names",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_processing_and_semantic_title_update_room_name(self):
+        from gateway.platforms.base import ProcessingOutcome
+
+        event = self._event()
+
+        await self.adapter.on_processing_start(event)
+        await self.adapter.set_semantic_room_name(
+            "!room:ex", "Add dynamic Matrix room names"
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        names = [
+            call.args[2]["name"]
+            for call in self.adapter._client.send_state_event.await_args_list
+        ]
+        assert names == [
+            "🟡 Hermes",
+            "🟡 Add dynamic Matrix room names",
+            "✅ Add dynamic Matrix room names",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_failure_and_cancelled_have_distinct_terminal_states(self):
+        from gateway.platforms.base import ProcessingOutcome
+
+        event = self._event()
+        await self.adapter.on_processing_start(event)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        await self.adapter.on_processing_start(event)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
+        names = [
+            call.args[2]["name"]
+            for call in self.adapter._client.send_state_event.await_args_list
+        ]
+        assert names == ["🟡 Hermes", "❌ Hermes", "🟡 Hermes", "⏹ Hermes"]
+
+    @pytest.mark.asyncio
+    async def test_disabled_or_group_room_does_not_rename(self):
+        event = self._event(chat_type="group")
+        await self.adapter.on_processing_start(event)
+        self.adapter._client.send_state_event.assert_not_awaited()
+
+        self.adapter._dynamic_room_name_enabled = False
+        event.source.chat_type = "dm"
+        await self.adapter.on_processing_start(event)
+        self.adapter._client.send_state_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_state_updates_are_deduplicated_for_overlapping_turns(self):
+        from gateway.platforms.base import ProcessingOutcome
+
+        async def delayed_send(*args, **kwargs):
+            await asyncio.sleep(0.01)
+            return "$room-name"
+
+        self.adapter._client.send_state_event.side_effect = delayed_send
+        event = self._event()
+        await asyncio.gather(
+            self.adapter.on_processing_start(event),
+            self.adapter.on_processing_start(event),
+        )
+        await asyncio.gather(
+            self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS),
+            self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS),
+        )
+
+        names = [
+            call.args[2]["name"]
+            for call in self.adapter._client.send_state_event.await_args_list
+        ]
+        assert names == ["🟡 Hermes", "✅ Hermes"]
+
+    @pytest.mark.asyncio
+    async def test_state_event_failure_is_best_effort(self):
+        self.adapter._client.send_state_event.side_effect = PermissionError("forbidden")
+
+        await self.adapter.on_processing_start(self._event())
+
+        self.adapter._client.send_state_event.assert_awaited_once()
+
+    def test_yaml_config_bridge_enables_feature(self, monkeypatch):
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _apply_yaml_config
+
+        monkeypatch.delenv("HERMES_MATRIX_DYNAMIC_ROOM_NAME", raising=False)
+        _apply_yaml_config({}, {"dynamic_room_name": True})
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="syt_test_token",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        assert adapter._dynamic_room_name_enabled is True
 
 
 # ---------------------------------------------------------------------------

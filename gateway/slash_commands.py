@@ -3786,6 +3786,22 @@ class GatewaySlashCommandsMixin:
                                 "Failed to rename Telegram topic from /title",
                                 exc_info=True,
                             )
+                    schedule_matrix_rename = getattr(
+                        self, "_schedule_matrix_semantic_room_rename", None
+                    )
+                    if callable(schedule_matrix_rename):
+                        try:
+                            await asyncio.to_thread(
+                                schedule_matrix_rename,
+                                source,
+                                session_id,
+                                sanitized,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Failed to rename Matrix room from /title",
+                                exc_info=True,
+                            )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

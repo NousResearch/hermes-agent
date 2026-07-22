@@ -97,6 +97,7 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  dynamic_room_name: false        # Rename DMs to show task state/title (default: false)
   max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
 ```
 
@@ -123,6 +124,23 @@ MATRIX_ALLOW_ROOM_MENTIONS=false
 :::tip Room-wide mentions
 Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
 :::
+
+### Dynamic Element Room Names
+
+Set `matrix.dynamic_room_name: true` to make a Matrix DM's Element-visible room
+name follow the current Hermes task:
+
+- `🟡` while Hermes is processing
+- `✅` after success
+- `❌` after failure
+- `⏹` after cancellation
+
+When Hermes generates a semantic session title—or when you use `/title`—that
+title becomes the room-name text while preserving the current status icon.
+Updates are deduplicated and limited to DMs so shared project rooms do not gain
+noisy room-state history. The bot account must have permission to send the
+`m.room.name` state event; a permission failure is logged and does not fail the
+agent turn.
 
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.

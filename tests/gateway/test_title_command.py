@@ -189,6 +189,31 @@ class TestHandleTitleCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_set_title_propagates_to_matrix_room_rename(self, tmp_path):
+        """/title <name> also updates an enabled Matrix DM room name."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "matrix")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_matrix_semantic_room_rename = MagicMock()
+
+        event = _make_event(
+            text="/title Matrix Task Name",
+            platform=Platform.MATRIX,
+            user_id="@user:matrix.org",
+            chat_id="!room:matrix.org",
+        )
+        result = await runner._handle_title_command(event)
+
+        assert "Matrix Task Name" in result
+        runner._schedule_matrix_semantic_room_rename.assert_called_once_with(
+            event.source, "test_session_123", "Matrix Task Name"
+        )
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_show_title_does_not_rename_topic(self, tmp_path):
         """Showing the title (no arg) must not trigger a topic rename."""
         from hermes_state import SessionDB

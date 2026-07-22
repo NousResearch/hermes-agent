@@ -100,6 +100,15 @@ def _make_discord_auto_thread_source() -> SessionSource:
     )
 
 
+def _make_matrix_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.org",
+        chat_type="dm",
+        user_id="@user:matrix.org",
+    )
+
+
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
@@ -298,6 +307,75 @@ async def test_run_agent_passes_discord_auto_thread_title_callback(monkeypatch, 
     mock_schedule.assert_called_once()
     assert mock_schedule.call_args.args[1] == "session-1"
     assert mock_schedule.call_args.args[2] == "Semantic Session Title"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_passes_matrix_room_name_title_callback(monkeypatch, tmp_path):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+    runner._session_db = SimpleNamespace(_db=MagicMock())  # type: ignore[assignment]
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+    monkeypatch.setattr(
+        tools_config,
+        "_get_platform_tools",
+        lambda user_config, platform_key: {"core"},
+    )
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        await runner._run_agent(
+            message="raw user prompt",
+            context_prompt="",
+            history=[],
+            source=_make_matrix_source(),
+            session_id="session-1",
+            session_key="agent:main:matrix:dm:!room:matrix.org",
+        )
+
+    mock_title.assert_called_once()
+    callback = mock_title.call_args.kwargs["title_callback"]
+    with patch.object(runner, "_schedule_matrix_semantic_room_rename") as mock_schedule:
+        callback("Semantic Session Title")
+    mock_schedule.assert_called_once()
+    assert mock_schedule.call_args.args[1:] == (
+        "session-1",
+        "Semantic Session Title",
+    )
+
+
+@pytest.mark.asyncio
+async def test_matrix_room_rename_ignores_stale_session_title():
+    runner = _make_runner()
+    adapter = SimpleNamespace(set_semantic_room_name=AsyncMock())
+    runner.adapters = {Platform.MATRIX: adapter}  # type: ignore[dict-item]
+    runner.session_store = SimpleNamespace(  # type: ignore[assignment]
+        get_or_create_session=lambda source: SimpleNamespace(session_id="new-session")
+    )
+
+    await runner._rename_matrix_room_for_session_title(
+        _make_matrix_source(),
+        "old-session",
+        "Old Session Title",
+    )
+
+    adapter.set_semantic_room_name.assert_not_awaited()
 
 
 def test_session_source_preserves_discord_auto_thread_metadata():

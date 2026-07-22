@@ -161,6 +161,8 @@ jobs:
         run: |
           python3 ../../scripts/ci/e2e_screenshot_status.py \
             --results-dir test-results \
+            --manifest-output /tmp/e2e-screenshot-manifest.json \
+            --evidence-dir /tmp/e2e-evidence \
             --artifact-url "$RESULTS_URL" \
             --output /tmp/e2e-review-status.json
           {

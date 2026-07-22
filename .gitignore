@@ -149,6 +149,7 @@ docs/superpowers/*
 # — ignore so `git status` stays clean and update's autostash skips them.
 .update-incomplete
 .update-incomplete.lock
+.install_method
 
 # Installer-written method stamp in the managed checkout root (scripts/install.sh).
 # Runtime metadata only — never a code change. Ignore so `git status` stays clean

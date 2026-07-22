@@ -28,6 +28,8 @@ Usage:
 import os
 import re
 import difflib
+import json
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -188,6 +190,10 @@ class WriteResult:
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
     warning: Optional[str] = None
+    # Exact inode published by a local atomic write.  Callers may use this as
+    # creation provenance; remote backends leave it unset because their
+    # filesystem identity is not comparable to the host filesystem.
+    filesystem_identity: Optional[Dict[str, int]] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -997,6 +1003,20 @@ class ShellFileOperations(FileOperations):
         # carries a marker so an orphaned temp (only possible on a hard
         # crash *between* cat and mv) is identifiable.
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+        identity_command = ""
+        if self.env.__class__.__name__ == "LocalEnvironment":
+            python = self._escape_shell_arg(sys.executable)
+            identity_script = self._escape_shell_arg(
+                "import json,os,sys; p=sys.argv[1]; "
+                "p=(p[1]+':'+p[2:]) if os.name=='nt' and len(p)>2 "
+                "and p[0]=='/' and p[1].isalpha() and p[2]=='/' else p; "
+                "s=os.lstat(p); "
+                "print('__HERMES_WRITE_IDENTITY__'+json.dumps({"
+                "'version':1,'device':s.st_dev,'inode':s.st_ino,"
+                "'mode':s.st_mode,'size':s.st_size,"
+                "'mtime_ns':s.st_mtime_ns,'ctime_ns':s.st_ctime_ns}))"
+            )
+            identity_command = f'{python} -c {identity_script} "$tmp"; '
 
         # One shell script, fully quoted. Notes:
         #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
@@ -1024,6 +1044,7 @@ class ShellFileOperations(FileOperations):
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
+            f"{identity_command}"
             'mv -f "$tmp" "$t"; '
             "trap - EXIT"
         )
@@ -1510,7 +1531,18 @@ class ShellFileOperations(FileOperations):
         # the atomic swap doesn't silently widen or narrow permissions, and
         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
         # turd next to the user's file.
+        written_identity: Optional[Dict[str, int]] = None
         write_result = self._atomic_write(path, content)
+        if self.env.__class__.__name__ == "LocalEnvironment":
+            marker = "__HERMES_WRITE_IDENTITY__"
+            for line in (write_result.stdout or "").splitlines():
+                if line.startswith(marker):
+                    try:
+                        decoded = json.loads(line[len(marker):])
+                        if isinstance(decoded, dict):
+                            written_identity = decoded
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        written_identity = None
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
@@ -1546,6 +1578,7 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            filesystem_identity=written_identity,
         )
     
     # =========================================================================

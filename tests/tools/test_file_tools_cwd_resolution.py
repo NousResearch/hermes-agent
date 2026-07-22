@@ -414,6 +414,45 @@ def test_write_file_creation_probe_occurs_inside_path_lock(
     assert target.read_text() == "agent content"
 
 
+def test_write_file_does_not_adopt_post_write_pathname_replacement(
+    _isolated_cwd, monkeypatch
+):
+    """Creation evidence stays bound to the inode published by the writer."""
+    from tools.file_operations import WriteResult
+
+    workspace, _decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("t1", str(workspace))
+    target = workspace / "test_replaced_after_write.py"
+    created_identity = None
+
+    class ReplacingFileOps:
+        def write_file(self, path, content):
+            nonlocal created_identity
+            Path(path).write_text(content)
+            created_identity = ft._local_path_identity(path)
+            Path(path).unlink()
+            Path(path).write_text("human replacement")
+            return WriteResult(
+                bytes_written=len(content.encode()),
+                filesystem_identity=created_identity,
+            )
+
+    monkeypatch.setattr(ft, "_get_file_ops", lambda _task_id: ReplacingFileOps())
+
+    import json
+    result = json.loads(
+        ft.write_file_tool(
+            "test_replaced_after_write.py", "agent content", task_id="t1"
+        )
+    )
+
+    assert result["created_path_identities"][0]["identity"] == created_identity
+    assert result["created_path_identities"][0]["identity"] != (
+        ft._local_path_identity(str(target))
+    )
+    assert target.read_text() == "human replacement"
+
+
 def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd

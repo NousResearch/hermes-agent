@@ -100,18 +100,18 @@ def _local_path_identity(path: str | None) -> dict[str, int] | None:
 
 
 def _add_created_path_evidence(
-    result_dict: dict, path: str | None, existed_before: bool | None
+    result_dict: dict,
+    path: str | None,
+    existed_before: bool | None,
+    written_identity: dict[str, int] | None,
 ) -> None:
     """Attach trusted creation metadata for a newly-created local target."""
     if result_dict.get("error") or existed_before is not False:
         return
-    if isinstance(path, str) and path:
-        identity = _local_path_identity(path)
-        if identity is None:
-            return
+    if isinstance(path, str) and path and isinstance(written_identity, dict):
         result_dict["created_paths"] = [path]
         result_dict["created_path_identities"] = [
-            {"path": path, "identity": identity}
+            {"path": path, "identity": written_identity}
         ]
 
 
@@ -1673,6 +1673,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
+            result_dict.pop("filesystem_identity", None)
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
@@ -1698,6 +1699,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             existed_before = _local_path_existed_before(_resolved)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
+            written_identity = result_dict.pop("filesystem_identity", None)
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
@@ -1707,7 +1709,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict["resolved_path"] = _resolved
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
-                _add_created_path_evidence(result_dict, _resolved, existed_before)
+                _add_created_path_evidence(
+                    result_dict, _resolved, existed_before, written_identity
+                )
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.

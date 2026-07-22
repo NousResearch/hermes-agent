@@ -163,6 +163,7 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",

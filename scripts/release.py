@@ -375,6 +375,7 @@ LEGACY_AUTHOR_MAP = {
     "qinhaojie.exe@bytedance.com": "qin-ctx",
     "834740219@qq.com": "ViewWay",
     "matt@vestigial.dev": "m4dni5",
+    "magnus919@pm.me": "magnus919",  # PR #45984 remote-run SSH plugin
     "harjoth.khara@gmail.com": "harjothkhara",
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",

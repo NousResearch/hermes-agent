@@ -1,0 +1,7 @@
+name: remote-run
+version: 1.2.0
+description: "Per-call SSH command execution with structured output and persistent host-key verification."
+author: Magnus Hedemark + Jasper
+kind: backend
+provides_tools:
+  - remote_run

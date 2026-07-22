@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tools import microsoft_graph_client as graph_client_mod
 from tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProvider
 from tools.microsoft_graph_client import (
     MicrosoftGraphAPIError,
@@ -255,3 +256,70 @@ class TestMicrosoftGraphClient:
 
         with pytest.raises(MicrosoftGraphClientError):
             await client.get_json("/me")
+
+    async def test_get_json_rejects_oversized_success_response(self, monkeypatch):
+        monkeypatch.setattr(graph_client_mod, "GRAPH_JSON_RESPONSE_MAX_BYTES", 8)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=b'{"payload":"too large"}',
+                headers={"content-type": "application/json"},
+            )
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        with pytest.raises(MicrosoftGraphClientError) as exc:
+            await client.get_json("/me")
+
+        assert "exceeded 8 bytes" in str(exc.value)
+
+    async def test_api_error_body_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(graph_client_mod, "GRAPH_JSON_RESPONSE_MAX_BYTES", 8)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                content=b"x" * 32,
+                headers={"content-type": "text/plain"},
+            )
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+
+        with pytest.raises(MicrosoftGraphAPIError) as exc:
+            await client.get_json("/me")
+
+        assert exc.value.status_code == 400
+        assert exc.value.payload is None
+        assert "response body exceeded 8 bytes" in str(exc.value)
+        assert "xxxxxxxxxxxxxxxx" not in str(exc.value)
+
+    async def test_download_error_body_is_bounded(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(graph_client_mod, "GRAPH_JSON_RESPONSE_MAX_BYTES", 8)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                content=b"y" * 32,
+                headers={"content-type": "text/plain"},
+            )
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+        destination = tmp_path / "recording.mp4"
+
+        with pytest.raises(MicrosoftGraphAPIError) as exc:
+            await client.download_to_file("/drive/item/content", destination)
+
+        assert "response body exceeded 8 bytes" in str(exc.value)
+        assert "yyyyyyyyyyyyyyyy" not in str(exc.value)
+        assert not destination.exists()
+        assert not (tmp_path / "recording.mp4.part").exists()

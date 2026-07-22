@@ -13,6 +13,8 @@ from tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProv
 
 
 DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+GRAPH_JSON_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+_GRAPH_BODY_LIMIT_EXCEEDED = "hermes_graph_body_limit_exceeded"
 
 
 class MicrosoftGraphClientError(RuntimeError):
@@ -197,9 +199,7 @@ class MicrosoftGraphClient:
                         headers=request_headers,
                     ) as response:
                         if response.status_code >= 400:
-                            # Materialize error body so we can surface a meaningful
-                            # message; error bodies are small.
-                            await response.aread()
+                            response = await self._read_limited_response(response)
                             api_error = self._build_api_error("GET", url, response)
                             last_error = api_error
 
@@ -288,13 +288,16 @@ class MicrosoftGraphClient:
                     timeout=httpx.Timeout(self.timeout),
                     transport=self._transport,
                 ) as client:
-                    response = await client.request(
+                    async with client.stream(
                         method,
                         url,
                         params=params,
                         json=json_body,
                         headers=request_headers,
-                    )
+                    ) as streamed_response:
+                        response = await self._read_limited_response(
+                            streamed_response
+                        )
             except httpx.HTTPError as exc:
                 last_error = exc
                 if attempt >= self.max_retries:
@@ -306,6 +309,11 @@ class MicrosoftGraphClient:
                 continue
 
             if response.status_code < 400:
+                if response.extensions.get(_GRAPH_BODY_LIMIT_EXCEEDED):
+                    raise MicrosoftGraphClientError(
+                        "Microsoft Graph response exceeded "
+                        f"{GRAPH_JSON_RESPONSE_MAX_BYTES} bytes for {method} {url}."
+                    )
                 return response
 
             api_error = self._build_api_error(method, url, response)
@@ -366,29 +374,66 @@ class MicrosoftGraphClient:
         return min(8.0, 0.5 * (2 ** attempt))
 
     @staticmethod
+    async def _read_limited_response(response: httpx.Response) -> httpx.Response:
+        chunks: list[bytes] = []
+        total = 0
+        exceeded = False
+
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > GRAPH_JSON_RESPONSE_MAX_BYTES:
+                exceeded = True
+                await response.aclose()
+                break
+            chunks.append(chunk)
+
+        extensions = dict(response.extensions)
+        if exceeded:
+            extensions[_GRAPH_BODY_LIMIT_EXCEEDED] = True
+            content = b""
+        else:
+            content = b"".join(chunks)
+
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=content,
+            request=response.request,
+            extensions=extensions,
+        )
+
+    @staticmethod
     def _build_api_error(
         method: str,
         url: str,
         response: httpx.Response,
     ) -> MicrosoftGraphAPIError:
         payload: Any = None
-        message = response.text.strip() or "unknown error"
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
+        if response.extensions.get(_GRAPH_BODY_LIMIT_EXCEEDED):
+            message = (
+                "response body exceeded "
+                f"{GRAPH_JSON_RESPONSE_MAX_BYTES} bytes"
+            )
+        else:
+            message = response.text.strip() or "unknown error"
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
 
-        if isinstance(payload, dict):
-            error = payload.get("error")
-            if isinstance(error, dict):
-                code = error.get("code")
-                inner_message = error.get("message")
-                if code and inner_message:
-                    message = f"{code}: {inner_message}"
-                elif inner_message:
-                    message = str(inner_message)
-            elif isinstance(error, str):
-                message = error
+            if isinstance(payload, dict):
+                error = payload.get("error")
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    inner_message = error.get("message")
+                    if code and inner_message:
+                        message = f"{code}: {inner_message}"
+                    elif inner_message:
+                        message = str(inner_message)
+                elif isinstance(error, str):
+                    message = error
 
         retry_after: float | None = None
         header_value = response.headers.get("Retry-After")

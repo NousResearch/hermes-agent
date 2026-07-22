@@ -79,7 +79,7 @@ moa:
     default:
       reference_models:
         - provider: openai-codex
-          model: gpt-5.5
+          model: gpt-5.6-sol
         - provider: openrouter
           model: deepseek/deepseek-v4-pro
       aggregator:
@@ -96,7 +96,7 @@ moa:
 
 Default preset:
 
-- reference: `openai-codex:gpt-5.5`
+- reference: `openai-codex:gpt-5.6-sol`
 - reference: `openrouter:deepseek/deepseek-v4-pro`
 - aggregator / acting model: `openrouter:anthropic/claude-opus-4.8`
 

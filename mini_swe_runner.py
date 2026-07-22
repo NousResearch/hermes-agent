@@ -33,11 +33,14 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import fire
-from dotenv import load_dotenv
-from agent.tool_dispatch_helpers import make_tool_result_message
+from pathlib import Path
 
-# Load environment variables
-load_dotenv()
+from agent.tool_dispatch_helpers import make_tool_result_message
+from hermes_cli.env_loader import load_hermes_dotenv
+
+# Load ~/.hermes/.env and repo .env (UTF-8, then latin-1 for Windows cp1252).
+_REPO_ROOT = Path(__file__).resolve().parent
+load_hermes_dotenv(project_env=_REPO_ROOT / ".env")
 
 
 def _effective_temperature_for_model(

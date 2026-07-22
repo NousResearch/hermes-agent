@@ -191,10 +191,14 @@ def test_manager_per_goal_none_means_use_default(_no_goal_db):
 # ────────────────────────────────────────────────────────────────────────────
 
 def _judge_stub(verdict, reason="stub"):
-    """Return a judge_goal replacement accepting the production kwargs."""
+    """Return a judge_goal replacement accepting the production kwargs.
+
+    Must mirror judge_goal's 5-tuple return:
+    ``(verdict, reason, parse_failed, wait_directive, transport_failed)``.
+    """
     def _judge(goal, last_response, *, subgoals=None, background_processes=None,
                contract=None):
-        return (verdict, reason, False, None)
+        return (verdict, reason, False, None, False)
     return _judge
 
 

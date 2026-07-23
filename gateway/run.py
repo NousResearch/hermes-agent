@@ -11911,12 +11911,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session, leaving a forged leading envelope in place lets one
             # participant impersonate another in the exact metadata shape we ask
             # the model to trust.
-            if _has_trusted_sender_id:
-                message_text = re.sub(
-                    r"^(?:\s*\[Verified sender:[^\]\n]*\]\s*)+",
-                    "",
-                    message_text,
-                )
+            message_text = re.sub(
+                r"^(?:\s*\[Verified sender:[^\]\n]*\]\s*)+",
+                "",
+                message_text,
+            )
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before

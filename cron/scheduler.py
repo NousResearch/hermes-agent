@@ -1459,6 +1459,170 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _run_send_blocking(make_coro):
+    """Run a ``_send_to_platform`` coroutine to completion from any thread.
+
+    Mirrors the standalone send path in :func:`_deliver_result`: ``asyncio.run``
+    in this thread, falling back to a worker thread when a loop is already
+    running here. ``make_coro`` is a zero-arg factory so a fresh coroutine can
+    be created for the retry (a coroutine cannot be awaited twice).
+    """
+    coro = make_coro()
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        # A loop is already running in this thread; the coro was never started.
+        # Close it to avoid a "coroutine was never awaited" warning, then run a
+        # fresh one in a worker thread that has no running loop.
+        coro.close()
+        # Explicit shutdown(wait=False) rather than a ``with`` block: matches the
+        # standalone-send threadpool pattern the #47163 loop-safety tests assert
+        # against, and drops the worker without blocking on the timed-out send.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(asyncio.run, make_coro()).result(timeout=30)
+        finally:
+            pool.shutdown(wait=False)
+
+
+def _attempt_delivery_fallback(
+    job: dict,
+    target: dict,
+    origin: dict,
+    platform,
+    pconfig,
+    content: str,
+    media_files,
+    error: object,
+    sent_keys: Optional[set] = None,
+) -> tuple:
+    """Redirect a definitively-undeliverable cron target to parent/home.
+
+    Returns ``(handled, error_message)``:
+
+    * ``(False, None)`` — no fallback applies: the failure was not definitive,
+      or no saner target exists. The caller should fall through to its normal
+      error handling.
+    * ``(True, None)`` — a fallback delivered the message. The caller should
+      treat the target as delivered (record no error).
+    * ``(True, <str>)`` — fallbacks were attempted but all failed. The caller
+      should record ``<str>`` and move on.
+
+    Only :func:`cron.delivery_fallback.is_definitive_delivery_failure` failures
+    are redirected, so an uncertain failure (timeout, rate limit, 5xx) is never
+    duplicated. A fallback that itself fails definitively advances to the next
+    fallback; a fallback that fails for an uncertain reason stops the chain so
+    that send is not retried elsewhere either.
+
+    ``sent_keys`` is a set, shared across all targets of one delivery run, of
+    ``(platform, chat_id, thread_id)`` tuples a fallback has already delivered
+    the (identical) job content to. It dedups across targets: when several
+    failing targets redirect to the same parent/home channel, the content is
+    sent there once, not once per failing target.
+    """
+    from cron.delivery_fallback import (
+        build_fallback_targets,
+        format_fallback_notice,
+        is_definitive_delivery_failure,
+    )
+
+    if not is_definitive_delivery_failure(error):
+        return (False, None)
+
+    platform_name = target["platform"]
+    chat_id = target["chat_id"]
+    thread_id = target.get("thread_id")
+
+    # The stored parent channel / chat_type belong to the origin conversation,
+    # so only trust them when this target IS the origin (not a fan-out target).
+    parent_chat_id = None
+    is_dm = False
+    if origin and _target_matches_origin(origin, platform_name, chat_id, thread_id):
+        parent_chat_id = origin.get("parent_chat_id")
+        # Suppress the home-channel fallback for a 1:1 DM: the home channel is
+        # typically a shared group, so escalating private DM content there would
+        # leak it. Only an explicit "dm" opts in (older jobs without chat_type
+        # keep prior behavior).
+        is_dm = str(origin.get("chat_type", "")).lower() in ("dm", "private")
+
+    fallback_targets = build_fallback_targets(
+        target,
+        parent_chat_id=parent_chat_id,
+        home_chat_id=_get_home_target_chat_id(platform_name),
+        home_thread_id=_get_home_target_thread_id(platform_name),
+        is_direct_message=is_dm,
+    )
+    if not fallback_targets:
+        return (False, None)
+
+    from tools.send_message_tool import _send_to_platform
+
+    if sent_keys is None:
+        sent_keys = set()
+
+    def _fb_key(t: dict) -> tuple:
+        tid = t.get("thread_id")
+        return (str(t.get("platform", "")).lower(), str(t.get("chat_id", "")),
+                str(tid) if tid is not None else "")
+
+    fail_prefix = f"delivery to {platform_name}:{chat_id} failed: {error}; "
+    last_error = error
+    for fb in fallback_targets:
+        kind = fb.get("fallback_kind", "fallback")
+        fb_key = _fb_key(fb)
+        if fb_key in sent_keys:
+            # An earlier target in this same run already delivered the identical
+            # content to this channel; re-sending would duplicate it. Treat as
+            # delivered and stop.
+            logger.info(
+                "Job '%s': %s fallback to %s skipped — content already delivered "
+                "there this run",
+                job["id"], kind, fb["chat_id"],
+            )
+            return (True, None)
+        logger.warning(
+            "Job '%s': %s target %s:%s is undeliverable (%s); "
+            "retrying %s channel %s",
+            job["id"], platform_name, chat_id, thread_id, last_error,
+            kind, fb["chat_id"],
+        )
+        notice = format_fallback_notice(content, fb.get("fallback_kind"))
+        try:
+            fb_result = _run_send_blocking(
+                lambda fb=fb, notice=notice: _send_to_platform(
+                    platform, pconfig, fb["chat_id"], notice,
+                    thread_id=fb.get("thread_id"), media_files=media_files,
+                )
+            )
+        except Exception as fb_exc:  # noqa: BLE001 - mirror standalone send handling
+            if is_definitive_delivery_failure(fb_exc):
+                last_error = fb_exc
+                continue
+            msg = f"{fail_prefix}{kind} fallback to {fb['chat_id']} failed: {fb_exc}"
+            logger.error("Job '%s': %s", job["id"], msg)
+            return (True, msg)
+
+        if fb_result and fb_result.get("error"):
+            fb_err = fb_result["error"]
+            if is_definitive_delivery_failure(fb_err):
+                last_error = fb_err
+                continue
+            msg = f"{fail_prefix}{kind} fallback error: {fb_err}"
+            logger.error("Job '%s': %s", job["id"], msg)
+            return (True, msg)
+
+        sent_keys.add(fb_key)
+        logger.info(
+            "Job '%s': delivered to %s:%s after %s fallback from %s:%s",
+            job["id"], fb["platform"], fb["chat_id"], kind, platform_name, chat_id,
+        )
+        return (True, None)
+
+    msg = f"{fail_prefix}all fallbacks failed; last error: {last_error}"
+    logger.error("Job '%s': %s", job["id"], msg)
+    return (True, msg)
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1545,6 +1709,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+    # Channels a stale-target fallback has already delivered this run's content
+    # to, shared across all targets so several failing targets that redirect to
+    # the same parent/home channel do not duplicate the message there.
+    fallback_sent_keys: set = set()
 
     for target in targets:
         platform_name = target["platform"]
@@ -1996,55 +2164,38 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            # Standalone path: run the async send in a fresh event loop (safe
+            # from any thread). _run_send_blocking encapsulates the asyncio.run /
+            # worker-thread retry; a send error raised on EITHER path propagates
+            # to the except below (#47163 crash-safety), which downgrades a
+            # shutdown race to a warning and otherwise attempts the stale-target
+            # fallback.
             try:
-                result = asyncio.run(coro)
-            except RuntimeError as run_err:
-                # asyncio.run() checks for a running loop before awaiting the coroutine;
-                # when it raises, the original coro was never started — close it to
-                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-                # fresh thread that has no running loop.
-                coro.close()
-                # If the RuntimeError is the interpreter-finalization signal,
-                # the fresh-thread fallback would fail identically — skip
-                # gracefully instead of logging a shutdown-race traceback.
-                if _interpreter_shutting_down(run_err):
+                result = _run_send_blocking(
+                    lambda: _send_to_platform(
+                        platform, pconfig, chat_id, cleaned_delivery_content,
+                        thread_id=thread_id, media_files=media_files,
+                    )
+                )
+            except Exception as e:
+                # A shutdown-race exception during teardown is expected — skip
+                # gracefully instead of treating it as a delivery failure or
+                # triggering a stale-target fallback (#58720, #55924).
+                if _interpreter_shutting_down(e):
                     msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
                     logger.warning("Job '%s': %s", job["id"], msg)
                     target_errors.append(msg)
                     delivery_errors.extend(target_errors)
                     continue
-                # The thread-pool fallback can itself raise (SMTP ConnectionError,
-                # future.result timeout, etc.). An exception raised inside this
-                # `except RuntimeError` block is NOT caught by the sibling
-                # `except Exception` below — it would escape _deliver_result()
-                # and crash the whole delivery loop, silently skipping every
-                # remaining target (#47163). Wrap the fallback in its own
-                # try/except so a per-target failure is logged and the loop
-                # continues to the next target.
-                try:
-                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                    try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                        result = future.result(timeout=30)
-                    finally:
-                        pool.shutdown(wait=False)
-                except Exception as e:
-                    # A shutdown-race here is expected during teardown; downgrade
-                    # to a warning so it doesn't read as a genuine failure.
-                    if _interpreter_shutting_down(e):
-                        msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
-                        logger.warning("Job '%s': %s", job["id"], msg)
-                        target_errors.append(msg)
+                handled, fb_msg = _attempt_delivery_fallback(
+                    job, target, origin, platform, pconfig,
+                    cleaned_delivery_content, media_files, e, fallback_sent_keys,
+                )
+                if handled:
+                    if fb_msg:
+                        target_errors.append(fb_msg)
                         delivery_errors.extend(target_errors)
-                        continue
-                    msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                    logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
-                    target_errors.extend([msg])
-                    delivery_errors.extend(target_errors)
                     continue
-            except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                 target_errors.extend([msg])
@@ -2052,7 +2203,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+                err = result["error"]
+                handled, fb_msg = _attempt_delivery_fallback(
+                    job, target, origin, platform, pconfig,
+                    cleaned_delivery_content, media_files, err, fallback_sent_keys,
+                )
+                if handled:
+                    if fb_msg:
+                        target_errors.append(fb_msg)
+                        delivery_errors.extend(target_errors)
+                    continue
+                msg = f"delivery error: {err}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)

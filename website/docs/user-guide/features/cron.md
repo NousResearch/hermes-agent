@@ -280,6 +280,20 @@ Semantics: `all` expands to every platform with a configured home channel. Zero 
 
 `all` composes with explicit targets. `origin,all` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
 
+### Stale-target fallback
+
+A `deliver="origin"` job sends its output back to the conversation it was created in. If that thread/channel is **deleted, archived, or otherwise inaccessible** by the time the job fires (e.g. a deleted Discord thread, a closed Telegram topic, an archived Slack channel, or the bot losing permission), Hermes does not drop the notification silently — it redirects, in order:
+
+> original thread/topic → parent channel → home channel
+
+The redirected message is prefixed with a short ⚠️ notice explaining that the original target was unavailable and where it went instead.
+
+Only **definitively** undeliverable failures redirect. **Uncertain** failures (timeouts, rate limits, 5xx) do not — the original send may already have landed, and a redirect would deliver the message twice.
+
+The mechanism is platform-neutral. Detection is most complete for Telegram, Discord, and Slack plus generic HTTP errors (including Matrix); platforms whose adapters return opaque error text are safely left alone (no redirect).
+
+**DM exception:** a 1:1 direct message that becomes undeliverable (e.g. the user blocked the bot) is **not** escalated to the home channel — that is typically a shared group and would leak private content. It only retries the DM's own root conversation.
+
 ### Telegram cron topic (`TELEGRAM_CRON_THREAD_ID`)
 
 When Telegram topic mode is enabled, the root DM is reserved as a system lobby — replies sent there are rebuffed with a lobby reminder and `reply_to_message_id` is dropped, so you cannot reply to a cron message that landed in the main chat.

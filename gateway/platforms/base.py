@@ -1974,7 +1974,16 @@ _SUBCHAT_NOT_FOUND_SUBSTRINGS = (
     "message to reply not found",
     "thread not found",
     "topic_deleted",
+    "topic_closed",
     "message_id_invalid",
+    # Discord: 10003 Unknown Channel (deleted/inaccessible channel|thread).
+    "unknown channel",
+    "error code: 10003",
+    # Slack: channel deleted or archived. A stale channel/thread is a
+    # sub-chat-level death (redirectable to parent/home), not a whole-chat
+    # death, so it must NOT mark the parent target dead.
+    "channel_not_found",
+    "is_archived",
 )
 
 
@@ -2028,10 +2037,37 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "not enough rights" in blob
         or "have no rights" in blob
         or "not a member" in blob
+        # Discord: 50001 Missing Access / 50013 Missing Permissions.
+        or "missing access" in blob
+        or "missing permissions" in blob
+        or "error code: 50001" in blob
+        or "error code: 50013" in blob
+        # Slack: bot removed from / never added to the channel, or its token
+        # lacks the scope to post there.
+        or "not_in_channel" in blob
+        or "missing_scope" in blob
+        or "restricted_action" in blob
     ):
         return "forbidden"
-    if any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS) or any(
-        s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS
+    if (
+        any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS)
+        or any(s in blob for s in _SUBCHAT_NOT_FOUND_SUBSTRINGS)
+        # Generic deleted / archived / locked container, across platforms whose
+        # adapters surface a free-text reason (e.g. Discord "Thread X not
+        # found", a 404 naming a channel/conversation, an archived or locked
+        # thread). Scoped to container nouns so unrelated "not found" strings
+        # (a missing media file, an unknown user) are not misread as a stale
+        # target. These compound shapes stay inline (not simple substrings): a
+        # sub-chat-level death, so is_chat_level_not_found — which only consults
+        # the constant tuples — correctly leaves the parent target alive.
+        or ("not found" in blob and (
+            "channel" in blob
+            or "thread" in blob
+            or "conversation" in blob
+            or "room" in blob
+        ))
+        or ("archiv" in blob and ("thread" in blob or "channel" in blob))
+        or ("thread" in blob and "locked" in blob)
     ):
         return "not_found"
     if (

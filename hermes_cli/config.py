@@ -1711,6 +1711,18 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
+        # Batch planner — orders only selected Kanban cards that are likely
+        # to overlap in a repository or versioned knowledge base. Invoked by
+        # the dashboard's "Plan & take" bulk action; keep it cheap.
+        "kanban_batch_planner": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 90,
+            "extra_body": {},
+            "reasoning_effort": "",
+        },
         # Profile describer — auto-generates a 1-2 sentence description
         # of what a profile is good at. Invoked by
         # ``hermes profile describe <name> --auto`` and the dashboard's
@@ -2868,6 +2880,12 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Coarse maximum context size the Kanban decomposer should plan for
+        # per fresh worker. The estimate is deliberately approximate: semantic
+        # seams decide where work can split; this cap tells the decomposer how
+        # large the resulting pieces may be. Runtime handoff remains the
+        # safeguard when actual tool output exceeds the forecast.
+        "decomposer_context_budget_tokens": 150_000,
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow

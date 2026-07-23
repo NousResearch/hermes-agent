@@ -75,6 +75,51 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+def test_context_budget_resolver_defaults_and_bounds_values():
+    assert decomp._resolve_context_budget_tokens({}) == 150_000
+    assert decomp._resolve_context_budget_tokens(
+        {"kanban": {"decomposer_context_budget_tokens": "120000"}}
+    ) == 120_000
+    assert decomp._resolve_context_budget_tokens(
+        {"kanban": {"decomposer_context_budget_tokens": "invalid"}}
+    ) == 150_000
+    assert decomp._resolve_context_budget_tokens(
+        {"kanban": {"decomposer_context_budget_tokens": 1}}
+    ) == 32_000
+
+
+def test_decompose_passes_context_budget_and_policy_to_llm(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="budget-aware task", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "fits",
+        "title": "Do the work",
+        "body": "Implement it.",
+        "assignee": "worker",
+        "estimated_context_tokens": 110_000,
+    })
+    patches = _patch_list_profiles(["worker"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload) as call_llm, _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"decomposer_context_budget_tokens": 120_000}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    messages = call_llm.call_args.kwargs["messages"]
+    assert "FEWEST workers" in messages[0]["content"]
+    assert "semantic seams" in messages[0]["content"]
+    assert "120,000 tokens" in messages[1]["content"]
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)

@@ -93,6 +93,24 @@ _HARDLINE_BLOCK = [
     # System-wide kill
     "kill -9 -1",
     "kill -1",
+    # Signaling PID 1 terminates the container init/supervisor when Hermes is
+    # deployed in a container and terminal() uses the local backend in the
+    # same PID namespace.  That drops the gateway and every active session.
+    "kill 1",
+    "kill -TERM 1",
+    "kill -15 1",
+    "kill -s TERM 1",
+    "kill --signal TERM 1",
+    "kill --signal=KILL 1",
+    "kill -- 1",
+    "kill 01",
+    "kill +1",
+    "kill -TERM -- 0001",
+    "/bin/kill -TERM 1",
+    "/usr/bin/kill -9 1",
+    "sudo kill -TERM 1",
+    "echo ready && kill -TERM 2 1",
+    "$(kill -TERM '1')",
     # Shutdown / reboot / halt
     "shutdown -h now",
     "shutdown -r now",
@@ -193,7 +211,23 @@ _HARDLINE_ALLOW = [
     # targeted kill
     "kill -9 12345",
     "kill -HUP 1234",
+    "kill -TERM 10",
+    "kill -TERM 11",
+    # Signal 0 and list/help modes inspect state without signaling PID 1.
+    "kill -0 1",
+    "kill -s 0 1",
+    "kill -n 0 1",
+    "kill --signal 0 1",
+    "kill --signal=0 1",
+    "kill -l 1",
+    "kill -L 1",
+    "kill --list 1",
+    "kill --list=1",
     "pkill python",
+    # A PID-1 command mentioned as quoted data is not executed.
+    "echo 'kill -TERM 1'",
+    "printf '%s' 'kill 1'",
+    "gh issue create --body 'kill -TERM 1'",
     # Ordinary ops
     "git status",
     "npm run build",
@@ -375,7 +409,8 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
     monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
     for cmd in ['rm -rf /', 'rm -rf "/"', 'rm -rf "$HOME"', "rm -rf ${HOME}",
-                "shutdown -h now", "mkfs.ext4 /dev/sda", "reboot"]:
+                "shutdown -h now", "mkfs.ext4 /dev/sda", "reboot",
+                "kill -TERM 1"]:
         r1 = check_dangerous_command(cmd, "local")
         assert r1["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_dangerous_command)"
         assert r1.get("hardline") is True
@@ -512,12 +547,16 @@ def test_container_backends_still_bypass(clean_session):
     """Containerized backends remain bypass-approved — they can't touch the host.
 
     Hardline only protects environments with real host impact (local, ssh).
+    The backend name describes the tool sandbox, not where Hermes itself is
+    deployed: a containerized Hermes using the local backend still shares its
+    PID namespace with the container init and therefore takes the local path.
     """
     for env in ("docker", "singularity", "modal", "daytona"):
-        r1 = check_dangerous_command("rm -rf /", env)
-        assert r1["approved"] is True, f"container {env} should still bypass"
-        r2 = check_all_command_guards("rm -rf /", env)
-        assert r2["approved"] is True, f"container {env} should still bypass"
+        for command in ("rm -rf /", "kill -TERM 1"):
+            r1 = check_dangerous_command(command, env)
+            assert r1["approved"] is True, f"container {env} should still bypass"
+            r2 = check_all_command_guards(command, env)
+            assert r2["approved"] is True, f"container {env} should still bypass"
 
 
 def test_hardline_runs_before_dangerous_detection(clean_session):

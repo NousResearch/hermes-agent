@@ -191,10 +191,12 @@ class TestUnifiedDashboardRouting:
             main_mod.cmd_dashboard(_args(open_profile="worker_x"))
         assert execs == []
 
-    def test_dashboard_starts_mcp_discovery_for_ws_backend(self, main_mod, monkeypatch):
-        """The dashboard process serves the /api/ws gateway but never runs
-        tui_gateway/entry.py, so it must kick off MCP discovery itself or
-        desktop sessions never see a profile's MCP tools."""
+    def test_dashboard_open_profile_does_not_start_mcp_discovery_at_startup(
+        self, main_mod, monkeypatch
+    ):
+        """Dashboard --open-profile startup should not spawn MCP discovery.
+        Chat WebSocket startup handles MCP discovery lazily when a real
+        chat session opens."""
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "default"
         )
@@ -224,11 +226,6 @@ class TestUnifiedDashboardRouting:
             types.SimpleNamespace(start_server=lambda **_kwargs: None),
         )
 
-        main_mod.cmd_dashboard(_args())
+        main_mod.cmd_dashboard(_args(open_profile="worker_x"))
 
-        assert calls == [
-            {
-                "logger": main_mod.logger,
-                "thread_name": "dashboard-mcp-discovery",
-            }
-        ]
+        assert calls == []

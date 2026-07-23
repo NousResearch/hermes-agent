@@ -873,19 +873,29 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
 
 class TestEditMessageStreamingSafety:
     @pytest.mark.asyncio
-    async def test_non_final_edit_uses_plain_text_without_markdown(self):
+    async def test_non_final_edit_formats_markdownv2_with_plain_fallback(self):
+        """Mid-stream frames render MarkdownV2 like the finalize edit does; a
+        BadRequest from malformed partial entities degrades to a plain frame
+        for that frame only (full matrix in
+        test_telegram_stream_preview_mdv2.py)."""
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
         adapter._bot = MagicMock()
-        adapter._bot.edit_message_text = AsyncMock()
+        bad_request = type("BadRequest", (Exception,), {})
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=[bad_request("Bad Request: can't parse entities"), None]
+        )
 
         result = await adapter.edit_message("123", "456", "partial **bold", finalize=False)
 
         assert result.success is True
-        adapter._bot.edit_message_text.assert_awaited_once_with(
-            chat_id=123,
-            message_id=456,
-            text="partial **bold",
-        )
+        first_call = adapter._bot.edit_message_text.await_args_list[0].kwargs
+        second_call = adapter._bot.edit_message_text.await_args_list[1].kwargs
+        assert "parse_mode" in first_call
+        assert second_call == {
+            "chat_id": 123,
+            "message_id": 456,
+            "text": "partial **bold",
+        }
 
     @pytest.mark.asyncio
     async def test_final_edit_uses_markdownv2_with_plain_fallback(self):

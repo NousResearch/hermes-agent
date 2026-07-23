@@ -1471,7 +1471,7 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
-            from hermes_cli.config import is_provider_enabled
+            from hermes_cli._provider_enabled import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():
                 if not is_provider_enabled(cfg):
@@ -2274,7 +2274,7 @@ def list_authenticated_providers(
         # the wire protocol differs.
         from collections import OrderedDict as _OD3
 
-        from hermes_cli.config import is_provider_enabled
+        from hermes_cli._provider_enabled import is_provider_enabled
 
         ep_groups: "_OD3[tuple, dict]" = _OD3()
         for ep_name, ep_cfg in user_providers.items():
@@ -2750,7 +2750,7 @@ def list_authenticated_providers(
     # ``provider_id`` so PROVIDER_REGISTRY entries that match user-config
     # blocks are filtered consistently.
     try:
-        from hermes_cli.config import is_provider_enabled
+        from hermes_cli._provider_enabled import is_provider_enabled
         if isinstance(user_providers, dict):
             _disabled_slugs = {
                 str(name).strip().lower()

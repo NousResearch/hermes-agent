@@ -13,17 +13,12 @@ transport:
   type: http
   url: https://somvia.app/mcp
 
-# The app issues a private som_ token for unattended agents. env_var identifies
-# the value used in the Bearer header while Hermes keeps the token in
-# ~/.hermes/.env rather than writing the secret into config.yaml.
+# The Catalog uses native MCP OAuth so interactive Hermes clients can complete
+# browser authentication without handling a long-lived token. Somvia also
+# accepts an app-issued som_ Bearer token for manual headless/VPS setups; both
+# auth paths reach the same read-only tools.
 auth:
-  type: api_key
-  env_var: SOMVIA_ACCESS_TOKEN
-  env:
-    - name: SOMVIA_ACCESS_TOKEN
-      prompt: "Somvia access token (starts with som_; copy it from the app's Connect screen)"
-      required: true
-      secret: true
+  type: oauth
 
 # Keep new server tools opt-in until this manifest is reviewed again. Every
 # tool below is annotated read-only by the server.
@@ -42,12 +37,15 @@ post_install: |
   Somvia requires an iPhone, Apple Health, and an active Somvia Pro plan.
   Install the app from https://apps.apple.com/app/id6786936154, sign in with
   Apple, choose the Health categories and history window you want, and let the
-  first sync finish. Then open the app's Connect screen and paste the private
-  som_ token when Hermes prompts for it.
+  first sync finish.
 
-  Start a new Hermes session to load the Somvia tools. A useful first prompt is:
+  Hermes will open a browser on first connection. Sign in with the same Apple
+  account used in Somvia, then start a new Hermes session to load the tools.
+  A useful first prompt is:
     Use Somvia to summarize my sleep and resting heart rate for the last 7 days.
 
-  Treat the token like a password. If it is exposed, refresh it in Somvia
-  Settings and update Hermes; the previous token stops working. Deleting the
-  Somvia account deletes synced Health data and invalidates its access tokens.
+  For a headless or unattended host, use Somvia's app-issued som_ Bearer token
+  with the manual configuration at https://somvia.app/hermes-apple-health.
+  Treat that token like a password; refresh it in Somvia Settings if exposed.
+  Deleting the Somvia account deletes synced Health data and invalidates both
+  OAuth access and app-issued tokens.

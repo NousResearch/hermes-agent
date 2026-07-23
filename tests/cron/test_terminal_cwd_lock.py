@@ -189,3 +189,72 @@ def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
     t.start()
     assert acquired.wait(timeout=5), "writer lock was leaked by run_job on exception"
     t.join(timeout=5)
+
+
+def test_writer_active_flag_set_before_lock_release():
+    """Regression: the writer-active flag must be set *inside* the condition
+    lock's critical section, never in the gap between releasing the lock and
+    setting the flag.
+
+    ``_ReadWriteLock`` models a workdir cron job as a writer that excludes
+    workdir-less (reader) jobs from observing its ``TERMINAL_CWD`` override.
+    If ``_writer_active`` is published only *after* the condition lock is
+    released, a concurrent reader can pass its guard in that window and run in
+    the writer's workdir — exactly the corruption the lock exists to prevent.
+    """
+    import cron.scheduler as sched
+
+    class _ProbeCondition:
+        """Condition stand-in that records whether a reader could have slipped
+        through the lock-release window during ``acquire_write``.
+
+        The real ``threading.Condition`` is used for actual locking; the probe
+        only inspects the lock's published state at the exact moment the
+        ``with self._cond`` block in ``acquire_write`` is about to release.
+        """
+
+        def __init__(self, lock):
+            self._lock = lock
+            self._real = threading.Condition(threading.Lock())
+            self.violation = False
+            self.checking = False
+
+        def __enter__(self):
+            return self._real.__enter__()
+
+        def __exit__(self, *exc):
+            # Only the ``acquire_write`` critical section is in scope (it is the
+            # only call we wrap with ``checking``).  At its ``with`` exit the
+            # condition lock is about to be released: if the writer-active flag
+            # is still False and no writer is queued, a reader's guard would pass
+            # and run concurrently with this writer.
+            if self.checking and (
+                not self._lock._writer_active and self._lock._writers_waiting == 0
+            ):
+                self.violation = True
+            return self._real.__exit__(*exc)
+
+        def wait(self):
+            return self._real.wait()
+
+        def notify_all(self):
+            return self._real.notify_all()
+
+    lock = sched._ReadWriteLock()
+    probe = _ProbeCondition(lock)
+    lock._cond = probe
+    lock._readers = 0
+    lock._writer_active = False
+    lock._writers_waiting = 0
+
+    probe.checking = True
+    lock.acquire_write()
+    probe.checking = False
+
+    assert not probe.violation, (
+        "a workdir-less reader could acquire the read lock concurrently with "
+        "the writer because _writer_active was published outside the condition "
+        "lock's critical section (TERMINAL_CWD isolation breach)"
+    )
+
+    lock.release_write()

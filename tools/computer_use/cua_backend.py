@@ -1505,8 +1505,10 @@ class CuaDriverBackend(ComputerUseBackend):
 
         # Belt-and-suspenders when --no-overlay is unsupported or ignored:
         # hide the agent cursor overlay via the session API so macOS idle
-        # redraw loops cannot keep burning CPU after the first action.
-        if _cua_no_overlay():
+        # redraw loops cannot keep burning CPU after the first action. Only
+        # once the handshake flipped `_started` — otherwise call_tool would
+        # re-enter session.start() (see _LIFECYCLE_CALLS).
+        if _cua_no_overlay() and self._session._started:
             try:
                 self.set_agent_cursor_enabled(False, cursor_id=self._session_id)
             except Exception as e:

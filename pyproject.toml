@@ -233,6 +233,14 @@ termux = [
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
 ]
+web3-mcp = [
+  "hermes-agent[mcp]",
+  "web3>=6.11.0,<7",
+  "solana>=0.30.0,<0.37",
+  "httpx>=0.28.0,<1",
+  # Align with daytona (hermes-agent[all]) — requires websockets>=15,<16
+  "websockets>=13.0,<16",
+]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that aren't covered by `tools/lazy_deps.py`.

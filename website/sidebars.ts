@@ -488,6 +488,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mcp/mcp-fastmcp',
                     'user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway',
                     'user-guide/skills/optional/mcp/mcp-mcporter',
+                    'user-guide/skills/optional/mcp/mcp-web3-chain-tools',
                   ],
                 },
                 {

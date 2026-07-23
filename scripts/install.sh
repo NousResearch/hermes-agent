@@ -517,6 +517,11 @@ detect_os() {
         Darwin*)
             OS="macos"
             DISTRO="macos"
+            if [ -z "${UV_NATIVE_TLS:-}" ] && [ "${UV_NATIVE_TLS_MACOS_DEFAULTED:-}" != "1" ]; then
+                export UV_NATIVE_TLS=1
+                export UV_NATIVE_TLS_MACOS_DEFAULTED=1
+                log_info "Using macOS native TLS roots for uv downloads (UV_NATIVE_TLS=1)"
+            fi
             ;;
         CYGWIN*|MINGW*|MSYS*)
             OS="windows"

@@ -467,7 +467,12 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
-  const dashCmd = `env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+  // Carry the probed remote Hermes home into the spawned backend explicitly:
+  // exec-channel env (e.g. ssh-config SetEnv) is not guaranteed to reach the
+  // detached setsid process, and the backend validates the token path against
+  // its own HERMES_HOME.
+  const homeArg = opts.hermesHome ? `HERMES_HOME=${expandRemotePath(opts.hermesHome)} ` : ''
+  const dashCmd = `env HERMES_DESKTOP=1 ${homeArg}${hermes} ${profileArgs}${subCmd}`
 
   return (
     `mkdir -p "$(dirname ${logPath})" && ` +
@@ -585,7 +590,7 @@ async function spawnRemoteDashboard(ssh, { hermesPath, profile, token, ownership
   let out
 
   try {
-    out = await ssh.exec(buildSpawnCommand(hermesPath, profile, { spawnNonce, tokenFilePath, logPath }))
+    out = await ssh.exec(buildSpawnCommand(hermesPath, profile, { spawnNonce, tokenFilePath, logPath, hermesHome }))
   } catch (error) {
     try {
       await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)

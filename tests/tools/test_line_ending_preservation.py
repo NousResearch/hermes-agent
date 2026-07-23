@@ -141,10 +141,12 @@ class TestWriteFileCRLFPreservation:
         """The agent typically sends bare-LF content; if the file existed
         with CRLF, the write should convert to CRLF rather than silently
         flipping the endings."""
-        from tools.file_tools import _handle_write_file
+        from tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "config.bat"
         target.write_bytes(b"@echo off\r\nset X=1\r\n")
+        read = json.loads(read_file_tool(str(target), task_id="crlf_write_1"))
+        assert "error" not in read, read
 
         result = _handle_write_file(
             {
@@ -178,10 +180,12 @@ class TestWriteFileCRLFPreservation:
 
     def test_overwrite_lf_file_stays_lf(self, hermes_home, tmp_path):
         """Pre-existing LF file should not get spurious CRLFs."""
-        from tools.file_tools import _handle_write_file
+        from tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "lf.txt"
         target.write_bytes(b"line1\nline2\n")
+        read = json.loads(read_file_tool(str(target), task_id="crlf_write_3"))
+        assert "error" not in read, read
 
         result = _handle_write_file(
             {"path": str(target), "content": "X\nY\nZ\n"},

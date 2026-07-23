@@ -8080,12 +8080,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         choice = self._normalize_slash_confirm_choice(raw, choices)
         return choice == "once"
 
-    def _confirm_and_apply_model_switch_result(self, result, persist_global: bool) -> None:
+    def _confirm_and_apply_model_switch_result(
+        self, result, persist_global: bool, custom_providers=None
+    ) -> None:
         try:
             if result.success and not self._confirm_expensive_model_switch(result):
                 _cprint("  Model switch cancelled.")
                 return
-            self._apply_model_switch_result(result, persist_global)
+            self._apply_model_switch_result(
+                result, persist_global, custom_providers=custom_providers
+            )
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
 
@@ -8205,7 +8209,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             save_config_value("model.context_length", None)
 
-    def _apply_model_switch_result(self, result, persist_global: bool) -> None:
+    def _apply_model_switch_result(
+        self, result, persist_global: bool, custom_providers=None
+    ) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
@@ -8214,10 +8220,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 from hermes_cli.context_switch_guard import merge_preflight_compression_warning
 
+                # Prefer the fresh inventory list (same source as switch_model /
+                # TUI); fall back to the agent-init snapshot.
+                _cp = (
+                    custom_providers
+                    if custom_providers is not None
+                    else getattr(self.agent, "_custom_providers", None)
+                )
                 merge_preflight_compression_warning(
                     result,
                     agent=self.agent,
                     messages=list(self.conversation_history or []),
+                    custom_providers=_cp,
                     config_context_length=getattr(self.agent, "_config_context_length", None),
                 )
             except Exception as exc:
@@ -8397,15 +8411,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
                 )
+                # Capture before close — picker state is cleared on close.
+                _picker_custom_provs = state.get("custom_provs")
                 self._close_model_picker()
                 if getattr(self, "_app", None):
                     threading.Thread(
                         target=self._confirm_and_apply_model_switch_result,
-                        args=(result, persist_global),
+                        args=(result, persist_global, _picker_custom_provs),
                         daemon=True,
                     ).start()
                 else:
-                    self._confirm_and_apply_model_switch_result(result, persist_global)
+                    self._confirm_and_apply_model_switch_result(
+                        result, persist_global, custom_providers=_picker_custom_provs
+                    )
                 return
             self._close_model_picker()
 
@@ -8550,6 +8568,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     result,
                     agent=self.agent,
                     messages=list(self.conversation_history or []),
+                    # Same fresh inventory list passed to switch_model above.
+                    custom_providers=custom_provs
+                    if custom_provs is not None
+                    else getattr(self.agent, "_custom_providers", None),
                     config_context_length=getattr(self.agent, "_config_context_length", None),
                 )
             except Exception as exc:

@@ -1,8 +1,16 @@
+import os
+from pathlib import Path
+from tempfile import gettempdir
 from types import SimpleNamespace
 
 import pytest
 
+# The hermetic runner clears Windows home variables before this module imports
+# cli.py.  Supply a disposable platform default until pytest isolates HERMES_HOME.
+os.environ.setdefault("LOCALAPPDATA", str(Path(gettempdir()) / "hermes-test-localappdata"))
+
 import cli
+from hermes_state import SessionDB
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +122,12 @@ def test_finalize_single_query_signal_window_does_not_reemit_during_atexit(monke
     monkeypatch.setattr(cli, "_run_cleanup", original_run_cleanup)
     monkeypatch.setattr(cli, "_active_agent_ref", None)
     monkeypatch.setattr(cli, "_reset_terminal_input_modes_on_exit", lambda: None)
-    monkeypatch.setattr(cli, "_cleanup_all_terminals", lambda: None)
+    def assert_session_was_finalized_before_teardown():
+        session = db.get_session(session_id)
+        assert session["ended_at"] is not None
+        assert session["end_reason"] == "shutdown"
+
+    monkeypatch.setattr(cli, "_cleanup_all_terminals", assert_session_was_finalized_before_teardown)
     monkeypatch.setattr(cli, "_cleanup_all_browsers", lambda: None)
     monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
     monkeypatch.setattr("agent.auxiliary_client.shutdown_cached_clients", lambda: None)
@@ -122,6 +135,38 @@ def test_finalize_single_query_signal_window_does_not_reemit_during_atexit(monke
     cli._run_cleanup()
 
     assert calls == [expected_finalize, ("release", {})]
+
+
+def test_run_cleanup_finalizes_real_state_db_session(monkeypatch, tmp_path):
+    """Cleanup persists the shutdown result in the session database."""
+    db_path = tmp_path / "state.db"
+    session_id = "one-shot-session"
+    db = SessionDB(db_path=db_path)
+    db.create_session(session_id, "cli")
+
+    monkeypatch.setattr(
+        cli,
+        "_active_agent_ref",
+        SimpleNamespace(session_id=session_id, _session_db=db),
+    )
+    monkeypatch.setattr(cli, "_arm_exit_watchdog", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_reset_terminal_input_modes_on_exit", lambda: None)
+    monkeypatch.setattr(cli, "_cleanup_all_terminals", lambda: None)
+    monkeypatch.setattr(cli, "_cleanup_all_browsers", lambda: None)
+    monkeypatch.setattr("tools.async_delegation.interrupt_all", lambda **_kwargs: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("agent.auxiliary_client.shutdown_cached_clients", lambda: None)
+
+    cli._run_cleanup(notify_session_finalize=False)
+    db.close()
+
+    reopened = SessionDB(db_path=db_path)
+    try:
+        session = reopened.get_session(session_id)
+        assert session["ended_at"] is not None
+        assert session["end_reason"] == "shutdown"
+    finally:
+        reopened.close()
 
 
 def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):

@@ -197,6 +197,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-data-science',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/data-science/data-science-duckdb-analytics',
                     'user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel',
                   ],
                 },

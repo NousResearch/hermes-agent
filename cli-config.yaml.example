@@ -823,6 +823,53 @@ agent:
     hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
 
 # =============================================================================
+# System-prompt prelude (operator system-prompt override, per model)
+# =============================================================================
+# Inject one or more verbatim Markdown files as the FIRST system content, ahead
+# of Hermes' own identity/tools/memory layers, resolved per model via a glob
+# map. This is the same idea coding-agent CLIs expose via --system-prompt-file /
+# --append-system-prompt-file: hand a model a full, model-appropriate operating
+# prompt so it behaves to a chosen standard, while Hermes' layers still ride on
+# top. The resolved text is plain system content, so each provider routes it to
+# its own system channel (Anthropic system=, OpenAI messages[0], Gemini
+# systemInstruction).
+#
+# When is it (re)loaded? The system prompt is built once per session and cached
+# for prefix-cache stability; the prelude re-resolves whenever that cache is
+# rebuilt: a new session, a model switch mid-session (switch_model), or after a
+# context-compression event. A continuing session reuses the prior prompt
+# verbatim (so the cache prefix stays warm) until one of those happens.
+#
+# Disabled by default. Files resolve under base_dir (or absolute paths).
+#
+# system_prompt_prelude:
+#   enabled: true
+#   base_dir: "~/.hermes/system-prompts"   # relative file entries resolve here
+#   first_match: true                      # true: first matching rule wins.
+#                                          # false: concatenate ALL matching rules.
+#   rules:
+#     - match: "*opus*"                    # fnmatch glob vs the model id
+#       files: ["claude-design.md", "house-style.md", "opus-operating.md"]
+#     - match: "*gpt*"
+#       files: ["gpt-design.md", "house-style.md", "gpt-behavior.md"]
+#     - match: "*gemini*"
+#       files: ["gemini-design.md", "house-style.md", "gemini-behavior.md"]
+#
+#   # Optional operating-mode marker (off unless a rule names operating_mode).
+#   # When a rule sets operating_mode, a short marker is prepended that names the
+#   # mode and tells the model to treat it as authoritative over later
+#   # conflicting framing, so a loaded operating prompt actually sticks instead
+#   # of being second-guessed by the trailing "Model:/Provider:" metadata line.
+#   # Example use: run an Opus model to a named house operating standard.
+#   #   rules:
+#   #     - match: "*opus*"
+#   #       operating_mode: "House"        # marker names this mode
+#   #       files: ["opus-operating.md"]
+#   # operating_mode_marker: ""            # override the marker template, or set
+#   #                                      # to "" to disable the marker entirely
+#   #                                      # while still naming the mode.
+
+# =============================================================================
 # Toolsets
 # =============================================================================
 # Control which tools the agent has access to.

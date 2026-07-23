@@ -71,6 +71,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     parts = build_system_prompt_parts(agent)
     full = build_system_prompt(agent)
 
+    prelude = parts.get("prelude", "")
     stable = parts.get("stable", "")
     context = parts.get("context", "")
     volatile = parts.get("volatile", "")
@@ -100,6 +101,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     tools_json = json.dumps(tools, ensure_ascii=False)
 
     sections: List[Tuple[str, int, int]] = [
+        ("prelude (operator system-prompt files)", len(prelude), _bytes(prelude)),
         ("stable (identity/guidance/skills)", len(stable), _bytes(stable)),
         ("context (AGENTS.md/cwd files)", len(context), _bytes(context)),
         ("volatile (memory/profile/timestamp)", len(volatile), _bytes(volatile)),

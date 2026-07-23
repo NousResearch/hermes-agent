@@ -145,9 +145,14 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
-    """Assemble the system prompt as three ordered parts.
+    """Assemble the system prompt as ordered parts.
 
-    Returns a dict with three keys:
+    Returns a dict with these keys:
+      * ``prelude``  - optional operator-supplied prelude resolved per model
+        via the ``system_prompt_prelude`` config map. Injected as the VERY
+        FIRST system content (ahead of ``stable``) so a model receives a full
+        model-appropriate operating prompt before Hermes' own layers. Empty
+        string when no prelude is configured or no rule matches.
       * ``stable``   — identity, tool guidance, skills prompt,
         environment hints, platform hints, model-family operational
         guidance.
@@ -166,6 +171,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
+
+    # ── Prelude tier (operator-supplied, per-model) ────────────────
+    # An optional operator-supplied system prompt resolved per-model from the
+    # ``system_prompt_prelude`` config map and placed ahead of everything
+    # Hermes adds, so a model receives a full model-appropriate operating
+    # prompt before Hermes' own identity/tools/memory layers. Fail-soft: any
+    # error yields an empty prelude and never breaks prompt build.
+    prelude_text = ""
+    try:
+        from agent.system_prompt_prelude import resolve_prelude
+
+        _pre = resolve_prelude(
+            getattr(agent, "model", None), getattr(agent, "provider", None)
+        )
+        prelude_text = _pre.text
+    except Exception:  # pragma: no cover - defensive; resolver logs internally
+        prelude_text = ""
 
     # Resolve the model's context window once so context-file caps can scale
     # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
@@ -518,6 +540,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.append(timestamp_line)
 
     return {
+        "prelude":  prelude_text.strip() if prelude_text else "",
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
@@ -540,7 +563,9 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    joined = "\n\n".join(
+        p for p in (parts.get("prelude", ""), parts["stable"], parts["context"], parts["volatile"]) if p
+    )
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.

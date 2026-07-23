@@ -106,6 +106,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.from_user.id = 1
     msg.from_user.full_name = "Test User"
     msg.message_thread_id = None
+    msg.reply_text = AsyncMock()
     return msg
 
 
@@ -397,7 +398,7 @@ class TestDocumentDownloadBlock:
 
     @pytest.mark.asyncio
     async def test_download_exception_handled(self, adapter):
-        """If get_file() raises, the handler logs the error without crashing."""
+        """If get_file() raises, the handler surfaces the failure without crashing."""
         doc = _make_document(file_name="crash.pdf", file_size=100)
         doc.get_file = AsyncMock(side_effect=RuntimeError("Telegram API down"))
         msg = _make_message(document=doc)
@@ -406,7 +407,72 @@ class TestDocumentDownloadBlock:
         # Should not raise
         await adapter._handle_media_message(update, MagicMock())
         # handle_message should still be called (the handler catches the exception)
+        # so the agent gets a turn — but now that turn carries a notice instead
+        # of being an empty/content-less event.
         adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_document_cache_failure_replies_and_signals_agent(self, adapter):
+        """A failed document download must surface on BOTH ends, not silently.
+
+        Regression for #23045 Bug 2: a CDN download/cache failure used to log a
+        warning and fall through to an empty agent turn — user thinks the file
+        arrived, agent sees nothing. Now the user gets a Telegram reply AND the
+        agent's event.text carries an attempted-attachment notice.
+        """
+        doc = _make_document(file_name="notes.md", mime_type="text/markdown", file_size=100)
+        doc.get_file = AsyncMock(side_effect=RuntimeError("Telegram CDN down"))
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        # 1. User is told the download failed, with the filename + exception type.
+        msg.reply_text.assert_awaited_once()
+        reply = msg.reply_text.await_args.args[0]
+        assert "Couldn't download" in reply
+        assert "notes.md" in reply
+        assert "RuntimeError" in reply
+
+        # 2. The agent still gets a turn, but event.text now carries a notice so
+        #    it knows an attachment was attempted and failed (not a silent empty turn).
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []  # nothing cached
+        assert "could not be downloaded" in (event.text or "")
+        assert "notes.md" in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_document_cache_failure_reply_error_is_nonfatal(self, adapter):
+        """If even the user-reply fails, the agent notice is still appended."""
+        doc = _make_document(file_name="x.bin", mime_type="application/octet-stream", file_size=100)
+        doc.get_file = AsyncMock(side_effect=RuntimeError("CDN down"))
+        msg = _make_message(document=doc)
+        msg.reply_text = AsyncMock(side_effect=RuntimeError("reply failed too"))
+        update = _make_update(msg)
+
+        # Must not raise despite reply_text blowing up
+        await adapter._handle_media_message(update, MagicMock())
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert "could not be downloaded" in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_voice_cache_failure_replies_and_signals_agent(self, adapter):
+        """Same fail-closed contract applies to the voice site (#23045 Bug 2 class)."""
+        msg = _make_message()
+        msg.voice = MagicMock()
+        msg.voice.file_size = 100
+        msg.voice.get_file = AsyncMock(side_effect=RuntimeError("CDN down"))
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        msg.reply_text.assert_awaited_once()
+        assert "voice message" in msg.reply_text.await_args.args[0]
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert "could not be downloaded" in (event.text or "")
 
 
 class TestVideoDownloadBlock:

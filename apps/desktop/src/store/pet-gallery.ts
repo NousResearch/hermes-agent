@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { normalize } from '@/lib/text'
 import { $petInfo, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
 
 /**
@@ -218,7 +219,7 @@ export function rankedGalleryPets(gallery: PetGallery | null, query = ''): Galle
     return []
   }
 
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
   // User-generated pets first, then the active pet, then installed, then curated.
   // Guard every term with a boolean — local-only pets omit curated/generated, and
@@ -333,6 +334,21 @@ export const PET_SCALE_MAX = 3.0
 export const PET_SCALE_DEFAULT = 0.33
 export const clampPetScale = (n: number) => Math.max(PET_SCALE_MIN, Math.min(PET_SCALE_MAX, n))
 
+// Wheel → scale. Multiplicative so one notch feels the same at any size. Tuned
+// for a discrete mouse-wheel notch (deltaY ≈ ±100); trackpad two-finger scroll
+// (smaller deltas) just resizes more gently, which is fine.
+const WHEEL_SCALE_K = 0.0015
+
+/**
+ * Next pet scale for one mouse-wheel step over the pet. Scrolling up (deltaY < 0)
+ * grows it, scrolling down shrinks it; the result is clamped to the slider's range.
+ */
+export function nextScaleFromWheel(current: number | undefined, deltaY: number): number {
+  const base = current ?? PET_SCALE_DEFAULT
+
+  return clampPetScale(base * Math.exp(-deltaY * WHEEL_SCALE_K))
+}
+
 let scalePersist: ReturnType<typeof setTimeout> | undefined
 
 /**
@@ -365,11 +381,14 @@ export function setPetScale(request: GatewayRequest, scale: number): void {
 export async function exportPet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
   $petBusy.set(slug)
   $petGalleryError.set(null)
+
   try {
     const res = await petRpc<{ ok: boolean; filename: string; zipBase64: string }>(request, 'pet.export', { slug })
+
     if (!res?.ok || !res.zipBase64) {
       throw new Error(fallback)
     }
+
     const bytes = Uint8Array.from(atob(res.zipBase64), c => c.charCodeAt(0))
     const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }))
     const anchor = document.createElement('a')
@@ -377,9 +396,11 @@ export async function exportPet(request: GatewayRequest, slug: string, fallback:
     anchor.download = res.filename || `${slug}.zip`
     anchor.click()
     URL.revokeObjectURL(url)
+
     return true
   } catch (e) {
     $petGalleryError.set(e instanceof Error ? e.message : fallback)
+
     return false
   } finally {
     $petBusy.set(null)
@@ -464,6 +485,7 @@ export function removePet(request: GatewayRequest, slug: string, fallback: strin
         if (p.slug !== slug) {
           return [p]
         }
+
         return p.generated || !p.spritesheetUrl ? [] : [{ ...p, installed: false }]
       })
     }))

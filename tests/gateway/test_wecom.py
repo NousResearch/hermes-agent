@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -336,6 +337,21 @@ class TestPolicyHelpers:
         assert adapter._is_group_allowed("group-1", "user-2") is False
         assert adapter._is_group_allowed("group-2", "user-1") is False
 
+    def test_pairing_group_policy_blocks_without_explicit_group_allow_from(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"group_policy": "pairing"})
+        )
+
+        assert adapter._is_group_allowed("group-1", "user-1") is False
+
+    def test_pairing_dm_policy_strict_auth_denies_unknown(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+        assert adapter._is_dm_allowed("user-1") is False
+        assert adapter._is_dm_intake_allowed("user-1") is True
 
 class TestMediaHelpers:
     def test_detect_wecom_media_type(self):
@@ -467,6 +483,55 @@ class TestMediaUpload:
             await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=4)
 
     @pytest.mark.asyncio
+    async def test_download_remote_bytes_blocks_connect_time_rebind(self, monkeypatch):
+        import httpcore
+        from httpcore._backends.auto import AutoBackend
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from tools.url_safety import SSRFConnectionBlocked
+
+        for proxy_var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(proxy_var, raising=False)
+
+        answers = iter(("93.184.216.34", "169.254.169.254"))
+
+        def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+            ip = next(answers)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))
+            ]
+
+        connect_attempts = []
+
+        async def fake_connect_tcp(
+            _self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            connect_attempts.append((host, port))
+            raise httpcore.ConnectError("stop before network")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(SSRFConnectionBlocked):
+            await adapter._download_remote_bytes(
+                "http://rebind.example/file.bin", max_bytes=1024
+            )
+
+        assert connect_attempts == []
+
+    @pytest.mark.asyncio
     async def test_cache_media_decrypts_url_payload_before_writing(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
@@ -589,7 +654,12 @@ class TestInboundMessages:
     async def test_on_message_builds_event(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"]))
@@ -621,7 +691,12 @@ class TestInboundMessages:
     async def test_on_message_preserves_quote_context(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
@@ -749,7 +824,12 @@ class TestWeComZombieSessionFix:
     async def test_on_message_caches_last_req_id_per_chat(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))

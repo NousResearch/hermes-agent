@@ -52,6 +52,13 @@ def _extract_autostash_block() -> str:
     return m.group(0)
 
 
+def _extract_install_sh_function(name: str) -> str:
+    text = INSTALL_SH.read_text()
+    match = re.search(rf"{name}\(\) \{{.*?\n\}}", text, re.DOTALL)
+    assert match is not None, f"{name}() not found in install.sh"
+    return match.group(0)
+
+
 def _make_unmerged_repo(repo: Path) -> None:
     """Leave ``repo`` with a conflicted (unmerged) index, as an interrupted
     update would."""
@@ -92,6 +99,8 @@ def test_install_sh_clears_unmerged_index_then_stashes(tmp_path: Path) -> None:
     script = (
         "set -e\n"
         'log_info() { echo "INFO: $*"; }\n'
+        f'INSTALL_DIR="{repo}"\n'
+        f"{_extract_install_sh_function('discard_update_lockfile_churn')}\n"
         "run() {\n"
         f"{block}"
         "}\n"

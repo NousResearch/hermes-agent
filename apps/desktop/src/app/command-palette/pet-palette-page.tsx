@@ -183,7 +183,9 @@ export function PetInlineToggle() {
       aria-pressed={enabled}
       className={cn(
         'flex shrink-0 items-center justify-center rounded-md p-1.5 transition-colors disabled:opacity-50',
-        enabled ? 'bg-(--chrome-action-hover) text-foreground' : 'text-muted-foreground hover:bg-(--chrome-action-hover)/60'
+        enabled
+          ? 'bg-(--chrome-action-hover) text-foreground'
+          : 'text-muted-foreground hover:bg-(--chrome-action-hover)/60'
       )}
       disabled={Boolean(busy)}
       onClick={toggle}

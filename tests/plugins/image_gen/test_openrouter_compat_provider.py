@@ -121,6 +121,26 @@ class TestProviderClass:
         with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
             assert _openrouter()._resolve_model() == "google/gemini-3.1-flash-image-preview"
 
+    def test_model_top_level_config_override(self):
+        cfg = {"model": "openai/gpt-image-2"}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain() == ["openai/gpt-image-2"]
+
+    def test_nous_honors_top_level_model(self):
+        from plugins.image_gen.openrouter import _build_providers
+
+        cfg = {"model": "openai/gpt-image-2"}
+        nous = {p.name: p for p in _build_providers()}["nous"]
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert nous._resolve_model_chain() == ["openai/gpt-image-2"]
+
+    def test_explicit_model_kwarg_wins_over_config(self):
+        cfg = {"model": "openai/gpt-image-2"}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain("google/gemini-3-pro-image") == [
+                "google/gemini-3-pro-image"
+            ]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -148,6 +168,43 @@ class TestHelpers:
         from plugins.image_gen.openrouter import _to_image_url_part
 
         assert _to_image_url_part("/no/such/file.png") is None
+
+    def test_to_image_url_part_blocks_credential_store(self, tmp_path, monkeypatch):
+        from plugins.image_gen.openrouter import _to_image_url_part
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="credential store"):
+            _to_image_url_part(str(auth_json))
+
+    def test_to_image_url_part_never_reads_blocked_credential(self, tmp_path, monkeypatch):
+        """The guard must fire BEFORE path.read_bytes() — the credential store
+        must never be inlined into a provider request (#57698)."""
+        from pathlib import Path as _P
+
+        from plugins.image_gen.openrouter import _to_image_url_part
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        real_read_bytes = _P.read_bytes
+        read: list = []
+
+        def _spy_read_bytes(self, *a, **k):
+            read.append(str(self))
+            return real_read_bytes(self, *a, **k)
+
+        monkeypatch.setattr(_P, "read_bytes", _spy_read_bytes)
+        with pytest.raises(ValueError, match="credential store"):
+            _to_image_url_part(str(auth_json))
+        assert str(auth_json) not in read, "blocked credential must never be read"
 
     def test_extract_images(self):
         from plugins.image_gen.openrouter import _extract_images
@@ -266,6 +323,17 @@ class TestGenerate:
 
         headers = mock_post.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer sk-or-test"
+
+    def test_generate_uses_model_kwarg_from_dispatch(self):
+        """image_generate passes image_gen.model as a model kwarg — honor it."""
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+            result = _openrouter().generate(prompt="a pet", model="openai/gpt-image-2")
+
+        assert result["success"] is True
+        assert result["model"] == "openai/gpt-image-2"
+        assert mock_post.call_args.kwargs["json"]["model"] == "openai/gpt-image-2"
 
     def test_posts_to_resolved_base_url(self):
         """Nous routes to its own base URL — proves the same code serves both."""

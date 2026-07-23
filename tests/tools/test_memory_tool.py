@@ -330,6 +330,10 @@ class TestMemoryStoreReplace:
         store.add("memory", "fact A")
         result = store.replace("memory", "nonexistent", "new")
         assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        # Zero-match must return current entries so the agent can self-correct
+        # instead of looping blindly (#42405, co-author #42417).
+        assert result["current_entries"] == ["fact A"]
 
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")
@@ -361,12 +365,117 @@ class TestMemoryStoreRemove:
         assert len(store.memory_entries) == 0
 
     def test_remove_no_match(self, store):
+        store.add("memory", "fact A")
         result = store.remove("memory", "nonexistent")
         assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        # Zero-match must return current entries (#42405, co-author #42417).
+        assert result["current_entries"] == ["fact A"]
 
     def test_remove_empty_old_text(self, store):
         result = store.remove("memory", "  ")
         assert result["success"] is False
+
+
+class TestMemoryConsolidationGracefulDegrade:
+    """Fix #3 for #42405: a failed at-capacity consolidation must never loop the
+    turn to budget exhaustion — after a per-turn cap of failures, memory ops
+    return a terminal 'stop, continue your reply' result instead of the
+    'retry — all in this turn' instruction."""
+
+    def test_zero_match_failures_degrade_after_cap(self, store):
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        # First `cap` failures still hand back previews + the self-correct hint.
+        for _ in range(cap):
+            r = store.replace("memory", "nonexistent", "new")
+            assert r["success"] is False
+            assert "current_entries" in r  # actionable feedback, keep trying
+            assert "retry with the exact text" in r["error"]
+        # The next failure degrades: terminal, no retry instruction.
+        r = store.replace("memory", "nonexistent", "new")
+        assert r["success"] is False
+        assert r["done"] is True
+        assert "current_entries" not in r
+        assert "continue with your reply" in r["error"]
+
+    def test_add_overflow_degrades_after_cap(self, store):
+        # Fill near the 500-char user/memory limit so add() overflows.
+        store.add("memory", "x" * 200)
+        store.add("memory", "y" * 200)
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        big = "z" * 200
+        for _ in range(cap):
+            r = store.add("memory", big)
+            assert r["success"] is False
+            assert "retry this add" in r["error"]  # still instructs in-turn retry
+        r = store.add("memory", big)
+        assert r["success"] is False
+        assert r["done"] is True
+        assert "continue with your reply" in r["error"]
+
+    def test_failures_mix_across_actions_share_one_budget(self, store):
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        # Interleave replace + remove failures — they share the per-turn counter.
+        actions = [lambda: store.replace("memory", "nope", "x"),
+                   lambda: store.remove("memory", "nope")]
+        for i in range(cap):
+            assert actions[i % 2]()["success"] is False
+        # cap+1th failure (any action) degrades.
+        r = store.remove("memory", "nope")
+        assert "continue with your reply" in r["error"]
+
+    def test_success_resets_failure_budget(self, store):
+        store.add("memory", "real entry")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        for _ in range(cap):
+            store.replace("memory", "nonexistent", "new")
+        # A successful op resets the counter — progress was made.
+        ok = store.replace("memory", "real entry", "updated entry")
+        assert ok["success"] is True
+        # Now a fresh failure is treated as the first again (still actionable).
+        r = store.replace("memory", "nonexistent", "new")
+        assert "current_entries" in r
+        assert "continue with your reply" not in r["error"]
+
+    def test_reset_consolidation_failures_clears_budget(self, store):
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        for _ in range(cap + 1):
+            store.replace("memory", "nonexistent", "new")
+        # New turn boundary resets the budget.
+        store.reset_consolidation_failures()
+        r = store.replace("memory", "nonexistent", "new")
+        assert "current_entries" in r  # actionable again, not degraded
+        assert "continue with your reply" not in r["error"]
+
+    def test_apply_batch_failures_count_toward_budget(self, store):
+        """apply_batch is the primary at-capacity consolidation path; its
+        failures must also degrade so a looping batch can't exhaust the turn
+        (#42405 whole-bug-class — sibling call path)."""
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        bad_batch = [{"action": "replace", "old_text": "nope", "content": "x"}]
+        for _ in range(cap):
+            r = store.apply_batch("memory", bad_batch)
+            assert r["success"] is False
+            assert "current_entries" in r  # still actionable under cap
+        r = store.apply_batch("memory", bad_batch)
+        assert r["success"] is False
+        assert r["done"] is True
+        assert "continue with your reply" in r["error"]
+
+    def test_apply_batch_and_single_op_share_budget(self, store):
+        """A batch failure followed by single-op failures shares one counter."""
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        store.apply_batch("memory", [{"action": "remove", "old_text": "nope"}])
+        for _ in range(cap - 1):
+            store.replace("memory", "nope", "x")
+        # cap reached across batch + single ops → next degrades.
+        r = store.replace("memory", "nope", "x")
+        assert "continue with your reply" in r["error"]
 
 
 class TestMemoryStorePersistence:
@@ -425,6 +534,26 @@ class TestMemoryToolDispatcher:
     def test_invalid_target(self, store):
         result = json.loads(memory_tool(action="add", target="invalid", content="x", store=store))
         assert result["success"] is False
+
+    def test_null_target_defaults_to_memory_store(self, store):
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target=None,
+                content="Project uses pytest with xdist.",
+                store=store,
+            )
+        )
+        assert result["success"] is True
+        assert store.memory_entries == ["Project uses pytest with xdist."]
+        assert store.user_entries == []
+
+    def test_invalid_non_string_target_still_rejected(self, store):
+        result = json.loads(
+            memory_tool(action="add", target=42, content="via tool", store=store)
+        )
+        assert result["success"] is False
+        assert "Invalid target" in result["error"]
 
     def test_unknown_action(self, store):
         result = json.loads(memory_tool(action="unknown", store=store))

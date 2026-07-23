@@ -54,6 +54,22 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_tool_progress_boolean_like_strings_normalise(self):
+        """Quoted YAML booleans should not unexpectedly enable progress."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({"display": {"tool_progress": "false"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "0"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "no"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "true"}}, "telegram", "tool_progress") == "all"
+
+    def test_busy_steer_ack_enabled_string_false_normalises(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"busy_steer_ack_enabled": "false"}}}}
+
+        assert resolve_display_setting(config, "telegram", "busy_steer_ack_enabled", True) is False
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting
@@ -149,6 +165,42 @@ class TestYAMLNormalisation:
         config = {"display": {"tool_progress": True}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_tool_progress_generic_is_not_a_mode(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"tool_progress": "generic"}}}}
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "all"
+
+    def test_tool_progress_mode_strips_whitespace(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"tool_progress": " off\n"}}}}
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "off"
+
+    def test_only_long_running_visibility_accepts_generic_mode(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {
+                        "thinking_progress": "generic",
+                        "interim_assistant_messages": "generic",
+                        "long_running_notifications": "generic",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
+        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
+
+    def test_thinking_progress_string_false_normalised_to_false(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"thinking_progress": "false"}}}}
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
+
     def test_show_reasoning_string_true(self):
         """String 'true' is normalised to bool True."""
         from gateway.display_config import resolve_display_setting
@@ -207,6 +259,21 @@ class TestPlatformDefaults:
         for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
+    def test_photon_defaults_to_low_tier(self):
+        """Photon (managed iMessage) is a permanent-message mobile inbox like
+        BlueBubbles, so it must default to TIER_LOW: tool progress off, no
+        interim scratch commentary, no heartbeats, no busy-ack iteration detail.
+        Regression guard for the Photon launch shipping without a
+        _PLATFORM_DEFAULTS entry, which left it inheriting the noisy global
+        ('all') defaults and spamming the iMessage thread."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "photon", "tool_progress") == "off"
+        assert resolve_display_setting({}, "photon", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "photon", "long_running_notifications") is False
+        assert resolve_display_setting({}, "photon", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "photon", "streaming") is False
+
     def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
         """Regression guard: ``whatsapp_cloud`` must stay TIER_LOW until the
         adapter implements edit_message. Without an edit endpoint, raising
@@ -260,6 +327,14 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
+
+    def test_slack_workspace_chatter_defaults(self):
+        """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
+        assert resolve_display_setting({}, "slack", "long_running_notifications") is False
+        assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
     def test_telegram_mobile_chatter_can_opt_in(self):
         """Per-platform config can re-enable Telegram busy-ack detail
@@ -555,3 +630,38 @@ class TestReasoningStyle:
 
         config = {"display": {"reasoning_style": "SUBTEXT"}}
         assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+
+
+class TestLiveStatusSetting:
+    """display.live_status — tri-state normalisation + platform overrides."""
+
+    def test_default_is_full(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "slack", "live_status") == "full"
+
+    def test_bool_and_string_coercion(self):
+        from gateway.display_config import resolve_display_setting
+
+        for raw, expected in [
+            (True, "full"), (False, "off"),
+            ("on", "full"), ("all", "full"),
+            ("no", "off"), ("verb", "verb"),
+            ("bogus", "full"),
+        ]:
+            config = {"display": {"live_status": raw}}
+            assert (
+                resolve_display_setting(config, "slack", "live_status") == expected
+            ), f"raw={raw!r}"
+
+    def test_per_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "live_status": "full",
+                "platforms": {"slack": {"live_status": "verb"}},
+            }
+        }
+        assert resolve_display_setting(config, "slack", "live_status") == "verb"
+        assert resolve_display_setting(config, "google_chat", "live_status") == "full"

@@ -23,10 +23,16 @@ import sys
 from pathlib import Path
 
 
+SLACK_LONG_DESCRIPTION_MIN_CHARACTERS = 175
+SLACK_LONG_DESCRIPTION_MAX_CHARACTERS = 4000
+
+
 def _build_full_manifest(
     bot_name: str,
     bot_description: str,
     include_assistant: bool = True,
+    messaging_experience: str | None = None,
+    long_description: str | None = None,
 ) -> dict:
     """Build a full Slack manifest merging display info + our slash list.
 
@@ -36,16 +42,23 @@ def _build_full_manifest(
     for a Hermes deployment — users can tweak them in the Slack UI after
     pasting.
 
-    When ``include_assistant`` is True (default) the manifest opts the app
-    into Slack's AI Assistant container: the ``assistant_view`` feature, the
-    ``assistant:write`` scope, and the ``assistant_thread_*`` events. Slack
-    then renders DMs as the right-hand Assistant split-pane, where every
-    exchange is a thread and bare slash commands are not delivered as normal
-    ``command`` events. Pass ``include_assistant=False`` (``--no-assistant``)
-    to omit those three pieces and get a flat DM surface where ``/help``,
-    ``/new``, etc. work inline.
+    By default, this keeps Hermes on Slack's older Assistant messaging
+    experience (``assistant_view``) for backward compatibility. Pass
+    ``messaging_experience="agent"`` (``--agent-view``) to emit Slack's Agent
+    messaging experience (``agent_view`` + ``app_home_opened``). Pass
+    ``include_assistant=False`` or ``messaging_experience="none"``
+    (``--no-assistant``) to omit Slack AI messaging features and get a flat DM
+    surface where ``/help``, ``/new``, etc. work inline.
     """
     from hermes_cli.commands import slack_app_manifest
+
+    if messaging_experience is None:
+        messaging_experience = "assistant" if include_assistant else "none"
+    messaging_experience = str(messaging_experience).strip().lower()
+    if messaging_experience not in {"assistant", "agent", "none"}:
+        raise ValueError(
+            "messaging_experience must be one of: assistant, agent, none"
+        )
 
     partial = slack_app_manifest()
     slashes = partial["features"]["slash_commands"]
@@ -76,6 +89,9 @@ def _build_full_manifest(
         "im:history",
         "im:read",
         "im:write",
+        "mpim:history",
+        "mpim:read",
+        "reactions:read",
         "users:read",
     ]
 
@@ -84,9 +100,12 @@ def _build_full_manifest(
         "message.channels",
         "message.groups",
         "message.im",
+        "message.mpim",
+        "reaction_added",
+        "reaction_removed",
     ]
 
-    if include_assistant:
+    if messaging_experience == "assistant":
         features["assistant_view"] = {
             "assistant_description": "Chat with Hermes in threads and DMs.",
         }
@@ -97,19 +116,33 @@ def _build_full_manifest(
                 "assistant_thread_started",
             ]
         )
-        bot_scopes.sort()
-        bot_events.sort()
+    elif messaging_experience == "agent":
+        features["agent_view"] = {
+            "agent_description": "Chat with Hermes in Slack Messages.",
+        }
+        bot_scopes.append("assistant:write")
+        # Slack includes current viewing context in Agent DM events only after
+        # this subscription is enabled; the adapter consumes that context to
+        # preserve the referred channel across the agent turn.
+        bot_events.extend(["app_context_changed", "app_home_opened"])
+
+    bot_scopes.sort()
+    bot_events.sort()
+
+    display_information = {
+        "name": bot_name[:35],
+        "description": (bot_description or "Your Hermes agent on Slack")[:140],
+        "background_color": "#1a1a2e",
+    }
+    if long_description is not None:
+        display_information["long_description"] = long_description
 
     return {
         "_metadata": {
             "major_version": 1,
             "minor_version": 1,
         },
-        "display_information": {
-            "name": bot_name[:35],
-            "description": (bot_description or "Your Hermes agent on Slack")[:140],
-            "background_color": "#1a1a2e",
-        },
+        "display_information": display_information,
         "features": features,
         "oauth_config": {
             "scopes": {
@@ -138,23 +171,84 @@ def slack_manifest_command(args) -> int:
                       ``$HERMES_HOME/slack-manifest.json``)
       --name NAME     Override the bot display name (default: "Hermes")
       --description DESC  Override the bot description
+      --long-description TEXT  Override the long app description (175-4,000 characters)
+      --long-description-file PATH  Read the long app description from a UTF-8 file
       --slashes-only  Emit only the ``features.slash_commands`` array (for
                       merging into an existing manifest manually)
       --no-assistant  Omit Slack AI Assistant mode (assistant_view feature,
                       assistant:write scope, assistant_thread_* events) so
                       DMs render as a flat chat where bare slash commands
                       work inline instead of the Assistant thread pane.
+      --agent-view    Use Slack's Agent messaging experience (agent_view,
+                      app_home_opened + message.im) instead of the legacy
+                      Assistant messaging experience.
     """
     name = getattr(args, "name", None) or "Hermes"
     description = getattr(args, "description", None) or "Your Hermes agent on Slack"
-    include_assistant = not getattr(args, "no_assistant", False)
+    long_description = getattr(args, "long_description", None)
+    long_description_file = getattr(args, "long_description_file", None)
+    if getattr(args, "slashes_only", False) and (
+        long_description is not None or long_description_file is not None
+    ):
+        print(
+            "hermes slack manifest: long description options cannot be used "
+            "with --slashes-only",
+            file=sys.stderr,
+        )
+        return 2
+    if long_description_file is not None:
+        source_arg = str(long_description_file)
+        try:
+            source = Path(source_arg).expanduser()
+            with source.open("r", encoding="utf-8", newline="") as handle:
+                long_description = handle.read()
+        except (OSError, UnicodeError, RuntimeError) as exc:
+            print(
+                f"hermes slack manifest: cannot read long description from "
+                f"{source_arg}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    if (
+        long_description is not None
+        and len(long_description) < SLACK_LONG_DESCRIPTION_MIN_CHARACTERS
+    ):
+        print(
+            "hermes slack manifest: long description must be at least "
+            f"{SLACK_LONG_DESCRIPTION_MIN_CHARACTERS} characters "
+            f"(got {len(long_description)})",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        long_description is not None
+        and len(long_description) > SLACK_LONG_DESCRIPTION_MAX_CHARACTERS
+    ):
+        print(
+            "hermes slack manifest: long description must be at most "
+            f"{SLACK_LONG_DESCRIPTION_MAX_CHARACTERS} characters "
+            f"(got {len(long_description)})",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(args, "agent_view", False):
+        messaging_experience = "agent"
+    elif getattr(args, "no_assistant", False):
+        messaging_experience = "none"
+    else:
+        messaging_experience = "assistant"
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest
 
         manifest = slack_app_manifest()["features"]["slash_commands"]
     else:
-        manifest = _build_full_manifest(name, description, include_assistant=include_assistant)
+        manifest = _build_full_manifest(
+            name,
+            description,
+            messaging_experience=messaging_experience,
+            long_description=long_description,
+        )
 
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 

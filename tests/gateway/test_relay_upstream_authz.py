@@ -243,3 +243,51 @@ def test_event_from_wire_sets_relay_delivery_marker():
     )
     assert event.source.platform is Platform.DISCORD
     assert event.source.delivered_via_upstream_relay is True
+
+
+def test_event_from_wire_stamps_routed_profile():
+    """A connector-routed profile on the wire source lands on SessionSource.
+
+    In multiplex mode the connector resolves the target HERMES profile for a
+    Team-Gateway message and stamps ``profile`` on the wire source. The relay
+    transport must carry it through so build_session_key namespaces the session
+    and the agent turn resolves that profile's config/credentials.
+    """
+    from gateway.relay.ws_transport import _event_from_wire
+
+    event = _event_from_wire(
+        {
+            "text": "hello!",
+            "source": {
+                "platform": "discord",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "user_id": "267171776755269633",
+                "user_name": "rewbs",
+                "profile": "reviewer",
+            },
+        }
+    )
+    assert event.source.profile == "reviewer"
+
+
+def test_event_from_wire_profile_absent_is_none():
+    """No ``profile`` on the wire (single-profile gateway) → None.
+
+    Back-compat: a connector that never sets ``profile`` yields the legacy
+    behaviour, and session keys stay in the ``agent:main`` namespace.
+    """
+    from gateway.relay.ws_transport import _event_from_wire
+
+    event = _event_from_wire(
+        {
+            "text": "hi",
+            "source": {
+                "platform": "discord",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "user_id": "1",
+            },
+        }
+    )
+    assert event.source.profile is None

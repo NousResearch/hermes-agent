@@ -263,13 +263,13 @@ DISCORD_FREE_RESPONSE_CHANNELS=123456789,987654321
 
 | 级别 | 整数 | 包含内容 |
 |-------|---------|----------------|
-| 仅文字 | `274878286912` | 查看频道、发送消息、读取历史、嵌入内容、附件、帖子、反应 |
-| 文字 + 语音 | `274881432640` | 以上所有 + Connect、Speak |
+| 仅文字 | `309237763136` | 查看频道、发送消息、读取历史、嵌入内容、附件、帖子、反应、创建公开帖子 |
+| 文字 + 语音 | `309240908864` | 以上所有 + Connect、Speak |
 
 **使用更新后的权限 URL 重新邀请 Bot：**
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274881432640
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309240908864
 ```
 
 将 `YOUR_APP_ID` 替换为开发者门户中的应用 ID。

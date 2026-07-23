@@ -3,11 +3,19 @@
 import socket
 from unittest.mock import patch
 
+import httpx
+
 from tools.url_safety import (
     is_safe_url,
     async_is_safe_url,
     is_always_blocked_url,
     normalize_url_for_request,
+    redirect_target_from_response,
+    create_ssrf_safe_async_client,
+    SSRFConnectionBlocked,
+    _SSRFGuardedAsyncNetworkBackend,
+    _MAX_SSRF_CONNECT_IPS,
+    _resolved_http_connect_ips,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -40,6 +48,30 @@ class TestNormalizeUrlForRequest:
         assert (
             normalize_url_for_request("https://münich.example/Köln")
             == "https://xn--mnich-kva.example/K%C3%B6ln"
+        )
+
+    def test_repairs_space_between_scheme_and_authority(self):
+        assert (
+            normalize_url_for_request("https:// docs.openclaw.ai")
+            == "https://docs.openclaw.ai"
+        )
+
+    def test_repairs_tab_between_scheme_and_authority(self):
+        assert (
+            normalize_url_for_request("https://	docs.openclaw.ai/path")
+            == "https://docs.openclaw.ai/path"
+        )
+
+    def test_trims_but_preserves_path_and_query_space_semantics(self):
+        assert (
+            normalize_url_for_request(" https://example.com/a b?q=c d ")
+            == "https://example.com/a%20b?q=c%20d"
+        )
+
+    def test_does_not_collapse_embedded_scheme_separator_in_query(self):
+        assert (
+            normalize_url_for_request("https://example.com/r?next=https:// evil.example")
+            == "https://example.com/r?next=https://%20evil.example"
         )
 
 
@@ -264,6 +296,131 @@ class TestAsyncIsSafeUrl:
             (2, 1, 6, "", ("127.0.0.1", 0)),
         ]):
             assert await async_is_safe_url("http://localhost:8080/") is False
+
+
+class TestSSRFGuardedHttpxClient:
+    def test_connect_resolution_caps_safe_ip_candidates(self):
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"93.184.216.{idx}", 80))
+            for idx in range(1, _MAX_SSRF_CONNECT_IPS + 4)
+        ]
+
+        with patch("socket.getaddrinfo", return_value=answers):
+            ips = _resolved_http_connect_ips("example.com", 80, "http")
+
+        assert len(ips) == _MAX_SSRF_CONNECT_IPS
+        assert ips[0] == "93.184.216.1"
+        assert ips[-1] == f"93.184.216.{_MAX_SSRF_CONNECT_IPS}"
+
+    def test_connect_resolution_checks_private_ip_beyond_candidate_cap(self):
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"93.184.216.{idx}", 80))
+            for idx in range(1, _MAX_SSRF_CONNECT_IPS + 1)
+        ]
+        answers.append(
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))
+        )
+
+        with patch("socket.getaddrinfo", return_value=answers):
+            with pytest.raises(SSRFConnectionBlocked, match="metadata"):
+                _resolved_http_connect_ips("example.com", 80, "http")
+
+    @pytest.mark.asyncio
+    async def test_async_client_dials_validated_ip_not_hostname(self, monkeypatch):
+        """Direct httpx fetches should connect to the vetted IP, not re-resolve hostnames."""
+        import httpcore
+        from httpcore._backends.auto import AutoBackend
+
+        for proxy_var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(proxy_var, raising=False)
+
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda host, port, *args, **kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+            ],
+        )
+
+        connect_attempts = []
+
+        async def fake_connect_tcp(
+            self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            connect_attempts.append((host, port))
+            raise httpcore.ConnectError("stop before network")
+
+        monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
+
+        async with create_ssrf_safe_async_client(timeout=0.01, trust_env=False) as client:
+            with pytest.raises(httpx.ConnectError):
+                await client.get("http://example.com/image.png")
+
+        assert connect_attempts == [("93.184.216.34", 80)]
+
+    @pytest.mark.asyncio
+    async def test_async_backend_blocks_unix_socket_connects(self):
+        import contextvars
+
+        backend = _SSRFGuardedAsyncNetworkBackend(contextvars.ContextVar("test_schemes"))
+
+        with pytest.raises(SSRFConnectionBlocked, match="Unix socket"):
+            await backend.connect_unix_socket("/tmp/hermes.sock")
+
+    def test_async_client_rejects_unpatchable_custom_transport(self):
+        class CustomTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                return httpx.Response(200, request=request)
+
+        with pytest.raises(SSRFConnectionBlocked, match="Unsupported async httpx transport"):
+            create_ssrf_safe_async_client(transport=CustomTransport())
+
+    @pytest.mark.asyncio
+    async def test_async_client_preserves_env_proxy_mounts(self, monkeypatch):
+        """Installing the guard must not disable or rewrite httpx env proxy setup."""
+        for proxy_var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(proxy_var, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+
+        client = create_ssrf_safe_async_client(timeout=0.01)
+        try:
+            proxy_transports = [
+                transport
+                for transport in client.__dict__.get("_mounts", {}).values()
+                if transport is not None
+            ]
+            assert proxy_transports
+            assert type(client._transport._pool._network_backend).__name__ == (
+                "_SSRFGuardedAsyncNetworkBackend"
+            )
+            assert all(
+                type(transport._pool._network_backend).__name__
+                != "_SSRFGuardedAsyncNetworkBackend"
+                for transport in proxy_transports
+            )
+        finally:
+            await client.aclose()
 
 
 class TestIsBlockedIp:
@@ -629,3 +786,62 @@ class TestIPv4MappedIPv6SSRF:
             (10, 1, 6, "", ("::ffff:100.100.100.200", 0, 0, 0)),
         ]):
             assert is_safe_url("http://aliyun-metadata.internal/") is False
+
+
+class _FakeResponse:
+    """Minimal stand-in for an httpx response as seen inside a response hook."""
+
+    def __init__(self, *, is_redirect, location=None, url="", next_request=None):
+        self.is_redirect = is_redirect
+        self.headers = {"location": location} if location else {}
+        self.url = url
+        self.next_request = next_request
+
+
+class _FakeNextRequest:
+    def __init__(self, url):
+        self.url = url
+
+
+class TestRedirectTargetFromResponse:
+    """redirect_target_from_response is the SSRF-guard boundary for httpx hooks.
+
+    Inside httpx AsyncClient response hooks, ``response.next_request`` is often
+    ``None`` even for a real redirect, so a guard keyed only on it silently
+    never fires. Resolving from the ``Location`` header closes that hole.
+    """
+
+    def test_absolute_location_without_next_request(self):
+        # The exact bypass: redirect present, next_request unset, private target.
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="http://169.254.169.254/latest/meta-data",
+            url="https://public.example/image.png",
+        )
+        assert (
+            redirect_target_from_response(resp)
+            == "http://169.254.169.254/latest/meta-data"
+        )
+
+    def test_relative_location_is_resolved_against_response_url(self):
+        resp = _FakeResponse(
+            is_redirect=True,
+            location="/redir",
+            url="https://public.example/image.png",
+        )
+        assert redirect_target_from_response(resp) == "https://public.example/redir"
+
+    def test_non_redirect_returns_none(self):
+        resp = _FakeResponse(is_redirect=False, location="http://169.254.169.254/")
+        assert redirect_target_from_response(resp) is None
+
+    def test_falls_back_to_next_request_when_no_location(self):
+        resp = _FakeResponse(
+            is_redirect=True,
+            next_request=_FakeNextRequest("http://10.0.0.1/meta"),
+        )
+        assert redirect_target_from_response(resp) == "http://10.0.0.1/meta"
+
+    def test_no_location_no_next_request_returns_none(self):
+        resp = _FakeResponse(is_redirect=True)
+        assert redirect_target_from_response(resp) is None

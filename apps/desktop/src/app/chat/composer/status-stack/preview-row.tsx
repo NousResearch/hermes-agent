@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { ChevronRight, X } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { PREVIEW_PANE_ID } from '@/store/layout'
@@ -76,50 +75,54 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
 
   return (
     <StatusRow
-      leading={<ChevronRight aria-hidden className="size-3 text-muted-foreground/80" />}
-      onActivate={() => void togglePreview()}
+      leading={
+        <Codicon
+          aria-hidden
+          className={cn('text-muted-foreground/70', opening && 'animate-pulse')}
+          name="globe"
+          size="0.8rem"
+        />
+      }
+      // Plain click opens the link in the browser; ⌘/Ctrl-click opens it in the
+      // in-app preview pane instead. (isOpen still toggles the pane closed.)
+      onActivate={event => {
+        if (event.metaKey || event.ctrlKey) {
+          void togglePreview()
+        } else {
+          void openInBrowser()
+        }
+      }}
       trailing={
-        <span className="-my-1 flex items-center gap-0.5">
-          <Tip label={t.preview.openInBrowser}>
-            <Button
-              aria-label={t.preview.openInBrowser}
-              className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-              onClick={event => {
-                event.stopPropagation()
-                void openInBrowser()
-              }}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <Codicon name="link-external" size="0.75rem" />
-            </Button>
-          </Tip>
-          <Tip label={t.statusStack.dismiss}>
-            <Button
-              aria-label={t.statusStack.dismiss}
-              className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-              onClick={event => {
-                event.stopPropagation()
-                onDismiss(item.id)
-              }}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <X size={12} />
-            </Button>
-          </Tip>
-        </span>
+        <Tip label={t.statusStack.dismiss}>
+          <Button
+            aria-label={t.statusStack.dismiss}
+            className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+            onClick={event => {
+              event.stopPropagation()
+              onDismiss(item.id)
+            }}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="close" size="0.75rem" />
+          </Button>
+        </Tip>
       }
       trailingVisible
     >
-      <span className="min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4 text-foreground/92" title={item.target}>
-        {item.label}
-      </span>
-      <span className={cn('shrink-0 text-[0.62rem] leading-4 text-muted-foreground/70', opening && 'animate-pulse')}>
-        {opening ? t.preview.opening : isOpen ? t.preview.hide : t.preview.openPreview}
-      </span>
+      <Tip
+        label={
+          // inline-flex (not flex): a block child collapses Tip's decoration
+          // wrapper geometry and mis-positions the tooltip (#62022).
+          <span className="inline-flex flex-col gap-0.5">
+            <span>{item.target}</span>
+            <span className="opacity-70">{t.preview.linkHint}</span>
+          </span>
+        }
+      >
+        <span className="min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4 text-foreground/92">{item.label}</span>
+      </Tip>
     </StatusRow>
   )
 })

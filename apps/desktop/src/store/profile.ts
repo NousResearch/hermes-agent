@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile } from '@/hermes'
-import { queryClient } from '@/lib/query-client'
+import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
@@ -11,8 +11,9 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
-import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
+import { $gateway, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
+import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -35,6 +36,13 @@ export const $profiles = atom<ProfileInfo[]>([])
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
+}
+
+export async function refreshProfiles(): Promise<ProfileInfo[]> {
+  const { profiles } = await getProfiles()
+  $profiles.set(profiles)
+
+  return profiles
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────
@@ -102,7 +110,10 @@ interface ActiveProfileResponse {
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
   try {
-    const res = await window.hermesDesktop.api<ActiveProfileResponse>({ path: '/api/profiles/active' })
+    const res = await window.hermesDesktop.api<ActiveProfileResponse>({
+      path: '/api/profiles/active',
+      timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    })
 
     setActiveProfile(res.current || 'default')
   } catch {
@@ -110,8 +121,7 @@ export async function refreshActiveProfile(): Promise<void> {
   }
 
   try {
-    const { profiles } = await getProfiles()
-    $profiles.set(profiles)
+    await refreshProfiles()
   } catch {
     // Leave the cached list in place.
   }
@@ -144,12 +154,13 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
-// Bumped whenever the profile context actually changes (switch or create). The
-// chat controller subscribes and drops to a fresh new-session draft, so the
-// session you were in doesn't stay sticky across a profile switch.
+// Bumped whenever the open session should be dropped for a fresh new-session
+// draft: a profile switch/create (below), or deleting the project that owns the
+// currently-open session (store/projects). The chat controller subscribes and
+// resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
 
-function requestFreshSession(): void {
+export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 
@@ -166,7 +177,10 @@ $activeGatewayProfile.subscribe(value => {
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.
-    void queryClient.invalidateQueries()
+    // Narrowed so account/marketplace/onboarding caches don't refetch on
+    // every profile switch.
+    invalidateProfileScopedQueries()
+    resetStarmapGraph()
   }
 
   _lastRoutedProfile = key
@@ -176,6 +190,39 @@ $activeGatewayProfile.subscribe(value => {
 // profile's backend), else null. Drives the chat's "waking up <profile>" loader
 // so a lazy spawn doesn't read as a hang. Single-profile users never swap.
 export const $gatewaySwapTarget = atom<string | null>(null)
+
+// ── Hover-intent backend pre-warm ───────────────────────────────────────────
+// A cold switch to a profile whose pool backend isn't running pays the full
+// spawn (Python boot + port announce + readiness probe — measured ~2.5-3s)
+// plus the socket connect before the sidebar can repopulate. The pointer
+// entering a profile square in the rail signals the switch a few hundred ms
+// before the click lands, so we run the same spawn + connect chain then
+// (openGatewayForProfile — without activating). `ensureBackend` in the
+// Electron main is idempotent (a pooled profile returns its existing
+// connectionPromise), so the real switch joins the in-flight work instead of
+// duplicating it — and a pre-warm for an already-open profile is a no-op.
+// Throttled per profile so drive-by hovers can't spam spawn attempts; failures
+// stay silent here and surface on the real switch, which owns retry/error UX.
+const PREWARM_MIN_INTERVAL_MS = 60_000
+
+const prewarmedAt = new Map<string, number>()
+
+export function prewarmProfileBackend(name: string): void {
+  const key = normalizeProfileKey(name)
+
+  if (key === normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  const now = Date.now()
+
+  if (now - (prewarmedAt.get(key) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
+    return
+  }
+
+  prewarmedAt.set(key, now)
+  openGatewayForProfile(key).catch(() => undefined)
+}
 
 let gatewaySwitch: Promise<void> | null = null
 

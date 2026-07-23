@@ -320,7 +320,13 @@ class TestEnvOverrideWins:
         )
         monkeypatch.setattr(auth, "_load_auth_store", lambda *a, **k: {})
         monkeypatch.setattr(auth, "_load_provider_state", lambda store, pid: state)
+        monkeypatch.setattr(
+            auth,
+            "_load_provider_state_with_source",
+            lambda store, pid: (state, None),
+        )
         monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **k: None)
+        monkeypatch.setattr(auth, "_save_provider_state_to_source", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_sync_nous_pool_from_auth_store", lambda *a, **k: None)

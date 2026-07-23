@@ -27,7 +27,7 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.model import build_model_parser
-from hermes_cli.subcommands.postinstall import build_postinstall_parser
+
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.setup import build_setup_parser
@@ -51,7 +51,7 @@ def _h(name):
 SINGLE_HANDLER_CASES = [
     ("model", build_model_parser, "cmd_model", ["model"]),
     ("setup", build_setup_parser, "cmd_setup", ["setup"]),
-    ("postinstall", build_postinstall_parser, "cmd_postinstall", ["postinstall"]),
+
     ("whatsapp", build_whatsapp_parser, "cmd_whatsapp", ["whatsapp"]),
     ("slack", build_slack_parser, "cmd_slack", ["slack"]),
     ("login", build_login_parser, "cmd_login", ["login"]),
@@ -84,6 +84,25 @@ def test_single_handler_builders(name, builder, kw, argv):
     builder(sub, **{kw: handler})
     ns = parser.parse_args(argv)
     assert ns.func is handler
+
+
+def test_config_get_unset_subcommands_parse():
+    """`hermes config get/unset` parse key args (and --json for get)."""
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("config")
+    build_config_parser(sub, cmd_config=handler)
+
+    ns = parser.parse_args(["config", "get", "terminal.backend", "--json"])
+    assert ns.func is handler
+    assert ns.config_command == "get"
+    assert ns.key == "terminal.backend"
+    assert ns.json is True
+
+    ns = parser.parse_args(["config", "unset", "terminal.backend"])
+    assert ns.func is handler
+    assert ns.config_command == "unset"
+    assert ns.key == "terminal.backend"
 
 
 def test_dashboard_builder_two_handlers():

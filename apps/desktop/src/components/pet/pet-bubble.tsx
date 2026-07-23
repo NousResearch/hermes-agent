@@ -29,10 +29,32 @@ interface Spec {
 // Keep them short — the bubble is tiny and never wraps.
 const SPECS: Partial<Record<PetState, Spec>> = {
   run: {
-    lines: ['working…', 'on it…', 'crunching…', 'tinkering…', 'cooking…', 'in the weeds…', 'wiring it up…', 'making moves…', 'heads down…', 'hammering away…']
+    lines: [
+      'working…',
+      'on it…',
+      'crunching…',
+      'tinkering…',
+      'cooking…',
+      'in the weeds…',
+      'wiring it up…',
+      'making moves…',
+      'heads down…',
+      'hammering away…'
+    ]
   },
   review: {
-    lines: ['thinking…', 'reading…', 'reviewing…', 'pondering…', 'connecting dots…', 'sizing it up…', 'tracing it…', 'mulling…', 'scheming…', 'hmm…']
+    lines: [
+      'thinking…',
+      'reading…',
+      'reviewing…',
+      'pondering…',
+      'connecting dots…',
+      'sizing it up…',
+      'tracing it…',
+      'mulling…',
+      'scheming…',
+      'hmm…'
+    ]
   },
   failed: {
     glyph: AlertCircle,
@@ -75,6 +97,7 @@ export function PetBubble() {
   // it's actually the user's turn. Everything else maps to a mood spec.
   const specKey: null | PetState =
     state in SPECS ? state : state === 'idle' && activity.awaitingInput ? 'waiting' : null
+
   const rotating = specKey === 'run' || specKey === 'review'
 
   // Pick a fresh line on every mood change, then keep rotating (random, no

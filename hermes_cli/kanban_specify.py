@@ -162,21 +162,10 @@ def specify_task(
         )
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import call_llm
     except Exception as exc:  # pragma: no cover — import smoke test
         logger.debug("specify: auxiliary client import failed: %s", exc)
         return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
-
-    try:
-        client, model = get_text_auxiliary_client("triage_specifier")
-    except Exception as exc:
-        logger.debug("specify: get_text_auxiliary_client failed: %s", exc)
-        return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
-
-    if client is None or not model:
-        return SpecifyOutcome(
-            task_id, False, "no auxiliary client configured"
-        )
 
     user_msg = _USER_TEMPLATE.format(
         task_id=task.id,
@@ -185,8 +174,11 @@ def specify_task(
     )
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
+        # Route through call_llm so auxiliary.triage_specifier.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the direct-create path dropped extra_body (#35566).
+        resp = call_llm(
+            task="triage_specifier",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -194,7 +186,6 @@ def specify_task(
             temperature=0.3,
             max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
             timeout=timeout or 120,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info(

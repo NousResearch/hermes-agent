@@ -496,7 +496,11 @@ class FactRetriever:
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        # FTS5 defaults to AND-between-tokens, which kills recall on
+        # natural-language queries ("what happened with the deployment
+        # rollback"). Sanitize: drop stopwords, OR-join content tokens, so
+        # any significant term can match.
+        params.append(self._sanitize_fts_query(query))
 
         if category:
             where_clauses.append("f.category = ?")
@@ -556,6 +560,63 @@ class FactRetriever:
             if cleaned:
                 tokens.add(cleaned)
         return tokens
+
+    # Stopwords dropped before FTS5 OR-expansion. Short English function
+    # words that carry no retrieval signal and force false-negative AND
+    # matches when left in the query.
+    _FTS_STOPWORDS = frozenset({
+        "a", "about", "above", "after", "again", "all", "am", "an", "and",
+        "any", "are", "as", "at", "be", "because", "been", "before", "being",
+        "between", "both", "but", "by", "can", "could", "did", "do", "does",
+        "doing", "don", "down", "during", "each", "few", "for", "from",
+        "further", "had", "has", "have", "having", "he", "her", "here",
+        "hers", "herself", "him", "himself", "his", "how", "i", "if", "in",
+        "into", "is", "it", "its", "itself", "just", "me", "more", "most",
+        "my", "myself", "no", "nor", "not", "now", "of", "off", "on", "once",
+        "only", "or", "other", "our", "ours", "ourselves", "out", "over",
+        "own", "same", "she", "should", "so", "some", "such", "than", "that",
+        "the", "their", "theirs", "them", "themselves", "then", "there",
+        "these", "they", "this", "those", "through", "to", "too", "under",
+        "until", "up", "very", "was", "we", "were", "what", "when", "where",
+        "which", "while", "who", "whom", "why", "will", "with", "would",
+        "you", "your", "yours", "yourself", "yourselves",
+    })
+
+    @classmethod
+    def _sanitize_fts_query(cls, query: str) -> str:
+        """Convert a natural-language query to an FTS5-safe OR expression.
+
+        FTS5 treats a multi-word MATCH argument as AND-joined by default,
+        which tanks recall on prose queries. This helper:
+          - tokenizes the query
+          - drops stopwords and short (<2 char) tokens
+          - strips FTS5 special characters from each token
+          - OR-joins the survivors
+
+        If nothing remains (pathological query), falls back to the raw
+        query so the caller sees zero results instead of a SQL error.
+        """
+        if not query:
+            return ""
+        # Strip FTS5 operator characters from EACH token to avoid
+        # accidentally creating a malformed query.
+        _FTS_SPECIAL = '"()*^:-+'
+        tokens: list[str] = []
+        for raw in query.lower().split():
+            cleaned = raw.strip(".,;:!?\"'()[]{}#@<>") .translate(
+                str.maketrans("", "", _FTS_SPECIAL)
+            )
+            if len(cleaned) < 2:
+                continue
+            if cleaned in cls._FTS_STOPWORDS:
+                continue
+            # FTS5 phrase-literal each token to ensure no special chars
+            # sneak through as operators.
+            tokens.append(f'"{cleaned}"')
+        if not tokens:
+            # Fallback: raw query (likely returns 0, but never crashes)
+            return query
+        return " OR ".join(tokens)
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:

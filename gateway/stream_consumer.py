@@ -20,6 +20,7 @@ import inspect
 import logging
 import queue
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -32,19 +33,96 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
 )
+from gateway.response_filters import (
+    is_intentional_silence_response as _is_intentional_silence_response,
+    is_partial_silence_marker as _is_partial_silence_marker,
+)
 
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
-
-# Sentinel to signal a tool boundary — finalize current message and start a
-# new one so that subsequent text appears below tool progress messages.
 _NEW_SEGMENT = object()
-
-# Queue marker for a completed assistant commentary message emitted between
-# API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
+
+# Queue marker for a synchronous flush barrier.  Enqueued as
+# ``(_FLUSH, threading.Event)``; the drain loop finalizes and delivers any
+# buffered segment, then sets the event.  A caller on the agent worker thread
+# uses this (via ``flush_pending_sync``) to block until everything queued
+# BEFORE the marker has actually landed on the platform — needed before
+# sending a blocking interactive prompt (clarify poll) so the prompt is the
+# last thing on screen, not racing ahead of buffered prose.
+_FLUSH = object()
+
+
+def escape_code_fences_for_display(text: str) -> str:
+    """Escape triple-backtick markers so text can be safely wrapped
+    inside an outer ``` code block without breaking the fence.
+
+    When reasoning content contains ``` (e.g. the model quotes code
+    in its thinking), wrapping it in an outer ``` for display causes
+    the inner fence to break the outer block.  Solution: replace each
+    `` ``` `` with `` \\`\\`\\` `` before wrapping.
+
+    Returns:
+        The input text with each `` ``` `` replaced by `` \\`\\`\\` ``,
+        or the input unchanged if no triple-backticks are present.
+    """
+    if not isinstance(text, str) or "```" not in text:
+        return text
+    return text.replace("```", "\\`\\`\\`")
+
+
+def ensure_closed_code_fences(text: str) -> str:
+    """Append a closing `` ``` `` fence and/or `` ` `` if the text has
+    orphaned code-block or inline-code markers.
+
+    When model output is truncated mid-code-block (e.g. by token limits
+    or a finish_reason="length"), the resulting message has an unclosed
+    code fence.  On Discord, Slack, and other platforms this causes
+    everything after the orphaned fence to render as a single code block.
+    The same problem applies to inline-code spans closed by a single
+    backtick: an orphaned `` ` `` makes the remainder of the message
+    render as inline code.
+
+    Triple-backtick: count `` ``` `` occurrences.  If odd, append a
+    closing fence on its own line.  This is safe because nested
+    triple-backtick fences (e.g. a literal `` ``` `` inside a code block)
+    are exceedingly rare in model output and, when they do appear, the
+    extra closing fence just creates a brief empty code block at the end
+    of the message — far less harmful than the entire message being one
+    giant code block.
+
+    Single backtick: after balancing triple-backtick fences, strip all
+    complete `` ```…``` `` regions and count remaining standalone `` ` ``.
+    If odd, append a closing inline-code backtick.  Same trade-off: a
+    stray closing backtick may produce a brief empty inline-code span,
+    which is far less harmful than the rest of the message being rendered
+    as inline code.
+
+    Returns:
+        The input text with closing markers appended if needed, or the
+        input text unchanged.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    # Step 1: fix triple-backtick code-block fences (existing logic)
+    if text.count("```") % 2 == 1:
+        text = text.rstrip("\n") + "\n```"
+
+    # Step 2: fix single-backtick inline-code spans
+    # Remove complete ```…``` regions so their internal backticks don't
+    # pollute the standalone count.  Also remove any trailing unclosed
+    # ``` that leaks through (defence in depth).
+    import re
+    without_fences = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    without_fences = re.sub(r"```[^`]*$", "", without_fences)
+
+    if without_fences.count("`") % 2 == 1:
+        text = text + "`"
+
+    return text
 
 
 @dataclass
@@ -121,6 +199,7 @@ class GatewayStreamConsumer:
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
+        run_still_current: Optional[Callable[[], bool]] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -155,6 +234,10 @@ class GatewayStreamConsumer:
         # reply that was split across the platform's edit limit while streaming
         # doesn't leave stale fragments above the final message.
         self._preview_message_ids: "set[str]" = set()
+        # IDs from only the active text segment.  A tool boundary preserves
+        # the run-wide set for fresh-final bookkeeping, but a failure recovery
+        # must never delete an earlier finalized preamble/commentary message.
+        self._segment_preview_message_ids: "set[str]" = set()
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
@@ -168,6 +251,10 @@ class GatewayStreamConsumer:
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
         self._fallback_preserve_partial_messages = False
+        # Keep fallback recovery responsive. Telegram's adapter already bounds
+        # edit retries at five seconds; a final-delivery fallback must not hold
+        # the stream task through a longer flood cooldown before retrying.
+        self._max_fallback_flood_retry_seconds = 5.0
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
@@ -175,6 +262,14 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        self._delivered_commentary_texts: list[str] = []
+        # Retains the finalized visible text of each streaming segment so
+        # ``has_delivered_text`` can still match after ``_reset_segment_state``
+        # clears ``_last_sent_text``. Without this, a segment break (triggered
+        # by ``on_segment_break`` or ``on_commentary``) erases the only record
+        # of what was delivered, and the gateway's final-send suppression
+        # can't recognize an already-delivered response. (#65919 review)
+        self._delivered_segment_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -183,6 +278,11 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+
+        # Session staleness guard — when set to False (e.g. after /new or
+        # /stop), the run() loop will abandon the stream early instead of
+        # continuing to edit and deliver stale deltas.
+        self._run_still_current = run_still_current or (lambda: True)
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -221,6 +321,8 @@ class GatewayStreamConsumer:
         final-message delivery.
         """
         meta = dict(self.metadata) if self.metadata else {}
+        if self._initial_reply_to_id:
+            meta["reply_to_message_id"] = self._initial_reply_to_id
         if expect_edits:
             meta["expect_edits"] = True
         if final:
@@ -291,6 +393,19 @@ class GatewayStreamConsumer:
                 pass
         return await self.adapter.edit_message(**kwargs)
 
+    def has_delivered_text(self, text: str) -> bool:
+        """Return True if *text* was already delivered as visible chat content."""
+        target = self._clean_for_display(text or "").strip()
+        if not target:
+            return False
+        visible_prefix = self._visible_prefix().strip()
+        if visible_prefix == target:
+            return True
+        return any(
+            sent.strip() == target
+            for sent in (*self._delivered_commentary_texts, *self._delivered_segment_texts)
+        )
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
@@ -299,6 +414,29 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def flush_pending_sync(self, timeout: float = 5.0) -> bool:
+        """Block the calling (agent worker) thread until everything queued
+        before this point has been finalized and delivered to the platform.
+
+        Enqueues a ``(_FLUSH, Event)`` barrier behind any pending deltas /
+        commentary / segment breaks.  The async ``run()`` task processes those
+        first (FIFO), then handles the barrier — finalizing the current segment
+        and setting the event.  Returns True if the flush completed within
+        ``timeout``, False on timeout (so the caller continues rather than
+        hanging if the consumer task is not running / already finished).
+
+        This is the ordering barrier used before sending a blocking interactive
+        prompt (clarify poll): without it, the poll — sent on a separate,
+        agent-thread-blocking path — races ahead of buffered prose that is still
+        sitting in this queue, so the question lands ABOVE its own explanation.
+        """
+        evt = threading.Event()
+        try:
+            self._queue.put((_FLUSH, evt))
+        except Exception:
+            return False
+        return evt.wait(timeout=max(0.0, float(timeout)))
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -310,9 +448,33 @@ class GatewayStreamConsumer:
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
 
+    @staticmethod
+    def _signal_flush(flush_event) -> None:
+        """Wake a thread blocked in flush_pending_sync(), swallowing errors.
+
+        Centralised so every loop exit path that consumed a ``_FLUSH`` barrier
+        (the normal bottom-of-iteration path AND early ``continue`` paths such
+        as the oversized-prose overflow split) reliably sets the event. Missing
+        a set is not a deadlock — the caller uses a bounded timeout — but it
+        would make the caller stall the full timeout before its blocking send.
+        """
+        if flush_event is None:
+            return
+        try:
+            flush_event.set()
+        except Exception:
+            pass
+
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
+        # Retain the finalized visible text of the current segment before
+        # clearing ``_last_sent_text``, so ``has_delivered_text`` can still
+        # match it after a segment break. (#65919 review)
+        if self._last_sent_text:
+            finalized = self._clean_for_display(self._last_sent_text).strip()
+            if finalized:
+                self._delivered_segment_texts.append(finalized)
         self._message_id = None
         self._message_created_ts = None
         self._accumulated = ""
@@ -320,6 +482,7 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._segment_preview_message_ids = set()
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -373,12 +536,17 @@ class GatewayStreamConsumer:
         self._think_buffer = ""
 
         while buf:
+            # Case-insensitive matching: models emit mixed-case tag
+            # variants (<Think>, <THINKING>, …). Match against a
+            # lowercased view of the buffer with lowercased tag names so
+            # every case variant is caught with a single canonical form.
+            lower_buf = buf.lower()
             if self._in_think_block:
                 # Look for the earliest closing tag
                 best_idx = -1
                 best_len = 0
                 for tag in self._CLOSE_THINK_TAGS:
-                    idx = buf.find(tag)
+                    idx = lower_buf.find(tag.lower())
                     if idx != -1 and (best_idx == -1 or idx < best_idx):
                         best_idx = idx
                         best_len = len(tag)
@@ -401,9 +569,10 @@ class GatewayStreamConsumer:
                 best_idx = -1
                 best_len = 0
                 for tag in self._OPEN_THINK_TAGS:
+                    tag_lower = tag.lower()
                     search_start = 0
                     while True:
-                        idx = buf.find(tag, search_start)
+                        idx = lower_buf.find(tag_lower, search_start)
                         if idx == -1:
                             break
                         # Block-boundary check (mirrors cli.py logic)
@@ -439,15 +608,55 @@ class GatewayStreamConsumer:
                     # No opening tag — check for a partial tag at the tail
                     held_back = 0
                     for tag in self._OPEN_THINK_TAGS:
+                        tag_lower = tag.lower()
                         for i in range(1, len(tag)):
-                            if buf.endswith(tag[:i]) and i > held_back:
+                            if lower_buf.endswith(tag_lower[:i]) and i > held_back:
                                 held_back = i
                     if held_back:
                         self._accumulated += buf[:-held_back]
                         self._think_buffer = buf[-held_back:]
                     else:
-                        self._accumulated += buf
+                        # No (partial) open tag — but the model may have
+                        # emitted an orphan close tag like </think> on its
+                        # own (e.g. when a thinking-mode toggle drops the
+                        # matched open, or when upstream stripping is
+                        # incomplete). Strip those before accumulating so
+                        # they never reach the user.
+                        self._accumulated += self._strip_orphan_close_tags(buf)
                     return
+
+    @classmethod
+    def _strip_orphan_close_tags(cls, text: str) -> str:
+        """Remove any close tags from *text* that have no matching open.
+
+        Mirrors ``agent/think_scrubber.py::StreamingThinkScrubber.
+        _strip_orphan_close_tags`` so the progressive-display filter
+        behaves the same as the post-stream final-response scrubber.
+        An orphan close tag is always noise — stripped along with any
+        trailing whitespace so surrounding prose flows naturally.
+        """
+        if "</" not in text:
+            return text
+        text_lower = text.lower()
+        out: list[str] = []
+        i = 0
+        while i < len(text):
+            matched = False
+            if text_lower[i:i + 2] == "</":
+                for tag in cls._CLOSE_THINK_TAGS:
+                    tag_lower = tag.lower()
+                    tag_len = len(tag_lower)
+                    if text_lower[i:i + tag_len] == tag_lower:
+                        j = i + tag_len
+                        while j < len(text) and text[j] in " \t\n\r":
+                            j += 1
+                        i = j
+                        matched = True
+                        break
+            if not matched:
+                out.append(text[i])
+                i += 1
+        return "".join(out)
 
     def _flush_think_buffer(self) -> None:
         """Flush any held-back partial-tag buffer into accumulated text.
@@ -456,7 +665,9 @@ class GatewayStreamConsumer:
         was held back waiting for a possible opening tag is not lost.
         """
         if self._think_buffer and not self._in_think_block:
-            self._accumulated += self._think_buffer
+            # Strip any orphan close tags that may have been held back —
+            # see _filter_and_accumulate for context.
+            self._accumulated += self._strip_orphan_close_tags(self._think_buffer)
             self._think_buffer = ""
 
     async def run(self) -> None:
@@ -493,9 +704,17 @@ class GatewayStreamConsumer:
 
         try:
             while True:
+                # Abandon the stream early if the session has been reset
+                # (e.g. /new or /stop). Prevents stale deltas from being
+                # delivered after the user has already moved on.
+                if not self._run_still_current():
+                    return
+
                 # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
+                got_flush = False
+                flush_event = None
                 commentary_text = None
                 while True:
                     try:
@@ -509,6 +728,14 @@ class GatewayStreamConsumer:
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
                             break
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _FLUSH:
+                            # Flush barrier: finalize the current segment like a
+                            # tool boundary, then signal the waiting thread once
+                            # delivery for this iteration has completed (below).
+                            got_flush = True
+                            got_segment_break = True
+                            flush_event = item[1]
+                            break
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
@@ -518,6 +745,22 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+
+                    # Intentional-silence suppression.  When the agent chose
+                    # not to reply it emits a bare control marker (NO_REPLY /
+                    # [SILENT] / …).  The gateway's whole-response filter
+                    # (gateway/run.py) suppresses this on the non-streaming
+                    # path, but by the time it runs the stream consumer has
+                    # already edited the raw marker onto the screen.  Detect
+                    # the exact-marker final buffer here and retract any
+                    # preview instead of finalizing it, so the marker never
+                    # reaches the chat.  Substantive prose that merely mentions
+                    # a marker is NOT suppressed (see is_intentional_silence_response).
+                    if _is_intentional_silence_response(
+                        self._clean_for_display(self._accumulated)
+                    ):
+                        await self._suppress_silence_marker()
+                        return
 
                 # Decide whether to flush an edit
                 now = time.monotonic()
@@ -539,6 +782,24 @@ class GatewayStreamConsumer:
                     )
 
                 current_update_visible = False
+                # Hold back mid-stream edits while the buffer so far could
+                # still resolve to an intentional-silence marker.  Without
+                # this, a partial marker (e.g. "NO_REPLY" streamed as
+                # "NO"→"NO_REPLY") would flash onto the screen on an interval
+                # tick before got_done can suppress it.  Only defers display —
+                # got_done above always resolves the buffer (suppress if it's
+                # an exact marker, otherwise fall through and flush normally),
+                # so genuine prose that merely starts marker-like is never lost.
+                if (
+                    should_edit
+                    and not got_done
+                    and not got_segment_break
+                    and commentary_text is None
+                    and _is_partial_silence_marker(
+                        self._clean_for_display(self._accumulated)
+                    )
+                ):
+                    should_edit = False
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
@@ -547,41 +808,85 @@ class GatewayStreamConsumer:
                         and self._message_id is None
                     ):
                         # No existing message to edit (first message or after a
-                        # segment break).  Use truncate_message — the same
-                        # helper the non-streaming path uses — to split with
-                        # proper word/code-fence boundaries and chunk
-                        # indicators like "(1/2)".
-                        chunks = self.adapter.truncate_message(
-                            self._accumulated, _safe_limit, len_fn=_len_fn,
+                        # segment break).  Seal only the overflowing head chunks
+                        # as fixed messages, then keep the trailing chunk in
+                        # _accumulated so the normal send/edit path below makes
+                        # it the active preview.  That lets chunk 2, 3, ... keep
+                        # updating in-place as later streamed deltas arrive
+                        # instead of posting every split as an immutable message.
+                        chunks = self._truncate_for_stream(
+                            self._accumulated, _safe_limit, _len_fn,
                         )
+                        if len(chunks) <= 1:
+                            # A malformed/legacy adapter result must not leave
+                            # this overflow branch with an unsplittable payload.
+                            chunks = self._split_text_chunks(
+                                self._accumulated, _safe_limit, _len_fn,
+                            )
                         chunks_delivered = False
-                        reply_to = self._message_id or self._initial_reply_to_id
-                        for chunk in chunks:
+                        reply_to = self._initial_reply_to_id
+                        all_heads_delivered = len(chunks) > 1
+                        for chunk in chunks[:-1]:
                             new_id = await self._send_new_chunk(
                                 chunk,
                                 reply_to,
                                 final=got_done,
                             )
-                            if new_id is not None and new_id != reply_to:
-                                chunks_delivered = True
-                        self._accumulated = ""
-                        self._last_sent_text = ""
+                            if new_id is None or new_id == reply_to:
+                                # Failed to deliver a sealed head; keep the
+                                # full accumulated text intact so the gateway's
+                                # fallback path can still deliver it completely.
+                                all_heads_delivered = False
+                                chunks_delivered = False
+                                break
+                            chunks_delivered = True
+                            reply_to = new_id
+
+                        if all_heads_delivered:
+                            self._accumulated = chunks[-1]
+                            # The head chunks are sealed.  Clear the edit target
+                            # so the remaining tail is sent as a fresh active
+                            # chunk, then edited by subsequent deltas.
+                            self._message_id = None
+                            self._message_created_ts = None
+                            self._last_sent_text = ""
+                        else:
+                            # A prior head may have landed before a later head
+                            # failed.  Do not edit that sealed message with the
+                            # unsplit full payload; let the fallback path retry.
+                            self._message_id = None
+                            self._message_created_ts = None
+                            self._last_sent_text = ""
+
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            # Only claim final delivery if THESE chunks actually
-                            # landed.  ``_already_sent`` may be True from prior
-                            # tool-progress edits or fallback-mode promotion (#10748)
-                            # — that doesn't mean the final answer reached the user.
-                            self._final_response_sent = chunks_delivered
-                            if chunks_delivered:
+                            tail_delivered = True
+                            if self._accumulated:
+                                tail_delivered = await self._send_or_edit(
+                                    self._accumulated, finalize=True,
+                                )
+                            # Only claim final delivery if the sealed chunks and
+                            # final tail actually landed.  ``_already_sent`` may
+                            # be True from prior progress/fallback state (#10748).
+                            self._final_response_sent = chunks_delivered and tail_delivered
+                            if self._final_response_sent:
                                 self._final_content_delivered = True
                             return
                         if got_segment_break:
                             self._message_id = None
                             self._fallback_final_send = False
                             self._fallback_prefix = ""
-                        continue
+                            if not self._accumulated:
+                                continue
 
+                        # This iteration consumed a _FLUSH barrier and delivered
+                        # the buffered prose via the chunk loop above, then takes
+                        # an early `continue` that skips the bottom-of-loop set.
+                        # Signal here so flush_pending_sync() doesn't stall the
+                        # full timeout waiting on already-delivered content.
+                        if got_flush:
+                            self._signal_flush(flush_event)
+                        continue
                     # Existing message: edit it with the first chunk, then
                     # start a new message for the overflow remainder.
                     while (
@@ -593,8 +898,8 @@ class GatewayStreamConsumer:
                             self._accumulated, _safe_limit, _len_fn,
                         )
                         split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
+                        if split_at < _cp_budget // 2:
+                            split_at = _cp_budget
                         chunk = self._accumulated[:split_at]
                         # finalize=True so the adapter applies platform-specific
                         # rich-text markup (e.g. Telegram MarkdownV2). This
@@ -738,6 +1043,13 @@ class GatewayStreamConsumer:
                         await self._flush_segment_tail_on_edit_failure()
                     self._reset_segment_state(preserve_no_edit=True)
 
+                # Flush barrier satisfied: the buffered segment (if any) has now
+                # been finalized and delivered above, so wake the thread blocked
+                # in flush_pending_sync().  Done last so the waiter only unblocks
+                # once everything queued before the barrier is on screen.
+                if got_flush:
+                    self._signal_flush(flush_event)
+
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
@@ -770,6 +1082,26 @@ class GatewayStreamConsumer:
                 self._final_content_delivered = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
+        finally:
+            # Safety net: if run() exits (normal return, cancellation, or
+            # exception) while a _FLUSH barrier is still queued or was consumed
+            # but not yet signaled, wake any waiters now. Without this a caller
+            # blocked in flush_pending_sync() would stall the full timeout when
+            # the consumer dies mid-flush. Bounded either way, but this makes
+            # the common case instant instead of timeout-delayed.
+            try:
+                while True:
+                    item = self._queue.get_nowait()
+                    if (
+                        isinstance(item, tuple)
+                        and len(item) == 2
+                        and item[0] is _FLUSH
+                    ):
+                        self._signal_flush(item[1])
+            except queue.Empty:
+                pass
+            except Exception:
+                pass
 
     # Strip MEDIA:<path> tags before display. Uses the shared anchored
     # MEDIA_TAG_CLEANUP_RE from gateway/platforms/base.py — only tags whose
@@ -790,14 +1122,7 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
-        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
-        # Collapse excessive blank lines left behind by removed tags
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        # Strip trailing whitespace/newlines but preserve leading content
-        return cleaned.rstrip()
+        return _BasePlatformAdapter.strip_media_directives_for_display(text)
 
     async def _send_new_chunk(
         self,
@@ -851,25 +1176,102 @@ class GatewayStreamConsumer:
         return final_text
 
     @staticmethod
+    def _balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
+        """Close orphaned ``` fences at each chunk boundary and reopen on the next.
+
+        When a split lands inside a triple-backtick code block, the head chunk
+        would render everything after the orphaned fence as code, and the tail
+        chunk's content would lose its code formatting.  Mirror
+        ``BasePlatformAdapter.truncate_message``'s contract: close the fence at
+        the end of the chunk and reopen it (with the original language tag) at
+        the start of the next one, so EVERY delivered chunk is fence-balanced
+        on its own.
+        """
+        if len(chunks) <= 1:
+            return chunks
+        out: "list[str]" = []
+        carry_lang: "Optional[str]" = None
+        for chunk in chunks:
+            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+            in_code = carry_lang is not None
+            lang = carry_lang or ""
+            for line in chunk.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if in_code:
+                        in_code = False
+                        lang = ""
+                    else:
+                        in_code = True
+                        tag = stripped[3:].strip()
+                        lang = tag.split()[0] if tag else ""
+            body = prefix + chunk
+            if in_code:
+                body += "\n```"
+                carry_lang = lang
+            else:
+                carry_lang = None
+            out.append(body)
+        return out
+
+    @staticmethod
     def _split_text_chunks(
-        text: str, limit: int,
+        text: str,
+        limit: int,
         len_fn: "Callable[[str], int]" = len,
     ) -> list[str]:
-        """Split text into reasonably sized chunks for fallback sends."""
+        """Split text into reasonably sized chunks for fallback sends.
+
+        Chunks are fence-balanced: a split inside a ``` code block closes the
+        fence on the head chunk and reopens it on the tail, so no chunk leaves
+        the rest of a message rendering as one giant code block.
+        """
         if len_fn(text) <= limit:
             return [text]
+        # Reserve headroom for the close/reopen fence markers the balancing
+        # pass may add, so balanced chunks stay within the platform limit.
+        split_limit = limit
+        if "```" in text:
+            split_limit = max(limit - 16, limit // 2, 1)
         chunks: list[str] = []
         remaining = text
-        while len_fn(remaining) > limit:
-            _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
+        while len_fn(remaining) > split_limit:
+            _cp_budget = _custom_unit_to_cp(remaining, split_limit, len_fn)
             split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < limit // 2:
-                split_at = limit
+            if split_at < _cp_budget // 2:
+                split_at = _cp_budget
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:
             chunks.append(remaining)
-        return chunks
+        return GatewayStreamConsumer._balance_fences_across_chunks(chunks)
+
+    def _truncate_for_stream(
+        self,
+        text: str,
+        limit: int,
+        len_fn: "Callable[[str], int]",
+    ) -> list[str]:
+        """Use the adapter's canonical splitter for streaming overflow.
+
+        Platform adapters may add word-boundary, code-fence, table, or
+        platform-specific formatting rules.  The consumer must not replace
+        those rules with newline-only slicing.  Non-base test doubles and
+        legacy adapters retain the historical two-argument call shape.
+        """
+        truncate = getattr(self.adapter, "truncate_message", None)
+        if not callable(truncate):
+            return self._split_text_chunks(text, limit, len_fn)
+
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            chunks = truncate(text, limit, len_fn=len_fn)
+        else:
+            chunks = truncate(text, limit)
+        if not isinstance(chunks, (list, tuple)) or not all(
+            isinstance(chunk, str) for chunk in chunks
+        ):
+            return self._split_text_chunks(text, limit, len_fn)
+        return list(chunks)
 
     async def _send_fallback_final(self, text: str) -> None:
         """Send the final continuation after streaming edits stop working.
@@ -877,9 +1279,43 @@ class GatewayStreamConsumer:
         Retries each chunk once on flood-control failures with a short delay.
         """
         final_text = self._clean_for_display(text)
+        # Ensure balanced code fences before computing continuation,
+        # so the closing fence reaches the user even when the fallback
+        # only delivers the tail after mid-stream edits failed.
+        final_text = ensure_closed_code_fences(final_text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
+            # Some platforms treat a successful streaming preview as durable
+            # delivery. Telegram clients can instead lose or retain only part
+            # of that preview after a failed final edit, so opt-in adapters
+            # commit the completed answer with a fresh final send.
+            if (
+                final_text.strip()
+                and final_text == self._visible_prefix()
+                and getattr(
+                    self.adapter,
+                    "RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK",
+                    False,
+                ) is True
+            ):
+                delivery = await self._send_empty_fallback_final(final_text)
+                if delivery == "delivered":
+                    return
+                self._already_sent = True
+                self._fallback_prefix = ""
+                self._fallback_preserve_partial_messages = False
+                if delivery == "ambiguous":
+                    # A timeout may mean Telegram accepted the send but the
+                    # client never received the response. Preserve duplicate
+                    # suppression for that one uncertain outcome.
+                    self._final_content_delivered = True
+                else:
+                    # A confirmed failure leaves the gateway free to perform
+                    # its normal final send.
+                    self._final_response_sent = False
+                    self._final_content_delivered = False
+                return
             # Nothing new to send — the visible partial already matches final text.
             # BUT: if final_text itself has meaningful content (e.g. a timeout
             # message after a long tool call), the prefix-based continuation
@@ -941,13 +1377,15 @@ class GatewayStreamConsumer:
                 )
                 if result.success:
                     break
-                if attempt == 0 and self._is_flood_error(result):
+                retry_delay = self._fallback_flood_retry_delay(result)
+                if attempt == 0 and retry_delay is not None:
                     logger.debug(
-                        "Flood control on fallback send, retrying in 3s"
+                        "Flood control on fallback send, retrying in %.1fs",
+                        retry_delay,
                     )
-                    await asyncio.sleep(3.0)
+                    await asyncio.sleep(retry_delay)
                 else:
-                    break  # non-flood error or second attempt failed
+                    break  # non-flood error, long flood wait, or second failure
 
             if not result or not result.success:
                 if sent_any_chunk:
@@ -1009,6 +1447,103 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+
+    async def _send_empty_fallback_final(self, final_text: str) -> str:
+        """Commit a completed answer after Telegram finalization fails.
+
+        Returns ``delivered`` on confirmed success, ``failed`` when the
+        gateway can safely retry, and ``ambiguous`` when a timeout may have
+        reached the platform already.
+        """
+        # Tool/segment boundaries intentionally preserve the run-wide preview
+        # IDs for normal fresh-final cleanup.  This recovery replaces only the
+        # active final segment, so never delete an earlier finalized preamble.
+        stale_ids = set(self._segment_preview_message_ids)
+        if self._message_id and self._message_id != "__no_edit__":
+            stale_ids.add(str(self._message_id))
+
+        result = None
+        for attempt in range(2):
+            try:
+                result = await self.adapter.send(
+                    chat_id=self.chat_id,
+                    content=final_text,
+                    metadata=self._metadata_for_send(final=True),
+                )
+            except Exception as exc:
+                logger.debug("Empty fallback final send failed: %s", exc)
+                return (
+                    "ambiguous"
+                    if self._send_failure_may_have_delivered(exc)
+                    else "failed"
+                )
+
+            if getattr(result, "success", False):
+                break
+            retry_delay = self._fallback_flood_retry_delay(result)
+            if attempt == 0 and retry_delay is not None:
+                logger.debug(
+                    "Flood control on empty fallback final send; retrying in %.1fs",
+                    retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            return (
+                "ambiguous"
+                if self._send_failure_may_have_delivered(result)
+                else "failed"
+            )
+
+        new_message_id = getattr(result, "message_id", None)
+        delete_fn = getattr(self.adapter, "delete_message", None)
+        if delete_fn is not None:
+            for stale_id in stale_ids:
+                if not stale_id or stale_id == new_message_id:
+                    continue
+                try:
+                    await delete_fn(self.chat_id, stale_id)
+                except Exception as exc:
+                    logger.debug(
+                        "Empty fallback preview cleanup failed (%s): %s",
+                        stale_id,
+                        exc,
+                    )
+
+        self._segment_preview_message_ids = set()
+        self._message_id = new_message_id or "__no_edit__"
+        self._already_sent = True
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        self._last_sent_text = final_text
+        self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
+        self._notify_new_message()
+        return "delivered"
+
+    @staticmethod
+    def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
+        """Return True for timeout failures where retrying may duplicate."""
+        if getattr(result_or_exc, "retryable", None) is True:
+            return False
+        error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
+        name = result_or_exc.__class__.__name__.lower()
+        return "timeout" in error or "timed out" in error or "timeout" in name
+
+    def _fallback_flood_retry_delay(self, result: Any) -> float | None:
+        """Return a bounded retry delay for a fallback send, if safe to retry."""
+        if not self._is_flood_error(result):
+            return None
+        try:
+            delay = float(getattr(result, "retry_after", None) or 3.0)
+        except (TypeError, ValueError):
+            delay = 3.0
+        if delay > self._max_fallback_flood_retry_seconds:
+            logger.debug(
+                "Flood control requests %.1fs; leaving final delivery to the gateway",
+                delay,
+            )
+            return None
+        return max(0.0, delay)
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
@@ -1144,11 +1679,12 @@ class GatewayStreamConsumer:
         if not prefix or not prefix.strip():
             return
         try:
-            await self._edit_message(
+            result = await self._edit_message(
                 message_id=self._message_id,
                 content=prefix,
             )
-            self._last_sent_text = prefix
+            if getattr(result, "success", False):
+                self._last_sent_text = prefix
         except Exception:
             pass  # best-effort — don't let this block the fallback path
 
@@ -1173,6 +1709,10 @@ class GatewayStreamConsumer:
                 # stale tool bubble above it so the next tool starts a
                 # new bubble below.
                 self._notify_new_message()
+                # Record the exact delivered text so run.py can confirm whether
+                # an interim "preview" actually carried the final response, vs.
+                # unrelated commentary delivered during a session split (#14238).
+                self._delivered_commentary_texts.append(text)
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
@@ -1224,9 +1764,11 @@ class GatewayStreamConsumer:
         return base
 
     def _track_preview_id(self, message_id: Optional[str]) -> None:
-        """Record a real preview message id for fresh-final cleanup."""
+        """Record a real preview message id for finalization cleanup."""
         if message_id and message_id != "__no_edit__":
-            self._preview_message_ids.add(str(message_id))
+            message_id = str(message_id)
+            self._preview_message_ids.add(message_id)
+            self._segment_preview_message_ids.add(message_id)
 
     def _track_preview_ids_from_result(self, result: Any) -> None:
         """Record every message id a send/edit result exposes: the primary id
@@ -1339,6 +1881,49 @@ class GatewayStreamConsumer:
             self._final_response_sent = True
         return True
 
+    async def _suppress_silence_marker(self) -> None:
+        """Retract any streamed preview when the final reply is a silence marker.
+
+        The agent chose not to respond and emitted a bare control marker.  Any
+        preview message the consumer already put on screen (a partial marker
+        flushed on an interval tick, or a preamble before a tool boundary) must
+        be removed so the raw marker is never left visible.  Deletion reuses the
+        same best-effort ``delete_message`` path as :meth:`_try_fresh_final`.
+
+        Crucially, the delivery flags (``_final_response_sent`` /
+        ``_final_content_delivered``) are left **False**: nothing was delivered.
+        The gateway then does not mistake the marker for a delivered reply, and
+        its own whole-response filter turns the marker into "" so no fallback
+        send happens either.  ``_already_sent`` is likewise cleared so the
+        gateway's ``already_sent`` short-circuits do not fire.
+        """
+        stale_ids = set(self._preview_message_ids)
+        if self._message_id and self._message_id != "__no_edit__":
+            stale_ids.add(self._message_id)
+        delete_fn = getattr(self.adapter, "delete_message", None)
+        if delete_fn is not None:
+            for stale_id in stale_ids:
+                if not stale_id or stale_id == "__no_edit__":
+                    continue
+                try:
+                    await delete_fn(self.chat_id, stale_id)
+                except Exception as e:
+                    logger.debug(
+                        "Silence-marker preview cleanup failed (%s): %s",
+                        stale_id, e,
+                    )
+        self._preview_message_ids = set()
+        self._message_id = None
+        self._accumulated = ""
+        self._last_sent_text = ""
+        self._already_sent = False
+        self._final_response_sent = False
+        self._final_content_delivered = False
+        logger.info(
+            "Suppressed streamed intentional-silence marker (chat=%s)",
+            self.chat_id,
+        )
+
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
     ) -> bool:
@@ -1355,6 +1940,12 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Ensure code fences are balanced before send/edit.  Model output
+        # truncated mid-code-block (e.g. finish_reason="length") leaves an
+        # orphaned ``` which, on Discord/Slack/Matrix, causes the entire
+        # remaining output to render as a single code block.  This covers
+        # the streaming edit path (G2) and first-send path alike.
+        text = ensure_closed_code_fences(text)
         # A bare streaming cursor is not meaningful user-visible content and
         # can render as a stray tofu/white-box message on some clients.
         visible_without_cursor = text
@@ -1516,6 +2107,7 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        immediate_final_fallback = False
                         if (
                             finalize
                             and is_turn_final
@@ -1577,12 +2169,30 @@ class GatewayStreamConsumer:
                                 self._MAX_FLOOD_STRIKES,
                                 self._current_edit_interval,
                             )
-                            if self._flood_strikes < self._MAX_FLOOD_STRIKES:
+                            immediate_final_fallback = (
+                                finalize
+                                and is_turn_final
+                                and getattr(
+                                    self.adapter,
+                                    "FALLBACK_ON_FINAL_EDIT_FLOOD",
+                                    False,
+                                ) is True
+                            )
+                            if (
+                                self._flood_strikes < self._MAX_FLOOD_STRIKES
+                                and not immediate_final_fallback
+                            ):
                                 # Don't disable edits yet — just slow down.
                                 # Update _last_edit_time so the next edit
                                 # respects the new interval.
                                 self._last_edit_time = time.monotonic()
                                 return False
+
+                            if immediate_final_fallback:
+                                logger.debug(
+                                    "Turn-final edit hit flood control; "
+                                    "entering fallback immediately"
+                                )
 
                         # Non-flood error OR flood strikes exhausted: enter
                         # fallback mode — send only the missing tail once the
@@ -1596,8 +2206,12 @@ class GatewayStreamConsumer:
                         self._edit_supported = False
                         self._already_sent = True
                         # Best-effort: strip the cursor from the last visible
-                        # message so the user doesn't see a stuck ▉.
-                        await self._try_strip_cursor()
+                        # message so the user doesn't see a stuck ▉. A
+                        # turn-final Telegram flood skips this cosmetic edit:
+                        # another edit would consume the same flood budget and
+                        # delay the fallback send that carries the answer.
+                        if not immediate_final_fallback:
+                            await self._try_strip_cursor()
                         return False
                 else:
                     # Editing not supported — skip intermediate updates.

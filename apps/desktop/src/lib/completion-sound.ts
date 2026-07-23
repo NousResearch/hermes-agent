@@ -1,6 +1,7 @@
 // Completion sound bank for agent turn-end cues.
 // Fourteen curated presets for A/B in Settings → Appearance. Default is variant 1.
 
+import { ownsAmbientCue } from '@/store/ambient'
 import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
 
@@ -15,7 +16,8 @@ function getCtx(): AudioContext | null {
 
   try {
     if (!ctx) {
-      const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      const Ctor =
+        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
 
       if (!Ctor) {
         return null
@@ -451,13 +453,22 @@ export function previewCompletionSound(variantId?: number) {
   playVariant(resolveCompletionSoundVariantId(variantId ?? $completionSoundVariantId.get()))
 }
 
-// Plays the selected completion cue on any `message.complete`.
-export function playCompletionSound() {
+// Plays the selected completion cue on any `message.complete`. Pass a dedupeKey
+// (the session id) so only one window beeps when several are open — the mute
+// check runs first, so a muted window never claims the cue out from under an
+// audible peer.
+export function playCompletionSound(dedupeKey?: string) {
   if ($hapticsMuted.get()) {
     return
   }
 
-  playVariant($completionSoundVariantId.get())
+  const play = () => playVariant($completionSoundVariantId.get())
+
+  if (!dedupeKey) {
+    return play()
+  }
+
+  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && play())
 }
 
 interface AirPuffSpec {

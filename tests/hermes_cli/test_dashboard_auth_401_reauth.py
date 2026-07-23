@@ -27,15 +27,16 @@ import pytest
 # against each other (and against any other file that also touches
 # ``app.state``) — the marker name is shared across all dashboard-auth test
 # files that gate the app.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import (
     SESSION_AT_COOKIE,
+    SESSION_PROVIDER_COOKIE,
     SESSION_RT_COOKIE,
     clear_session_cookies,
     set_session_cookies,
@@ -253,6 +254,156 @@ class TestTransparentRefreshOnAccessTokenEviction:
             for c in set_cookies
         ), f"no rotated RT cookie in {set_cookies!r}"
 
+    def test_provider_hint_routes_refresh_to_token_owner(self, gated_app):
+        """A Nous-style RT must not be rejected by Basic just because Basic
+        was registered first. The non-secret provider hint routes directly to
+        the provider that minted the session."""
+        class WrongProvider(StubAuthProvider):
+            name = "basic"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise AssertionError("foreign refresh token reached Basic provider")
+
+        wrong = WrongProvider()
+        _provider, valid_rt = self._build_rt_only_app()
+        clear_providers()
+        register_provider(wrong)
+        register_provider(StubAuthProvider(default_ttl=900))
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "stub")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 200
+        assert wrong.refresh_calls == 0
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_unknown_provider_hint_retains_verify_fallback(self, gated_app):
+        """A hint for a removed provider must not suppress the normal scan."""
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        valid_at = _sign({
+            "sub": "stub-user-1",
+            "email": "stub@example.test",
+            "name": "Stub User",
+            "org_id": "stub-org-1",
+            "exp": int(_t.time()) + 900,
+        })
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_AT_COOKIE, valid_at)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "removed-provider")
+
+        response = gated_app.get("/api/auth/me")
+
+        assert response.status_code == 200
+        assert response.json()["provider"] == "stub"
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [RefreshExpiredError, ProviderError],
+        ids=["token-rejected", "provider-unreachable"],
+    )
+    def test_stale_provider_hint_refresh_error_falls_back(
+        self,
+        gated_app,
+        error_type,
+    ):
+        """A stale known hint may reject a foreign RT or be unavailable.
+
+        Either failure applies only to that provider candidate; remaining
+        providers still get a chance to claim the token.
+        """
+        class StaleHintProvider(StubAuthProvider):
+            name = "basic"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise error_type("foreign refresh token")
+
+        stale = StaleHintProvider()
+        _provider, valid_rt = self._build_rt_only_app()
+        clear_providers()
+        register_provider(stale)
+        register_provider(StubAuthProvider(default_ttl=900))
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "basic")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 200
+        assert stale.refresh_calls == 1
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_refresh_outage_returns_503_without_clearing_cookies(self, gated_app):
+        """Uncertain ownership during an outage must not log the user out."""
+        class UnreachableProvider(StubAuthProvider):
+            name = "unreachable"
+
+            def refresh_session(self, *, refresh_token: str):
+                raise ProviderError("simulated provider outage")
+
+        class RejectingProvider(StubAuthProvider):
+            name = "rejecting"
+
+            def refresh_session(self, *, refresh_token: str):
+                raise RefreshExpiredError("foreign refresh token")
+
+        clear_providers()
+        register_provider(UnreachableProvider())
+        register_provider(RejectingProvider())
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, "opaque-refresh-token")
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "unreachable")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 503
+        assert gated_app.cookies.get(SESSION_RT_COOKIE) == "opaque-refresh-token"
+        assert not any(
+            SESSION_RT_COOKIE in cookie and "Max-Age=0" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_valid_legacy_session_is_migrated_with_provider_hint(self, gated_app):
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        valid_at = _sign({
+            "sub": "stub-user-1",
+            "email": "stub@example.test",
+            "name": "Stub User",
+            "org_id": "stub-org-1",
+            "exp": int(_t.time()) + 900,
+        })
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_AT_COOKIE, valid_at)
+
+        response = gated_app.get("/api/sessions")
+
+        assert response.status_code == 200
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
     def test_no_cookies_at_all_still_bounces(self, gated_app):
         """Guard the fix didn't over-reach: a request with NEITHER cookie
         must still 401 to login (nothing to verify or refresh)."""
@@ -282,14 +433,24 @@ class TestTransparentRefreshOnAccessTokenEviction:
 
 
 class TestHtmlRedirectNext:
-    def test_deep_html_path_redirects_with_next(self, gated_app):
+    def test_deep_html_path_auto_sso_with_next(self, gated_app):
+        # Single interactive provider registered (the stub) → an unauth HTML
+        # load auto-initiates the OAuth redirect (Phase 1 cloud-auto-discovery)
+        # rather than rendering the /login interstitial. The original path is
+        # preserved as next= so the post-login landing returns there.
         r = gated_app.get("/sessions", follow_redirects=False)
         assert r.status_code == 302
-        assert r.headers["location"] == "/login?next=%2Fsessions"
+        assert r.headers["location"] == (
+            "/auth/login?provider=stub&next=%2Fsessions"
+        )
 
-    def test_root_path_redirects_with_next(self, gated_app):
+    def test_root_path_auto_sso(self, gated_app):
         r = gated_app.get("/", follow_redirects=False)
-        assert r.headers["location"] in ("/login", "/login?next=%2F")
+        # Root has no useful next= (login lands at "/" anyway).
+        assert r.headers["location"] in (
+            "/auth/login?provider=stub",
+            "/auth/login?provider=stub&next=%2F",
+        )
 
     def test_login_loop_avoided(self, gated_app):
         """A request to /login itself must not produce ``?next=/login``
@@ -308,6 +469,94 @@ class TestHtmlRedirectNext:
         assert r.status_code == 401
         body = r.json()
         assert "next=" not in body["login_url"]
+
+
+# ---------------------------------------------------------------------------
+# Gate middleware: auto-SSO redirect + one-shot loop guard (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSsoRedirect:
+    """The dashboard auto-initiates the portal OAuth redirect on an
+    unauthenticated HTML document load (single interactive provider), and a
+    one-shot cookie guard prevents an infinite redirect loop when the portal
+    has no session for the user.
+    """
+
+    from hermes_cli.dashboard_auth.cookies import SSO_ATTEMPT_COOKIE
+
+    def test_unauth_html_load_auto_redirects_to_oauth(self, gated_app):
+        """Common case: clicked a dashboard link, no local session cookie.
+        We bounce straight to /auth/login (the OAuth-initiation route) rather
+        than the /login interstitial, and arm the one-shot guard cookie."""
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/auth/login?provider=stub")
+        # The one-shot loop-guard marker is set on the redirect.
+        set_cookie = r.headers.get_list("set-cookie")
+        assert any(self.SSO_ATTEMPT_COOKIE in c for c in set_cookie)
+
+    def test_second_unauth_load_with_guard_falls_back_to_login(self, gated_app):
+        """Loop-guard: the user came back from the portal STILL
+        unauthenticated (no portal session). The guard cookie is now present,
+        so instead of auto-redirecting again (which would ping-pong forever)
+        we fall back to the /login interstitial and clear the marker."""
+        # Simulate the return trip: guard cookie present, still no session.
+        gated_app.cookies.set(self.SSO_ATTEMPT_COOKIE, "1")
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        # Falls back to the interstitial, NOT another /auth/login bounce.
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+        # And the one-shot marker is cleared so a later visit gets a fresh
+        # silent attempt rather than being stuck on /login forever.
+        set_cookie = r.headers.get_list("set-cookie")
+        assert any(
+            self.SSO_ATTEMPT_COOKIE in c and "Max-Age=0" in c
+            for c in set_cookie
+        )
+
+    def test_no_infinite_loop_following_redirects(self, gated_app):
+        """End-to-end loop safety: following redirects from an unauth load,
+        with the stub IdP unable to mint a session (it bounces back to the
+        callback but we never land a cookie in this no-portal-session
+        simulation), must terminate — not loop forever. We assert the guard
+        makes the SECOND unauth gate decision fall back to /login.
+
+        Concretely: first load arms the guard + 302s to /auth/login; a
+        subsequent unauth load (guard present) lands on /login. Two distinct
+        outcomes, no third bounce."""
+        first = gated_app.get("/dashboard", follow_redirects=False)
+        assert first.headers["location"].startswith("/auth/login?provider=stub")
+        # Carry the guard cookie the first response set into the next request
+        # (TestClient persists set-cookie automatically). A second unauth load:
+        second = gated_app.get("/dashboard", follow_redirects=False)
+        assert second.headers["location"].startswith("/login")
+        assert "/auth/login" not in second.headers["location"]
+
+    def test_api_path_never_auto_redirects(self, gated_app):
+        """Auto-SSO is for HTML document loads only. An /api/* fetch with no
+        cookie still gets the 401 JSON envelope (a fetch() would otherwise
+        follow the 302 into the cross-origin OAuth dance opaquely)."""
+        r = gated_app.get("/api/sessions", follow_redirects=False)
+        assert r.status_code == 401
+        assert r.json()["error"] == "unauthenticated"
+
+    def test_multiple_providers_render_chooser_not_auto_sso(self, gated_app):
+        """With two interactive providers we can't pick for the user, so the
+        /login chooser must render rather than auto-redirecting to one."""
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+        from hermes_cli.dashboard_auth import register_provider
+
+        class _SecondStub(StubAuthProvider):
+            name = "stub2"
+            display_name = "Second Stub IdP"
+
+        register_provider(_SecondStub())
+        r = gated_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
 
 
 # ---------------------------------------------------------------------------

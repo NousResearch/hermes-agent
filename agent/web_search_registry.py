@@ -219,6 +219,65 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     return None
 
 
+def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:
+    """Return the plugin key of a *disabled* bundled web plugin that would
+    have provided the configured backend, or None.
+
+    When a user sets ``web.extract_backend: firecrawl`` (or the search
+    equivalent) but also lists ``web-firecrawl`` in ``plugins.disabled``,
+    the provider never registers and the dispatcher would otherwise emit a
+    misleading "No web extract provider configured. Set web.extract_backend
+    to ..." error — even though the backend IS configured correctly. The
+    real fix is to re-enable the plugin. This helper detects that case so
+    the dispatcher can point the user at the actual cause (issue #40190
+    follow-up: pi314's disabled-plugin symptom).
+
+    Pass ``capability`` ("search" | "extract") to resolve the configured
+    name straight from ``config.yaml`` (``web.<capability>_backend`` →
+    ``web.backend``). This is more reliable than the resolved backend the
+    dispatcher fell back to, since a disabled provider fails the
+    ``_is_backend_available`` gate and the dispatcher silently drops to
+    the shared default. An explicit ``configured`` name still wins when
+    given.
+
+    Matching is by convention: bundled web plugins live under the
+    ``web/<vendor>`` key with the provider ``name`` differing only in
+    hyphen/underscore (``brave-free`` provider ⇄ ``web/brave_free`` key,
+    ``firecrawl`` ⇄ ``web/firecrawl``). We normalize both sides before
+    comparing so every bundled provider is covered without hardcoding a
+    per-vendor table.
+    """
+    def _norm(s: str) -> str:
+        return s.strip().lower().replace("-", "_")
+
+    if not configured and capability in ("search", "extract"):
+        configured = (
+            _read_config_key("web", f"{capability}_backend")
+            or _read_config_key("web", "backend")
+        )
+    if not configured:
+        return None
+
+    want = _norm(configured)
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        pm = get_plugin_manager()
+        for key, loaded in pm._plugins.items():
+            if not isinstance(key, str) or not key.startswith("web/"):
+                continue
+            if loaded.enabled:
+                continue
+            if loaded.error != "disabled via config":
+                continue
+            vendor = key.split("/", 1)[1]
+            if _norm(vendor) == want:
+                return key
+    except Exception as exc:  # noqa: BLE001 — diagnostics are best-effort
+        logger.debug("disabled-web-plugin lookup failed: %s", exc)
+    return None
+
+
 def get_active_search_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web search provider.
 

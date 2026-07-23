@@ -109,6 +109,7 @@ class TestStdioPidTracking:
         """_kill_orphaned_mcp_children does nothing when no PIDs tracked."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _stdio_pids,
             _lock,
@@ -117,6 +118,7 @@ class TestStdioPidTracking:
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
 
         # Should not raise
         _kill_orphaned_mcp_children()
@@ -125,6 +127,7 @@ class TestStdioPidTracking:
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _lock,
         )
@@ -133,6 +136,7 @@ class TestStdioPidTracking:
         fake_pid = 999999999
         with _lock:
             _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         # Should not raise (ProcessLookupError is caught)
         _kill_orphaned_mcp_children()
@@ -144,6 +148,7 @@ class TestStdioPidTracking:
         """SIGTERM-first then SIGKILL after 2s for orphan cleanup."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _lock,
         )
@@ -151,7 +156,9 @@ class TestStdioPidTracking:
         fake_pid = 424242
         with _lock:
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         fake_sigkill = 9
         monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
@@ -177,6 +184,7 @@ class TestStdioPidTracking:
         """Without SIGKILL, SIGTERM is used for both phases."""
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _lock,
         )
@@ -184,7 +192,9 @@ class TestStdioPidTracking:
         fake_pid = 434343
         with _lock:
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         monkeypatch.delattr(signal, "SIGKILL", raising=False)
 
@@ -198,6 +208,99 @@ class TestStdioPidTracking:
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
+
+    def test_run_stdio_reaps_orphans_before_spawn(self):
+        """_run_stdio kills orphaned PIDs from prior failed attempts (#57355)."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pids,
+            _stdio_pgids,
+            _lock,
+            MCPServerTask,
+        )
+        from unittest.mock import patch, MagicMock, AsyncMock
+
+        # Seed an orphan PID that belongs to a prior failed connection.
+        fake_pid = 999999997
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+
+        server = MCPServerTask.__new__(MCPServerTask)
+        server.name = "test-zombie-reap"
+        server._ready = MagicMock()
+        server._shutdown_event = MagicMock()
+        server._shutdown_event.is_set.return_value = True
+        server._reconnect_event = MagicMock()
+        server._sampling = None
+        server._elicitation = None
+        server._registered_tool_names = []
+
+        config = {"command": "echo", "args": ["hello"]}
+
+        import asyncio
+
+        async def _run():
+            # _run_stdio should reap orphans before it gets to the
+            # stdio_client spawn.  Patch the OSV check (local import)
+            # and stdio_client so no real subprocess is spawned.
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._build_safe_env", return_value={}), \
+                 patch("tools.mcp_tool._resolve_stdio_command",
+                       return_value=("echo", {})), \
+                 patch("tools.mcp_tool._write_stderr_log_header"), \
+                 patch("tools.mcp_tool._get_mcp_stderr_log",
+                       return_value=None), \
+                 patch("tools.mcp_tool.check_package_for_malware",
+                       return_value=None, create=True), \
+                 patch("tools.osv_check.check_package_for_malware",
+                       return_value=None):
+                # Patch stdio_client to raise so the test exits quickly
+                cm = MagicMock()
+                cm.__aenter__ = AsyncMock(side_effect=RuntimeError("test"))
+                cm.__aexit__ = AsyncMock(return_value=False)
+                with patch("tools.mcp_tool.stdio_client", return_value=cm):
+                    try:
+                        await server._run_stdio(config)
+                    except Exception:
+                        pass
+
+        asyncio.run(_run())
+
+        # The orphan must have been reaped before the spawn attempt.
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+
+    def test_kill_orphaned_can_filter_by_server_name(self):
+        """Reconnect cleanup reaps only the orphan owned by that MCP server."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
+            _orphan_stdio_pids,
+            _lock,
+        )
+
+        target_pid = 454545
+        other_pid = 464646
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _orphan_stdio_pids.update({target_pid, other_pid})
+            _orphan_stdio_pid_servers[target_pid] = "feishu"
+            _orphan_stdio_pid_servers[other_pid] = "mimir"
+
+        with patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.mcp_tool.time.sleep") as mock_sleep:
+            _kill_orphaned_mcp_children(server_name="feishu")
+
+        mock_kill.assert_called_once_with(target_pid, signal.SIGTERM)
+        mock_sleep.assert_called_once_with(2)
+        with _lock:
+            assert target_pid not in _orphan_stdio_pids
+            assert target_pid not in _orphan_stdio_pid_servers
+            assert other_pid in _orphan_stdio_pids
+            assert _orphan_stdio_pid_servers[other_pid] == "mimir"
 
 
 # ---------------------------------------------------------------------------
@@ -214,10 +317,17 @@ class TestStdioPgroupReaping:
     """_kill_orphaned_mcp_children reaps via killpg when a pgid is tracked."""
 
     def _reset_state(self):
-        from tools.mcp_tool import _stdio_pids, _orphan_stdio_pids, _stdio_pgids, _lock
+        from tools.mcp_tool import (
+            _orphan_stdio_pid_servers,
+            _orphan_stdio_pids,
+            _stdio_pgids,
+            _stdio_pids,
+            _lock,
+        )
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _stdio_pgids.clear()
 
     def test_killpg_used_when_pgid_tracked(self, monkeypatch):
@@ -429,8 +539,8 @@ class TestStdioPgroupReaping:
         )
         parent_pgid = os.getpgid(parent.pid)
         # Wait for parent to exit and grandchild to spin up.
-        parent.wait(timeout=5)
-        deadline = _time.time() + 5
+        parent.wait(timeout=15)
+        deadline = _time.time() + 15  # fresh CPython spinup dilates under CI load
         while _time.time() < deadline and not grandchild_pid_file.exists():
             _time.sleep(0.05)
         assert grandchild_pid_file.exists(), "grandchild did not start"
@@ -443,6 +553,7 @@ class TestStdioPgroupReaping:
         # Drive the reaper: register the parent pid + pgid as an orphan.
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
+            _orphan_stdio_pid_servers,
             _orphan_stdio_pids,
             _stdio_pgids,
             _stdio_pids,
@@ -451,8 +562,10 @@ class TestStdioPgroupReaping:
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
             _stdio_pgids.clear()
             _orphan_stdio_pids.add(parent.pid)
+            _orphan_stdio_pid_servers[parent.pid] = "orphan"
             _stdio_pgids[parent.pid] = parent_pgid
         try:
             _kill_orphaned_mcp_children()
@@ -464,7 +577,7 @@ class TestStdioPgroupReaping:
                 pass
 
         # Grandchild should be gone — SIGTERM via killpg in phase 1 reached it.
-        deadline = _time.time() + 3
+        deadline = _time.time() + 10
         while _time.time() < deadline and psutil.pid_exists(grandchild_pid):
             _time.sleep(0.05)
         assert not psutil.pid_exists(grandchild_pid), (
@@ -560,7 +673,7 @@ class TestMCPInitialConnectionRetry:
         asyncio.get_event_loop().run_until_complete(_run())
 
     def test_initial_connect_gives_up_after_max_retries(self):
-        """Server gives up after _MAX_INITIAL_CONNECT_RETRIES failures."""
+        """Server parks (does not exit) after _MAX_INITIAL_CONNECT_RETRIES failures."""
         from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
         call_count = 0
@@ -583,8 +696,13 @@ class TestMCPInitialConnectionRetry:
                 assert "DNS resolution failed" in str(server._error)
                 # 1 initial + N retries = _MAX_INITIAL_CONNECT_RETRIES + 1 total attempts
                 assert call_count == _MAX_INITIAL_CONNECT_RETRIES + 1
+                # The task parks for later revival instead of exiting.
+                await asyncio.sleep(0)
+                assert not task.done(), "run task should park, not exit"
 
-                await task
+                server._shutdown_event.set()
+                server._reconnect_event.set()
+                await asyncio.wait_for(task, timeout=5)
 
         asyncio.get_event_loop().run_until_complete(_run())
 

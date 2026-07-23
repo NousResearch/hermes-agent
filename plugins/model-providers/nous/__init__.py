@@ -13,7 +13,20 @@ class NousProfile(ProviderProfile):
     def build_extra_body(
         self, *, session_id: str | None = None, **context
     ) -> dict[str, Any]:
-        return {"tags": nous_portal_tags()}
+        body: dict[str, Any] = {"tags": nous_portal_tags(session_id=session_id)}
+        if session_id:
+            # Top-level session_id → provider sticky routing key. Pins every
+            # turn of a session to the same upstream endpoint so explicit
+            # Anthropic cache_control breakpoints stay warm instead of
+            # cold-writing a fresh cache on each reroute (Anthropic/Vertex/
+            # Bedrock caches are instance-local). Mirrors the OpenRouter
+            # profile; without it the portal falls back to hashing the opening
+            # messages, which breaks pinning whenever those shift.
+            body["session_id"] = session_id
+        provider_preferences = context.get("provider_preferences")
+        if provider_preferences:
+            body["provider"] = provider_preferences
+        return body
 
     def build_api_kwargs_extras(
         self,
@@ -47,7 +60,7 @@ nous = NousProfile(
         "hermes-3-405b",
         "hermes-3-70b",
     ),
-    base_url="https://inference.nousresearch.com/v1",
+    base_url="https://inference-api.nousresearch.com/v1",
     auth_type="oauth_device_code",
 )
 

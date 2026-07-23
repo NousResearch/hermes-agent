@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
@@ -67,11 +68,7 @@ export function cleanPetName(prompt: string): string {
   const meaningful = words.filter(w => !NAME_STOPWORDS.has(w.toLowerCase()))
   const picked = (meaningful.length ? meaningful : words).slice(0, 3)
 
-  const name = picked
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
-    .slice(0, 28)
-    .trim()
+  const name = picked.map(capitalize).join(' ').slice(0, 28).trim()
 
   return name || 'Pet'
 }
@@ -82,15 +79,7 @@ export interface PetDraft {
   dataUri: string
 }
 
-export type PetGenStatus =
-  | 'idle'
-  | 'generating'
-  | 'ready'
-  | 'hatching'
-  | 'preview'
-  | 'adopting'
-  | 'error'
-  | 'stale'
+export type PetGenStatus = 'idle' | 'generating' | 'ready' | 'hatching' | 'preview' | 'adopting' | 'error' | 'stale'
 
 /** Live hatch step for the egg screen — which row is being drawn, then compose/save. */
 export interface PetHatchStage {
@@ -410,9 +399,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
         return
       }
 
-      $petGenDrafts.set(
-        [...current, { index: draft.index, dataUri: draft.dataUri }].sort((a, b) => a.index - b.index)
-      )
+      $petGenDrafts.set([...current, { index: draft.index, dataUri: draft.dataUri }].sort((a, b) => a.index - b.index))
     }) ?? (() => {})
 
   try {

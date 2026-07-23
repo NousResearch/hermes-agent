@@ -194,7 +194,7 @@ A form-based editor for `config.yaml`. All 150+ configuration fields are auto-di
 - **agent** — max iterations, gateway timeout, service tier
 - **delegation** — subagent limits, reasoning effort
 - **memory** — provider selection, context injection settings
-- **approvals** — dangerous command approval mode (ask/yolo/deny)
+- **approvals** — dangerous command approval mode (smart/manual/off)
 - And more — every section of config.yaml has corresponding form fields
 
 Fields with known valid values (terminal backend, skin, approval mode, etc.) render as dropdowns. Booleans render as toggles. Everything else is a text input.
@@ -361,7 +361,7 @@ the API server and webhook endpoints) with its live connection status.
 
 A consolidated administration panel for installation-wide operations:
 
-- **Host** — live system stats: OS / kernel, architecture, hostname, Python and Hermes versions, CPU core count + utilization, memory, disk usage of the Hermes home, uptime, and load average. (CPU/memory/disk come from `psutil` when installed; identity fields are always shown.) The Hermes version shows an **update-status badge** (up to date / N commits behind) and a **Check for updates** button. When an update is available on a git or pip install, an **Update now** button opens a confirmation dialog — showing how many commits you'll pull — before running `hermes update` in the background. On Docker/Nix/Homebrew installs the dashboard can't apply the update in place, so it shows the correct out-of-band command instead.
+- **Host** — live system stats: OS / kernel, architecture, hostname, Python and Hermes versions, CPU core count + utilization, memory, disk usage of the Hermes home, uptime, and load average. (CPU/memory/disk come from `psutil` when installed; identity fields are always shown.) The Hermes version shows an **update-status badge** (up to date / N commits behind) and a **Check for updates** button. When an update is available on a git install, an **Update now** button opens a confirmation dialog — showing how many commits you'll pull — before running `hermes update` in the background. On Docker/Nix installs the dashboard can't apply the update in place, so it shows the correct out-of-band command instead.
 - **Nous Portal** — login status, the active inference provider, and the Tool Gateway routing table (which tools run via the Portal vs. locally), with a link to manage your subscription. Read-only mirror of `hermes portal`.
 - **Skill curator** — the background skill-maintenance status (active / paused, interval, last run) with pause/resume and a run-now button. Mirrors `hermes curator`.
 - **Gateway** — start, stop, and restart the messaging gateway, with live status (running/stopped, PID, state)
@@ -542,7 +542,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
 | `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Create / remove a shell hook (consent-gated) |
 | `GET /api/system/stats` | Host stats — OS, CPU, memory, disk, uptime |
-| `GET /api/hermes/update/check` | Report update availability (commits behind, install method) without applying. For git/pip installs that are behind, also returns a `commits` list (`sha`, `summary`, `author`, `at`) of what's changed. `?force=1` busts the 6h cache |
+| `GET /api/hermes/update/check` | Report update availability (commits behind, install method) without applying. For git installs that are behind, also returns a `commits` list (`sha`, `summary`, `author`, `at`) of what's changed. `?force=1` busts the 6h cache |
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
@@ -965,6 +965,14 @@ def register(ctx):
 
 The login page lists all registered providers; multiple providers can be stacked and the user picks one at `/login`.
 
+### Non-interactive (bearer-token) auth
+
+Alongside interactive human login (session cookies + refresh), the `DashboardAuthProvider` ABC supports a **non-interactive, service-to-service** capability via `supports_token = True` + `verify_token(token=...)`. When a provider opts in, an inbound `Authorization: Bearer <token>` is verified and, on success, a `TokenPrincipal` is attached to the request (`request.state.token_principal`) for the endpoints that provider marks token-authable — no cookie, no redirect, no refresh.
+
+The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/drain`): `nous-account-service` provisions a per-agent secret via `HERMES_DASHBOARD_DRAIN_SECRET`, and the provider verifies inbound bearer tokens against it with a constant-time compare, registering `/api/gateway/drain` as token-authable. It **fails closed** — a weak/short secret (< 256 bits) is rejected at registration and the endpoint stays disabled; it's a no-op when the env var is unset. Behavioural knobs (`scope`, `min_secret_chars`) live under `dashboard.drain_auth` in `config.yaml`.
+
+Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
+
 ### Verifying the gate is on
 
 ```bash
@@ -1082,7 +1090,7 @@ When you run `hermes update`, the web frontend is automatically rebuilt if `npm`
 
 ## Themes & plugins
 
-The dashboard ships with six built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
+The dashboard ships with eight built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
 
 **Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
 
@@ -1094,6 +1102,7 @@ Built-in themes:
 |-------|-----------|
 | **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
 | **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
+| **Nous Blue** (`nous-blue`) | Nous-branded blue accents with airy spacing |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |

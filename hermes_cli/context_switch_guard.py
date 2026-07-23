@@ -69,6 +69,9 @@ def merge_preflight_compression_warning(
     messages: Optional[List[dict]] = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
+    configured_model: str | None = None,
+    configured_provider: str | None = None,
+    configured_base_url: str | None = None,
 ) -> None:
     """If the next user message will likely preflight-compress, append a warning."""
     if not result.success or agent is None:
@@ -80,6 +83,13 @@ def merge_preflight_compression_warning(
     if cc is None:
         return
 
+    # Classic CLI historically omitted custom_providers here while the /model
+    # confirmation display threaded agent._custom_providers — so the shrink
+    # warning fell through to the hardcoded catalog (e.g. "qwen" → 131072)
+    # even when custom_providers[].models.<id>.context_length was 1M.
+    if custom_providers is None:
+        custom_providers = getattr(agent, "_custom_providers", None)
+
     old_ctx = int(getattr(cc, "context_length", 0) or 0)
     new_ctx = resolve_display_context_length(
         result.new_model,
@@ -89,6 +99,21 @@ def merge_preflight_compression_warning(
         model_info=result.model_info,
         custom_providers=custom_providers,
         config_context_length=config_context_length,
+        configured_model=(
+            configured_model
+            if configured_model is not None
+            else getattr(agent, "model", None)
+        ),
+        configured_provider=(
+            configured_provider
+            if configured_provider is not None
+            else getattr(agent, "provider", None)
+        ),
+        configured_base_url=(
+            configured_base_url
+            if configured_base_url is not None
+            else getattr(agent, "base_url", None)
+        ),
     )
     if not new_ctx:
         return
@@ -141,12 +166,18 @@ def enrich_model_switch_warnings_for_gateway(
         return
 
     cfg_ctx = None
+    configured_model = None
+    configured_provider = None
+    configured_base_url = None
     if load_gateway_config is not None:
         try:
             cfg = load_gateway_config()
             model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
                 cfg_ctx = int(model_cfg["context_length"])
+                configured_model = model_cfg.get("default") or model_cfg.get("model")
+                configured_provider = model_cfg.get("provider")
+                configured_base_url = model_cfg.get("base_url")
         except Exception:
             pass
 
@@ -166,4 +197,7 @@ def enrich_model_switch_warnings_for_gateway(
         messages=messages,
         custom_providers=custom_providers,
         config_context_length=cfg_ctx,
+        configured_model=configured_model,
+        configured_provider=configured_provider,
+        configured_base_url=configured_base_url,
     )

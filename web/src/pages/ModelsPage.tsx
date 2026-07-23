@@ -295,10 +295,12 @@ function UseAsMenu({
   return (
     <div className={cn("relative", open && "z-20")} data-use-as-menu>
       <Button
-        ref={triggerRef}
         size="sm"
         outlined
-        onClick={() => setOpen((v) => !v)}
+        onClick={(event) => {
+          triggerRef.current = event.currentTarget;
+          setOpen((value) => !value);
+        }}
         disabled={busy}
         aria-controls={menuId}
         aria-expanded={open}

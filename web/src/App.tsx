@@ -506,10 +506,12 @@ export default function App() {
         }}
       >
         <Button
-          ref={mobileMenuTriggerRef}
           ghost
           size="icon"
-          onClick={() => setMobileOpen(true)}
+          onClick={(event) => {
+            mobileMenuTriggerRef.current = event.currentTarget;
+            setMobileOpen(true);
+          }}
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"

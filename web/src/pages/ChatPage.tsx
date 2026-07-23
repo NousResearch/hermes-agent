@@ -418,9 +418,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
     setEnd(
       <Button
-        ref={mobilePanelTriggerRef}
         ghost
-        onClick={() => setMobilePanelOpenRaw(true)}
+        onClick={(event) => {
+          mobilePanelTriggerRef.current = event.currentTarget;
+          setMobilePanelOpenRaw(true);
+        }}
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
         className={cn(

@@ -8295,16 +8295,20 @@ def reload_env() -> int:
             os.environ[key] = value
             count += 1
     # Remove known Hermes vars that were deleted from .env — provenance-
-    # gated so container-supplied env survives. Discard removed keys from
-    # the provenance set: once gone from both .env and os.environ they are
-    # no longer .env-sourced, so a value a supervisor re-injects later must
-    # not be removable on the strength of the old provenance.
+    # gated so container-supplied env survives. A key absent from .env is no
+    # longer .env-sourced whether or not a live process value remains, so the
+    # provenance record is discarded unconditionally; only the deletion (and
+    # count) depend on a value actually being present. Discarding on the
+    # already-absent path matters: leaving stale provenance there would let a
+    # later externally re-injected value be deleted on the strength of the
+    # old record — the exact failure this gate exists to prevent.
     with _CONFIG_LOCK:
         for key in _DOTENV_LOADED_KEYS & known_keys:
-            if key not in env_vars and key in os.environ:
-                del os.environ[key]
+            if key not in env_vars:
                 _DOTENV_LOADED_KEYS.discard(key)
-                count += 1
+                if key in os.environ:
+                    del os.environ[key]
+                    count += 1
     return count
 
 

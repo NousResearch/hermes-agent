@@ -217,6 +217,37 @@ class TestReloadEnv:
             finally:
                 os.environ.pop(known_key, None)
 
+    def test_69738_provenance_discarded_when_process_value_already_absent(
+        self, tmp_path
+    ):
+        """Stale-provenance boundary: a key loaded from .env whose process
+        value has ALREADY disappeared from os.environ before the .env deletion
+        is reloaded must still have its provenance discarded — otherwise a
+        value re-injected externally afterwards would be deleted on the
+        strength of the stale record (#69738 review finding)."""
+        env_file = tmp_path / ".env"
+        known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
+        env_file.write_text(f"{known_key}=from_dotenv\n")
+        provenance: set = set()
+        with patch.dict(
+            reload_env.__globals__,
+            {"get_env_path": lambda: env_file, "_DOTENV_LOADED_KEYS": provenance},
+        ):
+            try:
+                reload_env()  # establishes provenance + injects the value
+                assert os.environ.get(known_key) == "from_dotenv"
+                os.environ.pop(known_key)  # value vanishes externally first
+                env_file.write_text("")  # then the key is deleted from .env
+                assert reload_env() == 0
+                assert known_key not in os.environ
+                assert known_key not in provenance  # no stale record left
+                # Externally re-injected value must now survive reloads.
+                os.environ[known_key] = "reinjected_externally"
+                assert reload_env() == 0
+                assert os.environ.get(known_key) == "reinjected_externally"
+            finally:
+                os.environ.pop(known_key, None)
+
     def test_69738_env_loaded_then_deleted_key_is_removed_but_reinjection_survives(
         self, tmp_path
     ):

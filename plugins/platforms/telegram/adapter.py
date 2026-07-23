@@ -3489,6 +3489,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
+            if self.config.extra.get("media_write_timeout") is not None:
+                request_kwargs["media_write_timeout"] = self._coerce_float_extra(
+                    "media_write_timeout",
+                    20.0,
+                )
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
             # HTTPXRequest builds the underlying httpx.AsyncClient with

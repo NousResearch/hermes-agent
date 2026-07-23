@@ -1902,6 +1902,22 @@ timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)
 
 Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe/London`, `Asia/Kolkata`, `UTC`). Leave empty or omit for server-local time.
 
+## Telegram
+
+Configure the timeout for uploading media through the Telegram gateway:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      media_write_timeout: 120.0  # seconds
+```
+
+`media_write_timeout` applies to media uploads such as voice notes and audio
+files. Increase it on hosts with slow uplinks. When omitted,
+python-telegram-bot keeps its 20 second default. This setting is separate from
+the generic Telegram HTTP write timeout.
+
 ## Discord
 
 Configure Discord-specific behavior for the messaging gateway:

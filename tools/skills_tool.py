@@ -666,13 +666,21 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *, skip_disabled: bool = False, include_paths: bool = False
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        include_paths: If True, each dict also carries ``path`` — the skill's
+            directory as found by this scan. Off by default so the dicts
+            handed to the dashboard, banner, and hub stay tier-1 metadata.
+            Ask for it when you need the directory that produced a given
+            name; deriving it later by re-resolving the name can disagree
+            with the scan.
 
     Returns:
         List of skill metadata dicts (name, description, category).
@@ -701,16 +709,23 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature = _skills_scan_signature(dirs_to_scan, disabled)
     now = time.monotonic()
 
+    def _shape(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Per-call shallow copies: callers mutate the returned dicts
+        (e.g. web_server annotates s["enabled"]/s["usage"]) — handing out the
+        cached objects would poison the cache for everyone else. ``path`` is
+        cached for the callers that ask, and dropped for everyone else so the
+        default shape stays name/description/category."""
+        if include_paths:
+            return [dict(s) for s in entries]
+        return [{k: v for k, v in s.items() if k != "path"} for s in entries]
+
     cached = _SKILLS_CACHE.get(cache_key)
     if (
         cached is not None
         and cached[0] == signature
         and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS
     ):
-        # Per-call shallow copies: callers mutate the returned dicts
-        # (e.g. web_server annotates s["enabled"]/s["usage"]) — handing
-        # out the cached objects would poison the cache for everyone else.
-        return [dict(s) for s in cached[2]]
+        return _shape(cached[2])
 
     skills = []
     seen_names: set = set()
@@ -758,6 +773,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "path": skill_dir,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -774,12 +790,39 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # re-scans rather than serving the torn result past the TTL). Same
     # shallow-copy contract as the hit path — the caller may mutate.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
-    return [dict(s) for s in skills]
+    return _shape(skills)
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
+
+
+_REVIEW_WRITABILITY_HINT = (
+    "Use skill_view(name) to see full content, tags, and linked files. "
+    "This pass may only write to entries with writable=true; "
+    "blocked_because says why the rest are refused. When the skill that best "
+    "fits the lesson is blocked, do not retry it — create a new agent-owned "
+    "skill or save the lesson to memory instead."
+)
+
+
+def _annotate_review_writability(skills: List[Dict[str, Any]]) -> None:
+    """Mark each entry with the write guard's verdict, in place.
+
+    Background review only. The fork is shown ``writable`` and
+    ``blocked_because`` from the same predicate that guards the write, so it
+    can pick a target it is actually allowed to change instead of discovering
+    the refusal one failed tool call at a time. Blocked skills stay in the
+    listing — the fork still reads them, and it needs to know that a topic is
+    already covered by a skill it cannot edit.
+    """
+    from tools.skill_provenance import background_review_block_reason
+
+    for skill in skills:
+        reason = background_review_block_reason(skill["name"], skill.pop("path", None))
+        skill["writable"] = reason is None
+        skill["blocked_because"] = reason
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -789,6 +832,10 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     Returns only name + description to minimize token usage. Use skill_view() to
     load full content, tags, related files, etc.
 
+    Under the background review origin, each entry also carries ``writable``
+    and ``blocked_because`` so the autonomous fork can choose a target it owns.
+    Foreground listings keep the minimal shape.
+
     Args:
         category: Optional category filter (e.g., "mlops")
         task_id: Optional task identifier used to probe the active backend
@@ -797,6 +844,12 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        try:
+            from tools.skill_provenance import is_background_review
+            review_mode = is_background_review()
+        except Exception:
+            review_mode = False
+
         active_skills_dir = _skills_dir()
         if not active_skills_dir.exists():
             active_skills_dir.mkdir(parents=True, exist_ok=True)
@@ -810,8 +863,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Find all skills
-        all_skills = _find_all_skills()
+        # Find all skills. The review fork needs each skill's directory to
+        # resolve external ownership, so ask for paths only in that mode.
+        all_skills = _find_all_skills(include_paths=review_mode)
 
         if not all_skills:
             return json.dumps(
@@ -831,6 +885,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         # Sort by category then name
         all_skills = _sort_skills(all_skills)
 
+        if review_mode:
+            _annotate_review_writability(all_skills)
+
         # Extract unique categories
         categories = sorted(
             {s.get("category") for s in all_skills if s.get("category")}
@@ -842,7 +899,10 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "skills": all_skills,
                 "categories": categories,
                 "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "hint": (
+                    _REVIEW_WRITABILITY_HINT if review_mode
+                    else "Use skill_view(name) to see full content, tags, and linked files"
+                ),
             },
             ensure_ascii=False,
         )
@@ -1371,7 +1431,11 @@ def skill_view(
                 return json.dumps(
                     {
                         "success": True,
-                        "name": name,
+                        # The resolved skill name, never the caller's spelling:
+                        # the tool wrapper records telemetry against whatever
+                        # this field says, so echoing "operations/aio" back
+                        # filed a second usage record under that string.
+                        "name": resolved_name,
                         "file": file_path,
                         "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
                         "is_binary": True,
@@ -1393,7 +1457,7 @@ def skill_view(
             return json.dumps(
                 {
                     "success": True,
-                    "name": name,
+                    "name": resolved_name,
                     "file": file_path,
                     "content": content,
                     "file_type": target_file.suffix,

@@ -267,8 +267,12 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
     )
 
 
-def _pinned_guard(name: str) -> Optional[str]:
+def _pinned_guard(name: str, skill_dir: Optional[Path] = None) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
+
+    Pass ``skill_dir`` when it is known: the pin flag is filed under one key,
+    and a caller spelling it differently ("operations/foo" for a pin stored
+    under "foo") would otherwise walk straight past the guard.
 
     Pin protects a skill from **deletion** — both the curator's auto-archive
     passes and the agent's ``skill_manage(action="delete")`` tool call. The
@@ -280,8 +284,11 @@ def _pinned_guard(name: str) -> Optional[str]:
     """
     try:
         from tools import skill_usage
-        rec = skill_usage.get_record(name)
-        if rec.get("pinned"):
+        from tools.skill_provenance import skill_alias_names
+        if any(
+            skill_usage.get_record(alias).get("pinned")
+            for alias in skill_alias_names(name, skill_dir)
+        ):
             return (
                 f"Skill '{name}' is pinned and cannot be deleted by "
                 f"skill_manage. Ask the user to run "
@@ -292,6 +299,83 @@ def _pinned_guard(name: str) -> Optional[str]:
     except Exception:
         logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
     return None
+
+
+# Every background-review refusal ends with this. A refusal that only says
+# "no" leaves the review fork with one obvious next move — try the same skill
+# again — which is exactly the loop this text exists to break. Naming the two
+# places the fork DOES own turns a dead end into a next action.
+_BACKGROUND_REVIEW_FALLBACK = (
+    " Do not retry this skill — the write is refused every time. Put the "
+    "lesson somewhere you own instead: create a NEW agent-owned skill with "
+    "skill_manage(action=\"create\", ...) that carries it, or, if it is a "
+    "fact about the user rather than a technique, save it with the memory "
+    "tool."
+)
+
+
+def _background_review_refusal(
+    name: str, action: str, reason: str, skill_dir: Optional[Path] = None
+) -> Dict[str, Any]:
+    """Build the refusal payload for one block reason from the shared predicate."""
+    from tools import skill_provenance as prov
+
+    if reason == prov.BLOCK_PINNED:
+        detail = (
+            f"Refusing background curator {action} for pinned skill '{name}': "
+            "pinned skills are off-limits to autonomous maintenance. Ask the "
+            f"user to run `hermes curator unpin {name}` if they want it changed."
+        )
+    elif reason == prov.BLOCK_EXTERNAL:
+        detail = (
+            f"Refusing background curator {action} for skill '{name}': the "
+            "skill lives in skills.external_dirs, which are externally owned "
+            "and read-only to autonomous curation."
+        )
+    elif reason == prov.BLOCK_PROTECTED_BUILTIN:
+        detail = (
+            f"Refusing background curator {action} for protected built-in "
+            f"skill '{name}'."
+        )
+    elif reason == prov.BLOCK_HUB_INSTALLED:
+        detail = (
+            f"Refusing background curator {action} for hub-installed skill "
+            f"'{name}'."
+        )
+    elif reason == prov.BLOCK_BUNDLED:
+        detail = f"Refusing background curator {action} for bundled skill '{name}'."
+    elif reason == prov.BLOCK_NOT_AGENT_CREATED:
+        created_by = None
+        try:
+            from tools import skill_usage
+            usage = skill_usage.load_usage()
+            # Report the record that actually blocked, not whichever spelling
+            # the caller happened to use — the caller's key often has no
+            # record at all, which reported a misleading created_by=None.
+            for alias in prov.skill_alias_names(name, skill_dir):
+                record = usage.get(alias)
+                if isinstance(record, dict) and not skill_usage._is_curator_managed_record(record):
+                    created_by = record.get("created_by")
+                    break
+        except Exception:
+            logger.debug("created_by lookup failed for %s", name, exc_info=True)
+        detail = (
+            f"Refusing background curator {action} for skill '{name}': the "
+            f"skill records show it is not agent-created "
+            f"(created_by={created_by!r}). Manually authored skills are "
+            "off-limits to autonomous curation."
+        )
+    else:  # pragma: no cover — defensive; every reason above is enumerated
+        detail = (
+            f"Refusing background curator {action} for skill '{name}': "
+            f"{reason}."
+        )
+
+    return {
+        "success": False,
+        "error": detail + _BACKGROUND_REVIEW_FALLBACK,
+        "blocked_because": reason,
+    }
 
 
 def _background_review_write_guard(
@@ -305,95 +389,27 @@ def _background_review_write_guard(
     bundled, or hub-installed skills. The background review fork is different:
     it is autonomous lifecycle maintenance, so its write surface is restricted
     to local curator-owned sediment.
+
+    Ownership itself is decided by
+    ``skill_provenance.background_review_block_reason`` — the same predicate
+    ``skills_list`` uses to mark entries ``writable``. Enforcement and
+    discovery read one source of truth, so the fork is never shown a target
+    this guard will reject.
     """
     try:
-        from tools.skill_provenance import is_background_review
+        from tools.skill_provenance import (
+            background_review_block_reason,
+            is_background_review,
+        )
         if not is_background_review():
             return None
     except Exception:
         return None
 
-    # Pin must be respected by autonomous maintenance. The curator already
-    # skips pinned skills from every auto-transition; the background review
-    # fork is the same kind of autonomous, no-user-present actor, so it must
-    # not write to a pinned skill either (issue #25839). This is stricter than
-    # the foreground ``_pinned_guard`` (which only blocks deletion) precisely
-    # because there is no user in the loop to consent to an edit here.
-    try:
-        from tools import skill_usage
-        if skill_usage.get_record(name).get("pinned"):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for pinned skill "
-                    f"'{name}': pinned skills are off-limits to autonomous "
-                    "maintenance. Ask the user to run "
-                    f"`hermes curator unpin {name}` if they want it changed."
-                ),
-            }
-    except Exception:
-        logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
-
-    try:
-        from agent.skill_utils import is_external_skill_path
-        if is_external_skill_path(skill_dir):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for skill '{name}': "
-                    "the skill lives in skills.external_dirs, which are "
-                    "externally owned and read-only to autonomous curation."
-                ),
-            }
-    except Exception:
-        logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
-
-    try:
-        from tools import skill_usage
-        if skill_usage.is_protected_builtin(name):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for protected "
-                    f"built-in skill '{name}'."
-                ),
-            }
-        if skill_usage.is_hub_installed(name):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for hub-installed "
-                    f"skill '{name}'."
-                ),
-            }
-        if skill_usage.is_bundled(name):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for bundled "
-                    f"skill '{name}'."
-                ),
-            }
-        # Manually authored skills (created_by != "agent") are off-limits
-        # to autonomous curation. This prevents the LLM consolidation pass
-        # from archiving skills the user placed manually (e.g. via URL
-        # install or direct SKILL.md authoring), which lack the
-        # `created_by: "agent"` marker.
-        usage_data = skill_usage.load_usage()
-        usage_rec = usage_data.get(name)
-        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for skill "
-                    f"'{name}': the skill records show it is not agent-created "
-                    f"(created_by={usage_rec.get('created_by')!r}). Manually authored "
-                    f"skills are off-limits to autonomous curation."
-                ),
-            }
-    except Exception:
-        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
-    return None
+    reason = background_review_block_reason(name, skill_dir)
+    if reason is None:
+        return None
+    return _background_review_refusal(name, action, reason, skill_dir)
 
 
 def _background_review_read_before_write_guard(
@@ -609,15 +625,56 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Within each root, two spellings resolve, in this order:
+
+    1. A relative path under that root — ``"<category>/<name>"``. This is the
+       ``path`` value ``create`` returns, and callers feed it straight back as
+       ``name``; without this the next call on a categorized skill failed with
+       "not found". Absolute paths and anything containing ``..`` are refused,
+       and the candidate must stay inside the root that produced it.
+    2. The directory basename, matched anywhere under that root.
+
+    Both passes run against one root before moving to the next, so root order
+    decides precedence: a nested local skill still beats a top-level external
+    one of the same name. Running the relative pass across every root first
+    inverted that — the external root's exact match won over the local root's
+    nested skill and silently shadowed it.
+
+    ``name`` is normalized first, so ``./foo`` resolves exactly as ``foo``
+    does and cannot slip past a guard keyed on the plain name.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+    from tools.path_security import has_traversal_component
+
+    if not name:
+        return None
+
+    relative_name: Optional[str] = None
+    if not has_traversal_component(name) and not Path(name).is_absolute():
+        # PurePath collapses "./foo" -> "foo" and "a/./b" -> "a/b".
+        relative_name = str(Path(name))
+
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
+
+        # (1) Relative path under this root, e.g. "operations/my-skill".
+        if relative_name:
+            candidate = skills_dir / relative_name
+            skill_md = candidate / "SKILL.md"
+            if skill_md.is_file() and not is_excluded_skill_path(skill_md):
+                try:
+                    candidate.resolve().relative_to(skills_dir.resolve())
+                    return {"path": candidate}
+                except (OSError, ValueError):
+                    pass  # symlinked or otherwise outside its own root
+
+        # (2) Directory basename anywhere under this root.
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
-            if skill_md.parent.name == name:
+            if skill_md.parent.name == relative_name:
                 return {"path": skill_md.parent}
     return None
 
@@ -1063,6 +1120,13 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if guard:
         return guard
 
+    # Everything below keys on the skill's identity rather than the caller's
+    # spelling: the pin flag, the archive record, and the usage entry are all
+    # filed under the canonical name.
+    from tools.skill_provenance import canonical_skill_name
+
+    canonical = canonical_skill_name(name, existing["path"])
+
     # Fail closed on unverified deletes during the curator consolidation pass.
     # A bare prune (no absorbed_into) from the LLM umbrella pass is the
     # fail-open behavior reported in #29912 — refuse it; keep the skill active.
@@ -1070,7 +1134,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if fail_closed:
         return fail_closed
 
-    pinned_err = _pinned_guard(name)
+    pinned_err = _pinned_guard(canonical, existing["path"])
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
@@ -1122,7 +1186,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if curator_pass:
         try:
             from tools.skill_usage import archive_skill
-            ok, archive_msg = archive_skill(name)
+            ok, archive_msg = archive_skill(canonical)
         except Exception as e:
             return {"success": False, "error": f"failed to archive '{name}': {e}"}
         if not ok:
@@ -1358,6 +1422,23 @@ def skill_manage(
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
 
+    # Resolve the skill's on-disk identity BEFORE the action runs, so every
+    # telemetry write below lands on one key no matter how the caller spelled
+    # the name. This has to happen up front: a delete removes the directory
+    # the canonical name is derived from. `create` needs no lookup — its
+    # `name` is validated bare, so it is already canonical.
+    canonical_name = name
+    telemetry_aliases = [name]
+    if action in {"patch", "edit", "write_file", "remove_file", "delete"}:
+        try:
+            from tools.skill_provenance import canonical_skill_name, skill_alias_names
+            resolved = _find_skill(name)
+            if resolved:
+                canonical_name = canonical_skill_name(name, resolved["path"])
+                telemetry_aliases = skill_alias_names(name, resolved["path"])
+        except Exception:
+            logger.debug("canonical name resolution failed for %s", name, exc_info=True)
+
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off
     # (default) passes straight through. The gate is bypassed when this call is
@@ -1423,15 +1504,19 @@ def skill_manage(
             from tools.skill_provenance import is_background_review
             if action == "create":
                 if is_background_review():
-                    mark_agent_created(name)
+                    mark_agent_created(canonical_name)
             elif action in {"patch", "edit", "write_file", "remove_file"}:
-                bump_patch(name)
+                bump_patch(canonical_name)
             elif action == "delete":
                 # A recoverable curator archive (routed through archive_skill)
                 # keeps its usage record as STATE_ARCHIVED so `hermes curator
                 # status`/`restore` still see it. Only a hard delete forgets.
                 if not result.get("_archived"):
-                    forget(name)
+                    # Drop every alias: a legacy record left under an old
+                    # spelling would otherwise outlive the skill and
+                    # contradict whatever is created at that name next.
+                    for alias in telemetry_aliases:
+                        forget(alias)
         except Exception:
             pass
 

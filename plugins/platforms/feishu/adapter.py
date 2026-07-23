@@ -52,6 +52,7 @@ import collections
 import concurrent.futures
 import hashlib
 import hmac
+import importlib.util
 import itertools
 import json
 import logging
@@ -85,45 +86,37 @@ try:
 except ImportError:
     websockets = None  # type: ignore[assignment]
 
-try:
-    import lark_oapi as lark
-    from lark_oapi.api.application.v6 import GetApplicationRequest
-    from lark_oapi.api.im.v1 import (
-        CreateFileRequest,
-        CreateFileRequestBody,
-        CreateImageRequest,
-        CreateImageRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-        GetChatRequest,
-        GetMessageRequest,
-        GetMessageResourceRequest,
-        P2ImMessageMessageReadV1,
-        ReplyMessageRequest,
-        ReplyMessageRequestBody,
-        UpdateMessageRequest,
-        UpdateMessageRequestBody,
-    )
-    from lark_oapi.core import AccessTokenType, HttpMethod
-    from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-    from lark_oapi.core.model import BaseRequest
-    from lark_oapi.event.callback.model.p2_card_action_trigger import (
-        CallBackCard,
-        P2CardActionTriggerResponse,
-    )
-    from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
-    from lark_oapi.ws import Client as FeishuWSClient
-
-    FEISHU_AVAILABLE = True
-except ImportError:
-    FEISHU_AVAILABLE = False
-    lark = None  # type: ignore[assignment]
-    CallBackCard = None  # type: ignore[assignment]
-    P2CardActionTriggerResponse = None  # type: ignore[assignment]
-    EventDispatcherHandler = None  # type: ignore[assignment]
-    FeishuWSClient = None  # type: ignore[assignment]
-    FEISHU_DOMAIN = None  # type: ignore[assignment]
-    LARK_DOMAIN = None  # type: ignore[assignment]
+# lark_oapi is a heavy SDK importing 10,055 modules that takes ~11s to import.
+# Do NOT import at module level — use check_feishu_requirements() (lazy) or
+# inline importlib.util.find_spec() checks instead. Module-level imports here
+# block the event loop when the adapter module is imported during plugin
+# resolution (see #68756).
+FEISHU_AVAILABLE = importlib.util.find_spec("lark_oapi") is not None
+lark = None  # type: ignore[assignment]
+GetApplicationRequest = None  # type: ignore[assignment]
+CreateFileRequest = None  # type: ignore[assignment]
+CreateFileRequestBody = None  # type: ignore[assignment]
+CreateImageRequest = None  # type: ignore[assignment]
+CreateImageRequestBody = None  # type: ignore[assignment]
+CreateMessageRequest = None  # type: ignore[assignment]
+CreateMessageRequestBody = None  # type: ignore[assignment]
+GetChatRequest = None  # type: ignore[assignment]
+GetMessageRequest = None  # type: ignore[assignment]
+GetMessageResourceRequest = None  # type: ignore[assignment]
+P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
+ReplyMessageRequest = None  # type: ignore[assignment]
+ReplyMessageRequestBody = None  # type: ignore[assignment]
+UpdateMessageRequest = None  # type: ignore[assignment]
+UpdateMessageRequestBody = None  # type: ignore[assignment]
+AccessTokenType = None  # type: ignore[assignment]
+HttpMethod = None  # type: ignore[assignment]
+FEISHU_DOMAIN = None  # type: ignore[assignment]
+LARK_DOMAIN = None  # type: ignore[assignment]
+BaseRequest = None  # type: ignore[assignment]
+CallBackCard = None  # type: ignore[assignment]
+P2CardActionTriggerResponse = None  # type: ignore[assignment]
+EventDispatcherHandler = None  # type: ignore[assignment]
+FeishuWSClient = None  # type: ignore[assignment]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -1377,7 +1370,10 @@ def check_feishu_requirements() -> bool:
     Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
     on first call if not present. Rebinds all module-level globals on success.
     """
-    if FEISHU_AVAILABLE:
+    # Check whether globals are already bound (lazy import already ran),
+    # NOT whether the package is on-disk (FEISHU_AVAILABLE from find_spec) —
+    # the globals stay None until this function runs the actual import (#68756).
+    if lark is not None:
         return True
 
     def _import():
@@ -5277,6 +5273,8 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     that Feishu puts in @mention payloads.  It is NOT the app_id.
     """
     if FEISHU_AVAILABLE:
+        # Trigger lazy import so module-level SDK globals are bound (#68756).
+        check_feishu_requirements()
         return _probe_bot_sdk(app_id, app_secret, domain)
     return _probe_bot_http(app_id, app_secret, domain)
 
@@ -5466,6 +5464,9 @@ async def _standalone_send(
     """
     if not FEISHU_AVAILABLE:
         return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
+
+    # Trigger lazy import so module-level SDK globals are bound (#68756).
+    check_feishu_requirements()
 
     media_files = media_files or []
     try:

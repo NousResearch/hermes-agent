@@ -505,6 +505,19 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_omits_replace_flag(self):
+        """generate_launchd_plist() emits ``gateway run`` without ``--replace``.
+
+        Removing ``--replace`` prevents the launchd restart loop on unexpected
+        SIGTERM.  See PR #63535.
+        """
+        plist = gateway_cli.generate_launchd_plist()
+        # The ProgramArguments block must contain ``gateway`` then ``run``
+        # but NOT ``--replace``.
+        assert "<string>gateway</string>" in plist
+        assert "<string>run</string>" in plist
+        assert "<string>--replace</string>" not in plist
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

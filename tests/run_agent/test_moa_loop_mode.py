@@ -2642,3 +2642,25 @@ def test_run_reference_trims_oversized_view_before_calling(monkeypatch):
     assert len(sent_messages) < len(view) + 1
     # And ends with the synthetic trailing user turn.
     assert sent_messages[-1]["role"] == "user"
+
+
+def test_render_tool_calls_tolerates_namespace_shapes():
+    """SDK-shaped (SimpleNamespace) tool_call entries must render their real
+    function name+args, not degrade to '[called tool: tool]'."""
+    from agent.moa_loop import _render_tool_calls
+
+    ns_call = SimpleNamespace(
+        function=SimpleNamespace(name="web_search", arguments='{"query": "x"}')
+    )
+    dict_call = {"function": {"name": "read_file", "arguments": '{"path": "y"}'}}
+    mixed = _render_tool_calls([ns_call, dict_call])
+
+    assert '[called tool: web_search({"query": "x"})]' in mixed
+    assert '[called tool: read_file({"path": "y"})]' in mixed
+
+    # Dict entry with a namespace-shaped nested function also renders.
+    hybrid = {"function": SimpleNamespace(name="terminal", arguments=None)}
+    assert _render_tool_calls([hybrid]) == "[called tool: terminal]"
+
+    # Degenerate shapes still fall back safely.
+    assert _render_tool_calls([SimpleNamespace()]) == "[called tool: tool]"

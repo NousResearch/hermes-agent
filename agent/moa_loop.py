@@ -908,21 +908,35 @@ def _render_tool_calls(tool_calls: Any) -> str:
     The advisory view cannot carry real ``tool_calls`` payloads (strict
     providers reject tool_calls the reference never produced), so the agent's
     actions are flattened to text the reference can read and reason about.
+
+    Tolerates both dict-shaped and ``SimpleNamespace``-shaped entries (with a
+    nested ``function`` of either kind), so the helper works uniformly against
+    an OpenAI-style transport and against SDK-style stream-stitched responses.
+    Without this shape tolerance, a SimpleNamespace-sourced entry rendered as
+    ``[called tool: tool]`` and silently lost the function name.
     """
     lines: list[str] = []
     for tc in tool_calls or []:
-        fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
-        name = fn.get("name") or (tc.get("name") if isinstance(tc, dict) else "") or "tool"
-        args = fn.get("arguments")
-        if isinstance(args, str):
-            args_text = args
-        elif args is not None:
+        if isinstance(tc, dict):
+            fn = tc.get("function") or {}
+            fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            fn_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+            top_name = tc.get("name")
+        else:
+            fn = getattr(tc, "function", None)
+            fn_name = getattr(fn, "name", None) if fn is not None else None
+            fn_args = getattr(fn, "arguments", None) if fn is not None else None
+            top_name = getattr(tc, "name", None)
+        name = fn_name or top_name or "tool"
+        if isinstance(fn_args, str):
+            args_text = fn_args
+        elif fn_args is not None:
             try:
                 import json
 
-                args_text = json.dumps(args, ensure_ascii=False)
+                args_text = json.dumps(fn_args, ensure_ascii=False)
             except Exception:
-                args_text = str(args)
+                args_text = str(fn_args)
         else:
             args_text = ""
         lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")

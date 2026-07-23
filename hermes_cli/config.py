@@ -8288,14 +8288,60 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
+    """Get a value from ~/.hermes/.env, environment, or credential pool.
+
+    Resolution order:
+        1. os.environ
+        2. ~/.hermes/.env
+        3. Credential pool (for keys stored via ``hermes auth add``)
+
+    The credential pool fallback maps env var names to providers by
+    scanning ``providers.<name>.key_env`` in config.yaml, then reading
+    the pool entry for that provider.  This fixes STT/TTS and other
+    tools that bypass the full provider resolver path (#68003).
+    """
     # Check environment first
     if key in os.environ:
         return os.environ[key]
 
     # Then check .env file
     env_vars = load_env()
-    return env_vars.get(key)
+    val = env_vars.get(key)
+    if val:
+        return val
+
+    # Finally check credential pool — find provider that uses this env var
+    try:
+        cfg = load_config()
+        providers = cfg.get("providers") or {}
+        if isinstance(providers, dict):
+            for provider_name, provider_cfg in providers.items():
+                if not isinstance(provider_cfg, dict):
+                    continue
+                provider_key_env = (
+                    provider_cfg.get("key_env")
+                    or provider_cfg.get("api_key_env")
+                    or ""
+                ).strip()
+                if provider_key_env == key:
+                    # Found the provider — check credential pool
+                    try:
+                        from hermes_cli.auth import read_credential_pool
+
+                        pool_entries = read_credential_pool(provider_name)
+                        if pool_entries and isinstance(pool_entries, list):
+                            for entry in pool_entries:
+                                if isinstance(entry, dict):
+                                    api_key = entry.get("api_key") or entry.get("access_token")
+                                    if api_key:
+                                        return str(api_key)
+                    except Exception:
+                        pass
+                    break
+    except Exception:
+        pass
+
+    return None
 
 
 def get_env_value_prefer_dotenv(key: str) -> Optional[str]:

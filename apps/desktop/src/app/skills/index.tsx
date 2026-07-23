@@ -11,14 +11,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { CountSkeleton } from '@/components/ui/skeleton'
 import {
-  editLearningNode,
-  getLearningNode,
+  deleteSkillFile,
+  getSkillContent,
   getSkills,
   getToolsets,
   getUsageAnalytics,
   type HermesGateway,
   toggleSkill,
-  toggleToolset
+  toggleToolset,
+  updateSkillContent
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
@@ -28,7 +29,7 @@ import { normalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
+import type { SkillInfo, SkillPackageFile, ToolsetInfo } from '@/types/hermes'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -56,6 +57,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { SkillsHub } from './hub'
 import { McpTab } from './mcp-tab'
+import { SKILL_PACKAGE_FILES_QUERY_KEY, SkillPackageFiles } from './skill-package-files'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 
 const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'hub'] as const
@@ -448,10 +450,16 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     )
   }
 
-  // Learned/local skills are editable + archivable, mirroring the memory
-  // graph (same /api/learning/node endpoints — delete archives, restorable
-  // via `hermes curator restore`).
-  const [skillEditor, setSkillEditor] = useState<null | { content: string; name: string }>(null)
+  // Skills are directory packages. Agent/local files are editable; bundled
+  // and hub files use the same viewer in read-only mode.
+  const [skillEditor, setSkillEditor] = useState<null | {
+    content: string
+    editable: boolean
+    filePath: string
+    isBinary: boolean
+    name: string
+  }>(null)
+
   const [skillDraft, setSkillDraft] = useState('')
   const [skillSaving, setSkillSaving] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<null | string>(null)
@@ -469,38 +477,75 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setArchiveTarget(null)
   })
 
-  const openSkillEditor = async (name: string) => {
+  const skillEditorDirty = Boolean(skillEditor && skillDraft !== skillEditor.content)
+
+  const confirmDiscardSkillEdit = () => !skillEditorDirty || window.confirm(t.skills.discardUnsaved)
+
+  const closeSkillEditor = () => {
+    if (!confirmDiscardSkillEdit()) {
+      return
+    }
+
+    setSkillEditor(null)
+    setSkillDraft('')
+  }
+
+  const openSkillEditor = async (skill: SkillInfo, file: SkillPackageFile) => {
+    if (skillEditor?.name === skill.name && skillEditor.filePath === file.path) {
+      return
+    }
+
+    if (!confirmDiscardSkillEdit()) {
+      return
+    }
+
+    skillEditorEpoch.current += 1
     const epoch = skillEditorEpoch.current
+    const editable = skill.provenance === 'agent'
+
+    if (file.is_binary) {
+      setSkillEditor({ content: '', editable, filePath: file.path, isBinary: true, name: skill.name })
+      setSkillDraft('')
+
+      return
+    }
 
     try {
-      const node = await getLearningNode(name)
+      const fileContent = await getSkillContent(skill.name, file.path)
 
       if (skillEditorEpoch.current !== epoch) {
         return
       }
 
-      setSkillEditor({ content: node.content, name })
-      setSkillDraft(node.content)
+      setSkillEditor({
+        content: fileContent.content,
+        editable,
+        filePath: file.path,
+        isBinary: false,
+        name: skill.name
+      })
+      setSkillDraft(fileContent.content)
     } catch (err) {
-      notifyError(err, name)
+      notifyError(err, file.path)
     }
   }
 
   const saveSkillEdit = async () => {
-    if (!skillEditor) {
+    if (!skillEditor || !skillEditor.editable || skillEditor.isBinary) {
       return
     }
 
     setSkillSaving(true)
 
     try {
-      await editLearningNode(skillEditor.name, skillDraft)
+      await updateSkillContent(skillEditor.name, skillEditor.filePath, skillDraft)
       notify({
         kind: 'success',
         title: t.skills.skillUpdated,
         message: t.skills.appliesToNewSessions(skillEditor.name)
       })
       setSkillEditor(null)
+      setSkillDraft('')
       void refreshCapabilities()
     } catch (err) {
       notifyError(err, skillEditor.name)
@@ -509,25 +554,77 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     }
   }
 
+  const removeSkillFile = async (skill: SkillInfo, file: SkillPackageFile) => {
+    if (file.path === 'SKILL.md' || skill.provenance !== 'agent') {
+      return
+    }
+
+    if (!window.confirm(t.skills.deleteFileConfirm(file.path))) {
+      return
+    }
+
+    try {
+      await deleteSkillFile(skill.name, file.path)
+
+      if (skillEditor?.name === skill.name && skillEditor.filePath === file.path) {
+        setSkillEditor(null)
+        setSkillDraft('')
+      }
+
+      await queryClient.invalidateQueries({ queryKey: SKILL_PACKAGE_FILES_QUERY_KEY })
+      notify({ kind: 'success', title: t.skills.fileDeleted, message: file.path })
+    } catch (err) {
+      notifyError(err, file.path)
+    }
+  }
+
+  const selectSkill = (name: string) => {
+    if (skillEditor?.name !== name && !confirmDiscardSkillEdit()) {
+      return
+    }
+
+    if (skillEditor?.name !== name) {
+      setSkillEditor(null)
+      setSkillDraft('')
+    }
+
+    setSelectedSkill(name)
+  }
+
   const skillEditorPane = skillEditor && (
     <DetailPane
       actions={
-        <Button disabled={skillSaving} onClick={() => void saveSkillEdit()} size="xs">
+        <Button
+          disabled={skillSaving || !skillEditor.editable || skillEditor.isBinary || !skillEditorDirty}
+          onClick={() => void saveSkillEdit()}
+          size="xs"
+        >
           {skillSaving ? t.common.saving : t.common.save}
         </Button>
       }
       id="skill-editor"
-      onClose={() => setSkillEditor(null)}
-      title={<span className="text-[0.68rem] font-normal text-muted-foreground/60">{skillEditor.name}/SKILL.md</span>}
+      onClose={closeSkillEditor}
+      title={
+        <span className="text-[0.68rem] font-normal text-muted-foreground/60">
+          {skillEditor.name}/{skillEditor.filePath}
+        </span>
+      }
     >
-      <CodeEditor
-        filePath="SKILL.md"
-        initialValue={skillEditor.content}
-        key={skillEditor.name}
-        onCancel={() => setSkillEditor(null)}
-        onChange={setSkillDraft}
-        onSave={() => void saveSkillEdit()}
-      />
+      {skillEditor.isBinary ? (
+        <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+          {t.skills.binaryUnsupported(skillEditor.filePath)}
+        </div>
+      ) : (
+        <CodeEditor
+          disabled={!skillEditor.editable || skillSaving}
+          filePath={skillEditor.filePath}
+          initialValue={skillEditor.content}
+          key={`${skillEditor.name}:${skillEditor.filePath}`}
+          onCancel={closeSkillEditor}
+          onChange={setSkillDraft}
+          onSave={() => void saveSkillEdit()}
+        />
+      )}
     </DetailPane>
   )
 
@@ -601,7 +698,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   enabled={skill.enabled}
                   key={skill.name}
                   meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                  onSelect={() => setSelectedSkill(skill.name)}
+                  onSelect={() => selectSkill(skill.name)}
                   onToggle={enabled => void handleToggleSkill(skill, enabled)}
                   subtitle={skillSubtitle(skill)}
                   title={skill.name}
@@ -613,7 +710,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               {activeSkill && (
                 <SkillDetail
                   onArchive={() => setArchiveTarget(activeSkill.name)}
-                  onEdit={() => void openSkillEditor(activeSkill.name)}
+                  onDeleteFile={file => void removeSkillFile(activeSkill, file)}
+                  onEdit={() =>
+                    void openSkillEditor(activeSkill, { is_binary: false, kind: 'skill', path: 'SKILL.md' })
+                  }
+                  onOpenFile={file => void openSkillEditor(activeSkill, file)}
                   skill={activeSkill}
                 />
               )}
@@ -716,7 +817,19 @@ function DetailHeader({
   )
 }
 
-function SkillDetail({ onArchive, onEdit, skill }: { onArchive: () => void; onEdit: () => void; skill: SkillInfo }) {
+function SkillDetail({
+  onArchive,
+  onDeleteFile,
+  onEdit,
+  onOpenFile,
+  skill
+}: {
+  onArchive: () => void
+  onDeleteFile: (file: SkillPackageFile) => void
+  onEdit: () => void
+  onOpenFile: (file: SkillPackageFile) => void
+  skill: SkillInfo
+}) {
   const { t } = useI18n()
   // Only learned/local skills are the user's to rewrite or archive — bundled
   // and hub skills are managed by their sources.
@@ -748,6 +861,7 @@ function SkillDetail({ onArchive, onEdit, skill }: { onArchive: () => void; onEd
           </Button>
         </div>
       )}
+      <SkillPackageFiles onDelete={onDeleteFile} onOpen={onOpenFile} skill={skill} />
     </>
   )
 }

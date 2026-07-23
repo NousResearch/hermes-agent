@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
+from agent.skill_utils import SKILL_SUPPORT_DIRS
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
 
@@ -492,7 +493,7 @@ MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 # Subdirectories allowed for write_file/remove_file
-ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+ALLOWED_SUBDIRS = SKILL_SUPPORT_DIRS
 
 
 # =============================================================================

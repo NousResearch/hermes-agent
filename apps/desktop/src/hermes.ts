@@ -48,11 +48,13 @@ import type {
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
+  SkillFileContent,
   SkillHubPreview,
   SkillHubScanResult,
   SkillHubSearchResponse,
   SkillHubSourcesResponse,
   SkillInfo,
+  SkillPackageFiles,
   StarmapGraph,
   StatusResponse,
   TerminalBackendsResponse,
@@ -188,6 +190,7 @@ export type {
   SessionRuntimeInfo,
   SessionSearchResponse,
   SessionSearchResult,
+  SkillFileContent,
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubResult,
@@ -196,6 +199,9 @@ export type {
   SkillHubSource,
   SkillHubSourcesResponse,
   SkillInfo,
+  SkillPackageFile,
+  SkillPackageFileKind,
+  SkillPackageFiles,
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
@@ -859,6 +865,42 @@ export function getSkills(): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...profileScoped(),
     path: '/api/skills'
+  })
+}
+
+export function getSkillFiles(name: string): Promise<SkillPackageFiles> {
+  return window.hermesDesktop.api<SkillPackageFiles>({
+    ...profileScoped(),
+    path: `/api/skills/files?name=${encodeURIComponent(name)}`
+  })
+}
+
+export function getSkillContent(name: string, filePath = 'SKILL.md'): Promise<SkillFileContent> {
+  return window.hermesDesktop.api<SkillFileContent>({
+    ...profileScoped(),
+    path: `/api/skills/content?name=${encodeURIComponent(name)}&file_path=${encodeURIComponent(filePath)}`
+  })
+}
+
+export function updateSkillContent(
+  name: string,
+  filePath: string,
+  content: string
+): Promise<{ message: string; success: boolean }> {
+  return window.hermesDesktop.api<{ message: string; success: boolean }>({
+    ...profileScoped(),
+    path: '/api/skills/content',
+    method: 'PUT',
+    body: { name, file_path: filePath, content }
+  })
+}
+
+export function deleteSkillFile(name: string, filePath: string): Promise<{ message: string; success: boolean }> {
+  return window.hermesDesktop.api<{ message: string; success: boolean }>({
+    ...profileScoped(),
+    path: '/api/skills/file',
+    method: 'DELETE',
+    body: { name, file_path: filePath }
   })
 }
 

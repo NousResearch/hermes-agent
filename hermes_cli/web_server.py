@@ -15307,6 +15307,13 @@ class SkillCreate(BaseModel):
 class SkillContentUpdate(BaseModel):
     name: str
     content: str
+    file_path: Optional[str] = None
+    profile: Optional[str] = None
+
+
+class SkillFileDelete(BaseModel):
+    name: str
+    file_path: str
     profile: Optional[str] = None
 
 
@@ -15323,23 +15330,124 @@ def _clear_skills_prompt_cache() -> None:
         pass
 
 
-@app.get("/api/skills/content")
-async def get_skill_content(name: str, profile: Optional[str] = None):
-    """Return the raw SKILL.md text for a skill, for the dashboard editor."""
+def _skill_package_target(name: str, file_path: Optional[str]) -> tuple[Path, str]:
+    """Resolve one dashboard-visible package file through manager validation."""
+    from tools.skill_manager_tool import (
+        ALLOWED_SUBDIRS,
+        _find_skill,
+        _resolve_skill_target,
+        _validate_file_path,
+    )
+
+    normalized = file_path or "SKILL.md"
+    validation_error = _validate_file_path(normalized)
+    parts = Path(normalized).parts
+    if validation_error or (
+        normalized != "SKILL.md"
+        and (not parts or parts[0] not in ALLOWED_SUBDIRS)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=validation_error or f"Unsupported skill package path: '{normalized}'.",
+        )
+
+    found = _find_skill(name)
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
+
+    target, target_error = _resolve_skill_target(found["path"], normalized)
+    if target_error or target is None:
+        raise HTTPException(status_code=400, detail=target_error or "Invalid file path.")
+    return target, normalized
+
+
+def _require_editable_skill(name: str) -> None:
+    """Keep bundled and hub-managed skill packages read-only in the dashboard."""
+    from tools.skill_usage import provenance
+
+    origin = provenance(name)
+    if origin != "agent":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Skill '{name}' is {origin}-managed and read-only.",
+        )
+
+
+def _is_binary_skill_file(path: Path) -> bool:
+    """Detect files that must not be opened in the desktop text editor."""
+    try:
+        with path.open("rb") as handle:
+            sample = handle.read(8192)
+    except OSError:
+        return False
+    if b"\x00" in sample:
+        return True
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+@app.get("/api/skills/files")
+async def get_skill_files(name: str, profile: Optional[str] = None):
+    """List the complete allowlisted package surface for one skill."""
+    from agent.skill_utils import list_skill_support_files
     from tools.skill_manager_tool import _find_skill
 
     with _profile_scope(profile):
         found = _find_skill(name)
         if not found:
             raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
-        skill_md = found["path"] / "SKILL.md"
-        if not skill_md.exists():
+        skill_dir = found["path"]
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.is_file():
             raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
+
+        files = [{"path": "SKILL.md", "kind": "skill", "is_binary": False}]
+        for kind, paths in list_skill_support_files(skill_dir).items():
+            for relative_path in paths:
+                target, _ = _skill_package_target(name, relative_path)
+                files.append(
+                    {
+                        "path": relative_path,
+                        "kind": kind,
+                        "is_binary": _is_binary_skill_file(target),
+                    }
+                )
+        return {"name": name, "files": files}
+
+
+@app.get("/api/skills/content")
+async def get_skill_content(
+    name: str,
+    file_path: Optional[str] = None,
+    profile: Optional[str] = None,
+):
+    """Return raw text for SKILL.md or an allowlisted supporting file."""
+
+    with _profile_scope(profile):
+        target, normalized = _skill_package_target(name, file_path)
+        if not target.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"File '{normalized}' not found in skill '{name}'.",
+            )
+        if _is_binary_skill_file(target):
+            raise HTTPException(
+                status_code=415,
+                detail=f"File '{normalized}' is binary and cannot be opened as text.",
+            )
         try:
-            content = skill_md.read_text(encoding="utf-8")
+            content = target.read_text(encoding="utf-8")
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"name": name, "content": content, "path": str(skill_md)}
+        return {
+            "name": name,
+            "file_path": normalized,
+            "content": content,
+            "path": str(target),
+        }
 
 
 @app.post("/api/skills")
@@ -15363,13 +15471,46 @@ async def create_skill(body: SkillCreate):
 
 @app.put("/api/skills/content")
 async def update_skill_content(body: SkillContentUpdate):
-    """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
-    from tools.skill_manager_tool import _edit_skill
+    """Replace SKILL.md or an allowlisted text support file from the editor."""
+    from tools.skill_manager_tool import _edit_skill, _write_file
 
     with _profile_scope(body.profile):
-        result = _edit_skill(body.name, body.content)
+        target, normalized = _skill_package_target(body.name, body.file_path)
+        _require_editable_skill(body.name)
+        if target.exists() and _is_binary_skill_file(target):
+            raise HTTPException(
+                status_code=415,
+                detail=f"File '{normalized}' is binary and cannot be edited as text.",
+            )
+        result = (
+            _edit_skill(body.name, body.content)
+            if normalized == "SKILL.md"
+            else _write_file(body.name, normalized, body.content)
+        )
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
+        status = 404 if "not found" in str(err).lower() else 400
+        raise HTTPException(status_code=status, detail=err)
+    _clear_skills_prompt_cache()
+    return result
+
+
+@app.delete("/api/skills/file")
+async def delete_skill_file(body: SkillFileDelete):
+    """Delete one support file without overloading whole-skill archival."""
+    from tools.skill_manager_tool import _remove_file
+
+    with _profile_scope(body.profile):
+        _, normalized = _skill_package_target(body.name, body.file_path)
+        if normalized == "SKILL.md":
+            raise HTTPException(
+                status_code=400,
+                detail="SKILL.md cannot be deleted; archive the whole skill instead.",
+            )
+        _require_editable_skill(body.name)
+        result = _remove_file(body.name, normalized)
+    if not result.get("success"):
+        err = result.get("error", "Failed to delete skill file.")
         status = 404 if "not found" in str(err).lower() else 400
         raise HTTPException(status_code=status, detail=err)
     _clear_skills_prompt_cache()

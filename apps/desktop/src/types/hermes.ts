@@ -735,6 +735,26 @@ export interface SkillInfo {
   provenance?: 'agent' | 'bundled' | 'hub'
 }
 
+export type SkillPackageFileKind = 'skill' | 'references' | 'templates' | 'scripts' | 'assets'
+
+export interface SkillPackageFile {
+  is_binary: boolean
+  kind: SkillPackageFileKind
+  path: string
+}
+
+export interface SkillPackageFiles {
+  files: SkillPackageFile[]
+  name: string
+}
+
+export interface SkillFileContent {
+  content: string
+  file_path: string
+  name: string
+  path: string
+}
+
 export interface ToolsetInfo {
   configured: boolean
   description: string

@@ -1361,6 +1361,28 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         optimize_streaming_latency = max(0, min(2, optimize_streaming_latency))
     if auto_speech_tags:
         text = _apply_xai_auto_speech_tags(text)
+
+    # User-configured default wrap tags. Lets the user pick a global voice
+    # personality (e.g. "lower-pitch,fast") so every session — and every
+    # agent run, including new ones that don't remember to wrap — gets the
+    # same delivery. Skipped when the text already contains xAI speech tags,
+    # so the agent can still override per-message if it wants to.
+    default_wrap = str(xai_config.get("default_wrap_tags", "")).strip()
+    if default_wrap and not _XAI_SPEECH_TAG_RE.search(text):
+        wrap_tags = [t.strip().lower() for t in default_wrap.split(",") if t.strip()]
+        valid = [t for t in wrap_tags if t in _XAI_WRAPPING_SPEECH_TAGS]
+        if valid:
+            opening = "".join(f"<{t}>" for t in valid)
+            closing = "".join(f"</{t}>" for t in reversed(valid))
+            text = f"{opening}{text}{closing}"
+
+    # Optional outer padding (e.g. "…") to keep the audio from clipping at
+    # the start/end. Applied outside the wrap tags.
+    prepend_pad = str(xai_config.get("prepend_padding", "")).strip()
+    append_pad = str(xai_config.get("append_padding", "")).strip()
+    if prepend_pad or append_pad:
+        text = f"{prepend_pad}{text}{append_pad}"
+
     base_url = str(
         xai_config.get("base_url")
         or creds.get("base_url")
@@ -1841,6 +1863,36 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         )
         prompt_text = prompt_text[:max_len]
 
+    # Apply user-configured system instruction (global voice personality).
+    # Without this, every Gemini TTS call renders the same default delivery
+    # regardless of how nice a system_instruction the user has set in
+    # config. We also fold the optional `speed` hint in as a textual
+    # instruction, since the Gemini TTS API has no direct numeric speed
+    # field — the prompt is the only knob.
+    system_instruction = str(gemini_config.get("system_instruction", "")).strip()
+    speed_hint = gemini_config.get("speed")
+    if speed_hint is not None:
+        try:
+            speed_val = float(speed_hint)
+            if speed_val > 0:
+                # Translate numeric speed into natural-language pacing the
+                # model can follow. Skip when speed is at the default 1.0
+                # — neutral pacing is implicit.
+                if speed_val >= 1.2:
+                    pace = "Speak at a notably fast, energetic pace."
+                elif speed_val > 1.0:
+                    pace = "Speak at a slightly faster than average pace."
+                elif speed_val <= 0.7:
+                    pace = "Speak at a slow, deliberate pace."
+                elif speed_val < 1.0:
+                    pace = "Speak at a slightly slower, calmer pace."
+                else:
+                    pace = ""
+                if pace:
+                    system_instruction = f"{system_instruction} {pace}".strip() if system_instruction else pace
+        except (TypeError, ValueError):
+            pass
+
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -1852,6 +1904,8 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             },
         },
     }
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
     headers = {"Content-Type": "application/json"}
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":

@@ -43,36 +43,27 @@ else
     fi
 fi
 
-# ── 3. Ensure Hermes config has twozero_td MCP entry ──
+# ── 3. Ensure the touchdesigner MCP catalog entry is installed ──
 if [[ ! -f "$HERMES_CFG" ]]; then
     echo -e " ${FAIL} Hermes config not found at ${HERMES_CFG}"
-    manual_steps+=("Create ${HERMES_CFG} with twozero_td MCP server entry")
-elif grep -q 'twozero_td' "$HERMES_CFG" 2>/dev/null; then
-    echo -e " ${OK} twozero_td MCP entry exists in Hermes config"
+    manual_steps+=("Run 'hermes setup' first, then 'hermes mcp install touchdesigner'")
+elif grep -qE '^\s+touchdesigner:' "$HERMES_CFG" 2>/dev/null; then
+    echo -e " ${OK} touchdesigner MCP entry exists in Hermes config"
 else
-    echo -e " ${WARN} Adding twozero_td MCP entry to Hermes config..."
-    python3 -c "
-import yaml, sys, copy
+    echo -e " ${WARN} Installing touchdesigner from the MCP catalog..."
+    if command -v hermes >/dev/null 2>&1 && hermes mcp install touchdesigner </dev/null; then
+        echo -e " ${OK} touchdesigner MCP installed via catalog"
+    else
+        echo -e " ${FAIL} Could not run 'hermes mcp install touchdesigner'"
+        manual_steps+=("Run: hermes mcp install touchdesigner")
+    fi
+    manual_steps+=("Restart Hermes session to pick up the new MCP server")
+fi
 
-cfg_path = '$HERMES_CFG'
-with open(cfg_path, 'r') as f:
-    cfg = yaml.safe_load(f) or {}
-
-if 'mcp_servers' not in cfg:
-    cfg['mcp_servers'] = {}
-
-if 'twozero_td' not in cfg['mcp_servers']:
-    cfg['mcp_servers']['twozero_td'] = {
-        'url': '${MCP_ENDPOINT}',
-        'timeout': 120,
-        'connect_timeout': 60
-    }
-    with open(cfg_path, 'w') as f:
-        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-" 2>/dev/null && echo -e " ${OK} twozero_td MCP entry added to config" \
-              || { echo -e " ${FAIL} Could not update config (is PyYAML installed?)"; \
-                   manual_steps+=("Add twozero_td MCP entry to ${HERMES_CFG} manually"); }
-    manual_steps+=("Restart Hermes session to pick up config change")
+# ── 3b. Warn about a stale legacy entry from the old manual setup ──
+if [[ -f "$HERMES_CFG" ]] && grep -q 'twozero_td' "$HERMES_CFG" 2>/dev/null; then
+    echo -e " ${WARN} Legacy 'twozero_td' entry found in config"
+    manual_steps+=("Remove the old 'twozero_td' entry from mcp_servers in ${HERMES_CFG} (replaced by the catalog's 'touchdesigner' entry)")
 fi
 
 # ── 4. Test if MCP port is responding ──

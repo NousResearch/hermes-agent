@@ -1,0 +1,103 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: touchdesigner
+description: Drive a live TouchDesigner session via the twozero plugin.
+source: https://github.com/404dotzero/twozero-td-mcp
+
+# 404.zero's twozero plugin (free, no license/payment) embeds an MCP server
+# inside the running TouchDesigner process and serves it over local
+# Streamable HTTP. There is nothing to install on the Hermes side — the user
+# drops twozero.tox into TD and enables the MCP toggle; the hub binds to
+# 127.0.0.1:40404. Hermes's MCP client just connects to the URL.
+#
+# Multi-instance TD is handled by the hub automatically: keep ONE url here
+# (the hub port) — do not add per-instance entries. The default port is
+# controlled by the twozero setting "MCP default port"; if you change it,
+# edit the url in mcp_servers.touchdesigner to match.
+transport:
+  type: http
+  url: http://127.0.0.1:40404/mcp
+
+# The plugin-embedded hub accepts connections only from the same machine and
+# has no authentication of its own. Nothing to prompt for.
+auth:
+  type: none
+
+# Tool selection at install time:
+# The server advertises 36 tools. The 25 below are the complete creative
+# surface — building networks, setting parameters, reading/writing DATs and
+# CHOPs, operator screenshots, search, errors, and performance. The 11 left
+# off by default fall in two clusters, both enableable any time with
+# `hermes mcp configure touchdesigner`:
+#   - Desktop input automation (td_input_execute/status/clear,
+#     td_op_screen_rect, td_click_screen_point, td_screen_point_to_global,
+#     td_get_screen_screenshot): synthesizes real mouse/keyboard events and
+#     captures the user's actual screen. Powerful but invasive — opt-in.
+#   - Admin/dev (td_project_quit, td_test_session, td_dev_log,
+#     td_clear_dev_log): can save-and-close the user's project, and
+#     td_test_session exports conversation transcripts / submits bug reports
+#     to the vendor's hub — off by default per the no-outbound-telemetry
+#     posture. The dev logs only function in the plugin's Devmode.
+tools:
+  default_enabled:
+    - td_execute_python
+    - td_create_operator
+    - td_set_operator_pars
+    - td_get_operator_info
+    - td_get_operators_info
+    - td_get_par_info
+    - td_get_network
+    - td_get_focus
+    - td_get_errors
+    - td_get_hints
+    - td_read_dat
+    - td_write_dat
+    - td_read_chop
+    - td_read_textport
+    - td_clear_textport
+    - td_get_screenshot
+    - td_get_screenshots
+    - td_navigate_to
+    - td_find_op
+    - td_search
+    - td_get_perf
+    - td_list_instances
+    - td_get_docs
+    - td_agents_md
+    - td_reinit_extension
+
+post_install: |
+  This entry connects to the twozero plugin's MCP server, which runs INSIDE
+  TouchDesigner (2025.32280+). TouchDesigner is Windows/macOS only — there is
+  no Linux build. On a Linux Hermes host, TD must run on another machine:
+  make twozero's port reachable from Hermes (it binds localhost, so forward
+  it on the TD machine) and edit the url in mcp_servers.touchdesigner to
+  point at that machine's IP.
+
+  One-time setup in TD:
+
+    1. Download https://www.404zero.com/pisang/twozero.tox
+    2. Drag twozero.tox into the TD network editor and click Install.
+    3. Enable MCP: twozero icon > Settings > mcp > "auto start MCP" > Yes.
+       The hub binds to http://127.0.0.1:40404/mcp.
+
+  TouchDesigner must be RUNNING with twozero's MCP enabled before the tools
+  work — start TD first, then your Hermes session. Quick health check:
+    curl -s http://127.0.0.1:40404/mcp   (returns hub JSON with instances)
+
+  SECURITY: td_execute_python runs arbitrary Python inside TouchDesigner with
+  no sandbox — same trust level as the terminal tool. The server is
+  localhost-only and unauthenticated (any local process can reach it).
+
+  The desktop input-automation tools (mouse/keyboard control, full-screen
+  capture) and admin tools (project quit, vendor bug-report/chat export) are
+  off by default. Enable them with: hermes mcp configure touchdesigner
+
+  If you previously configured this server manually under the key
+  `twozero_td` (the old skill setup script), remove that entry from
+  mcp_servers in config.yaml to avoid loading the server twice.
+
+  The bundled `touchdesigner-mcp` skill covers workflows, pitfalls, and
+  proven recipes (audio-reactive GLSL, recording, instancing).

@@ -141,12 +141,17 @@ actual = str(n.width) + 'x' + str(n.height)
 
 ### MCP entry format
 
-The twozero TD entry should look like:
+The catalog install (`hermes mcp install touchdesigner`) writes:
 ```yaml
-mcpServers:
-  twozero_td:
-    url: http://localhost:40404/mcp
+mcp_servers:
+  touchdesigner:
+    url: http://127.0.0.1:40404/mcp
+    enabled: true
+    tools:
+      include: [...]   # curated default — 25 creative tools
 ```
+If you find an old `twozero_td` entry (written by earlier versions of this
+skill's setup script), remove it — the catalog entry replaces it.
 
 ### After config changes
 

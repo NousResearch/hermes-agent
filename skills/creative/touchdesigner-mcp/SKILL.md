@@ -1,10 +1,10 @@
 ---
 name: touchdesigner-mcp
 description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools."
-version: 1.1.0
+version: 1.2.0
 author: kshitijk4poor
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [macos, windows]
 metadata:
   hermes:
     tags: [TouchDesigner, MCP, twozero, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
@@ -28,24 +28,40 @@ metadata:
 Hermes Agent -> MCP (Streamable HTTP) -> twozero.tox (port 40404) -> TD Python
 ```
 
+**TouchDesigner runs on Windows and macOS only — there is no Linux build**, so
+the standard localhost workflow cannot work on Linux. (A Hermes host can still
+drive TD on ANOTHER machine by pointing the `mcp_servers.touchdesigner` url at
+that machine's IP, but TD itself must live on Windows/macOS and twozero binds
+localhost by default — the TD machine has to forward the port.)
+
 36 native tools. Free plugin (no payment/license — confirmed April 2026).
+TouchDesigner Non-Commercial is free too (requires a free derivative.ca
+account to activate).
 Context-aware (knows selected OP, current network).
 Hub health check: `GET http://localhost:40404/mcp` returns JSON with instance PID, project name, TD version.
 
-## Setup (Automated)
+## Setup
 
-Run the setup script to handle everything:
+The server is in the Nous MCP catalog. Install it with:
+
+```bash
+hermes mcp install touchdesigner
+```
+
+This writes the `mcp_servers.touchdesigner` entry (`http://127.0.0.1:40404/mcp`)
+and applies the curated default tool selection: the 25 creative tools are on;
+the 11 desktop input-automation tools (`td_input_*`, `td_op_screen_rect`,
+`td_click_screen_point`, `td_screen_point_to_global`, `td_get_screen_screenshot`)
+and admin tools (`td_project_quit`, `td_test_session`, `td_dev_log`,
+`td_clear_dev_log`) are OFF by default. Enable them when needed with
+`hermes mcp configure touchdesigner`.
+
+The optional helper script checks TD, downloads twozero.tox, and health-checks
+the port:
 
 ```bash
 bash "${HERMES_HOME:-$HOME/.hermes}/skills/creative/touchdesigner-mcp/scripts/setup.sh"
 ```
-
-The script will:
-1. Check if TD is running
-2. Download twozero.tox if not already cached
-3. Add `twozero_td` MCP server to Hermes config (if missing)
-4. Test the MCP connection on port 40404
-5. Report what manual steps remain (drag .tox into TD, enable MCP toggle)
 
 ### Manual steps (one-time, cannot be automated)
 
@@ -57,6 +73,10 @@ After setup, verify:
 ```bash
 nc -z 127.0.0.1 40404 && echo "twozero MCP: READY"
 ```
+
+> Migrating from the old manual setup: earlier versions of this skill wrote a
+> `twozero_td` entry into `mcp_servers` directly. If you have one, remove it
+> from `~/.hermes/config.yaml` so the server isn't loaded twice under two names.
 
 ## Environment Notes
 

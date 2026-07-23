@@ -435,14 +435,16 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 def should_use_direct_api_call(agent) -> bool:
     """Whether a cron OpenAI-wire request should skip the interrupt worker.
 
-    Issue #62151 is specific to OpenRouter's chat-completions path inside the
-    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
-    established workers: their cancellation and client ownership differ, and
-    the report provides no evidence that those paths share the pre-HTTP wedge.
+    Issue #62151 was reported on OpenRouter's chat-completions path inside the
+    gateway cron thread stack. Codex Responses uses the same spawned interrupt
+    worker and can wedge on later tool-loop calls too. Keep both OpenAI-wire
+    transports inline for cron; native Anthropic, Bedrock, and MoA retain their
+    established workers because their cancellation and client ownership differ.
     """
     return (
         getattr(agent, "platform", None) == "cron"
-        and getattr(agent, "api_mode", None) == "chat_completions"
+        and getattr(agent, "api_mode", None)
+        in {"chat_completions", "codex_responses"}
         and getattr(agent, "provider", None) != "moa"
     )
 
@@ -455,7 +457,13 @@ def direct_api_call(agent, api_kwargs: dict):
     does not have) so the nested-pool deadlock (#62151) cannot occur. Because the
     request runs in-flight normally, the per-request OpenAI client's own httpx
     timeout (provider ``request_timeout_seconds`` / ``HERMES_API_TIMEOUT``) bounds
-    a genuinely hung provider — the same bound interactive calls already rely on.
+    a genuinely hung provider. Cron's outer inactivity watchdog can also call
+    ``AIAgent.interrupt``; ``_active_request_abort`` then shuts down the request
+    socket while this owner thread performs the final client close.
+
+    For Codex Responses this inline path intentionally bypasses the worker-only
+    TTFB and event-idle watchdogs in ``interruptible_api_call``. Cron Codex calls
+    therefore rely on the request timeout and outer cron inactivity watchdog.
     """
     _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
@@ -470,10 +478,10 @@ def direct_api_call(agent, api_kwargs: dict):
             agent._abort_request_openai_client(request_client, reason=reason)
 
     def _make_client(reason: str, kind: str = "openai"):
-        # direct_api_call only runs for OpenAI-wire chat_completions cron
-        # requests (see should_use_direct_api_call), so the anthropic branch of
-        # the dispatch — the only caller that passes kind — is never reached
-        # here; the ``kind`` parameter exists purely for signature parity.
+        # direct_api_call only runs for OpenAI-wire chat_completions and Codex
+        # Responses cron requests (see should_use_direct_api_call), so the
+        # anthropic branch of the dispatch — the only caller that passes kind —
+        # is never reached here; ``kind`` exists purely for signature parity.
         client = agent._create_request_openai_client(reason=reason, api_kwargs=api_kwargs)
         with request_client_lock:
             request_client_holder["client"] = client
@@ -507,6 +515,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
     can detect interrupts without waiting for the full HTTP round-trip.
+
+    Cron OpenAI-wire requests are the exception: they run inline via
+    ``direct_api_call`` to avoid the nested worker deadlock from #62151.
 
     Each worker thread gets its own OpenAI client instance. Interrupts only
     close that worker-local client, so retries and other requests never

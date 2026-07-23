@@ -3466,6 +3466,34 @@ class TestKimiTemperatureOmitted:
 
         assert "temperature" not in kwargs
 
+    def test_codex_backend_api_omits_temperature(self):
+        """Codex backend-api responses endpoints reject temperature parameters."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openai-codex",
+            model="gpt-5.2",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url="https://chatgpt.com/backend-api/codex/v1/responses",
+        )
+
+        assert "temperature" not in kwargs
+
+    def test_non_codex_chatgpt_endpoint_preserves_temperature(self):
+        """Only the Codex backend-api path should force temperature omission."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openai",
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0.3,
+            base_url="https://chatgpt.com/v1/chat/completions",
+        )
+
+        assert kwargs["temperature"] == 0.3
+
 
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)

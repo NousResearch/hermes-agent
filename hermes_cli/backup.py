@@ -811,6 +811,16 @@ _QUICK_STATE_FILES = (
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 _QUICK_DEFAULT_KEEP = 20
 
+# Total-work budget (scandir'd directory entries) for one protected-root
+# capture in create_quick_snapshot(). Bounds a directory-cycle traversal
+# (e.g. a Windows junction looping back to an ancestor, linearly or via
+# branching) without any per-entry identity check — see the guard's own
+# comment in create_quick_snapshot() for the full rationale (#68907
+# review, pass 5). A real Hermes state tree never comes close to this;
+# module-level (not a function-local constant) so tests can monkeypatch
+# it down to a small value instead of driving 200k synthetic iterations.
+_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES = 200_000
+
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     home = hermes_home or get_hermes_home()
@@ -958,39 +968,51 @@ def create_quick_snapshot(
             # directory junction (or a POSIX hardlink-to-directory)
             # aliasing an ancestor, which would otherwise recurse forever,
             # re-copying the same files under an ever-deeper path until
-            # path-length or resource exhaustion (#68907 review, Finding
-            # 2). os.path.islink() does NOT catch junctions/reparse
-            # points (they aren't POSIX symlinks).
+            # resource exhaustion (#68907 review, Finding 2).
+            # os.path.islink() does NOT catch junctions/reparse points
+            # (they aren't POSIX symlinks).
             #
-            # A PRIOR version of this fix used a visited-set keyed on
-            # entry identity (st_dev, st_ino) from DirEntry.stat(). That
-            # was a WORSE bug than the one it targeted: verified by direct
-            # measurement on this Windows machine, DirEntry.stat() (the
-            # cached fast-path stat, as opposed to os.stat()) reports
-            # st_dev=0, st_ino=0 for every entry — so any two sibling
-            # directories collide on (0, 0) and the second one is silently
-            # dropped from the manifest, with neither `failed` nor
-            # `size_skipped` set. That is exactly the silent-incompleteness
-            # class this whole traversal exists to eliminate, and it broke
-            # every multi-subdirectory protected root on Windows, not just
-            # the rare junction case.
+            # TWO prior versions of this guard were both wrong:
+            #  - An identity visited-set keyed on (st_dev, st_ino) from
+            #    DirEntry.stat(). Verified by direct measurement on this
+            #    Windows machine: DirEntry.stat() (the cached fast-path
+            #    stat, unlike os.stat()) reports st_dev=0, st_ino=0 for
+            #    EVERY entry — any two sibling directories collide on
+            #    (0, 0) and the second is silently dropped, with neither
+            #    `failed` nor `size_skipped` set. Worse than the bug it
+            #    targeted: broke every multi-subdirectory protected root
+            #    on Windows.
+            #  - A max recursion DEPTH (64). Depth only bounds path
+            #    LENGTH, not total WORK. Two junctions forming a BINARY
+            #    cycle (pairing/a -> pairing, pairing/b -> pairing) still
+            #    reach depth 64 on every path, but getting there costs
+            #    2**65-1 ~= 3.7e19 scandir calls — the snapshot hangs
+            #    long before any failure is recorded.
             #
-            # A max-depth bound is the fail-safe alternative: platform-
-            # independent, cannot collide, and when exceeded it goes
-            # through the same _record_failure() choke point as every
-            # other capture problem — blocking the keep=1 prune instead of
-            # silently dropping data. A junction looping back to an
-            # ancestor recurses until the bound trips (recorded, safe). A
-            # junction pointing at an unrelated sibling causes at most a
-            # bounded redundant re-capture of already-protected files
-            # (harmless for a snapshot). A legitimate Hermes state tree
-            # (pairing/, kanban/boards/) is a few levels deep at most, so
-            # the bound is never approached by real data.
-            MAX_TRAVERSAL_DEPTH = 64
+            # The fix is a total-work BUDGET: platform-independent (no
+            # identity, cannot collide) and bounds branching as well as
+            # depth (a bounded-depth linear traversal is necessarily
+            # bounded in total entries too, so the budget subsumes a
+            # depth check — it is the ONLY guard here, not stacked with
+            # one). When exceeded, it goes through the same
+            # _record_failure() choke point as every other capture
+            # problem — recorded once, and the WHOLE traversal for this
+            # root aborts immediately (not just the offending branch, so
+            # a branching cycle can't keep burning budget on other
+            # branches) — blocking the keep=1 prune instead of silently
+            # dropping data. A junction looping back to an ancestor
+            # (linear or branching) burns through the budget and stops
+            # (recorded, safe). A junction pointing at an unrelated
+            # sibling causes at most a bounded redundant re-capture of
+            # already-protected files (harmless for a snapshot). A
+            # legitimate Hermes state tree (pairing/, kanban/boards/) is
+            # tiny, so the budget is never approached by real data.
+            entries_visited = 0
+            budget_exceeded = False
 
-            stack = [(src, 0)]
+            stack = [src]
             while stack:
-                current, depth = stack.pop()
+                current = stack.pop()
                 try:
                     entries = list(os.scandir(current))
                 except OSError as exc:
@@ -998,6 +1020,17 @@ def create_quick_snapshot(
                     continue
 
                 for entry in entries:
+                    entries_visited += 1
+                    if entries_visited > _QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES:
+                        _record_failure(
+                            _rel_for(current),
+                            f"traversal work budget exceeded "
+                            f"({_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES} "
+                            f"entries) — possible directory cycle",
+                        )
+                        budget_exceeded = True
+                        break
+
                     entry_path = Path(entry.path)
 
                     try:
@@ -1030,15 +1063,7 @@ def create_quick_snapshot(
                         # never raises (swallows OSError, returns False).
                         if os.path.islink(entry.path):
                             continue
-                        if depth + 1 > MAX_TRAVERSAL_DEPTH:
-                            _record_failure(
-                                _rel_for(entry_path),
-                                f"traversal bound exceeded "
-                                f"({MAX_TRAVERSAL_DEPTH} levels) — possible "
-                                f"directory cycle",
-                            )
-                            continue
-                        stack.append((entry_path, depth + 1))
+                        stack.append(entry_path)
                         continue
 
                     try:
@@ -1070,6 +1095,9 @@ def create_quick_snapshot(
                     except (OSError, PermissionError) as exc:
                         logger.warning("Could not snapshot %s: %s", sub_rel, exc)
                         _record_failure(sub_rel, str(exc))
+
+                if budget_exceeded:
+                    break
             continue
 
         if not stat.S_ISREG(top_stat.st_mode):

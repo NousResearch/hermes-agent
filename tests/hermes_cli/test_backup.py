@@ -1,7 +1,6 @@
 """Tests for hermes backup and import commands."""
 
 import errno
-import itertools
 import json
 import os
 import shutil
@@ -2318,30 +2317,45 @@ class TestQuickSnapshot:
         assert (snap_dir / "pairing" / "a" / "one.json").exists()
         assert (snap_dir / "pairing" / "b" / "two.json").exists()
 
-    def test_traversal_depth_bound_terminates_cycle_and_blocks_prune(
-        self, hermes_home
+    def test_linear_cycle_terminates_via_traversal_budget_and_blocks_prune(
+        self, hermes_home, monkeypatch
     ):
-        """A directory structure that would recurse unboundedly (e.g. a
-        Windows junction looping back to an ancestor) must be caught by a
-        depth bound: the traversal terminates, the overrun is recorded as
-        a failure (visible, forensic), and the keep=1 prune is blocked —
-        never silent data loss, never an unbounded hang (#68907 review,
-        pass 4).
+        """A directory structure that recurses unboundedly in a straight
+        line (e.g. a Windows junction looping back to an ancestor) must
+        be caught by the traversal work budget: the traversal
+        terminates, the overrun is recorded as a failure (visible,
+        forensic), and the keep=1 prune is blocked — never silent data
+        loss, never an unbounded hang (#68907 review, pass 5).
 
+        A prior version of this guard used a max recursion DEPTH (64)
+        instead of a total-work budget. Depth alone only bounds path
+        LENGTH: it happens to catch a purely linear chain like this one
+        fine, but a BRANCHING cycle (see
+        test_binary_cycle_terminates_via_traversal_budget_and_blocks_prune
+        below) blows up exponentially long before any fixed depth is
+        reached. The work budget subsumes the linear case too, so this
+        test now exercises the budget instead of a separate depth check.
+
+        The budget (_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES) is patched
+        down to a small value so the test runs fast without needing
+        200k synthetic iterations; production still uses 200_000.
         Simulated by an os.scandir fake that always yields exactly one
         (synthetic) child directory, however deep the traversal goes —
-        behaviorally identical to a self-referencing junction. That
-        child's reported identity is DIFFERENT on every call (an
-        ever-incrementing fake inode), so an identity-based visited-set
-        cannot bound it either — only a structural (depth) bound can.
-        This is deterministic and safe to run on any OS without a real
-        junction/symlink loop, and it stays RED against a version with no
-        depth bound at all (a hard call-count ceiling raises a sentinel,
-        non-OSError exception if ever exceeded, so a broken guard fails
-        loudly and fast instead of hanging the test suite).
+        behaviorally identical to a self-referencing junction. The test
+        carries its own independent safety ceiling, comfortably above
+        the patched budget: if the production guard somehow failed to
+        stop it, the test's sentinel (non-OSError) exception fires
+        instead of letting the test hang.
         """
         from hermes_cli import backup as backup_mod
         from hermes_cli.backup import create_quick_snapshot
+
+        # raising=False: on a pre-pass-5 commit this attribute doesn't
+        # exist yet, and the patch should be a harmless no-op there (that
+        # commit's own — different — bound mechanism is exercised as-is).
+        monkeypatch.setattr(
+            backup_mod, "_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES", 50, raising=False
+        )
 
         prior = hermes_home / "state-snapshots" / "20200101-000000"
         prior.mkdir(parents=True)
@@ -2352,19 +2366,11 @@ class TestQuickSnapshot:
         pairing_dir = hermes_home / "pairing"
         pairing_dir.mkdir()
 
-        class _UnstableIdentityStat:
-            def __init__(self, ino):
-                self.st_dev = 1
-                self.st_ino = ino
-
         class _LoopEntry:
             """A synthetic subdirectory whose own listing always yields
-            another copy of itself, with a fresh (never-repeating)
-            identity each time — a case identity-based cycle detection
-            cannot bound."""
+            another copy of itself."""
 
             name = "loop"
-            _next_ino = itertools.count(1)
 
             def __init__(self, path):
                 self.path = str(path)
@@ -2375,16 +2381,14 @@ class TestQuickSnapshot:
             def is_file(self, *args, **kwargs):
                 return False
 
-            def stat(self, *args, **kwargs):
-                return _UnstableIdentityStat(next(self._next_ino))
-
         class _RunawayRecursion(Exception):
-            """Raised only if the traversal exceeds the ceiling below —
-            proves the depth bound failed to terminate the recursion,
-            without ever letting the test actually hang."""
+            """Raised only if the traversal exceeds the test's own
+            ceiling — proves the traversal budget failed to terminate
+            the recursion, without ever letting the test actually
+            hang."""
 
         call_count = {"n": 0}
-        CALL_CEILING = 500  # far above the depth-64 bound; proves termination
+        CALL_CEILING = 500  # far above the patched budget (50)
 
         real_scandir = backup_mod.os.scandir
 
@@ -2393,7 +2397,7 @@ class TestQuickSnapshot:
             if call_count["n"] > CALL_CEILING:
                 raise _RunawayRecursion(
                     f"os.scandir called {call_count['n']} times — the "
-                    "traversal bound did not stop recursion"
+                    "traversal work budget did not stop recursion"
                 )
             p = Path(path)
             if p == pairing_dir or p.name == "loop":
@@ -2412,14 +2416,131 @@ class TestQuickSnapshot:
         with open(snap_dir / "manifest.json") as f:
             meta = json.load(f)
 
-        assert "failed" in meta, "traversal bound was exceeded but not recorded"
+        assert "failed" in meta, "traversal budget was exceeded but not recorded"
         assert any("cycle" in reason for reason in meta["failed"].values()), (
             meta["failed"]
         )
 
         assert prior.is_dir(), (
             "prior complete snapshot was pruned despite an unterminated "
-            "traversal bound"
+            "traversal budget"
+        )
+
+    def test_binary_cycle_terminates_via_traversal_budget_and_blocks_prune(
+        self, hermes_home, monkeypatch
+    ):
+        """A BRANCHING directory cycle — e.g. two Windows junctions
+        pairing/a -> pairing and pairing/b -> pairing (junctions bypass
+        islink()) — must also be caught, and caught FAST.
+
+        This is the case a depth-only bound misses: reaching a fixed
+        depth of 64 down EVERY branch of a binary cycle requires
+        2**65-1 ~= 3.7e19 scandir calls, so the snapshot would hang or
+        exhaust resources long before any failure is recorded. A
+        total-work budget (counting entries visited, not path length)
+        catches this almost immediately, because branching makes the
+        entry count explode exponentially per level.
+
+        The budget is patched down to a small value for a fast,
+        deterministic test; production still uses 200_000. The test
+        carries its own independent safety ceiling — generously above
+        what the patched budget needs, but tiny compared to what a
+        depth-only guard would need for this shape — so a version with
+        no total-work budget (only depth) fails this test LOUDLY AND
+        FAST (RED against 959130e40) instead of hanging, and the
+        work-budgeted version passes almost immediately (GREEN).
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        # raising=False: on a pre-pass-5 commit (959130e40, depth-only)
+        # this attribute doesn't exist — the patch is then a harmless
+        # no-op and that commit's own depth-64 bound runs unmodified,
+        # which is exactly what should fail this test's ceiling.
+        monkeypatch.setattr(
+            backup_mod, "_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES", 50, raising=False
+        )
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+
+        class _BranchEntry:
+            """A synthetic subdirectory whose own listing always yields
+            TWO more copies of the same shape — an infinite binary tree,
+            modeling two junctions that each loop back into the cycle."""
+
+            def __init__(self, path, name):
+                self.path = str(path)
+                self.name = name
+
+            def is_dir(self, *args, **kwargs):
+                return True
+
+            def is_file(self, *args, **kwargs):
+                return False
+
+        class _RunawayRecursion(Exception):
+            """Raised only if the traversal exceeds the test's own
+            ceiling — proves the traversal budget failed to bound the
+            branching cycle, without ever letting the test actually
+            hang."""
+
+        call_count = {"n": 0}
+        # Generous vs. what the patched budget (50) needs (~25-30 calls,
+        # since each call yields 2 entries) but minuscule compared to
+        # what an unbounded-branching depth-64 traversal would need.
+        CALL_CEILING = 2000
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            call_count["n"] += 1
+            if call_count["n"] > CALL_CEILING:
+                raise _RunawayRecursion(
+                    f"os.scandir called {call_count['n']} times — the "
+                    "traversal budget did not bound the branching cycle"
+                )
+            p = Path(path)
+            if p == pairing_dir or p.name in ("a", "b"):
+                return [
+                    _BranchEntry(p / "a", "a"),
+                    _BranchEntry(p / "b", "b"),
+                ]
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        assert call_count["n"] <= CALL_CEILING, (
+            "branching traversal did not terminate within the safety ceiling"
+        )
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "failed" in meta, "traversal budget was exceeded but not recorded"
+        # Exactly one failure: the whole protected-root traversal must
+        # abort immediately on budget overrun, not just skip the
+        # offending branch and keep burning budget on the others.
+        assert len(meta["failed"]) == 1, (
+            f"expected exactly one recorded failure (traversal aborts "
+            f"immediately), got: {meta['failed']}"
+        )
+        assert any("cycle" in reason for reason in meta["failed"].values()), (
+            meta["failed"]
+        )
+
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite an unbounded "
+            "branching cycle"
         )
 
 # ---------------------------------------------------------------------------

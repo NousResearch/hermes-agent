@@ -1791,6 +1791,35 @@ def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_hom
     assert flags == {"telegram": True, "discord": False}
 
 
+def test_home_channels_ignore_foreign_profile_subscription(
+    client, with_home_channels, monkeypatch,
+):
+    """GET /home-channels should only reflect rows owned by the active profile."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=t["id"],
+            platform="telegram",
+            chat_id="1234567",
+            thread_id="42",
+            notifier_profile="other-profile",
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "default",
+    )
+
+    r = client.get(f"/api/plugins/kanban/home-channels?task_id={t['id']}")
+    flags = {h["platform"]: h["subscribed"] for h in r.json()["home_channels"]}
+    assert flags == {"telegram": False, "discord": False}
+
+
 def test_home_subscribe_is_idempotent(client, with_home_channels):
     """Re-subscribing keeps a single row at the DB layer."""
     from hermes_cli import kanban_db as kb
@@ -1861,6 +1890,42 @@ def test_home_unsubscribe_removes_notify_sub_row(client, with_home_channels):
         assert kb.list_notify_subs(conn, t["id"]) == []
     finally:
         conn.close()
+
+
+def test_home_unsubscribe_preserves_foreign_profile_subscription(
+    client, with_home_channels, monkeypatch,
+):
+    """DELETE should not remove a matching home subscription owned elsewhere."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=t["id"],
+            platform="telegram",
+            chat_id="1234567",
+            thread_id="42",
+            notifier_profile="other-profile",
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "default",
+    )
+
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, t["id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "other-profile"
 
 
 def test_home_subscribe_multiple_platforms_independent(client, with_home_channels):

@@ -9131,14 +9131,23 @@ def add_notify_sub(
 
 
 def list_notify_subs(
-    conn: sqlite3.Connection, task_id: Optional[str] = None,
+    conn: sqlite3.Connection,
+    task_id: Optional[str] = None,
+    *,
+    notifier_profile: Optional[str] = None,
 ) -> list[dict]:
+    q = "SELECT * FROM kanban_notify_subs"
+    clauses: list[str] = []
+    params: list[Any] = []
     if task_id is not None:
-        rows = conn.execute(
-            "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (task_id,),
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
+        clauses.append("task_id = ?")
+        params.append(task_id)
+    if notifier_profile is not None:
+        clauses.append("notifier_profile = ?")
+        params.append(notifier_profile)
+    if clauses:
+        q += " WHERE " + " AND ".join(clauses)
+    rows = conn.execute(q, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -9149,13 +9158,18 @@ def remove_notify_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
 ) -> bool:
+    q = (
+        "DELETE FROM kanban_notify_subs WHERE task_id = ? "
+        "AND platform = ? AND chat_id = ? AND thread_id = ?"
+    )
+    params: list[Any] = [task_id, platform, chat_id, thread_id or ""]
+    if notifier_profile is not None:
+        q += " AND notifier_profile = ?"
+        params.append(notifier_profile)
     with write_txn(conn):
-        cur = conn.execute(
-            "DELETE FROM kanban_notify_subs WHERE task_id = ? "
-            "AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
-        )
+        cur = conn.execute(q, params)
     return cur.rowcount > 0
 
 

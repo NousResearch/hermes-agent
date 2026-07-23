@@ -1789,10 +1789,15 @@ def get_home_channels(
     homes = _configured_home_channels()
     subscribed_homes: set[tuple[str, str, str]] = set()
     if task_id:
+        active_profile = _active_profile_name()
         board = _resolve_board(board)
         conn = _conn(board=board)
         try:
-            subs = kanban_db.list_notify_subs(conn, task_id)
+            subs = kanban_db.list_notify_subs(
+                conn,
+                task_id,
+                notifier_profile=active_profile,
+            )
         finally:
             conn.close()
         for sub in subs:
@@ -1863,6 +1868,7 @@ def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(N
             platform=platform,
             chat_id=home["chat_id"],
             thread_id=home["thread_id"] or None,
+            notifier_profile=_active_profile_name(),
         )
         return {"ok": True, "task_id": task_id, "home_channel": home}
     finally:

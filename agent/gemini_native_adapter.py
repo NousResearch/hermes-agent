@@ -371,6 +371,49 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
     return contents, system_instruction
 
 
+# Gemini built-in tool names that the platform supports natively.
+# These are declared as separate tool objects alongside functionDeclarations.
+_GEMINI_BUILTIN_TOOLS = frozenset({
+    "googleSearch",
+    "codeExecution",
+    "retrieval",
+})
+
+
+def _build_builtin_tools(config: Any) -> List[Dict[str, Any]]:
+    """Build Gemini native built-in tool objects from config.
+
+    Accepts a list of tool configs (e.g. ``[{"googleSearch": {}},
+    {"codeExecution": {}}]``) or a dict of tool-name to config
+    (e.g. ``{"googleSearch": {}, "codeExecution": {}}``).
+    Returns a list of tool objects ready to append to the tools array.
+    """
+    if not config:
+        return []
+    if isinstance(config, dict):
+        tools: List[Dict[str, Any]] = []
+        for name, cfg in config.items():
+            if name in _GEMINI_BUILTIN_TOOLS:
+                if isinstance(cfg, dict):
+                    tools.append({name: cfg})
+                else:
+                    tools.append({name: {}})
+        return tools
+    if isinstance(config, list):
+        result: List[Dict[str, Any]] = []
+        for item in config:
+            if not isinstance(item, dict):
+                continue
+            for name, cfg in item.items():
+                if name in _GEMINI_BUILTIN_TOOLS:
+                    if isinstance(cfg, dict):
+                        result.append({name: cfg})
+                    else:
+                        result.append({name: {}})
+        return result
+    return []
+
+
 def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
     if not isinstance(tools, list):
         return []
@@ -439,13 +482,21 @@ def build_gemini_request(
     top_p: Optional[float] = None,
     stop: Any = None,
     thinking_config: Any = None,
+    gemini_builtin_tools: Any = None,
 ) -> Dict[str, Any]:
     contents, system_instruction = _build_gemini_contents(messages)
     request: Dict[str, Any] = {"contents": contents}
     if system_instruction:
         request["systemInstruction"] = system_instruction
 
-    gemini_tools = _translate_tools_to_gemini(tools)
+    # Build the full tools array: built-in tools first, then functionDeclarations.
+    # Gemini's API accepts multiple tool objects in the tools array:
+    #   [{"googleSearch": {}}, {"codeExecution": {}}, {"functionDeclarations": [...]}]
+    gemini_tools: List[Dict[str, Any]] = []
+    builtin_tools = _build_builtin_tools(gemini_builtin_tools)
+    gemini_tools.extend(builtin_tools)
+    function_tools = _translate_tools_to_gemini(tools)
+    gemini_tools.extend(function_tools)
     if gemini_tools:
         request["tools"] = gemini_tools
 
@@ -944,8 +995,10 @@ class GeminiNativeClient:
         **_: Any,
     ) -> Any:
         thinking_config = None
+        gemini_builtin_tools = None
         if isinstance(extra_body, dict):
             thinking_config = extra_body.get("thinking_config") or extra_body.get("thinkingConfig")
+            gemini_builtin_tools = extra_body.get("gemini_builtin_tools")
 
         request = build_gemini_request(
             messages=messages or [],
@@ -956,6 +1009,7 @@ class GeminiNativeClient:
             top_p=top_p,
             stop=stop,
             thinking_config=thinking_config,
+            gemini_builtin_tools=gemini_builtin_tools,
         )
 
         model = bare_gemini_model_id(model)

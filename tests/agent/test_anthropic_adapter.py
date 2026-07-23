@@ -1394,7 +1394,9 @@ class TestConvertMessages:
 
         assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Placeholder text must be non-whitespace: strict Anthropic-compatible
+        # endpoints (zenmux) 400 on whitespace-only text blocks.
+        assert result[0]["content"][0]["text"].strip()
         assert result[1]["role"] == "assistant"
         assert any(
             m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
@@ -1418,7 +1420,7 @@ class TestConvertMessages:
 
         assert system is None
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        assert result[0]["content"][0]["text"].strip()
         assert result[1]["role"] == "assistant"
         assert "Context compaction summary" in str(result[1]["content"])
 

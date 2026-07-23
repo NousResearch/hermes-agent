@@ -2427,7 +2427,10 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     (convert_messages_to_converse).
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        # ponytail: some Anthropic-compatible endpoints (e.g. zenmux) reject a
+        # whitespace-only text block with HTTP 400 "text content blocks must
+        # contain non-whitespace text"; use a minimal non-blank placeholder.
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": "."}]})
 
 
 def convert_messages_to_anthropic(

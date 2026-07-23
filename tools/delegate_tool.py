@@ -1414,6 +1414,11 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Stash the child's RESOLVED toolsets (post parent-intersection and
+    # blocked-tool stripping) so _run_single_child can surface them on the
+    # result entry — the entry is built in _run_single_child's scope, where
+    # child_toolsets is not visible (issue #63887).
+    child._delegate_child_toolsets = list(child_toolsets)
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1815,6 +1820,11 @@ def _run_single_child(
         child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
     )
 
+    # The child's RESOLVED toolsets (post parent-intersection and blocked-tool
+    # stripping), stashed by _build_child_agent. Surfaced on the result entry
+    # so the parent can catch a goal/capability mismatch (issue #63887).
+    child_toolsets = list(getattr(child, "_delegate_child_toolsets", []) or [])
+
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None
     if child_pool is not None:
@@ -2201,6 +2211,13 @@ def _run_single_child(
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
+            # The child's RESOLVED toolsets (post parent-intersection and
+            # blocked-tool stripping) — not what the caller requested. Surfaced
+            # in the completion block so the parent can catch a goal/capability
+            # mismatch (e.g. "write a file" dispatched to a child that never
+            # had the file toolset), which a budget-tier child may otherwise
+            # report as completed with a fabricated verification (issue #63887).
+            "toolsets": sorted(child_toolsets),
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
             "tokens": {
@@ -2350,6 +2367,7 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "toolsets": sorted(child_toolsets),
             "_child_role": getattr(child, "_delegate_role", None),
         }
 

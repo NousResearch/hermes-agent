@@ -60,6 +60,29 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # through instead of silently overriding them with the placeholder.
 _DEFAULT_USER_ID = "hermes-user"
 
+# Conversation-provenance kwargs the gateway threads through initialize()
+# (agent/agent_init.py), mapped to the metadata key each is stored under.
+# An explicit allowlist rather than a kwargs dump: initialize() also receives
+# host-local values (hermes_home, agent_workspace, ...) that must never leak
+# into a remote memory store. gateway_user_id is the platform-native id of
+# the human in the chat (Slack UID, Telegram id, ...) — distinct from the
+# memory principal, which a configured MEM0_USER_ID may override to a shared
+# store. Extend this table to record new context the gateway starts passing.
+_PROVENANCE_KWARGS = (
+    ("user_id", "gateway_user_id"),
+    ("user_id_alt", "gateway_user_id_alt"),
+    ("user_name", "user_name"),
+    ("chat_id", "chat_id"),
+    ("chat_name", "chat_name"),
+    ("chat_type", "chat_type"),
+    ("thread_id", "thread_id"),
+    ("session_title", "session_title"),
+)
+
+# Metadata travels on every add; cap each value so a pathological session
+# title or chat name can't bloat writes past Mem0's metadata size limits.
+_PROVENANCE_VALUE_MAX_CHARS = 256
+
 
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
@@ -206,6 +229,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = "hermes"
         self._rerank_default = False
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
+        self._session_id = ""
+        self._session_meta: Dict[str, str] = {}
         self._sync_thread = None
         self._prefetch_thread = None
         self._prefetch_query = ""
@@ -363,6 +388,12 @@ class Mem0MemoryProvider(MemoryProvider):
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
         self._channel = kwargs.get("platform") or "cli"
+        self._session_id = session_id or ""
+        self._session_meta = {}
+        for kwarg, meta_key in _PROVENANCE_KWARGS:
+            value = kwargs.get(kwarg)
+            if value:
+                self._session_meta[meta_key] = str(value)[:_PROVENANCE_VALUE_MAX_CHARS]
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -376,10 +407,20 @@ class Mem0MemoryProvider(MemoryProvider):
         # cross-agent recall.
         return {"user_id": self._user_id}
 
-    def _write_metadata(self) -> Dict[str, Any]:
-        # Tag every write with the gateway channel so the dashboard can offer
-        # per-channel filtered views without coupling identity to the channel.
-        return {"channel": self._channel} if self._channel else {}
+    def _write_metadata(self, *, session_id: str = "") -> Dict[str, Any]:
+        # Tag every write with the gateway channel plus conversation
+        # provenance (who was in the chat, which channel/thread, which
+        # session) so a memory can be traced back to the exact conversation
+        # it came from and Mem0's metadata filters can offer per-person /
+        # per-thread views. Callers with a fresher session_id than the one
+        # captured at initialize (sync_turn is called per-turn) pass it here.
+        metadata: Dict[str, Any] = dict(self._session_meta)
+        if self._channel:
+            metadata["channel"] = self._channel
+        effective_session = session_id or self._session_id
+        if effective_session:
+            metadata["session_id"] = effective_session
+        return metadata
 
     def system_prompt_block(self) -> str:
         # Mirror the precedence in _create_backend (oss > host > platform) so
@@ -494,7 +535,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     user_id=self._user_id,
                     agent_id=self._agent_id,
                     infer=True,
-                    metadata=self._write_metadata(),
+                    metadata=self._write_metadata(session_id=session_id),
                 )
                 self._record_success()
             except Exception as e:

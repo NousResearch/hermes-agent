@@ -529,7 +529,7 @@ class TestMem0WriteMetadata:
             provider._sync_thread.join(timeout=5.0)
         adds = [c for c in provider._backend.captured if c[0] == "add"]
         assert adds, "expected an add call from sync_turn"
-        assert adds[-1][2]["metadata"] == {"channel": "discord"}
+        assert adds[-1][2]["metadata"] == {"channel": "discord", "session_id": "s"}
 
 
 class _SentinelBackend:

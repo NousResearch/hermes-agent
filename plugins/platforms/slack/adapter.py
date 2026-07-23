@@ -3936,11 +3936,16 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
         return (
             f"You are connected to this Slack workspace as the bot "
-            f'"@{name}". In messages, each line is prefixed with the sender\'s '
-            f"name, and mentions are shown as @DisplayName. Only treat a "
-            f'message as directed at you when it mentions "@{name}" '
-            f"specifically; a mention of any other participant is not a "
-            f"mention of you, even if their name is similar."
+            f'"@{name}". The Slack adapter already applied authorization, mention, '
+            f"and channel-routing rules before delivering this message. Treat every "
+            f"delivered turn as intentionally routed to you, including a message "
+            f"accepted from a free-response channel or active thread. Your own routing "
+            f'mention "@{name}" may have been removed from the model-visible text. '
+            f"Do not ask for another mention, reject the message, or stay silent solely "
+            f'because "@{name}" is absent. In messages, each line is prefixed with the '
+            f"sender's name, and visible mentions are shown as @DisplayName; a mention "
+            f"of any other participant is not a mention of you, even if their name is "
+            f"similar."
         )
 
     async def _resolve_user_is_bot(

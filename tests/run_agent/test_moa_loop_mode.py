@@ -2478,3 +2478,167 @@ moa:
     usage2, cost2 = facade.consume_reference_usage()
     assert usage2.input_tokens == 0
     assert cost2 is None
+
+
+class _CountingCtxLen:
+    """Stub for get_model_context_length that counts resolutions."""
+
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        if isinstance(self.value, Exception):
+            raise self.value
+        return self.value
+
+
+def _trim(messages, *, window=1000, reserve=None, cache=None, counting=None,
+          monkeypatch=None):
+    from agent import model_metadata, moa_loop
+
+    stub = counting or _CountingCtxLen(window)
+    monkeypatch.setattr(model_metadata, "get_model_context_length", stub)
+    return moa_loop._trim_messages_for_reference(
+        messages,
+        {"provider": "openrouter", "model": "small-window"},
+        {"provider": "openrouter", "model": "small-window"},
+        reserve_output_tokens=reserve,
+        context_length_cache=cache,
+    )
+
+
+def _advisory_view(n_pairs, chunk="x" * 400):
+    """A text-only advisory view: system + n user/assistant pairs + trailing user."""
+    msgs = [{"role": "system", "content": "advisory system prompt"}]
+    for i in range(n_pairs):
+        msgs.append({"role": "user", "content": f"u{i} {chunk}"})
+        msgs.append({"role": "assistant", "content": f"a{i} {chunk}"})
+    msgs.append({"role": "user", "content": "judge the state above"})
+    return msgs
+
+
+def test_reference_trim_untouched_when_within_window(monkeypatch):
+    msgs = _advisory_view(2)
+    out = _trim(list(msgs), window=10_000_000, monkeypatch=monkeypatch)
+    assert out == msgs
+
+
+def test_reference_trim_drops_oldest_and_keeps_invariants(monkeypatch):
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    msgs = _advisory_view(30)
+    out = _trim(list(msgs), window=4000, reserve=100, monkeypatch=monkeypatch)
+
+    # Something was dropped and it fits the (window*0.9 - reserve) budget…
+    assert len(out) < len(msgs)
+    # System prompt survives at index 0.
+    assert out[0]["role"] == "system"
+    # User-first after the system prompt — never assistant-first.
+    assert out[1]["role"] == "user"
+    # Trailing synthetic user turn survives.
+    assert out[-1] == msgs[-1]
+    # Oldest frames were the ones dropped: the kept body is a contiguous
+    # suffix of the original body.
+    assert out[1:] == msgs[len(msgs) - len(out) + 1:]
+
+
+def test_reference_trim_estimates_after_system_prompt(monkeypatch):
+    """The advisory system prompt counts against the budget: a view that fits
+    without it but not with it must still be trimmed."""
+    from agent import model_metadata, moa_loop
+
+    msgs = _advisory_view(6)
+    body_tokens = model_metadata.estimate_messages_tokens_rough(msgs[1:])
+    total_tokens = model_metadata.estimate_messages_tokens_rough(msgs)
+    assert total_tokens > body_tokens
+
+    # Pick a window where (body fits) but (system+body does not):
+    # budget = window*0.9 - reserve(100) must sit between the two.
+    window = int((body_tokens + (total_tokens - body_tokens) / 2 + 100) / 0.9)
+    out = _trim(list(msgs), window=window, reserve=100, monkeypatch=monkeypatch)
+    assert len(out) < len(msgs)
+    assert out[0]["role"] == "system"
+
+
+def test_reference_trim_reserves_output_tokens(monkeypatch):
+    """With a huge output reserve the budget shrinks and forces a trim that
+    a reserve-less estimate would not need."""
+    msgs = _advisory_view(10)
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    total = estimate_messages_tokens_rough(msgs)
+    window = int((total + 500) / 0.9)  # fits easily with a small reserve
+    out_small = _trim(list(msgs), window=window, reserve=100, monkeypatch=monkeypatch)
+    assert out_small == msgs
+    out_big = _trim(list(msgs), window=window, reserve=total, monkeypatch=monkeypatch)
+    assert len(out_big) < len(msgs)
+
+
+def test_reference_trim_unresolvable_window_is_a_noop(monkeypatch):
+    msgs = _advisory_view(3)
+    stub = _CountingCtxLen(RuntimeError("metadata down"))
+    out = _trim(list(msgs), counting=stub, monkeypatch=monkeypatch)
+    assert out == msgs
+
+
+def test_reference_trim_context_length_cache_hits_once(monkeypatch):
+    """A shared per-turn cache resolves each (provider, model) window once."""
+    cache = {}
+    stub = _CountingCtxLen(10_000_000)
+    msgs = _advisory_view(2)
+    for _ in range(4):
+        _trim(list(msgs), cache=cache, counting=stub, monkeypatch=monkeypatch)
+    assert stub.calls == 1
+    assert cache == {("openrouter", "small-window"): 10_000_000}
+
+
+def test_reference_trim_caches_resolution_failures(monkeypatch):
+    """A failing metadata source is probed once, not per reference call."""
+    cache = {}
+    stub = _CountingCtxLen(RuntimeError("metadata down"))
+    msgs = _advisory_view(2)
+    for _ in range(3):
+        out = _trim(list(msgs), cache=cache, counting=stub, monkeypatch=monkeypatch)
+        assert out == msgs
+    assert stub.calls == 1
+    assert cache == {("openrouter", "small-window"): None}
+
+
+def test_run_reference_trims_oversized_view_before_calling(monkeypatch):
+    """End-to-end: _run_reference sends a trimmed request for a small-window
+    model instead of letting the provider 400."""
+    from agent import model_metadata, moa_loop
+
+    sent = {}
+
+    def fake_call_llm(**kwargs):
+        sent.update(kwargs)
+        return _response_with_usage("advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot["model"]},
+    )
+    monkeypatch.setattr(
+        model_metadata, "get_model_context_length", lambda **k: 3000
+    )
+
+    view = _advisory_view(40)[1:]  # advisory view has no system prompt
+    label, text, _acct = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "small-window"},
+        view,
+        max_tokens=200,
+    )
+
+    assert text == "advice"
+    sent_messages = sent["messages"]
+    # System prompt was prepended and survived the trim.
+    assert sent_messages[0]["role"] == "system"
+    # The request actually shrank.
+    assert len(sent_messages) < len(view) + 1
+    # And ends with the synthetic trailing user turn.
+    assert sent_messages[-1]["role"] == "user"

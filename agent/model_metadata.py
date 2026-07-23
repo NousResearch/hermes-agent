@@ -2191,6 +2191,21 @@ def get_model_context_length(
     9. Default fallback (256K)"""
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
+        # When a config override inflates context_length past the real model's
+        # window (e.g. user sets model.context_length=65536 to meet the 64K
+        # minimum, but the underlying local model supports less), probe the
+        # real context and cap to it so compression fires before the provider
+        # rejects the request. (#60103)
+        if base_url and is_local_endpoint(base_url):
+            try:
+                real_ctx = get_model_context_length(
+                    model, base_url=base_url, api_key=api_key,
+                    config_context_length=None, provider=provider,
+                )
+                if real_ctx is not None and real_ctx > 0 and real_ctx < config_context_length:
+                    return real_ctx
+            except Exception:
+                pass
         return config_context_length
 
     # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,

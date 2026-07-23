@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/curator',
             'user-guide/features/memory',
             'user-guide/features/memory-providers',
+            'user-guide/features/community-memory-providers',
             'user-guide/features/honcho',
             'user-guide/features/context-files',
             'user-guide/features/context-references',

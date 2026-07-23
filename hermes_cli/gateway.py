@@ -2845,7 +2845,11 @@ WantedBy=multi-user.target
     systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
         hermes_home
     )
-    profile_arg = _profile_arg(hermes_home)
+    # A service installed for the default profile must stay on that profile.
+    # Without an explicit selector, CLI startup follows the interactive
+    # active_profile marker and can silently move the always-on gateway (and
+    # its cron store) to a named profile such as `aegis`.
+    profile_arg = _profile_arg(hermes_home) or "--profile default"
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)

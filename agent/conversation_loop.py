@@ -1312,7 +1312,11 @@ def run_conversation(
             # blocked) — reset the blocked-overflow warning dedup so a future
             # blocked-over-threshold turn can warn again. Mirrors the
             # turn-context preflight reset (silent-overflow fix #62625).
-            agent._clear_context_overflow_warn()
+            # getattr guard: test doubles built via object.__new__ lack the
+            # method (gateway test-double pitfall) — treat absence as no-op.
+            _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
+            if callable(_clear_warn):
+                _clear_warn()
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
                 "(context=%s, attempt=%s/%s)",
@@ -5471,7 +5475,11 @@ def run_conversation(
                     # never blocked) — reset the blocked-overflow warning
                     # dedup so a future blocked-over-threshold turn can warn
                     # again (silent-overflow fix #62625).
-                    agent._clear_context_overflow_warn()
+                    # getattr guard: test doubles built via object.__new__ lack the
+                    # method (gateway test-double pitfall) — treat absence as no-op.
+                    _clear_warn = getattr(agent, "_clear_context_overflow_warn", None)
+                    if callable(_clear_warn):
+                        _clear_warn()
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,

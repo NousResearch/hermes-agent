@@ -3559,6 +3559,61 @@ def test_cli_create_no_warn_unassigned(kanban_home, monkeypatch, capsys):
     assert "hermes gateway start" not in err
 
 
+
+def test_cli_create_inherits_board_default_workdir_kind(kanban_home, tmp_path, monkeypatch):
+    """No --workspace + board default_workdir in a git repo → worktree (#69787)."""
+    import subprocess
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    kb.create_board("cli-inherit", default_workdir=str(repo))
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 1)
+    ns = _make_create_ns(title="from-board", assignee="worker", workspace=None, board="cli-inherit")
+    for k, v in {
+        "branch": None, "project": None, "max_retries": None,
+        "model_override": None, "provider_override": None,
+        "goal_mode": False, "goal_max_turns": None, "initial_status": "running",
+    }.items():
+        setattr(ns, k, v)
+    with kb.scoped_current_board("cli-inherit"):
+        assert kb_cli._cmd_create(ns) == 0
+    with kb.connect(board="cli-inherit") as conn:
+        tasks = list(kb.list_tasks(conn))
+    assert len(tasks) >= 1
+    t = tasks[0]
+    assert t.workspace_kind == "worktree"
+    assert t.workspace_path == str(repo.resolve())
+
+
+def test_cli_create_explicit_scratch_skips_board_default(kanban_home, tmp_path, monkeypatch):
+    """Explicit --workspace scratch must not inherit board path (#30917)."""
+    import subprocess
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db as kb
+    repo = tmp_path / "proj2"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    kb.create_board("cli-scratch", default_workdir=str(repo))
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 1)
+    ns = _make_create_ns(title="force-scratch", assignee="worker", workspace="scratch", board="cli-scratch")
+    for k, v in {
+        "branch": None, "project": None, "max_retries": None,
+        "model_override": None, "provider_override": None,
+        "goal_mode": False, "goal_max_turns": None, "initial_status": "running",
+    }.items():
+        setattr(ns, k, v)
+    with kb.scoped_current_board("cli-scratch"):
+        assert kb_cli._cmd_create(ns) == 0
+    with kb.connect(board="cli-scratch") as conn:
+        tasks = list(kb.list_tasks(conn))
+    t = [x for x in tasks if x.title == "force-scratch"][0]
+    assert t.workspace_kind == "scratch"
+    assert t.workspace_path is None
+
+
+
 def test_cli_daemon_without_force_prints_deprecation_exits_2(kanban_home, capsys):
     """`hermes kanban daemon` (no --force) is a deprecation stub."""
     from hermes_cli import kanban as kb_cli

@@ -6132,6 +6132,33 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def recommended_workspace_kind_for_board(board: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """Recommend ``(workspace_kind, workspace_path)`` from board ``default_workdir``.
+
+    Mirrors the dashboard helper ``_default_workspace_kind`` so CLI / tool
+    creates inherit the same non-scratch default the create dialog suggests
+    (#69787). Scratch is never given a real path (see #28818 / #30917).
+
+    Returns ``("scratch", None)`` when the board has no default_workdir or
+    the path does not exist as a directory.
+    """
+    board_slug = board if board else get_current_board()
+    meta = read_board_metadata(board_slug)
+    workdir = str(meta.get("default_workdir") or "").strip()
+    if not workdir:
+        return ("scratch", None)
+    try:
+        path = Path(workdir).expanduser()
+        if not path.exists() or not path.is_dir():
+            # Keep scratch rather than a dead dir:/worktree root.
+            return ("scratch", None)
+        path = path.resolve()
+        kind = "worktree" if _git_toplevel(path) else "dir"
+        return (kind, str(path))
+    except (OSError, ValueError):
+        return ("scratch", None)
+
+
 def _git_toplevel(path: Path) -> Optional[Path]:
     """Return the git toplevel containing ``path``, or ``None`` if not in a repo."""
     try:

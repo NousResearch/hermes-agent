@@ -1203,11 +1203,23 @@ def _handle_create(args: dict, **kw) -> str:
             # literal workspace kind/path; directory sharing must be explicit.
             if _inherit_project and project_id is None:
                 _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                _inherited_project = False
                 if _self_tid:
                     _self_task = kb.get_task(conn, _self_tid)
                     if _self_task is not None and _self_task.project_id:
                         project_id = _self_task.project_id
                         project_source_task_id = _self_task.id
+                        _inherited_project = True
+                if not _inherited_project:
+                    # Chat / CLI-tool create with no parent-task project to
+                    # inherit: mirror the dashboard board default_workdir kind
+                    # (#69787). This is explicit board configuration, not the
+                    # parent's literal checkout, so directory sharing stays
+                    # opt-in per #67567.
+                    _bslug = board if board else kb.get_current_board()
+                    workspace_kind, workspace_path = (
+                        kb.recommended_workspace_kind_for_board(_bslug)
+                    )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),

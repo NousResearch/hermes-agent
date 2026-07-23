@@ -39,6 +39,7 @@ _STATUS_ICONS = {
     "running":  "●",
     "scheduled":"⏱",
     "blocked":  "⊘",
+    "completed_pending_review": "◉",
     "done":     "✓",
     "archived": "—",
 }
@@ -2397,6 +2398,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "timed_out": res.timed_out,
             "stale": res.stale,
             "auto_blocked": res.auto_blocked,
+            "missing_exit_signal": res.missing_exit_signal,
             "promoted": res.promoted,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
@@ -2424,6 +2426,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
+    print(f"Missing exit signal: {len(res.missing_exit_signal)}")
+    if res.missing_exit_signal:
+        print(f"  {', '.join(res.missing_exit_signal)}")
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
@@ -2646,7 +2651,10 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in (
+        "triage", "todo", "scheduled", "ready", "running", "blocked",
+        "completed_pending_review", "done",
+    ):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -2656,6 +2664,12 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    print(
+        "Missing-exit-signal 24h: "
+        f"{stats.get('missing_exit_signal_24h', 0)}/"
+        f"{stats.get('ended_runs_24h', 0)} "
+        f"({stats.get('missing_exit_signal_rate_24h', 0.0):.2%})"
+    )
     return 0
 
 

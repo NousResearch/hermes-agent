@@ -3626,6 +3626,16 @@ def run_job(
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        # Remove the cron session flag from the process environment when this
+        # is the last cron job still running.  os.environ is process-global
+        # and the scheduler often runs inside a gateway process — without
+        # cleanup the flag leaks into user-interactive sessions and blocks
+        # execute_code, web_request, and other tools gated on the cron-mode
+        # deny path (#73195).
+        with _running_lock:
+            remaining = _running_job_ids - {job_id}
+            if not remaining:
+                os.environ.pop("HERMES_CRON_SESSION", None)
         if _session_db:
             # Title the cron session from the job (name -> id) and PERSIST it
             # BEFORE end_session()/close() tear the connection down, so the

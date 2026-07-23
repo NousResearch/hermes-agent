@@ -9,6 +9,7 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import re
@@ -29,6 +30,8 @@ from openai.types.chat.chat_completion_message_tool_call import (
 from agent.file_safety import get_read_block_error, get_write_denied_error
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -615,6 +618,31 @@ class CopilotACPClient:
                         f"Original error:\n{stderr_text}"
                     )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
+
+            # ── Graceful fallback for session/prompt ───────────────────────
+            # Some ACP server implementations (including Claude Code's ACP)
+            # send all text chunks via session/update notifications and then
+            # exit cleanly WITHOUT sending a final JSON-RPC response.  When
+            # this happens for session/prompt and we have collected text,
+            # treat it as successful completion instead of raising TimeoutError.
+            if method == "session/prompt" and text_parts is not None:
+                combined = "".join(text_parts).strip()
+                if combined:
+                    logger.warning(
+                        "ACP %s completed via notification stream "
+                        "(no JSON-RPC response). process_exit=%s "
+                        "text=%d chars reasoning=%d parts",
+                        method,
+                        proc.poll() is not None,
+                        len(combined),
+                        len(reasoning_parts or []),
+                    )
+                    return {}
+                logger.info(
+                    "ACP %s produced no visible text — raising timeout.",
+                    method,
+                )
+
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
         try:
@@ -691,6 +719,15 @@ class CopilotACPClient:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:
                 reasoning_parts.append(chunk_text)
+            elif kind not in ("agent_message_chunk", "agent_thought_chunk"):
+                # Log non-chunk session/update types so protocol quirks
+                # (e.g. user_message_chunk, usage_update, end_turn) are
+                # visible in the log even though they are safely consumed.
+                logger.log(
+                    logging.DEBUG if not chunk_text else logging.INFO,
+                    "ACP session/update type=%r text=%d chars",
+                    kind, len(chunk_text),
+                )
             return True
 
         if process.stdin is None:

@@ -42,6 +42,7 @@ web dashboard.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -111,6 +112,45 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _payload_fingerprint(subsystem: str, payload: Dict[str, Any]) -> str:
+    """Stable fingerprint of a pending payload for duplicate detection.
+
+    Two writes with the same fingerprint describe the *same* change and should
+    collapse to one pending record. The fingerprint is keyed on the fields that
+    define the write's effect (action + target skill + the content being
+    written), deliberately ignoring volatile fields (timestamps, summary text,
+    origin) so that a foreground and a background attempt at the same patch are
+    recognised as duplicates.
+
+    For skills: action + name + (file_path | old_string) + (file_content |
+    new_string). For memory: action + target + content.
+    """
+    h = hashlib.sha1()
+    h.update(subsystem.encode("utf-8"))
+    action = payload.get("action", "")
+    h.update(f"|action={action}".encode("utf-8"))
+
+    if subsystem == SKILLS:
+        h.update(f"|skill={payload.get('name', '')}".encode("utf-8"))
+        # Collapse at the file level, not the locus level. Two patches against
+        # the same file are revisions of the same logical edit (the model
+        # almost always re-wrote the whole section anyway); collapsing to the
+        # newest keeps the approval card readable — the user sees one item per
+        # file, not three patches against the same SKILL.md.
+        fp = payload.get("file_path", "")
+        if fp:
+            # Explicit support file (references/xxx, templates/yyy, scripts/zzz).
+            h.update(f"|file_path={fp}".encode("utf-8"))
+        else:
+            # No file_path → targets the skill's SKILL.md.
+            h.update(b"|file_path=SKILL.md")
+    else:
+        # Memory.
+        h.update(f"|target={payload.get('target', '')}".encode("utf-8"))
+        h.update(f"|content={payload.get('content', '')}".encode("utf-8"))
+    return h.hexdigest()
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -128,7 +168,49 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
     logs and still returns a record (the write is simply lost, which is the
     safe failure for an approval gate — nothing is silently committed).
+
+    Duplicate handling: if a pending with the same payload fingerprint already
+    exists, it is **replaced in place** by this one (the newer summary/origin
+    wins, the id is preserved so existing approval-card references stay valid).
+    This stops background-review runs from stacking N copies of the same patch
+    against the same locus when the same conversation triggers review several
+    times. ``duplicates_collapsed`` in the returned record is 1 when this
+    happened, 0 otherwise.
     """
+    fingerprint = _payload_fingerprint(subsystem, payload)
+    duplicates_collapsed = 0
+    # Scan existing pending for a fingerprint match.
+    try:
+        existing = list_pending(subsystem)
+    except Exception:
+        existing = []
+    for rec in existing:
+        if rec.get("_fingerprint") == fingerprint:
+            # Replace in place — keep the id, refresh payload/summary/origin/ts.
+            pid = rec["id"]
+            new_record = {
+                "id": pid,
+                "subsystem": subsystem,
+                "action": payload.get("action", ""),
+                "summary": (summary or "").strip(),
+                "origin": origin or "foreground",
+                "created_at": time.time(),
+                "payload": payload,
+                "_fingerprint": fingerprint,
+            }
+            try:
+                path = _pending_dir(subsystem) / f"{pid}.json"
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(new_record, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+                os.replace(tmp, path)
+            except Exception as e:  # pragma: no cover - disk failure path
+                logger.error("Failed to replace dedup'd pending %s/%s: %s",
+                             subsystem, pid, e, exc_info=True)
+            duplicates_collapsed = 1
+            new_record["duplicates_collapsed"] = duplicates_collapsed
+            return new_record
+
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid,
@@ -138,6 +220,8 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "origin": origin or "foreground",
         "created_at": time.time(),
         "payload": payload,
+        "_fingerprint": fingerprint,
+        "duplicates_collapsed": duplicates_collapsed,
     }
     try:
         d = _pending_dir(subsystem)

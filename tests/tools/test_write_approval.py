@@ -238,6 +238,97 @@ def test_pending_store_roundtrip(hermes_home):
 
 
 # ---------------------------------------------------------------------------
+# Duplicate detection (stage_write collapse)
+# ---------------------------------------------------------------------------
+
+def test_stage_memory_duplicate_collapses(hermes_home):
+    # Same (action, target, content) → same fingerprint → replace in place.
+    from tools import write_approval as wa
+    r1 = wa.stage_write("memory",
+                        {"action": "add", "target": "user", "content": "dup"},
+                        summary="first", origin="foreground")
+    r2 = wa.stage_write("memory",
+                        {"action": "add", "target": "user", "content": "dup"},
+                        summary="second", origin="background_review")
+    assert wa.pending_count("memory") == 1, "duplicate should collapse to 1"
+    assert r1["id"] == r2["id"], "id should be preserved on collapse"
+    assert r2["duplicates_collapsed"] == 1
+    got = wa.get_pending("memory", r2["id"])
+    assert got["summary"] == "second", "newer summary should win"
+    assert got["origin"] == "background_review", "newer origin should win"
+
+
+def test_stage_memory_distinct_content_does_not_collapse(hermes_home):
+    from tools import write_approval as wa
+    wa.stage_write("memory",
+                   {"action": "add", "target": "user", "content": "a"},
+                   summary="a", origin="foreground")
+    wa.stage_write("memory",
+                   {"action": "add", "target": "user", "content": "b"},
+                   summary="b", origin="foreground")
+    assert wa.pending_count("memory") == 2
+
+
+def test_stage_skill_patch_same_locus_collapses(hermes_home):
+    # Two patches targeting the SAME old_string on the SAME skill — even with
+    # different new_string — must collapse, so background-review can't stack
+    # N revisions of the same edit.
+    from tools import write_approval as wa
+    payload1 = {"action": "patch", "name": "demo",
+                "old_string": "## Section A", "new_string": "## Section A\nnew line v1"}
+    payload2 = {"action": "patch", "name": "demo",
+                "old_string": "## Section A", "new_string": "## Section A\nnew line v2"}
+    r1 = wa.stage_write("skills", payload1, summary="v1", origin="foreground")
+    r2 = wa.stage_write("skills", payload2, summary="v2", origin="background_review")
+    assert wa.pending_count("skills") == 1
+    assert r1["id"] == r2["id"]
+    assert r2["duplicates_collapsed"] == 1
+    got = wa.get_pending("skills", r2["id"])
+    assert got["payload"]["new_string"].endswith("v2"), "newer new_string should win"
+
+
+def test_stage_skill_write_file_same_path_collapses(hermes_home):
+    from tools import write_approval as wa
+    p1 = {"action": "write_file", "name": "demo",
+          "file_path": "references/x.md", "file_content": "v1"}
+    p2 = {"action": "write_file", "name": "demo",
+          "file_path": "references/x.md", "file_content": "v2"}
+    wa.stage_write("skills", p1, summary="v1", origin="foreground")
+    wa.stage_write("skills", p2, summary="v2", origin="foreground")
+    assert wa.pending_count("skills") == 1
+
+
+def test_stage_skill_distinct_files_do_not_collapse(hermes_home):
+    # Patches against DIFFERENT files of the same skill stay separate.
+    from tools import write_approval as wa
+    wa.stage_write("skills",
+                   {"action": "patch", "name": "demo",
+                    "old_string": "## A", "new_string": "## A\nx"},
+                   summary="patch SKILL.md", origin="foreground")
+    wa.stage_write("skills",
+                   {"action": "patch", "name": "demo",
+                    "file_path": "references/notes.md",
+                    "old_string": "## B", "new_string": "## B\ny"},
+                   summary="patch references/notes.md", origin="foreground")
+    assert wa.pending_count("skills") == 2
+
+
+def test_stage_skill_patch_same_file_collapses(hermes_home):
+    # Two patches against the same SKILL.md (no file_path) with DIFFERENT
+    # old_strings still collapse — they are revisions of one logical edit.
+    from tools import write_approval as wa
+    wa.stage_write("skills",
+                   {"action": "patch", "name": "demo",
+                    "old_string": "## A", "new_string": "## A\nx"},
+                   summary="first", origin="foreground")
+    wa.stage_write("skills",
+                   {"action": "patch", "name": "demo",
+                    "old_string": "## B (different locus)", "new_string": "## B\ny"},
+                   summary="second", origin="foreground")
+    assert wa.pending_count("skills") == 1
+
+
+# ---------------------------------------------------------------------------
 # Shared command handler
 # ---------------------------------------------------------------------------
 

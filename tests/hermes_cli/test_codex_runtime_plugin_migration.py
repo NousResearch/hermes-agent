@@ -492,6 +492,10 @@ class TestMigrate:
 
         This is the fix for 'all other tools that codex doesn't provide
         should be useable by hermes' — quirk #7."""
+        from hermes_cli.codex_runtime_plugin_migration import (
+            HERMES_TOOLS_DYNAMIC_ENV_VARS,
+        )
+
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,
                          default_permission_profile=None,
@@ -502,8 +506,35 @@ class TestMigrate:
         # Must include startup + tool timeouts so codex doesn't give up
         assert "startup_timeout_sec" in text
         assert "tool_timeout_sec" in text
+        required_worker_context = {
+            "HERMES_HOME",
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_WORKSPACE",
+            "HERMES_KANBAN_RUN_ID",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_BOARD",
+        }
+        assert required_worker_context <= set(HERMES_TOOLS_DYNAMIC_ENV_VARS)
+        assert all(name.startswith("HERMES_") for name in HERMES_TOOLS_DYNAMIC_ENV_VARS)
+        assert not any(
+            name.endswith(("API_KEY", "AUTH_TOKEN", "BASE_URL"))
+            for name in HERMES_TOOLS_DYNAMIC_ENV_VARS
+        )
+        for name in HERMES_TOOLS_DYNAMIC_ENV_VARS:
+            assert f'"{name}"' in text
         # And the entry is reported
         assert "hermes-tools" in report.migrated
+
+        # The managed block is replace-on-migrate. The dynamic context
+        # allowlist must survive every product regeneration, not merely a
+        # one-off manual edit to config.toml.
+        migrate({}, codex_home=tmp_path,
+                discover_plugins=False,
+                default_permission_profile=None,
+                expose_hermes_tools=True)
+        rerendered = (tmp_path / "config.toml").read_text()
+        assert rerendered.count("env_vars =") == 1
+        assert all(f'"{name}"' in rerendered for name in HERMES_TOOLS_DYNAMIC_ENV_VARS)
 
     def test_expose_hermes_tools_disabled_skips_entry(self, tmp_path):
         """expose_hermes_tools=False suppresses the callback registration."""

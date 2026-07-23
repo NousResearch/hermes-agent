@@ -66,13 +66,17 @@ class TestBeginRegistration:
                 "interval": 2,
             },
         ]
-        with patch("hermes_cli.dingtalk_auth._api_post", side_effect=responses):
+        with patch("hermes_cli.dingtalk_auth._api_post", side_effect=responses) as mock_api_post:
             result = begin_registration()
 
         assert result["device_code"] == "dev-xyz"
         assert "verification_uri_complete" in result
         assert result["interval"] == 2
         assert result["expires_in"] == 7200
+        assert mock_api_post.call_args_list[0].args == (
+            "/app/registration/init",
+            {"source": "HERMES"},
+        )
 
     def test_missing_nonce_raises(self):
         from hermes_cli.dingtalk_auth import begin_registration, RegistrationError
@@ -214,4 +218,11 @@ class TestConfigOverrides:
         import importlib
         import hermes_cli.dingtalk_auth as mod
         importlib.reload(mod)
-        assert mod.REGISTRATION_SOURCE == "openClaw"
+        assert mod.REGISTRATION_SOURCE == "HERMES"
+
+    def test_source_hermes_env_is_normalized(self, monkeypatch):
+        monkeypatch.setenv("DINGTALK_REGISTRATION_SOURCE", "hermes")
+        import importlib
+        import hermes_cli.dingtalk_auth as mod
+        importlib.reload(mod)
+        assert mod.REGISTRATION_SOURCE == "HERMES"

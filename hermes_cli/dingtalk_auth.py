@@ -29,7 +29,25 @@ REGISTRATION_BASE_URL = os.environ.get(
     "DINGTALK_REGISTRATION_BASE_URL", "https://oapi.dingtalk.com"
 ).rstrip("/")
 
-REGISTRATION_SOURCE = os.environ.get("DINGTALK_REGISTRATION_SOURCE", "openClaw")
+def _normalize_registration_source(value: str) -> str:
+    """Normalize source for /app/registration/init payload."""
+    source = str(value or "").strip()
+    if not source:
+        return "HERMES"
+    # Keep compatibility with lowercase env values while honoring API contract.
+    if source.lower() == "hermes":
+        return "HERMES"
+    return source
+
+
+REGISTRATION_SOURCE = _normalize_registration_source(
+    os.environ.get("DINGTALK_REGISTRATION_SOURCE", "HERMES")
+)
+
+AUTH_FLOW_NOTICE_LINES = (
+    "  This flow is initiated by Hermes.",
+    "  Note: You may see 'Hermes' text on the DingTalk authorization page.",
+)
 
 
 # ── API helpers ────────────────────────────────────────────────────────────
@@ -235,8 +253,8 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
 
     print()
     print_info("  Initializing DingTalk device authorization...")
-    print_info("  Note: the scan page is branded 'OpenClaw' — DingTalk's")
-    print_info("        ecosystem onboarding bridge. Safe to use.")
+    for line in AUTH_FLOW_NOTICE_LINES:
+        print_info(line)
 
     try:
         reg = begin_registration()

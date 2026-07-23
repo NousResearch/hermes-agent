@@ -1056,6 +1056,20 @@ _MEDIA_DELIVERY_CACHE_SUBDIRS = (
 )
 
 
+def _iter_hermes_profile_dirs() -> List[Path]:
+    """Return ``<root>/profiles/<name>/`` directories that currently exist.
+
+    Shared by cache allowlisting and credential denylisting so both sides
+    see the same live profile set (including profiles created after process
+    start). Missing or unreadable ``profiles/`` yields an empty list.
+    """
+    profiles_dir = _HERMES_ROOT / "profiles"
+    try:
+        return [p for p in profiles_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
+
 def _profile_cache_roots() -> List[Path]:
     """Return per-profile canonical cache roots under the shared Hermes root.
 
@@ -1070,12 +1084,7 @@ def _profile_cache_roots() -> List[Path]:
     denied prefix and $HOME is not that prefix). See issue #31733.
     """
     roots: List[Path] = []
-    profiles_dir = _HERMES_ROOT / "profiles"
-    try:
-        profile_dirs = [p for p in profiles_dir.iterdir() if p.is_dir()]
-    except OSError:
-        return roots
-    for profile_dir in profile_dirs:
+    for profile_dir in _iter_hermes_profile_dirs():
         for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS:
             roots.append(profile_dir / "cache" / subdir)
     return roots
@@ -1159,19 +1168,26 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The active Hermes profile and shared Hermes root both contain control
-    # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above (matched BEFORE this denylist in
+    # The active Hermes profile, the shared Hermes root, and every sibling
+    # profile under <root>/profiles/<name>/ contain control files and
+    # credentials. Only cache subdirectories under them are explicitly
+    # allowlisted above (matched BEFORE this denylist in
     # validate_media_delivery_path, so generated media still delivers).
     #
-    # These are the per-file credential / secret stores that live at the
-    # HERMES_HOME root. The set mirrors the canonical read guard in
+    # These are the per-file credential / secret stores that live at each
+    # Hermes home root. The set mirrors the canonical read guard in
     # agent/file_safety.py (get_read_block_error / build_write_denied_*) so the
     # delivery (read/exfil) side can't trail the write side: a credential the
     # agent is forbidden to write or read must also never be auto-attached to a
     # chat reply. Enumerated explicitly per-file rather than denying the whole
     # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hermes
     # stay deliverable (see #32090, #34425).
+    #
+    # Sibling/inactive profiles must use the same policy: default mode would
+    # otherwise accept MEDIA:<root>/profiles/<other>/.env (and the rest of
+    # this list) because only (_HERMES_HOME, _HERMES_ROOT) were denied.
+    # Enumeration mirrors _profile_cache_roots() so profiles created after
+    # process start are covered.
     _ROOT_CREDENTIAL_FILES = (
         ".env",
         "auth.json",
@@ -1205,7 +1221,17 @@ def _media_delivery_denied_paths() -> List[Path]:
         "pairing",
         "mcp-tokens",
     )
-    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+    hermes_dirs: List[Path] = []
+    for base in (_HERMES_HOME, _HERMES_ROOT, *_iter_hermes_profile_dirs()):
+        try:
+            real = base.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            # Fail closed: still deny under the unresolved path rather than
+            # skipping the home/profile entirely.
+            real = base
+        if real not in hermes_dirs:
+            hermes_dirs.append(real)
+    for hermes_root in hermes_dirs:
         for rel in _ROOT_CREDENTIAL_FILES:
             denied.append(hermes_root / rel)
         for rel in _ROOT_CREDENTIAL_DIRS:

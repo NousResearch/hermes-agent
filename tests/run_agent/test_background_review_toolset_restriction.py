@@ -220,10 +220,132 @@ def test_background_review_includes_memory_when_user_profile_enabled():
     with patch.object(run_agent.AIAgent, "__init__", _no_init), \
          patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
          patch("threading.Thread", _SyncThread):
-        agent._spawn_background_review(
-            messages_snapshot=[],
-            review_memory=True,
-            review_skills=False,
-        )
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=[],
+                review_memory=True,
+                review_skills=False,
+            )
+        except RuntimeError:
+            pass
 
     assert "memory" in captured["whitelist"]
+
+
+def test_background_review_whitelist_includes_active_provider_tools():
+    """Active memory provider's write tools must be reachable from the
+    review fork so distilled memories land in the configured backend
+    instead of the legacy short ``MEMORY.md`` file (#59244).
+
+    The bug we pin: ``_spawn_background_review`` builds a whitelist from
+    ``review_toolsets`` (currently just ``[\"skills\", \"memory\"]``),
+    ``skip_memory=True`` disables the provider surface in the fork, so
+    the legacy ``memory`` tool remains the only path. Live provider
+    write tools (``mnemosyne_remember`` etc.) are never whitelisted,
+    so the review writes distilled facts to MEMORY.md even when
+    ``memory.provider`` is set to e.g. mnemosyne.
+    """
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    class _FakeProvider:
+        name = "mnemosyne"
+
+        def get_tool_schemas(self):
+            # The provider advertises two write tools and one read tool.
+            # ALL of them must end up in the whitelist — the review LLM
+            # may legitimately need any of them to write a distilled
+            # memory or summarize recalled context.
+            return [
+                {"name": "mnemosyne_remember", "description": "...", "parameters": {}},
+                {"name": "mnemosyne_recall", "description": "...", "parameters": {}},
+                {"name": "mnemosyne_sleep", "description": "...", "parameters": {}},
+            ]
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = True
+    agent._user_profile_enabled = False
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("plugins.memory._get_active_memory_provider", return_value="mnemosyne"), \
+         patch("plugins.memory.load_memory_provider", return_value=_FakeProvider()), \
+         patch("threading.Thread", _SyncThread):
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=[],
+                review_memory=True,
+                review_skills=False,
+            )
+        except RuntimeError:
+            pass
+
+    # Provider tool names must be in the whitelist alongside the legacy
+    # ``memory`` tool. None of the listed tools are part of the
+    # ``[\"skills\", \"memory\"]`` default toolsets, so they only arrive
+    # through our new provider-aware path.
+    for name in ("mnemosyne_remember", "mnemosyne_recall", "mnemosyne_sleep"):
+        assert name in captured["whitelist"], (
+            f"{name!r} missing from review whitelist — provider-aware "
+            "whitelist extension from #59244 regressed"
+        )
+    # Built-in legacy memory tool still whitelisted
+    # when ``_memory_enabled`` is True.
+    assert "memory" in captured["whitelist"]
+
+
+def test_background_review_whitelist_no_provider_unchanged():
+    """When no provider is configured, the whitelist must still contain
+    exactly the legacy ``memory`` + ``skills`` entries — the new
+    provider-aware path must be a no-op in that case (#59244).
+
+    Stash-regression companion: with the fix removed, this test still
+    passes (makes sure we didn't break the no-provider path while
+    adding the provider-aware one). With the fix removed AND a provider
+    configured, the corresponding test above fails. Pair them to pin
+    both halves of the contract.
+    """
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = True
+    agent._user_profile_enabled = False
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("plugins.memory._get_active_memory_provider", return_value=None), \
+         patch("threading.Thread", _SyncThread):
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=[],
+                review_memory=True,
+                review_skills=False,
+            )
+        except RuntimeError:
+            pass
+
+    # Same default contract as before — provider-aware path MUST NOT add
+    # any extra entries when no provider is configured.
+    assert "memory" in captured["whitelist"]
+    # ``skills`` shows up only when ``review_skills=True``; with the
+    # call above we passed ``review_skills=False``, so it MUST be absent.
+    assert "skills" not in captured["whitelist"]

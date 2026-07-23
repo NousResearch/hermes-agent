@@ -87,6 +87,9 @@ describe('settings helpers', () => {
       expect(schemaKeyToFieldCopyKey('updates.non_interactive_local_changes')).toBe(
         'updates.nonInteractiveLocalChanges'
       )
+      expect(schemaKeyToFieldCopyKey('updates.gateway_shutdown_notification')).toBe(
+        'updates.gatewayShutdownNotification'
+      )
     })
 
     it('looks up camelCase field copy by schema key with legacy fallback', () => {
@@ -119,6 +122,18 @@ describe('settings helpers', () => {
         })
       ).toThrow('Duplicate field copy key: display.personality')
     })
+  })
+
+  it('surfaces update shutdown notifications in Advanced settings', () => {
+    const advanced = SECTIONS.find(section => section.id === 'advanced')
+
+    expect(advanced?.keys).toContain('updates.gateway_shutdown_notification')
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'updates.gateway_shutdown_notification')).toBe(
+      'Update Shutdown Notifications'
+    )
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'updates.gateway_shutdown_notification')).toContain(
+      'Other shutdown and restart notices are unchanged.'
+    )
   })
 
   it('reads and writes nested config paths', () => {

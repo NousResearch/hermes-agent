@@ -5,7 +5,7 @@ handler validation, and availability gating.
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,6 +17,10 @@ from tools.homeassistant_tool import (
     _get_headers,
     _handle_get_state,
     _handle_call_service,
+    _async_list_entities,
+    _async_get_state,
+    _async_call_service,
+    _async_list_services,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
     _SERVICE_NAME_RE,
@@ -516,3 +520,85 @@ class TestRegistration:
         invalidate_check_fn_cache()
         defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
         assert len(defs) == 3
+
+
+# ---------------------------------------------------------------------------
+# Proxy environment support (Agent Vault credential injection)
+# ---------------------------------------------------------------------------
+
+
+def _mock_aiohttp_session(json_result=None):
+    """Build a mock aiohttp session + response for ``async with`` patterns.
+
+    Mirrors the helper in tests/gateway/test_homeassistant.py: the session
+    constructor is sync, so it's a MagicMock, while __aenter__/__aexit__ on
+    both the session and the response context managers are AsyncMock.
+    """
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = AsyncMock(return_value=json_result)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(return_value=mock_response)
+    mock_session.post = MagicMock(return_value=mock_response)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    return mock_session
+
+
+class TestTrustEnv:
+    """Home Assistant aiohttp sessions must opt in to proxy env handling.
+
+    Without trust_env=True, aiohttp ignores HTTPS_PROXY/HTTP_PROXY, so
+    traffic bypasses an env-based credential-injection proxy (e.g. Agent
+    Vault) that curl/requests/httpx would honor by default.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_entities_uses_trust_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_URL", "http://ha.local:8123")
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        mock_session = _mock_aiohttp_session(json_result=[])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session) as mock_ctor:
+            await _async_list_entities()
+
+        assert mock_ctor.call_args.kwargs.get("trust_env") is True
+
+    @pytest.mark.asyncio
+    async def test_get_state_uses_trust_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_URL", "http://ha.local:8123")
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        mock_session = _mock_aiohttp_session(
+            json_result={"entity_id": "sun.sun", "state": "above_horizon"}
+        )
+
+        with patch("aiohttp.ClientSession", return_value=mock_session) as mock_ctor:
+            await _async_get_state("sun.sun")
+
+        assert mock_ctor.call_args.kwargs.get("trust_env") is True
+
+    @pytest.mark.asyncio
+    async def test_call_service_uses_trust_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_URL", "http://ha.local:8123")
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        mock_session = _mock_aiohttp_session(json_result=[])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session) as mock_ctor:
+            await _async_call_service("light", "turn_on", entity_id="light.kitchen")
+
+        assert mock_ctor.call_args.kwargs.get("trust_env") is True
+
+    @pytest.mark.asyncio
+    async def test_list_services_uses_trust_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_URL", "http://ha.local:8123")
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        mock_session = _mock_aiohttp_session(json_result=[])
+
+        with patch("aiohttp.ClientSession", return_value=mock_session) as mock_ctor:
+            await _async_list_services()
+
+        assert mock_ctor.call_args.kwargs.get("trust_env") is True

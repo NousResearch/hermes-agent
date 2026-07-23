@@ -18,7 +18,7 @@ from agent.credential_pool import (
     get_custom_provider_pool_key,
     load_pool,
 )
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import get_secret as _get_secret, UnscopedSecretError
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
@@ -55,7 +55,10 @@ def _getenv(name: str, default: str = "") -> str:
     read ``os.environ``. Keeps the ``(name, default) -> str`` contract every
     call site here already relies on.
     """
-    val = _get_secret(name, default)
+    try:
+        val = _get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.environ.get(name, default)
     return val if val is not None else default
 
 

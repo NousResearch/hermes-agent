@@ -104,10 +104,15 @@ export function applyVoiceRecordResponse(
   }
 }
 
+export function sudoSubmissionParams(password: string, requestId: string) {
+  return { intent: 'submit', password, request_id: requestId }
+}
+
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo'>,
   rpc: GatewayRpc,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  sessionId: null | string = null
 ) {
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
@@ -115,7 +120,16 @@ export function dismissSensitivePrompt(
     patchOverlayState({ sudo: null })
     sys('sudo cancelled')
 
-    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+    return rpc<SudoRespondResponse>('sudo.cancel', { request_id: requestId }).then(result => {
+      if (result || !sessionId) {
+        return result
+      }
+
+      // A null result means the probe failed (notably, an older backend has no
+      // sudo.cancel method). Interrupt the owning turn instead of sending a
+      // null/empty password that legacy code can treat as submission.
+      return rpc<SudoRespondResponse>('session.interrupt', { session_id: sessionId })
+    })
   }
 
   if (overlay.secret) {
@@ -183,7 +197,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.sudo || overlay.secret) {
-      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys, getUiState().sid)
     }
 
     if (overlay.modelPicker) {

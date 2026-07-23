@@ -2463,11 +2463,21 @@ def terminal_tool(
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
+        # Clean the interrupt slate for an approved command exactly once, after
+        # approval/workdir preparation but before either foreground or
+        # background dispatch. A stale bit from the approval wait must not
+        # cancel the approved start; a genuine interrupt arriving after this
+        # boundary remains visible to the spawn/start guard and wait loop.
+        if _approved_run:
+            from tools.interrupt import clear_current_thread_interrupt
+
+            clear_current_thread_interrupt()
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.process_registry import process_registry
+            from tools.process_registry import ProcessStartCancelled, process_registry
 
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
@@ -2493,13 +2503,37 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
-                result_data = {
-                    "output": "Background process started",
-                    "session_id": proc_session.id,
-                    "pid": proc_session.pid,
-                    "exit_code": 0,
-                    "error": None,
-                }
+                if getattr(proc_session, "start_interrupted", False) is True:
+                    interrupt_output = getattr(
+                        proc_session, "start_interrupt_output", ""
+                    ).strip()
+                    tracking_note = (
+                        "Background process start was interrupted; the process "
+                        "may still be running and remains tracked."
+                    )
+                    result_data = {
+                        "output": (
+                            f"{interrupt_output}\n{tracking_note}"
+                            if interrupt_output
+                            else tracking_note
+                        ),
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "exit_code": 130,
+                        "error": (
+                            "Background process start was interrupted after PID "
+                            "capture; the process may still be running."
+                        ),
+                        "status": "running",
+                    }
+                else:
+                    result_data = {
+                        "output": "Background process started",
+                        "session_id": proc_session.id,
+                        "pid": proc_session.pid,
+                        "exit_code": 0,
+                        "error": None,
+                    }
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
                 # cannot occur here and this note never co-occurs with rc=130.
@@ -2707,6 +2741,17 @@ def terminal_tool(
                 return json.dumps(result_data, ensure_ascii=False)
             except SudoPasswordPromptCancelled:
                 raise
+            except ProcessStartCancelled as exc:
+                return json.dumps({
+                    "output": exc.output,
+                    "exit_code": 130,
+                    "error": (
+                        "Command cancelled before process start."
+                        if exc.before_start
+                        else "Background process start was interrupted."
+                    ),
+                    "status": "cancelled",
+                }, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({
                     "output": "",
@@ -2719,16 +2764,6 @@ def terminal_tool(
             retry_count = 0
             result = None
             command_cwd = None
-
-            # Clean interrupt slate for an approved command, ONCE before the
-            # retry loop: drop a stale bit that landed on this thread during the
-            # approval-wait so it can't SIGINT the just-approved run.  Do NOT
-            # re-clear inside the loop -- a genuine interrupt arriving during the
-            # backoff sleep between retries must survive and abort the command
-            # (caught by the next attempt's _wait_for_process poll loop -> 130).
-            if _approved_run:
-                from tools.interrupt import clear_current_thread_interrupt
-                clear_current_thread_interrupt()
 
             while retry_count <= max_retries:
                 try:
@@ -2793,7 +2828,7 @@ def terminal_tool(
 
             if result.get("_process_start_cancelled"):
                 return json.dumps({
-                    "output": "",
+                    "output": "[Command interrupted]",
                     "exit_code": 130,
                     "error": "Command cancelled before process start.",
                     "status": "cancelled",

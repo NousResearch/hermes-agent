@@ -55,7 +55,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { useInputHandlers } from './useInputHandlers.js'
+import { sudoSubmissionParams, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -956,7 +956,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ sudo: null })
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
+      return respondWith('sudo.respond', sudoSubmissionParams(pw, requestId), () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })

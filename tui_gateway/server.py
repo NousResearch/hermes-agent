@@ -130,7 +130,14 @@ _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
-_answers: dict[str, str] = {}
+
+
+class _SudoEmptySubmission(str):
+    """Identity-bearing empty string used only across the blocking bridge."""
+
+
+_SUDO_EMPTY_SUBMISSION = _SudoEmptySubmission()
+_answers: dict[str, str | None] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -2423,7 +2430,10 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
     answer_present = False
     try:
         _emit(event, sid, payload)
-        answered = ev.wait(timeout=timeout)
+        # Natural Event semantics: None → wait forever (clarify configured with
+        # clarify_timeout <= 0, released only by a real answer or
+        # session.interrupt), 0 → return immediately, > 0 → bounded wait.
+        answered = ev.wait(timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
@@ -2431,13 +2441,38 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
 
-    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+    # Emit an `.expire` notification on timeout for every blocking request type
+    # whose `*.respond` handler tolerates a late reply (allow_expired=True).
+    # All four blocking bridges — secret, sudo, clarify, terminal.read — share
+    # the same lifecycle: the tool gives up on timeout and returns empty, but a
+    # slow renderer (or a reconnect that dropped tool.complete) can still answer
+    # afterward. Without this the late `*.respond` would hit the generic 4009
+    # "no pending request" error and clients would surface a raw JSON-RPC string.
+    if not answered and not answer_present and event in {
+        "secret.request",
+        "sudo.request",
+        "clarify.request",
+        "terminal.read.request",
+    }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
             sid,
             {"request_id": rid},
         )
     return answer
+
+
+def _clarify_timeout_seconds() -> float | None:
+    """Clarify wait (seconds) for the TUI/desktop bridge, from the same
+    canonical config the messaging gateway and CLI use. Falls back to the
+    historical 300s _block default if config can't be read. ``<= 0`` in config
+    means unlimited and is returned as ``None`` (never auto-skip)."""
+    try:
+        from tools.clarify_gateway import get_clarify_timeout
+        timeout = get_clarify_timeout()
+        return timeout if timeout > 0 else None
+    except Exception:
+        return 300
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -2452,7 +2487,10 @@ def _clear_pending(sid: str | None = None) -> None:
     with _prompt_lock:
         for rid, (owner_sid, ev) in list(_pending.items()):
             if sid is None or owner_sid == sid:
-                _answers[rid] = ""
+                prompt = _pending_prompt_payloads.get(rid)
+                _answers[rid] = (
+                    None if prompt and prompt[0] == "sudo.request" else ""
+                )
                 ev.set()
 
 
@@ -4519,7 +4557,10 @@ def _agent_cbs(sid: str) -> dict:
             "notification.clear", sid, {"key": key}
         ),
         "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+            "clarify.request",
+            sid,
+            {"question": q, "choices": c},
+            timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
@@ -4607,12 +4648,24 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
 
 
+def _gateway_sudo_password_callback(sid: str) -> str | None:
+    answer = _block(
+        "sudo.request",
+        sid,
+        {},
+        timeout=120,
+    )
+    if answer is _SUDO_EMPTY_SUBMISSION:
+        return ""
+    return answer or None
+
+
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
 
-    set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+    set_sudo_password_callback(lambda: _gateway_sudo_password_callback(sid))
     set_project_workspace_callback(_apply_project_workspace)
 
     def secret_cb(env_var, prompt, metadata=None):
@@ -11721,18 +11774,51 @@ def _respond(rid, params, key, *, allow_expired=False):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "answer")
+    # allow_expired=True: a clarify can time out server-side (its entry is popped
+    # from _pending) while the card is still visible — common when a WebSocket
+    # reconnect during the wait drops tool.complete. A late answer must resolve
+    # gracefully instead of hitting the raw 4009 "no pending answer request".
+    return _respond(rid, params, "answer", allow_expired=True)
 
 
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
-    return _respond(rid, params, "text")
+    # allow_expired=True: the read_terminal tool's _block() uses a short 30s
+    # timeout, so a slow renderer losing the race is the common case — a late
+    # response must not error after the tool already returned empty.
+    return _respond(rid, params, "text", allow_expired=True)
 
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password", allow_expired=True)
+    # Before ``sudo.cancel`` existed, clients used an empty password for both
+    # dismissal and intentional empty submission. Treat that unmarked legacy
+    # value as cancellation so an old UI cannot wake a new backend into
+    # starting the pending command. New clients mark submissions explicitly,
+    # preserving Enter-on-empty as the legacy "try without a password" action.
+    response_params = params
+    if params.get("password", "") == "":
+        response_params = {
+            **params,
+            "password": (
+                _SUDO_EMPTY_SUBMISSION
+                if params.get("intent") == "submit"
+                else None
+            ),
+        }
+    return _respond(rid, response_params, "password", allow_expired=True)
+
+
+@method("sudo.cancel")
+def _(rid, params: dict) -> dict:
+    """Probeable, intent-specific cancellation for version-skewed UIs."""
+    return _respond(
+        rid,
+        {**params, "password": None},
+        "password",
+        allow_expired=True,
+    )
 
 
 @method("secret.respond")

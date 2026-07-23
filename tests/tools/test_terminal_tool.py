@@ -7,11 +7,14 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import cli as cli_module
 import tools.terminal_tool as terminal_tool
 from cli import HermesCLI
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import set_interrupt
+from tools.interrupt import is_interrupted, set_interrupt
+from tools.process_registry import ProcessStartCancelled
 
 
 def setup_function():
@@ -194,6 +197,386 @@ def test_cancelled_sudo_prompt_stops_before_command_execution(monkeypatch, tmp_p
     assert environment.run_bash_calls == 0
 
 
+@pytest.mark.parametrize("background", [False, True])
+def test_nonlocal_sudo_dismissal_has_foreground_background_parity(
+    monkeypatch, tmp_path, background
+):
+    import tools.process_registry as process_registry_module
+
+    task_id = f"sudo-cancel-{'background' if background else 'foreground'}"
+    calls = []
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+
+        def execute(self, *_args, **_kwargs):
+            calls.append("foreground")
+            raise terminal_tool.SudoPasswordPromptCancelled
+
+    class FakeRegistry:
+        def spawn_via_env(self, **_kwargs):
+            calls.append("background")
+            raise terminal_tool.SudoPasswordPromptCancelled
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "docker",
+            "docker_image": "inert-test-image",
+            "cwd": str(tmp_path),
+            "timeout": 60,
+        },
+    )
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            "sudo true",
+            background=background,
+            task_id=task_id,
+            force=True,
+        )
+    )
+
+    assert result == {
+        "output": "",
+        "exit_code": 130,
+        "error": "Command cancelled: sudo password prompt was dismissed.",
+        "status": "cancelled",
+    }
+    assert calls == ["background" if background else "foreground"]
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_nonlocal_pre_start_interrupt_has_foreground_background_parity(
+    monkeypatch, tmp_path, background
+):
+    import tools.process_registry as process_registry_module
+
+    task_id = f"interrupt-cancel-{'background' if background else 'foreground'}"
+    calls = []
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+
+        def execute(self, *_args, **_kwargs):
+            calls.append("foreground")
+            return {
+                "output": "",
+                "returncode": 130,
+                "_process_start_cancelled": True,
+            }
+
+    class FakeRegistry:
+        def spawn_via_env(self, **_kwargs):
+            calls.append("background")
+            raise ProcessStartCancelled
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "docker",
+            "docker_image": "inert-test-image",
+            "cwd": str(tmp_path),
+            "timeout": 60,
+        },
+    )
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            "echo never-started",
+            background=background,
+            task_id=task_id,
+            force=True,
+        )
+    )
+
+    assert result == {
+        "output": "[Command interrupted]",
+        "exit_code": 130,
+        "error": "Command cancelled before process start.",
+        "status": "cancelled",
+    }
+    assert calls == ["background" if background else "foreground"]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "[Command interrupted]",
+        "[Command interrupted - Modal sandbox exec cancelled]",
+    ],
+)
+def test_nonlocal_background_marker_interrupt_is_not_reported_started(
+    monkeypatch, tmp_path, marker
+):
+    import tools.process_registry as process_registry_module
+
+    task_id = "marker-interrupt-background"
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+
+    class FakeRegistry:
+        def spawn_via_env(self, **_kwargs):
+            raise ProcessStartCancelled(marker, before_start=False)
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "docker",
+            "docker_image": "inert-test-image",
+            "cwd": str(tmp_path),
+            "timeout": 60,
+        },
+    )
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            "echo interrupted",
+            background=True,
+            task_id=task_id,
+            force=True,
+        )
+    )
+
+    assert result == {
+        "output": marker,
+        "exit_code": 130,
+        "error": "Background process start was interrupted.",
+        "status": "cancelled",
+    }
+    assert "session_id" not in result
+
+
+def test_nonlocal_background_marker_with_pid_is_reported_tracked(
+    monkeypatch, tmp_path
+):
+    import tools.process_registry as process_registry_module
+
+    task_id = "marker-interrupt-background-with-pid"
+    marker = "[Command interrupted]"
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+
+    class FakeRegistry:
+        def spawn_via_env(self, **_kwargs):
+            return SimpleNamespace(
+                id="proc_interrupted",
+                pid=4242,
+                start_interrupted=True,
+                start_interrupt_output=f"4242\n{marker}",
+            )
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "ssh",
+            "cwd": str(tmp_path),
+            "timeout": 60,
+        },
+    )
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            "echo interrupted",
+            background=True,
+            task_id=task_id,
+            force=True,
+        )
+    )
+
+    assert result == {
+        "output": (
+            "4242\n[Command interrupted]\n"
+            "Background process start was interrupted; the process may still "
+            "be running and remains tracked."
+        ),
+        "session_id": "proc_interrupted",
+        "pid": 4242,
+        "exit_code": 130,
+        "error": (
+            "Background process start was interrupted after PID capture; "
+            "the process may still be running."
+        ),
+        "status": "running",
+        "hint": (
+            "background=true without notify_on_complete=true means this process "
+            "runs SILENTLY — you will not be told when it exits. If this is a "
+            "bounded task (test suite, build, CI poller, deploy, anything with "
+            "a defined end), you almost certainly wanted notify_on_complete=true "
+            "so the system pings you on exit. Re-launch with "
+            "notify_on_complete=true, or call process(action='poll') / "
+            "process(action='wait') yourself to learn the outcome. Only ignore "
+            "this hint for genuine long-lived processes that never exit "
+            "(servers, watchers, daemons)."
+        ),
+    }
+
+
+@pytest.mark.parametrize("env_type", ["local", "docker"])
+def test_approved_background_clears_stale_interrupt_once_before_spawn(
+    monkeypatch, tmp_path, env_type
+):
+    import tools.interrupt as interrupt_module
+    import tools.process_registry as process_registry_module
+
+    task_id = f"approved-background-stale-{env_type}"
+    clear_calls = []
+    interrupt_states_at_spawn = []
+    real_clear = interrupt_module.clear_current_thread_interrupt
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+        env = {}
+
+    class FakeRegistry:
+        pending_watchers = []
+
+        @staticmethod
+        def _session():
+            return SimpleNamespace(id="proc_approved", pid=1234)
+
+        def spawn_local(self, **_kwargs):
+            interrupt_states_at_spawn.append(is_interrupted())
+            return self._session()
+
+        def spawn_via_env(self, **_kwargs):
+            interrupt_states_at_spawn.append(is_interrupted())
+            return self._session()
+
+    def tracking_clear():
+        clear_calls.append("clear")
+        real_clear()
+
+    config = {
+        "env_type": env_type,
+        "cwd": str(tmp_path),
+        "timeout": 60,
+    }
+    if env_type == "docker":
+        config["docker_image"] = "inert-test-image"
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(interrupt_module, "clear_current_thread_interrupt", tracking_clear)
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    set_interrupt(True)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(
+                "echo approved",
+                background=True,
+                task_id=task_id,
+                force=True,
+            )
+        )
+    finally:
+        set_interrupt(False)
+
+    assert result["output"] == "Background process started"
+    assert result["exit_code"] == 0
+    assert interrupt_states_at_spawn == [False]
+    assert clear_calls == ["clear"]
+
+
+def test_approved_nonlocal_background_preserves_genuine_interrupt_after_clear(
+    monkeypatch, tmp_path
+):
+    import tools.interrupt as interrupt_module
+    import tools.process_registry as process_registry_module
+
+    task_id = "approved-background-genuine-interrupt"
+    clear_calls = []
+    real_clear = interrupt_module.clear_current_thread_interrupt
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+
+    class FakeRegistry:
+        def spawn_via_env(self, **_kwargs):
+            assert not is_interrupted()
+            set_interrupt(True)
+            raise ProcessStartCancelled
+
+    def tracking_clear():
+        clear_calls.append("clear")
+        real_clear()
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {
+            "env_type": "docker",
+            "docker_image": "inert-test-image",
+            "cwd": str(tmp_path),
+            "timeout": 60,
+        },
+    )
+    monkeypatch.setattr(interrupt_module, "clear_current_thread_interrupt", tracking_clear)
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    set_interrupt(True)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(
+                "echo interrupted",
+                background=True,
+                task_id=task_id,
+                force=True,
+            )
+        )
+        assert is_interrupted()
+    finally:
+        set_interrupt(False)
+
+    assert result == {
+        "output": "[Command interrupted]",
+        "exit_code": 130,
+        "error": "Command cancelled before process start.",
+        "status": "cancelled",
+    }
+    assert clear_calls == ["clear"]
+
+
 def test_global_interrupt_after_sudo_response_dequeue_stops_process_start(
     monkeypatch, tmp_path
 ):
@@ -291,7 +674,7 @@ def test_global_interrupt_after_sudo_response_dequeue_stops_process_start(
 
     assert not worker.is_alive()
     assert result["value"] == {
-        "output": "",
+        "output": "[Command interrupted]",
         "exit_code": 130,
         "error": "Command cancelled before process start.",
         "status": "cancelled",

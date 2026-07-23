@@ -10,6 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import tools.terminal_tool as terminal_tool
+from tools.environments.base import BaseEnvironment
+
 _original_stdout = sys.stdout
 
 
@@ -265,7 +268,10 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
-@pytest.mark.parametrize("event", ["secret.request", "sudo.request"])
+@pytest.mark.parametrize(
+    "event",
+    ["secret.request", "sudo.request", "clarify.request", "terminal.read.request"],
+)
 def test_sensitive_prompt_timeout_emits_expiry(capture, event):
     server, buf = capture
 
@@ -281,9 +287,17 @@ def test_sensitive_prompt_timeout_emits_expiry(capture, event):
 
 @pytest.mark.parametrize(
     ("method", "value_key"),
-    [("secret.respond", "value"), ("sudo.respond", "password")],
+    [
+        ("secret.respond", "value"),
+        ("sudo.respond", "password"),
+        ("clarify.respond", "answer"),
+        ("terminal.read.respond", "text"),
+    ],
 )
-def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key):
+def test_late_prompt_response_is_idempotent(server, method, value_key):
+    """All four blocking bridges tolerate a late reply after their request has
+    expired — the `*.respond` returns a graceful `{"status": "expired"}` instead
+    of the raw 4009 protocol error a client would otherwise surface verbatim."""
     response = server.handle_request(
         {
             "id": "late-response",
@@ -295,18 +309,6 @@ def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key)
     assert response["result"] == {"status": "expired"}
 
 
-def test_late_clarify_response_remains_protocol_error(server):
-    response = server.handle_request(
-        {
-            "id": "late-clarify",
-            "method": "clarify.respond",
-            "params": {"request_id": "expired-request", "answer": ""},
-        }
-    )
-
-    assert response["error"]["code"] == 4009
-
-
 def test_clear_pending(server):
     ev = threading.Event()
     # _pending values are (sid, Event) tuples
@@ -315,6 +317,150 @@ def test_clear_pending(server):
 
     assert ev.is_set()
     assert server._answers["r1"] == ""
+
+
+def test_late_sudo_cancel_is_idempotent(server):
+    response = server.handle_request(
+        {
+            "id": "late-sudo-cancel",
+            "method": "sudo.cancel",
+            "params": {"request_id": "expired-request"},
+        }
+    )
+
+    assert response["result"] == {"status": "expired"}
+
+
+def test_gateway_sudo_timeout_translates_to_cancellation(server, monkeypatch):
+    monkeypatch.setattr(server, "_block", lambda *_args, **_kwargs: "")
+
+    assert server._gateway_sudo_password_callback("sid-x") is None
+
+
+def test_gateway_explicit_empty_sudo_submission_survives_translation(
+    server, monkeypatch
+):
+    monkeypatch.setattr(
+        server,
+        "_block",
+        lambda *_args, **_kwargs: server._SUDO_EMPTY_SUBMISSION,
+    )
+
+    assert server._gateway_sudo_password_callback("sid-x") == ""
+
+
+@pytest.mark.parametrize(
+    ("method", "password", "intent", "expected"),
+    [
+        ("sudo.cancel", "ignored", None, None),
+        ("sudo.respond", None, None, None),
+        ("sudo.respond", "", None, None),
+        ("sudo.respond", "", "submit", "empty-submission"),
+    ],
+)
+def test_sudo_response_preserves_versioned_cancel_and_empty_submission(
+    server, method, password, intent, expected
+):
+    ev = threading.Event()
+    server._pending["sudo-1"] = ("sid-x", ev)
+    params = {"request_id": "sudo-1", "password": password}
+    if intent is not None:
+        params["intent"] = intent
+
+    response = server.handle_request(
+        {
+            "id": "sudo-response",
+            "method": method,
+            "params": params,
+        }
+    )
+
+    assert response["result"] == {"status": "ok"}
+    assert ev.is_set()
+    if expected is None:
+        assert server._answers["sudo-1"] is None
+    elif expected == "empty-submission":
+        assert server._answers["sudo-1"] is server._SUDO_EMPTY_SUBMISSION
+    else:
+        assert server._answers["sudo-1"] == expected
+
+
+def test_clear_pending_sudo_uses_null_but_secret_remains_empty(server):
+    events = {
+        "sudo": ("sudo.request", None),
+        "secret": ("secret.request", ""),
+    }
+    for rid, (event, _expected) in events.items():
+        server._pending[rid] = ("sid-x", threading.Event())
+        server._pending_prompt_payloads[rid] = (event, {})
+
+    server._clear_pending()
+
+    assert server._answers["sudo"] is None
+    assert server._answers["secret"] == ""
+
+
+def test_gateway_sudo_dismissal_cancels_before_backend_start(
+    server, monkeypatch, tmp_path
+):
+    task_id = "gateway-sudo-cancel-test"
+
+    class MinimalEnvironment(BaseEnvironment):
+        def __init__(self):
+            super().__init__(cwd=str(tmp_path), timeout=60)
+            self.run_bash_calls = 0
+
+        def _run_bash(self, *_args, **_kwargs):
+            self.run_bash_calls += 1
+            return object()
+
+        def _wait_for_process(self, *_args, **_kwargs):
+            return {"output": "executed", "returncode": 0}
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_resolve_container_task_id",
+        lambda _task_id: task_id,
+    )
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {"env_type": "local", "cwd": str(tmp_path), "timeout": 60},
+    )
+    monkeypatch.setattr(server, "_block", lambda *_args, **_kwargs: None)
+    environment = MinimalEnvironment()
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, environment)
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+
+    callback = lambda: server._gateway_sudo_password_callback("sid-x")
+    assert callback() is None
+
+    terminal_tool.set_sudo_password_callback(callback)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(
+                "sudo true",
+                task_id=task_id,
+                force=True,
+            )
+        )
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert result == {
+        "output": "",
+        "exit_code": 130,
+        "error": "Command cancelled: sudo password prompt was dismissed.",
+        "status": "cancelled",
+    }
+    assert environment.run_bash_calls == 0
 
 
 # ── Session lookup ───────────────────────────────────────────────────

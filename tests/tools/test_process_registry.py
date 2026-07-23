@@ -14,6 +14,7 @@ from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
+    ProcessStartCancelled,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
     MAX_ACTIVE_PROCESS_AGE,
@@ -657,6 +658,109 @@ class TestPruning:
 # =========================================================================
 
 class TestSpawnEnvSanitization:
+    def test_spawn_local_pipe_does_not_start_after_interrupt(self, registry):
+        from tools.interrupt import set_interrupt
+
+        popen = MagicMock()
+        set_interrupt(True)
+        try:
+            with patch("tools.process_registry.subprocess.Popen", popen), \
+                patch("tools.process_registry.threading.Thread", return_value=MagicMock()), \
+                patch.object(registry, "_write_checkpoint"):
+                with pytest.raises(ProcessStartCancelled):
+                    registry.spawn_local("echo never-started", cwd="/tmp")
+        finally:
+            set_interrupt(False)
+
+        popen.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Uses ptyprocess")
+    def test_spawn_local_pty_does_not_fallback_after_interrupt(self, registry):
+        from tools.interrupt import set_interrupt
+
+        pty_spawn = MagicMock()
+        popen = MagicMock()
+        set_interrupt(True)
+        try:
+            with patch("ptyprocess.PtyProcess.spawn", pty_spawn), \
+                patch("tools.process_registry.subprocess.Popen", popen), \
+                patch("tools.process_registry.threading.Thread", return_value=MagicMock()), \
+                patch.object(registry, "_write_checkpoint"):
+                with pytest.raises(ProcessStartCancelled):
+                    registry.spawn_local(
+                        "echo never-started",
+                        cwd="/tmp",
+                        use_pty=True,
+                    )
+        finally:
+            set_interrupt(False)
+
+        pty_spawn.assert_not_called()
+        popen.assert_not_called()
+
+    def test_spawn_local_stale_interrupt_clear_allows_start(self, registry):
+        from tools.interrupt import clear_current_thread_interrupt, set_interrupt
+
+        proc = MagicMock(pid=4321)
+        popen = MagicMock(return_value=proc)
+        fake_thread = MagicMock()
+        set_interrupt(True)
+        clear_current_thread_interrupt()
+
+        try:
+            with patch("tools.process_registry.subprocess.Popen", popen), \
+                patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+                patch.object(registry, "_write_checkpoint"):
+                session = registry.spawn_local("echo approved", cwd="/tmp")
+        finally:
+            set_interrupt(False)
+
+        assert session.pid == 4321
+        popen.assert_called_once()
+        fake_thread.start.assert_called_once()
+
+    def test_spawn_local_start_wins_over_concurrent_interrupt(self, registry):
+        from tools.interrupt import set_interrupt
+
+        entered_start = threading.Event()
+        release_start = threading.Event()
+        result = {}
+        proc = MagicMock(pid=4321)
+        real_thread = threading.Thread
+
+        def fake_popen(*_args, **_kwargs):
+            entered_start.set()
+            assert release_start.wait(timeout=5)
+            return proc
+
+        def spawn():
+            result["thread_id"] = threading.get_ident()
+            result["session"] = registry.spawn_local("echo started", cwd="/tmp")
+
+        with patch("tools.process_registry.subprocess.Popen", side_effect=fake_popen), \
+            patch("tools.process_registry.threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            worker = real_thread(target=spawn)
+            worker.start()
+            assert entered_start.wait(timeout=5)
+
+            setter = real_thread(
+                target=set_interrupt,
+                kwargs={"active": True, "thread_id": worker.ident},
+            )
+            setter.start()
+            time.sleep(0.05)
+            assert setter.is_alive()
+
+            release_start.set()
+            worker.join(timeout=5)
+            setter.join(timeout=5)
+
+        set_interrupt(False, thread_id=result["thread_id"])
+        assert not worker.is_alive()
+        assert not setter.is_alive()
+        assert result["session"].pid == 4321
+
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
 
@@ -772,6 +876,240 @@ class TestSpawnEnvSanitization:
 
         args, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
+
+    def test_spawn_via_env_tracks_a_dedicated_sandbox_process_group(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "4321\n", "returncode": 0}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(env, "sleep 60")
+
+        bg_command = env.commands[0][0]
+        assert "set -m; nohup bash -c" in bg_command
+        assert session.pid == 4321
+        assert session.pid_scope == "sandbox_group"
+
+    def test_kill_process_nonlocal_terminates_tracked_process_group(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {
+                    "output": "__HERMES_PROCESS_TERMINATED__\n",
+                    "returncode": 0,
+                }
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_remote_group")
+        session.pid = 4321
+        session.pid_scope = "sandbox_group"
+        session.env_ref = env
+        registry._running[session.id] = session
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "killed"
+        assert len(env.commands) == 1
+        kill_command, kill_kwargs = env.commands[0]
+        assert "_hermes_target=-4321" in kill_command
+        assert 'kill -TERM -- "$_hermes_target"' in kill_command
+        assert 'kill -0 -- "$_hermes_target"' in kill_command
+        assert 'kill -KILL -- "$_hermes_target"' in kill_command
+        assert kill_kwargs == {"timeout": 5}
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX-only: requires process groups",
+    )
+    def test_nonlocal_group_kill_reaps_real_supervisor_and_descendant(
+        self, registry, tmp_path
+    ):
+        import psutil
+
+        class LocalBashEnv:
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def execute(self, command, **kwargs):
+                completed = subprocess.run(
+                    ["bash", "-c", command],
+                    capture_output=True,
+                    text=True,
+                    timeout=kwargs.get("timeout", 5),
+                )
+                return {
+                    "output": completed.stdout + completed.stderr,
+                    "returncode": completed.returncode,
+                }
+
+        def live_group_members(pgid):
+            members = []
+            for proc in psutil.process_iter(["status"]):
+                try:
+                    if (
+                        os.getpgid(proc.pid) == pgid
+                        and proc.info["status"] != psutil.STATUS_ZOMBIE
+                    ):
+                        members.append(proc.pid)
+                except (OSError, psutil.Error):
+                    continue
+            return members
+
+        env = LocalBashEnv()
+        session = None
+        try:
+            with patch(
+                "tools.process_registry.threading.Thread",
+                return_value=MagicMock(),
+            ), patch.object(registry, "_write_checkpoint"):
+                session = registry.spawn_via_env(env, "sleep 60")
+
+            assert session.pid_scope == "sandbox_group"
+            assert os.getpgid(session.pid) == session.pid
+            assert _wait_until(
+                lambda: len(live_group_members(session.pid)) >= 2
+            )
+
+            result = registry.kill_process(session.id)
+
+            assert result["status"] == "killed"
+            assert _wait_until(lambda: not live_group_members(session.pid))
+        finally:
+            if session is not None:
+                try:
+                    os.killpg(session.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_kill_process_nonlocal_keeps_unconfirmed_group_tracked(self, registry):
+        class FakeEnv:
+            def execute(self, _command, **_kwargs):
+                return {
+                    "output": "__HERMES_PROCESS_STILL_RUNNING__\n",
+                    "returncode": 1,
+                }
+
+        session = _make_session(sid="proc_remote_still_running")
+        session.pid = 4321
+        session.pid_scope = "sandbox_group"
+        session.env_ref = FakeEnv()
+        registry._running[session.id] = session
+
+        result = registry.kill_process(session.id)
+
+        assert result == {
+            "status": "error",
+            "error": (
+                "Sandbox process termination could not be confirmed; "
+                "the process remains tracked"
+            ),
+        }
+        assert session.exited is False
+        assert registry.get(session.id) is session
+
+    def test_spawn_via_env_propagates_sudo_prompt_cancellation(self, registry):
+        from tools.terminal_tool import SudoPasswordPromptCancelled
+
+        class FakeEnv:
+            def execute(self, _command, **_kwargs):
+                raise SudoPasswordPromptCancelled
+
+        with pytest.raises(SudoPasswordPromptCancelled):
+            registry.spawn_via_env(FakeEnv(), "sudo true")
+
+    def test_spawn_via_env_propagates_pre_start_interrupt(self, registry):
+        from tools.process_registry import ProcessStartCancelled
+
+        class FakeEnv:
+            def execute(self, _command, **_kwargs):
+                return {
+                    "output": "",
+                    "returncode": 130,
+                    "_process_start_cancelled": True,
+                }
+
+        with pytest.raises(ProcessStartCancelled):
+            registry.spawn_via_env(FakeEnv(), "echo never-started")
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "[Command interrupted]",
+            "[Command interrupted - Modal sandbox exec cancelled]",
+        ],
+    )
+    def test_spawn_via_env_propagates_marker_bearing_interrupt(
+        self, registry, marker
+    ):
+        class FakeEnv:
+            def execute(self, _command, **_kwargs):
+                return {"output": marker, "returncode": 130}
+
+        with pytest.raises(ProcessStartCancelled) as exc_info:
+            registry.spawn_via_env(FakeEnv(), "echo interrupted")
+
+        assert exc_info.value.output == marker
+        assert exc_info.value.before_start is False
+
+    def test_spawn_via_ssh_retains_marker_bearing_pid_as_killable(self, registry):
+        marker = "[Command interrupted]"
+
+        class FakeSSHEnvironment:
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                if len(self.commands) == 1:
+                    return {"output": f"4242\n{marker}", "returncode": 130}
+                return {
+                    "output": "__HERMES_PROCESS_TERMINATED__\n",
+                    "returncode": 0,
+                }
+
+        env = FakeSSHEnvironment()
+        fake_thread = MagicMock()
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(env, "echo interrupted")
+            kill_result = registry.kill_process(session.id)
+
+        assert session.pid == 4242
+        assert session.start_interrupted is True
+        assert session.start_interrupt_output == f"4242\n{marker}"
+        assert kill_result["status"] == "killed"
+        assert "_hermes_target=-4242" in env.commands[1][0]
+        assert session.id not in registry._running
+        assert registry.get(session.id) is session
+
+    def test_spawn_via_env_keeps_unmarked_rc130_as_natural_child_result(
+        self, registry
+    ):
+        class FakeEnv:
+            def execute(self, _command, **_kwargs):
+                return {"output": "4242\nchild exited on SIGINT", "returncode": 130}
+
+        fake_thread = MagicMock()
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(FakeEnv(), "exit 130")
+
+        assert session.pid == 4242
+        assert session.start_interrupted is False
+        assert session.start_interrupt_output == ""
+        assert session.id in registry._running
+        fake_thread.start.assert_called_once()
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")

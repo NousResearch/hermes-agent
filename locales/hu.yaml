@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ A munkamenet automatikusan visszaállt ({reason}). A beszélgetés előzményei törölve.\nHasználd a /resume parancsot egy korábbi munkamenet böngészéséhez és visszaállításához.\nA visszaállítás időzítése a config.yaml session_reset szakaszában módosítható."
     reason_suspended:      "az előző munkamenet leállt vagy megszakadt"
+    reason_resume_pending_expired: "az átjáró újraindítása utáni helyreállítás időtúllépést ért el"
     reason_daily:          "napi ütemezés {hour}:00-kor"
     reason_idle:           "{duration} ideje inaktív"
+    duration_hours_minutes: "{hours} ó {minutes} p"
+    duration_hours:        "{hours} ó"
+    duration_minutes:      "{minutes} p"
 
   background:
     usage:                 "Használat: /background <prompt>\nPélda: /background Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."

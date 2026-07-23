@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Sessie outomaties herstel ({reason}). Gespreksgeskiedenis is uitgevee.\nGebruik /resume om 'n vorige sessie te blaai en te herstel.\nPas die hersteltyd aan in config.yaml onder session_reset."
     reason_suspended:      "vorige sessie is gestop of onderbreek"
+    reason_resume_pending_expired: "herstel ná die gateway-herbegin het uitgetel"
     reason_daily:          "daaglikse skedule om {hour}:00"
     reason_idle:           "onaktief vir {duration}"
+    duration_hours_minutes: "{hours} u {minutes} min"
+    duration_hours:        "{hours} u"
+    duration_minutes:      "{minutes} min"
 
   background:
     usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."

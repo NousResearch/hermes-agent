@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from contextvars import ContextVar, Token
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
+_language_scope: ContextVar[str | None] = ContextVar(
+    "hermes_i18n_language_scope", default=None
+)
 
 
 def _locales_dir() -> Path:
@@ -192,15 +196,35 @@ def _config_language_cached() -> str | None:
     ``reset_language_cache()`` clears this when config changes at runtime
     (e.g. after the setup wizard).
     """
+    return get_config_language()
+
+
+def get_config_language() -> str | None:
+    """Read ``display.language`` from the current scoped home."""
     try:
         from hermes_cli.config import load_config
+
         cfg = load_config()
         lang = (cfg.get("display") or {}).get("language")
         if lang:
             return _normalize_lang(lang)
     except Exception as exc:
-        logger.debug("Could not read display.language from config: %s", exc)
+        logger.debug("Could not read scoped display.language from config: %s", exc)
     return None
+
+
+def set_language_scope(lang: str | None) -> Token:
+    """Set the context-local language for one routed profile.
+
+    A profile without an explicit language scopes to English instead of
+    inheriting the process-level profile's cached language.
+    """
+    return _language_scope.set(_normalize_lang(lang) if lang else DEFAULT_LANGUAGE)
+
+
+def reset_language_scope(token: Token) -> None:
+    """Restore the language scope that preceded ``set_language_scope``."""
+    _language_scope.reset(token)
 
 
 def reset_language_cache() -> None:
@@ -215,10 +239,13 @@ def reset_language_cache() -> None:
 
 
 def get_language() -> str:
-    """Resolve the active language using env > config > default order."""
+    """Resolve the active language using env > profile scope > config > default."""
     env_lang = os.environ.get("HERMES_LANGUAGE")
     if env_lang:
         return _normalize_lang(env_lang)
+    scoped_lang = _language_scope.get()
+    if scoped_lang:
+        return scoped_lang
     cfg_lang = _config_language_cached()
     if cfg_lang:
         return cfg_lang
@@ -274,5 +301,8 @@ __all__ = [
     "DEFAULT_LANGUAGE",
     "t",
     "get_language",
+    "get_config_language",
+    "set_language_scope",
+    "reset_language_scope",
     "reset_language_cache",
 ]

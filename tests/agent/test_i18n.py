@@ -125,6 +125,35 @@ def test_default_when_nothing_set(monkeypatch):
     assert i18n.get_language() == "en"
 
 
+def test_context_language_scope_is_nested_and_restored(monkeypatch):
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+    monkeypatch.setattr(i18n, "_config_language_cached", lambda: "en")
+
+    assert i18n.get_language() == "en"
+    outer = i18n.set_language_scope("zh")
+    try:
+        assert i18n.get_language() == "zh"
+        inner = i18n.set_language_scope("ja")
+        try:
+            assert i18n.get_language() == "ja"
+        finally:
+            i18n.reset_language_scope(inner)
+        assert i18n.get_language() == "zh"
+    finally:
+        i18n.reset_language_scope(outer)
+    assert i18n.get_language() == "en"
+
+
+def test_env_language_still_wins_over_context_scope(monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", "tr")
+    token = i18n.set_language_scope("zh")
+    try:
+        assert i18n.get_language() == "tr"
+    finally:
+        i18n.reset_language_scope(token)
+
+
 # ---------------------------------------------------------------------------
 # t() semantics
 # ---------------------------------------------------------------------------

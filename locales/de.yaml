@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Sitzung automatisch zurückgesetzt ({reason}). Konversationsverlauf gelöscht.\nNutze /resume, um eine frühere Sitzung zu durchsuchen und wiederherzustellen.\nDas Reset-Timing lässt sich in config.yaml unter session_reset anpassen."
     reason_suspended:      "vorherige Sitzung wurde gestoppt oder unterbrochen"
+    reason_resume_pending_expired: "Wiederherstellung nach Gateway-Neustart hat das Zeitlimit überschritten"
     reason_daily:          "täglicher Zeitplan um {hour}:00 Uhr"
     reason_idle:           "inaktiv seit {duration}"
+    duration_hours_minutes: "{hours} Std. {minutes} Min."
+    duration_hours:        "{hours} Std."
+    duration_minutes:      "{minutes} Min."
 
   background:
     usage:                 "Verwendung: /background <prompt>\nBeispiel: /background Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."

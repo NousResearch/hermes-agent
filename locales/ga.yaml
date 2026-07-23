@@ -73,8 +73,12 @@ gateway:
   auto_reset:
     notice:                "◐ Athshocraíodh an seisiún go huathoibríoch ({reason}). Glanadh stair an chomhrá.\nÚsáid /resume chun seisiún roimhe seo a bhrabhsáil agus a aischur.\nCoigeartaigh uainiú an athshocraithe in config.yaml faoi session_reset."
     reason_suspended:      "stopadh nó cuireadh isteach ar an seisiún roimhe seo"
+    reason_resume_pending_expired: "chuaigh aisghabháil atosaithe an gheata thar am"
     reason_daily:          "sceideal laethúil ag {hour}:00"
     reason_idle:           "neamhghníomhach le {duration}"
+    duration_hours_minutes: "{hours} u {minutes} nóim"
+    duration_hours:        "{hours} u"
+    duration_minutes:      "{minutes} nóim"
 
   background:
     usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."

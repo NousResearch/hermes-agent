@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Sessão reiniciada automaticamente ({reason}). Histórico da conversa apagado.\nUsa /resume para percorrer e restaurar uma sessão anterior.\nAjusta o intervalo de reinício em config.yaml sob session_reset."
     reason_suspended:      "a sessão anterior foi parada ou interrompida"
+    reason_resume_pending_expired: "a recuperação após reiniciar o gateway expirou"
     reason_daily:          "agendamento diário às {hour}:00"
     reason_idle:           "inativa há {duration}"
+    duration_hours_minutes: "{hours} h {minutes} min"
+    duration_hours:        "{hours} h"
+    duration_minutes:      "{minutes} min"
 
   background:
     usage:                 "Uso: /background <prompt>\nExemplo: /background Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."

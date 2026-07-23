@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Oturum otomatik olarak sıfırlandı ({reason}). Konuşma geçmişi temizlendi.\nÖnceki bir oturumu görüntülemek ve geri yüklemek için /resume kullanın.\nSıfırlama zamanlamasını config.yaml içindeki session_reset altından ayarlayabilirsiniz."
     reason_suspended:      "önceki oturum durduruldu veya kesintiye uğradı"
+    reason_resume_pending_expired: "ağ geçidi yeniden başlatma kurtarması zaman aşımına uğradı"
     reason_daily:          "günlük zamanlama, saat {hour}:00"
     reason_idle:           "{duration} boyunca etkin değil"
+    duration_hours_minutes: "{hours} sa {minutes} dk"
+    duration_hours:        "{hours} sa"
+    duration_minutes:      "{minutes} dk"
 
   background:
     usage:                 "Kullanım: /background <prompt>\nÖrnek: /background Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."

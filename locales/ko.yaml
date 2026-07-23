@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ 세션이 자동으로 초기화되었습니다 ({reason}). 대화 기록이 삭제되었습니다.\n/resume 명령으로 이전 세션을 찾아 복원할 수 있습니다.\n초기화 시점은 config.yaml의 session_reset에서 조정할 수 있습니다."
     reason_suspended:      "이전 세션이 중지되었거나 중단됨"
+    reason_resume_pending_expired: "게이트웨이 재시작 복구 시간이 초과됨"
     reason_daily:          "매일 {hour}:00 일정"
     reason_idle:           "{duration} 동안 비활성"
+    duration_hours_minutes: "{hours}시간 {minutes}분"
+    duration_hours:        "{hours}시간"
+    duration_minutes:      "{minutes}분"
 
   background:
     usage:                 "사용법: /background <prompt>\n예시: /background 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."

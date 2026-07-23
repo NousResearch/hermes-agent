@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Сеанс автоматически сброшен ({reason}). История беседы очищена.\nИспользуйте /resume, чтобы просмотреть и восстановить предыдущий сеанс.\nВремя сброса настраивается в config.yaml в разделе session_reset."
     reason_suspended:      "предыдущий сеанс был остановлен или прерван"
+    reason_resume_pending_expired: "истекло время восстановления после перезапуска шлюза"
     reason_daily:          "ежедневное расписание в {hour}:00"
     reason_idle:           "неактивен в течение {duration}"
+    duration_hours_minutes: "{hours} ч {minutes} мин"
+    duration_hours:        "{hours} ч"
+    duration_minutes:      "{minutes} мин"
 
   background:
     usage:                 "Использование: /background <запрос>\nПример: /background Сделай сводку лучших историй с HN сегодня\n\nЗапускает запрос в отдельном сеансе. Можно продолжить общение — результат появится здесь по завершении."

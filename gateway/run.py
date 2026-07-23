@@ -1548,7 +1548,7 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
 
-    Combines the two seams the multiplexer needs:
+    Combines the three seams the multiplexer needs:
       1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
          skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
          it propagates into the agent worker thread via ``copy_context()``.
@@ -1556,6 +1556,8 @@ def _profile_runtime_scope(profile_home: "Path"):
          authoritative credential source, so ``get_secret`` reads this profile's
          keys and never the process-global ``os.environ`` (which in a
          multiplexer may hold another profile's values).
+      3. ``set_language_scope`` — resolves ``display.language`` from the
+         routed profile without consulting the process-global language cache.
 
     Only used on the multiplexed inbound path. Single-profile gateways never
     enter this scope, so their behavior is unchanged. Loading the profile's
@@ -1569,12 +1571,19 @@ def _profile_runtime_scope(profile_home: "Path"):
         set_secret_scope,
         reset_secret_scope,
     )
+    from agent.i18n import (
+        get_config_language,
+        reset_language_scope,
+        set_language_scope,
+    )
 
     home_token = set_hermes_home_override(str(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    language_token = set_language_scope(get_config_language())
     try:
         yield
     finally:
+        reset_language_scope(language_token)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
@@ -12554,30 +12563,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if should_notify:
                     adapter = self._adapter_for_source(source)
                     if adapter:
-                        if reset_reason == "suspended":
-                            reason_text = t("gateway.auto_reset.reason_suspended")
-                        elif reset_reason == "resume_pending_expired":
-                            reason_text = "gateway restart recovery timed out"
-                        elif reset_reason == "daily":
-                            reason_text = t("gateway.auto_reset.reason_daily", hour=policy.at_hour)
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = t("gateway.auto_reset.reason_idle", duration=duration)
-                        notice = t("gateway.auto_reset.notice", reason=reason_text)
                         try:
-                            session_info = await asyncio.to_thread(
-                                self._reset_notice_session_info, source
+                            notice = await asyncio.to_thread(
+                                self._format_auto_reset_notice,
+                                source,
+                                reset_reason,
+                                policy,
                             )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
                         except Exception:
-                            pass
-                        await adapter.send(
-                            source.chat_id, notice,
-                            metadata=self._thread_metadata_for_source(source),
-                        )
+                            logger.debug(
+                                "Could not format auto-reset notice",
+                                exc_info=True,
+                            )
+                            notice = ""
+                        if notice:
+                            await adapter.send(
+                                source.chat_id, notice,
+                                metadata=self._thread_metadata_for_source(source),
+                            )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)
 
@@ -14006,6 +14009,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+
+    def _format_auto_reset_notice(
+        self,
+        source: SessionSource,
+        reset_reason: str,
+        policy: Any,
+    ) -> str:
+        """Format the reset notice and session info in the served profile."""
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                return self._format_auto_reset_notice_scoped(reset_reason, policy)
+        return self._format_auto_reset_notice_scoped(reset_reason, policy)
+
+    def _format_auto_reset_notice_scoped(
+        self,
+        reset_reason: str,
+        policy: Any,
+    ) -> str:
+        if reset_reason == "suspended":
+            reason_text = t("gateway.auto_reset.reason_suspended")
+        elif reset_reason == "resume_pending_expired":
+            reason_text = t("gateway.auto_reset.reason_resume_pending_expired")
+        elif reset_reason == "daily":
+            reason_text = t(
+                "gateway.auto_reset.reason_daily",
+                hour=policy.at_hour,
+            )
+        else:
+            hours = policy.idle_minutes // 60
+            minutes = policy.idle_minutes % 60
+            if hours and minutes:
+                duration = t(
+                    "gateway.auto_reset.duration_hours_minutes",
+                    hours=hours,
+                    minutes=minutes,
+                )
+            elif hours:
+                duration = t(
+                    "gateway.auto_reset.duration_hours",
+                    hours=hours,
+                )
+            else:
+                duration = t(
+                    "gateway.auto_reset.duration_minutes",
+                    minutes=minutes,
+                )
+            reason_text = t(
+                "gateway.auto_reset.reason_idle",
+                duration=duration,
+            )
+
+        notice = t("gateway.auto_reset.notice", reason=reason_text)
+        try:
+            session_info = self._format_session_info()
+        except Exception:
+            logger.debug("Could not append session info to reset notice", exc_info=True)
+            session_info = ""
+        return f"{notice}\n\n{session_info}" if session_info else notice
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, profile-scoped.

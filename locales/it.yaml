@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Sessione reimpostata automaticamente ({reason}). Cronologia della conversazione cancellata.\nUsa /resume per sfogliare e ripristinare una sessione precedente.\nRegola i tempi di reset in config.yaml sotto session_reset."
     reason_suspended:      "la sessione precedente è stata arrestata o interrotta"
+    reason_resume_pending_expired: "il ripristino dopo il riavvio del gateway è scaduto"
     reason_daily:          "pianificazione giornaliera alle {hour}:00"
     reason_idle:           "inattiva da {duration}"
+    duration_hours_minutes: "{hours} h {minutes} min"
+    duration_hours:        "{hours} h"
+    duration_minutes:      "{minutes} min"
 
   background:
     usage:                 "Uso: /background <prompt>\nEsempio: /background Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al termine."

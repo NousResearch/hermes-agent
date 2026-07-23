@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ Сесію автоматично скинуто ({reason}). Історію розмови очищено.\nВикористовуйте /resume, щоб переглянути та відновити попередню сесію.\nЧас скидання налаштовується в config.yaml у розділі session_reset."
     reason_suspended:      "попередню сесію було зупинено або перервано"
+    reason_resume_pending_expired: "час відновлення після перезапуску шлюзу вичерпано"
     reason_daily:          "щоденний розклад о {hour}:00"
     reason_idle:           "неактивна протягом {duration}"
+    duration_hours_minutes: "{hours} год {minutes} хв"
+    duration_hours:        "{hours} год"
+    duration_minutes:      "{minutes} хв"
 
   background:
     usage:                 "Використання: /background <запит>\nПриклад: /background Підсумуй найкращі історії з HN сьогодні\n\nЗапускає запит в окремому сеансі. Можна продовжити спілкування — результат з'явиться тут після завершення."

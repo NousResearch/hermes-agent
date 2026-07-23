@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ セッションが自動的にリセットされました（{reason}）。会話履歴はクリアされました。\n/resume で以前のセッションを一覧・復元できます。\nリセットのタイミングは config.yaml の session_reset で調整できます。"
     reason_suspended:      "前回のセッションが停止または中断されたため"
+    reason_resume_pending_expired: "ゲートウェイ再起動後の復旧がタイムアウトしたため"
     reason_daily:          "毎日 {hour}:00 のスケジュールのため"
     reason_idle:           "{duration} 非アクティブだったため"
+    duration_hours_minutes: "{hours}時間{minutes}分"
+    duration_hours:        "{hours}時間"
+    duration_minutes:      "{minutes}分"
 
   background:
     usage:                 "使い方: /background <プロンプト>\n例: /background 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"

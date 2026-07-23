@@ -69,8 +69,12 @@ gateway:
   auto_reset:
     notice:                "◐ 会话已自动重置（{reason}）。对话历史已清空。\n使用 /resume 可浏览并恢复之前的会话。\n可在 config.yaml 的 session_reset 中调整重置时间。"
     reason_suspended:      "上一个会话已停止或中断"
+    reason_resume_pending_expired: "网关重启恢复超时"
     reason_daily:          "每日计划于 {hour}:00"
     reason_idle:           "闲置 {duration}"
+    duration_hours_minutes: "{hours} 小时 {minutes} 分钟"
+    duration_hours:        "{hours} 小时"
+    duration_minutes:      "{minutes} 分钟"
 
   background:
     usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"

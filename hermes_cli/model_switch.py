@@ -2034,6 +2034,13 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+            # Providers that use a base_url alone (no api key required)
+            # should be detected when their base_url_env_var is set.
+            if not has_creds:
+                pcfg = _auth_registry.get(hermes_slug) or _auth_registry.get(pid)
+                if pcfg and pcfg.base_url_env_var:
+                    if os.environ.get(pcfg.base_url_env_var):
+                        has_creds = True
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code

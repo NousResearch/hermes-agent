@@ -138,7 +138,17 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
-
+#
+# =============================================================================
+# Anthropic Credential Discovery
+# =============================================================================
+# Claude Code stores OAuth credentials in the macOS Keychain. Set this false
+# when Hermes runs under a sandbox or service account whose login Keychain is
+# unavailable. The default is true.
+#
+# anthropic:
+#   use_claude_code_keychain: false
+#
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================

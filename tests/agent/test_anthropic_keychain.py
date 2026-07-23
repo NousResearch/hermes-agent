@@ -69,7 +69,9 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             )
             assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_parses_valid_keychain_entry(self):
+    def test_parses_valid_keychain_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
              patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -84,12 +86,37 @@ class TestReadClaudeCodeCredentialsFromKeychain:
                 stderr="",
             )
             creds = _read_claude_code_credentials_from_keychain()
-            assert creds is not None
-            assert creds["accessToken"] == "kc-access-token-abc"
-            assert creds["refreshToken"] == "kc-refresh-token-xyz"
-            assert creds["expiresAt"] == 9999999999999
-            assert creds["source"] == "macos_keychain"
 
+        assert creds is not None
+        assert creds["accessToken"] == "kc-access-token-abc"
+        assert creds["refreshToken"] == "kc-refresh-token-xyz"
+        assert creds["expiresAt"] == 9999999999999
+        assert creds["source"] == "macos_keychain"
+
+    def test_config_can_disable_keychain_and_use_json_credentials(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "anthropic:\n  use_claude_code_keychain: false\n"
+        )
+        json_cred_file = tmp_path / ".claude" / ".credentials.json"
+        json_cred_file.parent.mkdir(parents=True)
+        json_cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "json-fallback-token",
+                "refreshToken": "json-refresh",
+                "expiresAt": 9999999999999,
+            }
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            creds = read_claude_code_credentials()
+
+        assert creds is not None
+        assert creds["accessToken"] == "json-fallback-token"
+        assert creds["source"] == "claude_code_credentials_file"
+        mock_run.assert_not_called()
 
 class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""

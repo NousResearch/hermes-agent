@@ -161,6 +161,187 @@ async def test_send_does_not_retry_on_unrelated_errors():
 
 
 # ---------------------------------------------------------------------------
+# Operator card rendering
+# ---------------------------------------------------------------------------
+
+
+def _operator_card_payload():
+    return {
+        "kind": "operator_card",
+        "version": 1,
+        "card_type": "approval",
+        "title": "Approve source sync",
+        "severity": "needs_review",
+        "summary": "A second source is ready to normalize.",
+        "fields": [{"label": "Issue", "value": "OE-222"}],
+        "actions": [{"id": "approve", "label": "Approve", "style": "success"}],
+        "links": [{"label": "Open issue", "url": "https://linear.app/example/issue/OE-222"}],
+        "state_ref": "oe-222:approval:1",
+    }
+
+
+class _FakeEmbed:
+    def __init__(self, *, title, description, color):
+        self.title = title
+        self.description = description
+        self.color = color
+        self.fields = []
+        self.footer = None
+
+    def add_field(self, *, name, value, inline):
+        self.fields.append({"name": name, "value": value, "inline": inline})
+
+    def set_footer(self, *, text):
+        self.footer = text
+
+
+@pytest.mark.asyncio
+async def test_send_renders_valid_operator_card_as_embed_with_text_fallback(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=7001)),
+        fetch_message=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(_discord_mod, "Embed", _FakeEmbed)
+
+    result = await adapter.send(
+        "555",
+        "untrusted presentation text",
+        metadata={"operator_card": _operator_card_payload()},
+    )
+
+    assert result.success is True
+    kwargs = channel.send.await_args.kwargs
+    assert kwargs["content"].startswith("🟡 **Needs review — Approve source sync**")
+    assert len(kwargs["content"]) <= adapter.MAX_MESSAGE_LENGTH
+    assert kwargs["embed"].title == "Approve source sync"
+    assert kwargs["embed"].description == "A second source is ready to normalize."
+    assert kwargs["embed"].fields[0] == {"name": "Issue", "value": "OE-222", "inline": False}
+    assert kwargs["embed"].footer == "Approval · Needs review"
+
+
+@pytest.mark.asyncio
+async def test_send_operator_card_targets_requested_thread(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    parent = SimpleNamespace(send=AsyncMock())
+    thread = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=7002)),
+        fetch_message=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else parent,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(_discord_mod, "Embed", _FakeEmbed)
+
+    result = await adapter.send(
+        "555",
+        "ignored",
+        metadata={"thread_id": "777", "operator_card": _operator_card_payload()},
+    )
+
+    assert result.success is True
+    assert thread.send.await_count == 1
+    assert parent.send.await_count == 0
+    assert isinstance(thread.send.await_args.kwargs["embed"], _FakeEmbed)
+
+
+@pytest.mark.asyncio
+async def test_send_operator_card_creates_forum_thread_with_embed(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    thread_channel = SimpleNamespace(id=888, send=AsyncMock())
+    thread = SimpleNamespace(id=888, message=SimpleNamespace(id=7003), thread=thread_channel)
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(_discord_mod, "Embed", _FakeEmbed)
+
+    result = await adapter.send(
+        "999",
+        "ignored",
+        metadata={"operator_card": _operator_card_payload()},
+    )
+
+    assert result.success is True
+    kwargs = forum_channel.create_thread.await_args.kwargs
+    assert kwargs["name"] == "Needs review — Approve source sync"
+    assert isinstance(kwargs["embed"], _FakeEmbed)
+    assert len(kwargs["content"]) <= adapter.MAX_MESSAGE_LENGTH
+
+
+@pytest.mark.asyncio
+async def test_send_rejects_invalid_operator_card_without_platform_write():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    payload = _operator_card_payload()
+    payload["unexpected"] = "fail closed"
+
+    result = await adapter.send(
+        "555",
+        "must not be sent",
+        metadata={"operator_card": payload},
+    )
+
+    assert result.success is False
+    assert "unknown fields" in (result.error or "")
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_send_bounds_contract_valid_but_oversized_card_to_discord_limits(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=7009)),
+        fetch_message=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(_discord_mod, "Embed", _FakeEmbed)
+
+    # Every part below is within the operator-card contract, yet the embed it
+    # would naively produce blows past Discord's 1024 per-field and 6000
+    # aggregate ceilings (12 fields at the field limit + a wide link block).
+    payload = _operator_card_payload()
+    payload["fields"] = [{"label": f"Field {i}", "value": "x" * 1024} for i in range(12)]
+    payload["links"] = [
+        {"label": "L" * 80, "url": "https://example.com/" + "y" * 2000} for _ in range(5)
+    ]
+
+    result = await adapter.send(
+        "555",
+        "ignored",
+        metadata={"operator_card": payload},
+    )
+
+    # The card is delivered (safe fallback), not dropped by a Discord 400.
+    assert result.success is True
+    embed = channel.send.await_args.kwargs["embed"]
+    # Per-field invariants.
+    assert all(len(field["value"]) <= 1024 for field in embed.fields)
+    assert all(0 < len(field["name"]) <= 256 for field in embed.fields)
+    # Aggregate invariant: whole embed stays within the 6000 budget.
+    total = len(embed.title) + len(embed.description) + len(embed.footer or "")
+    total += sum(len(field["name"]) + len(field["value"]) for field in embed.fields)
+    assert total <= 6000
+    # The full card still reaches the operator via the plaintext content.
+    assert channel.send.await_args.kwargs["content"].startswith("🟡")
+
+
+# ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------
 

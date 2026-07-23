@@ -115,6 +115,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.operator_cards import OperatorCard, render_operator_card_text
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float, env_int
@@ -197,6 +198,101 @@ def _abort_discord_websocket_transport(websocket: Any) -> bool:
         return False
     abort()
     return True
+
+
+_DISCORD_OPERATOR_CARD_COLORS = {
+    "done": 0x2ECC71,
+    "info": 0x3498DB,
+    "needs_review": 0xF1C40F,
+    "blocked": 0xE74C3C,
+    "critical": 0x992D22,
+}
+_DISCORD_OPERATOR_CARD_SEVERITY_LABELS = {
+    "done": "Done",
+    "info": "Info",
+    "needs_review": "Needs review",
+    "blocked": "Blocked",
+    "critical": "Critical",
+}
+
+# Discord embed budgets, measured in UTF-16 code units (Discord's own unit for
+# these limits).  A contract-valid operator card can still exceed them — e.g.
+# up to 12 fields at the 1024-char field ceiling, or a link block wider than a
+# single field — and Discord rejects an oversized embed wholesale (HTTP 400,
+# error code 50035), which would drop the entire message.  We bound each part
+# and stop once the running aggregate would overflow.
+_DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+_DISCORD_EMBED_FOOTER_LIMIT = 2048
+_DISCORD_EMBED_FIELD_NAME_LIMIT = 256
+_DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+_DISCORD_EMBED_TOTAL_LIMIT = 6000
+_DISCORD_EMBED_MAX_FIELDS = 25
+
+
+def _build_operator_card_embed(card: OperatorCard) -> Any:
+    """Render a validated operator card as an embed bounded to Discord's limits.
+
+    Every part is truncated to its per-element ceiling and fields are dropped
+    once the running aggregate would exceed Discord's 6000-code-unit budget, so
+    the embed is always API-valid.  Nothing the operator needs is lost: the
+    plaintext fallback (``render_operator_card_text``) still carries the full
+    card as the message content alongside this embed.
+    """
+    title = _truncate_discord_component_text(card.title, _DISCORD_EMBED_TITLE_LIMIT)
+    description = _truncate_discord_component_text(
+        card.summary, _DISCORD_EMBED_DESCRIPTION_LIMIT
+    )
+    card_type_label = card.card_type.replace("_", " ").title()
+    severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[card.severity]
+    footer = _truncate_discord_component_text(
+        f"{card_type_label} · {severity_label}", _DISCORD_EMBED_FOOTER_LIMIT
+    )
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=_DISCORD_OPERATOR_CARD_COLORS[card.severity],
+    )
+
+    # Title, description, and footer always count against the 6000 aggregate.
+    remaining = _DISCORD_EMBED_TOTAL_LIMIT - (
+        utf16_len(title) + utf16_len(description) + utf16_len(footer)
+    )
+
+    def _add_bounded_field(name: str, value: str) -> None:
+        nonlocal remaining
+        if len(embed.fields) >= _DISCORD_EMBED_MAX_FIELDS or remaining <= 0:
+            return
+        name = _truncate_discord_component_text(
+            name, min(_DISCORD_EMBED_FIELD_NAME_LIMIT, remaining)
+        )
+        if not name:
+            return
+        remaining -= utf16_len(name)
+        if remaining <= 0:
+            return
+        value = _truncate_discord_component_text(
+            value, min(_DISCORD_EMBED_FIELD_VALUE_LIMIT, remaining)
+        )
+        if not value:
+            return
+        remaining -= utf16_len(value)
+        embed.add_field(name=name, value=value, inline=False)
+
+    for field in card.fields:
+        _add_bounded_field(field.label, field.value)
+    if card.actions:
+        _add_bounded_field(
+            "Actions", " · ".join(action.label for action in card.actions)
+        )
+    if card.links:
+        _add_bounded_field(
+            "Links", "\n".join(f"[{link.label}]({link.url})" for link in card.links)
+        )
+
+    embed.set_footer(text=footer)
+    return embed
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -2874,6 +2970,27 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            operator_card = None
+            operator_card_embed = None
+            operator_card_thread_name = None
+            if metadata and "operator_card" in metadata:
+                operator_card = OperatorCard.from_mapping(metadata["operator_card"])
+                content = render_operator_card_text(
+                    operator_card,
+                    max_length=self.MAX_MESSAGE_LENGTH,
+                )
+                operator_card_embed = _build_operator_card_embed(operator_card)
+                severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[
+                    operator_card.severity
+                ]
+                # Discord's 100-char thread-name cap is measured in UTF-16 code
+                # units; a naive ``[:100]`` slice counts code points and can
+                # emit a name Discord rejects.  Use the shared UTF-16-aware
+                # component truncator like every other Discord label.
+                operator_card_thread_name = _truncate_discord_component_text(
+                    f"{severity_label} — {operator_card.title}", 100
+                )
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -2898,7 +3015,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(
+                    channel,
+                    content,
+                    embed=operator_card_embed,
+                    thread_name=operator_card_thread_name,
+                )
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
@@ -2931,10 +3053,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: Dict[str, Any] = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if i == 0 and operator_card_embed is not None:
+                        send_kwargs["embed"] = operator_card_embed
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -2953,10 +3078,8 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        send_kwargs["reference"] = None
+                        msg = await channel.send(**send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -2996,7 +3119,14 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        *,
+        embed: Any = None,
+        thread_name: Optional[str] = None,
+    ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -3011,15 +3141,18 @@ class DiscordAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-        thread_name = _derive_forum_thread_name(content)
+        thread_name = thread_name or _derive_forum_thread_name(content)
 
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "name": thread_name,
+                "content": starter_content,
+            }
+            if embed is not None:
+                create_kwargs["embed"] = embed
+            thread = await forum_channel.create_thread(**create_kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")

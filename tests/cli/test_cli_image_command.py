@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from cli import (
     HermesCLI,
@@ -79,6 +79,24 @@ class TestCollectQueryImages:
 
         assert message == "describe this"
         assert images == [img]
+
+
+class TestPreprocessImagesWithVision:
+    def test_failed_analysis_keeps_image_path_and_caption(self, tmp_path):
+        img = _make_image(tmp_path / "failed-analysis.png")
+        cli_obj = _make_cli()
+
+        with patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as analyze:
+            analyze.return_value = '{"success": false}'
+            enriched = cli_obj._preprocess_images_with_vision(
+                "please inspect this",
+                [img],
+                announce=False,
+            )
+
+        assert f"[Image attached at: {img}]" in enriched
+        assert "couldn't be analyzed" in enriched
+        assert enriched.endswith("please inspect this")
 
 
 class TestTermuxImageHints:

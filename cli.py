@@ -6657,9 +6657,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"  {_DIM}✓ image analyzed{_RST}")
                 else:
                     enriched_parts.append(
-                        f"
-[Image attached at: {img_path}]
-[The user attached an image but it couldn't be analyzed. "
+                        f"\n[Image attached at: {img_path}]\n"
+                        f"[The user attached an image but it couldn't be analyzed. "
                         f"You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]"
                     )
@@ -6667,9 +6666,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
             except Exception as e:
                 enriched_parts.append(
-                    f"
-[Image attached at: {img_path}]
-[The user attached an image but analysis failed ({e}). "
+                    f"\n[Image attached at: {img_path}]\n"
+                    f"[The user attached an image but analysis failed ({e}). "
                     f"You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]"
                 )

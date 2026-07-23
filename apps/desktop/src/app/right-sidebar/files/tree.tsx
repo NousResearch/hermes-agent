@@ -5,9 +5,11 @@ import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { isEditableTarget } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { $repoChangeByPath, type RepoChangeKind } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
+import { $showHiddenFiles, isHiddenFileName, setShowHiddenFiles, toggleShowHiddenFiles } from '@/store/file-browser'
 import { $revealInTreeRequest } from '@/store/layout'
 
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
@@ -59,6 +61,7 @@ export function ProjectTree({
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
   const changeByPath = useStore($repoChangeByPath)
+  const showHiddenFiles = useStore($showHiddenFiles)
 
   const syncTreeSize = useCallback(() => {
     const el = containerRef.current
@@ -107,6 +110,14 @@ export function ProjectTree({
       const rel = target.startsWith(root) ? target.slice(root.length).replace(/^[\\/]+/, '') : ''
       const segments = rel.split(/[\\/]/).filter(Boolean)
 
+      // An explicit "Reveal in Sidebar" intent wins over the presentation
+      // filter. Re-enable dotfiles before walking the tree so the requested
+      // node cannot disappear behind the user's current preference.
+      if (!showHiddenFiles && segments.some(isHiddenFileName)) {
+        setShowHiddenFiles(true)
+        await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
+      }
+
       let acc = root
 
       for (let i = 0; i < segments.length - 1; i += 1) {
@@ -127,7 +138,7 @@ export function ProjectTree({
       // directly, no smooth scroll).
       treeRef.current?.scrollTo(target, 'start')
     },
-    [cwd, onLoadChildren, onNodeOpenChange]
+    [cwd, onLoadChildren, onNodeOpenChange, showHiddenFiles]
   )
 
   useEffect(
@@ -158,7 +169,20 @@ export function ProjectTree({
   // F2 / Enter on the selected row begins an inline rename. Capture-phase so it
   // beats arborist's own Enter-to-activate; skipped while an edit is in progress
   // (the editor input owns Enter/Esc then) and for placeholder rows.
-  const handleRenameShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const handleTreeShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const toggleHiddenFiles =
+      event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'h'
+
+    // Focus-scoped rather than global: Ctrl+H is Backspace in many terminals
+    // and must not be stolen from the composer or an inline rename field.
+    if (toggleHiddenFiles && !isEditableTarget(event.target)) {
+      event.preventDefault()
+      event.stopPropagation()
+      toggleShowHiddenFiles()
+
+      return
+    }
+
     if (!isRenameShortcut(event) || $renamingPath.get()) {
       return
     }
@@ -175,7 +199,7 @@ export function ProjectTree({
   }, [])
 
   return (
-    <div className="min-h-0 flex-1 overflow-hidden" onKeyDownCapture={handleRenameShortcut} ref={containerRef}>
+    <div className="min-h-0 flex-1 overflow-hidden" onKeyDownCapture={handleTreeShortcut} ref={containerRef}>
       {size.height > 0 && size.width > 0 ? (
         <Tree<TreeNode>
           childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}

@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
+import { setShowHiddenFiles } from '@/store/file-browser'
 import { $connection } from '@/store/session'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
@@ -10,6 +11,7 @@ import { resetProjectTreeState, useProjectTree } from './use-project-tree'
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 
 beforeEach(() => {
+  setShowHiddenFiles(true)
   $connection.set(null)
   resetProjectTreeState()
   readDir.mockReset()
@@ -18,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  setShowHiddenFiles(true)
   $connection.set(null)
   resetProjectTreeState()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -57,6 +60,54 @@ describe('useProjectTree', () => {
     expect(result.current.data.find(n => n.name === 'src')?.children).toBeUndefined()
     expect(result.current.data.find(n => n.name === 'src')?.isDirectory).toBe(true)
     expect(result.current.data.find(n => n.name === 'README.md')?.isDirectory).toBe(false)
+  })
+
+  it('filters cached dotfiles recursively and restores them without another directory read', async () => {
+    readDir.mockImplementation(async path => {
+      if (path === '/p') {
+        return ok([
+          { name: '.github', path: '/p/.github', isDirectory: true },
+          { name: 'src', path: '/p/src', isDirectory: true },
+          { name: '.env', path: '/p/.env', isDirectory: false },
+          { name: 'README.md', path: '/p/README.md', isDirectory: false }
+        ])
+      }
+
+      if (path === '/p/src') {
+        return ok([
+          { name: '.internal', path: '/p/src/.internal', isDirectory: false },
+          { name: 'index.ts', path: '/p/src/index.ts', isDirectory: false }
+        ])
+      }
+
+      throw new Error(`unexpected path ${path}`)
+    })
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(4))
+    await act(async () => result.current.loadChildren('/p/src'))
+
+    expect(result.current.data.find(node => node.name === 'src')?.children?.map(node => node.name)).toEqual([
+      '.internal',
+      'index.ts'
+    ])
+
+    act(() => setShowHiddenFiles(false))
+
+    expect(result.current.data.map(node => node.name)).toEqual(['src', 'README.md'])
+    expect(result.current.data.find(node => node.name === 'src')?.children?.map(node => node.name)).toEqual([
+      'index.ts'
+    ])
+
+    act(() => setShowHiddenFiles(true))
+
+    expect(result.current.data.map(node => node.name)).toEqual(['.github', 'src', '.env', 'README.md'])
+    expect(result.current.data.find(node => node.name === 'src')?.children?.map(node => node.name)).toEqual([
+      '.internal',
+      'index.ts'
+    ])
+    expect(readDir).toHaveBeenCalledTimes(2)
   })
 
   it('records rootError when readDir returns an error', async () => {

@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
@@ -897,10 +898,30 @@ def create_quick_snapshot(
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
-        if not src.exists():
+
+        # Classify src through the SAME choke point the descendants use
+        # below: raw os.stat(), not Path.exists()/is_dir()/is_file().
+        # Those pathlib methods silently swallow OSError for a specific
+        # errno set (ENOENT, ENOTDIR, EBADF, ELOOP —
+        # pathlib._IGNORED_ERRNOS) and return False. A transient
+        # EBADF/EACCES/ESTALE while stat-ing a PRESENT protected
+        # top-level file (e.g. state.db) would look identical to "doesn't
+        # exist", silently dropping it with nothing recorded and letting
+        # the keep=1 prune evict the last good snapshot (#68907 review,
+        # Finding 1). Only a genuine absence (ENOENT/ENOTDIR — most
+        # _QUICK_STATE_FILES entries are optional and won't exist on a
+        # given install) is a silent skip; anything else is recorded.
+        try:
+            top_stat = os.stat(src)
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:
+            continue
+        except OSError as exc:
+            _record_failure(rel, str(exc))
             continue
 
-        if src.is_dir():
+        if stat.S_ISDIR(top_stat.st_mode):
             # Walk the directory and record each file individually in the
             # manifest so restore can treat them uniformly.  Empty dirs are
             # skipped (nothing to snapshot).
@@ -933,6 +954,20 @@ def create_quick_snapshot(
                 except ValueError:
                     return str(path)
 
+            # Guards against scanning the same directory more than once —
+            # in particular a Windows directory junction (or a POSIX
+            # hardlink-to-directory) aliasing an ancestor, which would
+            # otherwise recurse forever, re-copying the same files under
+            # an ever-deeper path until path-length or resource exhaustion
+            # (#68907 review, Finding 2). os.path.islink() does NOT catch
+            # junctions/reparse points (they aren't POSIX symlinks), so
+            # the real identity — (st_dev, st_ino), which recent CPython
+            # populates from the NTFS file index on Windows too — is the
+            # only reliable guard. Seeded with src's own identity so a
+            # loop back to the root is caught on first sight instead of
+            # being copied once before detection.
+            visited = {(top_stat.st_dev, top_stat.st_ino)}
+
             stack = [src]
             while stack:
                 current = stack.pop()
@@ -955,19 +990,36 @@ def create_quick_snapshot(
                         # Skip heavy, regenerable per-board subtrees
                         # (scratch workspaces and task attachments can be
                         # large); we only need the board databases + their
-                        # metadata to restore a board. Pruned BEFORE
-                        # descent so an unreadable workspaces/attachments
-                        # subtree can never mark the snapshot incomplete —
-                        # nothing under it belongs in the snapshot anyway
-                        # (#68907 review, Finding 2).
+                        # metadata to restore a board. These names are
+                        # always directory roots in this codebase (see
+                        # kanban_db.py's workspaces_root() /
+                        # attachments_root()) — never plain files — so
+                        # this check is intentionally directory-only; a
+                        # FILE literally named "workspaces"/"attachments"
+                        # is not a layout this codebase produces and is
+                        # captured normally. Pruned BEFORE descent so an
+                        # unreadable workspaces/attachments subtree can
+                        # never mark the snapshot incomplete — nothing
+                        # under it belongs in the snapshot anyway (#68907
+                        # review, Finding 2).
                         if entry.name in ("workspaces", "attachments"):
                             continue
                         # Don't follow symlinked directories — matches the
                         # followlinks=False convention every other os.walk()
                         # call site in this file uses. os.path.islink()
                         # never raises (swallows OSError, returns False).
-                        if not os.path.islink(entry.path):
-                            stack.append(entry_path)
+                        if os.path.islink(entry.path):
+                            continue
+                        try:
+                            entry_stat = entry.stat()
+                        except OSError as exc:
+                            _record_failure(_rel_for(entry_path), str(exc))
+                            continue
+                        identity = (entry_stat.st_dev, entry_stat.st_ino)
+                        if identity in visited:
+                            continue
+                        visited.add(identity)
+                        stack.append(entry_path)
                         continue
 
                     try:
@@ -1001,7 +1053,10 @@ def create_quick_snapshot(
                         _record_failure(sub_rel, str(exc))
             continue
 
-        if not src.is_file():
+        if not stat.S_ISREG(top_stat.st_mode):
+            # Not a regular file (socket, fifo, device, ...) — nothing to
+            # protect here. Reuses the single os.stat() already taken
+            # above instead of a second, possibly-racy Path.is_file() call.
             continue
 
         if _too_large(src, rel):

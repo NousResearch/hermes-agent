@@ -1,5 +1,6 @@
 """Tests for hermes backup and import commands."""
 
+import errno
 import json
 import os
 import shutil
@@ -2155,6 +2156,166 @@ class TestQuickSnapshot:
         assert not prior.is_dir(), (
             "prior snapshot was retained even though the only failure was "
             "inside an excluded (never-descended) subtree"
+        )
+
+    def test_top_level_classification_failure_blocks_prune_and_is_recorded(
+        self, hermes_home, capsys
+    ):
+        """A transient classification failure on a PRESENT top-level
+        protected file (e.g. state.db) must be recorded and block the
+        keep=1 prune — not silently treated as "doesn't exist".
+
+        Path.exists()/is_dir()/is_file() swallow OSError for a specific
+        errno set (pathlib._IGNORED_ERRNOS = ENOENT, ENOTDIR, EBADF,
+        ELOOP) and return False. EBADF in particular is a real,
+        documented transient failure mode (pathlib's own source notes it
+        guards against a macOS stat() quirk) — using those methods for
+        the top-level src classification means a present file can look
+        identical to an absent one, silently dropping it from the
+        manifest with nothing recorded (#68907 review, Finding 1).
+
+        Driven through a monkeypatched os.stat (deterministic on any OS —
+        the errno is synthesized, not produced by a real syscall).
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        target = hermes_home / "state.db"
+        real_stat = backup_mod.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            if Path(path) == target:
+                raise OSError(errno.EBADF, "Bad file descriptor", str(target))
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(backup_mod.os, "stat", side_effect=fake_stat):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The classification failure is recorded ...
+        assert "failed" in meta, "top-level classification failure was not recorded"
+        assert "state.db" in meta["failed"]
+        assert "Bad file descriptor" in meta["failed"]["state.db"]
+
+        # ... state.db was never captured ...
+        assert "state.db" not in meta["files"]
+        assert not (snap_dir / "state.db").exists()
+
+        # ... but another protected file is still captured normally
+        # (success path unaffected by the unrelated failure).
+        assert "cron/jobs.json" in meta["files"]
+        assert (snap_dir / "cron" / "jobs.json").exists()
+
+        # The prior complete snapshot must survive.
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite a top-level "
+            "classification failure"
+        )
+
+        out = capsys.readouterr().out
+        assert "Snapshot INCOMPLETE" in out
+
+    def test_directory_cycle_guard_prevents_infinite_recursion(self, hermes_home):
+        """A directory that aliases an ancestor of itself — e.g. a Windows
+        junction ``pairing/loop -> pairing`` — must not cause unbounded
+        recursion. os.path.islink() does NOT recognize junctions/reparse
+        points as symlinks, so only a real-identity (st_dev, st_ino)
+        visited-set can catch the cycle (#68907 review, Finding 2).
+
+        A genuinely self-referencing os.scandir() is simulated: a synthetic
+        "loop" entry that reports pairing/'s own (st_dev, st_ino) identity
+        and whose own scandir() yields another copy of itself, forever. A
+        hard call-count ceiling raises a sentinel (non-OSError) exception
+        if ever exceeded, so a broken implementation fails LOUDLY and FAST
+        instead of hanging the test suite or recursing until a real
+        resource limit is hit.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+        (pairing_dir / "users.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+
+        real_pairing_stat = os.stat(pairing_dir)
+        loop_path = pairing_dir / "loop"
+
+        class _LoopEntry:
+            """Stands in for a junction that aliases pairing/ itself:
+            reports pairing/'s real identity, and (in the fake scandir
+            below) its own listing yields another copy of itself."""
+
+            name = "loop"
+
+            def __init__(self, path):
+                self.path = str(path)
+
+            def is_dir(self, *args, **kwargs):
+                return True
+
+            def is_file(self, *args, **kwargs):
+                return False
+
+            def stat(self, *args, **kwargs):
+                return real_pairing_stat
+
+        class _RunawayRecursion(Exception):
+            """Raised only if the traversal exceeds the ceiling below —
+            proves the cycle guard failed to terminate the recursion,
+            without ever letting the test actually hang."""
+
+        call_count = {"scandir": 0}
+        CEILING = 50  # far above what a correct guard needs (~1-2 calls)
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            call_count["scandir"] += 1
+            if call_count["scandir"] > CEILING:
+                raise _RunawayRecursion(
+                    f"os.scandir called {call_count['scandir']} times — the "
+                    "directory-identity cycle guard did not stop recursion"
+                )
+            p = Path(path)
+            if p == pairing_dir:
+                return list(real_scandir(path)) + [_LoopEntry(loop_path)]
+            if p == loop_path:
+                # The (simulated) junction target IS pairing/ again — same
+                # listing, forever, if nothing stops the recursion.
+                return list(real_scandir(pairing_dir)) + [_LoopEntry(loop_path)]
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        assert call_count["scandir"] <= CEILING, (
+            "traversal did not terminate within the safety ceiling"
+        )
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        # The real file is captured exactly once, at its real path.
+        assert "pairing/users.json" in meta["files"]
+        # The aliasing "loop" entry was never descended into.
+        assert not any(k.startswith("pairing/loop/") for k in meta["files"]), (
+            f"cycle guard failed to stop descent into the aliasing "
+            f"directory: {list(meta['files'])}"
         )
 
 # ---------------------------------------------------------------------------

@@ -572,9 +572,11 @@ def build_session_context_prompt(
             lines.append("")
             lines.append(
                 "**Platform notes:** You are running inside Slack and have access "
-                "to Slack-specific tools. You CAN search channel history, post "
-                "messages, react to messages, and perform other Slack operations "
-                "via the available Slack toolset."
+                "to Slack-specific tools this session. Consult the available Slack "
+                "tool schemas for the exact operations supported (e.g. channel "
+                "history and thread lookups, posting, reactions) — use those tools "
+                "for Slack-specific requests, and do not promise Slack actions "
+                "beyond what the loaded tools actually expose."
             )
         else:
             lines.append("")

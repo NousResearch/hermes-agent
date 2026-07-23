@@ -47,6 +47,7 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatSwapOverlay } from './chat-swap-overlay'
+import { SessionDragSwitcher } from './session-drag-switcher'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
@@ -458,7 +459,8 @@ export function ChatView({
           stalling to timeout. */}
       <PromptOverlays sessionId={activeSessionId} />
 
-      <ChatRuntimeBoundary
+      <SessionDragSwitcher>
+        <ChatRuntimeBoundary
         busy={busy}
         onCancel={haltRun}
         onEdit={onEdit}
@@ -554,6 +556,7 @@ export function ChatView({
           </Suspense>
         )}
       </ChatRuntimeBoundary>
+      </SessionDragSwitcher>
     </div>
   )
 }

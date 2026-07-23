@@ -1,6 +1,6 @@
 """Tests for WhatsApp connect() error handling.
 
-Regression tests for two bugs in WhatsAppAdapter.connect():
+Regression tests for three bugs in WhatsAppAdapter.connect():
 
 1. Uninitialized ``data`` variable: when ``resp.json()`` raised after the
    health endpoint returned HTTP 200, ``http_ready`` was set to True but
@@ -10,10 +10,15 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 2. Bridge log file handle leaked on error paths: the file was opened before
    the health-check loop but never closed when ``connect()`` returned False.
    Repeated connection failures accumulated open file descriptors.
+
+3. Windows job breakaway: the generic detached-process flags request
+   ``CREATE_BREAKAWAY_FROM_JOB``, which service-managed gateway jobs can reject
+   with ``WinError 5``. The bridge must detach without escaping the gateway job.
 """
 
 import asyncio
 import signal
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -182,6 +187,97 @@ class TestDataInitialized:
         # connect() returns True (warn-and-proceed path)
         assert result is True
         assert adapter._running is True
+
+
+# ---------------------------------------------------------------------------
+# Windows bridge process flags
+# ---------------------------------------------------------------------------
+
+class TestWindowsBridgeProcessFlags:
+    """The long-lived bridge must detach without escaping the gateway job."""
+
+    @pytest.mark.asyncio
+    async def test_uses_detach_flags_without_breakaway(self):
+        adapter = _make_adapter()
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+        mock_client_cls = _mock_aiohttp(
+            status=200,
+            json_data={"status": "connected"},
+        )
+
+        detach_flags = 0x00000200 | 0x00000008 | 0x08000000
+        with ExitStack() as stack:
+            entered_patches = [
+                stack.enter_context(common_patch)
+                for common_patch in _connect_patches(mock_proc, mock_fh, mock_client_cls)
+            ]
+            mock_popen = entered_patches[4]
+            stack.enter_context(
+                patch.object(
+                    type(adapter),
+                    "_poll_messages",
+                    new=MagicMock(return_value=MagicMock()),
+                )
+            )
+            stack.enter_context(
+                patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True)
+            )
+            mock_flags = stack.enter_context(
+                patch(
+                    "plugins.platforms.whatsapp.adapter.windows_detach_flags_without_breakaway",
+                    return_value=detach_flags,
+                )
+            )
+            result = await adapter.connect()
+
+        assert result is True
+        kwargs = mock_popen.call_args.kwargs
+        assert kwargs["creationflags"] == detach_flags
+        assert not kwargs["creationflags"] & 0x01000000
+        assert "start_new_session" not in kwargs
+        mock_flags.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_retains_start_new_session_on_posix(self):
+        adapter = _make_adapter()
+        mock_proc = MagicMock(pid=12345)
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+        mock_client_cls = _mock_aiohttp(
+            status=200,
+            json_data={"status": "connected"},
+        )
+
+        with ExitStack() as stack:
+            entered_patches = [
+                stack.enter_context(common_patch)
+                for common_patch in _connect_patches(mock_proc, mock_fh, mock_client_cls)
+            ]
+            mock_popen = entered_patches[4]
+            stack.enter_context(
+                patch.object(
+                    type(adapter),
+                    "_poll_messages",
+                    new=MagicMock(return_value=MagicMock()),
+                )
+            )
+            stack.enter_context(
+                patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False)
+            )
+            mock_flags = stack.enter_context(
+                patch(
+                    "plugins.platforms.whatsapp.adapter.windows_detach_flags_without_breakaway"
+                )
+            )
+            result = await adapter.connect()
+
+        assert result is True
+        kwargs = mock_popen.call_args.kwargs
+        assert kwargs["start_new_session"] is True
+        assert "creationflags" not in kwargs
+        mock_flags.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

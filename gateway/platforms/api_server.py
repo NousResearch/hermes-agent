@@ -46,6 +46,7 @@ import hmac
 import json
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from collections import deque
 from functools import wraps
 import logging
 import os
@@ -55,7 +56,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -685,6 +686,57 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
             "code": code,
         }
     }
+
+
+class _RunStream:
+    """Fan-out transport for one run's SSE events.
+
+    Every event entering via ``put_nowait`` gets a monotonically increasing
+    sequence number, is appended to a bounded backlog for replay, and is
+    fanned out to every attached subscriber queue. Each SSE connection owns
+    its queue, so handlers can never steal events from one another, and a
+    reconnecting client can resume from ``Last-Event-ID`` — including events
+    emitted while it was disconnected, up to the backlog window.
+
+    All methods must run on the adapter's event loop (producers reach this
+    object through ``loop.call_soon_threadsafe``), which makes ``attach``
+    atomic with respect to concurrent emissions: no event can be lost or
+    duplicated between the replay snapshot and the subscription.
+    """
+
+    BACKLOG_LIMIT = 1000
+
+    def __init__(self) -> None:
+        self.backlog: "deque[Tuple[int, Optional[Dict[str, Any]]]]" = deque(
+            maxlen=self.BACKLOG_LIMIT
+        )
+        self.subscribers: "Set[asyncio.Queue]" = set()
+        self.next_seq = 0
+        self.terminal = False
+
+    def put_nowait(self, event: Optional[Dict[str, Any]]) -> None:
+        """Sequence, retain, and fan out one event. ``None`` is the terminal
+        sentinel; anything after it is dropped."""
+        if self.terminal:
+            return
+        seq = self.next_seq
+        self.next_seq += 1
+        self.backlog.append((seq, event))
+        if event is None:
+            self.terminal = True
+        for q in list(self.subscribers):
+            q.put_nowait((seq, event))
+
+    def attach(self, last_seq: int = -1) -> "Tuple[asyncio.Queue, List[Tuple[int, Optional[Dict[str, Any]]]]]":
+        """Register a subscriber queue and return the backlog entries to
+        replay (those after ``last_seq``)."""
+        replay = [(s, e) for (s, e) in self.backlog if s > last_seq]
+        q: "asyncio.Queue[Tuple[int, Optional[Dict[str, Any]]]]" = asyncio.Queue()
+        self.subscribers.add(q)
+        return q, replay
+
+    def detach(self, q: "asyncio.Queue") -> None:
+        self.subscribers.discard(q)
 
 
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
@@ -4858,7 +4910,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        q = _RunStream()
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
@@ -5138,7 +5190,15 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events.
+
+        Each connection gets its own subscriber queue fed by fan-out, so
+        concurrent or stale handlers can never steal events from one another.
+        Events carry a monotonic ``id:`` (and a ``seq`` field in the payload);
+        on reconnect a client may pass ``Last-Event-ID`` (SSE standard) or a
+        ``last_seq`` query parameter to replay everything it missed, up to the
+        bounded backlog window.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -5153,7 +5213,17 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        q = self._run_streams[run_id]
+        stream = self._run_streams[run_id]
+
+        last_seq = -1
+        raw_last = request.headers.get("Last-Event-ID") or request.query.get("last_seq")
+        if raw_last is not None:
+            try:
+                last_seq = max(-1, int(str(raw_last).strip()))
+            except (TypeError, ValueError):
+                last_seq = -1
+
+        q, replay = stream.attach(last_seq)
         self._run_stream_subscribers.add(run_id)
 
         response = web.StreamResponse(
@@ -5166,10 +5236,28 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
+        async def _write_event(seq: int, event: Dict[str, Any]) -> None:
+            payload = dict(event)
+            payload["seq"] = seq
+            frame = f"id: {seq}\ndata: {json.dumps(payload)}\n\n"
+            await response.write(frame.encode())
+
         try:
+            if replay and last_seq >= 0 and replay[0][0] > last_seq + 1:
+                notice = f": replay truncated — oldest retained seq {replay[0][0]}\n\n"
+                await response.write(notice.encode())
+            for seq, event in replay:
+                if event is None:
+                    # Run already finished — replay ends with the sentinel.
+                    await response.write(b": stream closed\n\n")
+                    return response
+                await _write_event(seq, event)
+            if stream.terminal:
+                await response.write(b": stream closed\n\n")
+                return response
             while True:
                 try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    seq, event = await asyncio.wait_for(q.get(), timeout=30.0)
                 except asyncio.TimeoutError:
                     await response.write(b": keepalive\n\n")
                     continue
@@ -5177,17 +5265,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+                await _write_event(seq, event)
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            self._run_stream_subscribers.discard(run_id)
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            self._detach_run_stream(run_id, q)
 
         return response
 
+    def _detach_run_stream(self, run_id: str, q: "asyncio.Queue") -> None:
+        """Detach one SSE subscriber. The transport itself is retained —
+        orphaned or terminal transports are released by the TTL sweep, so a
+        reconnecting client can still replay missed events."""
+        stream = self._run_streams.get(run_id)
+        if stream is not None:
+            stream.detach(q)
+            if not stream.subscribers:
+                self._run_stream_subscribers.discard(run_id)
+        else:
+            self._run_stream_subscribers.discard(run_id)
 
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""

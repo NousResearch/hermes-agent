@@ -557,7 +557,7 @@ class TestRunLifecycleSweep:
 
                 adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
                 adapter._sweep_orphaned_runs_once(time.time())
-                before = expired_queue.qsize()
+                before = len(expired_queue.backlog)
                 stream_delta("must-not-buffer")
                 mock_agent.interrupt("finish test")
                 for _ in range(40):
@@ -565,7 +565,7 @@ class TestRunLifecycleSweep:
                         break
                     await asyncio.sleep(0.05)
 
-                assert expired_queue.qsize() == before
+                assert len(expired_queue.backlog) == before
 
     @pytest.mark.asyncio
     async def test_expired_orphan_run_state_is_reaped(self, adapter):
@@ -836,3 +836,315 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id}/events — attach/detach without losing state
+# ---------------------------------------------------------------------------
+
+
+class TestRunEventsReattach:
+    @pytest.mark.asyncio
+    async def test_reattach_after_disconnect_keeps_live_run_state(self, adapter):
+        """Disconnecting an SSE client mid-run must not drop the run transport.
+
+        The events API is designed for dashboards and thick clients that
+        attach/detach without losing state: reconnecting while the run is
+        still live must resume the stream instead of returning 404.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                # Wait until the agent is actually running.
+                await asyncio.get_running_loop().run_in_executor(
+                    None, ready.wait, 5.0
+                )
+
+                # Attach, then disconnect while the run is still live.
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                assert first.status == 200
+                first.close()
+                await asyncio.sleep(0.2)
+
+                # Reattach mid-run: the transport must have survived.
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+                assert second.status == 200
+
+                # Let the agent finish; the reattached stream must deliver it.
+                interrupted.set()
+                body = await asyncio.wait_for(second.text(), timeout=10.0)
+                assert "run.completed" in body
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_completion_retains_then_sweeps_transport(self, adapter):
+        """After completion + detach, the transport is retained for replay and
+        released by the TTL sweep once orphaned — never leaked."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                await events_resp.text()
+                await asyncio.sleep(0.2)
+
+                # Retained for post-completion replay, no longer subscribed.
+                assert run_id in adapter._run_streams
+                assert run_id not in adapter._run_stream_subscribers
+
+                # TTL sweep releases the orphaned terminal transport.
+                adapter._sweep_orphaned_runs_once(
+                    time.time() + adapter._RUN_STREAM_TTL + 1
+                )
+                assert run_id not in adapter._run_streams
+                assert run_id not in adapter._run_streams_created
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id}/events — per-subscriber delivery + sequenced replay
+# ---------------------------------------------------------------------------
+
+import json as _sse_json
+
+
+def _make_scripted_agent():
+    """Mock agent whose run can be driven step-by-step from the test.
+
+    Returns (create_side_effect, captured, ready, release). Use the returned
+    create_side_effect as adapter._create_agent's side_effect; it captures the
+    stream_delta_callback into captured. ready fires when run_conversation
+    starts; the run blocks until release is set.
+    """
+    ready = threading.Event()
+    release = threading.Event()
+    captured = {}
+    mock_agent = MagicMock()
+
+    def _create(*args, **kwargs):
+        captured["stream_delta_callback"] = kwargs.get("stream_delta_callback")
+        return mock_agent
+
+    def _run(user_message=None, conversation_history=None, task_id=None):
+        ready.set()
+        release.wait(timeout=15)
+        return {"final_response": "done"}
+
+    mock_agent.run_conversation.side_effect = _run
+    mock_agent.session_prompt_tokens = 0
+    mock_agent.session_completion_tokens = 0
+    mock_agent.session_total_tokens = 0
+    return _create, captured, ready, release
+
+
+def _parse_sse_frames(body: str):
+    """Parse raw SSE body into (seq_or_none, data_dict) for data frames."""
+    frames = []
+    for block in body.split("\n\n"):
+        seq = None
+        data = None
+        for line in block.splitlines():
+            if line.startswith("id:"):
+                try:
+                    seq = int(line[3:].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("data:"):
+                data = _sse_json.loads(line[5:].strip())
+        if data is not None:
+            frames.append((seq, data))
+    return frames
+
+
+async def _read_one_frame(resp):
+    """Read SSE lines until a blank line ends the frame; return raw text."""
+    lines = []
+    while True:
+        line = await resp.content.readline()
+        if not line:
+            break
+        lines.append(line.decode())
+        if line.strip() == b"":
+            break
+    return "".join(lines)
+
+
+class TestRunEventsReplay:
+    @pytest.mark.asyncio
+    async def test_reconnect_replays_events_emitted_while_disconnected(self, adapter):
+        """teknium1's bar: a reconnecting client must receive the exact delta
+        emitted after the first client disconnected, then the terminal event,
+        and must not re-receive already-seen events."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            create, captured, ready, release = _make_scripted_agent()
+            with patch.object(adapter, "_create_agent", side_effect=create):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                await asyncio.get_running_loop().run_in_executor(None, ready.wait, 5.0)
+
+                # First client attaches and reads the first delta.
+                captured["stream_delta_callback"]("one")
+                await asyncio.sleep(0.2)
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                assert first.status == 200
+                frame = await asyncio.wait_for(_read_one_frame(first), timeout=5.0)
+                assert "one" in frame
+                first_seq = _parse_sse_frames(frame)[0][0]
+                assert first_seq is not None, "SSE frames must carry a sequence id"
+                first.close()
+                await asyncio.sleep(0.2)
+
+                # Delta emitted while NO client is attached.
+                captured["stream_delta_callback"]("two")
+                await asyncio.sleep(0.2)
+                release.set()
+                await asyncio.sleep(0.3)
+
+                # Reconnect resuming after the last seen sequence.
+                second = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={"Last-Event-ID": str(first_seq)},
+                )
+                assert second.status == 200
+                body = await asyncio.wait_for(second.text(), timeout=10.0)
+                frames = _parse_sse_frames(body)
+                kinds = [d.get("event") for _, d in frames]
+                deltas = [d.get("delta") for _, d in frames if d.get("event") == "message.delta"]
+                assert deltas == ["two"], f"must replay exactly the missed delta, got {deltas}"
+                assert "one" not in [d.get("delta") for _, d in frames]
+                assert kinds[-1] == "run.completed"
+                seqs = [s for s, _ in frames]
+                assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+                assert all(s > first_seq for s in seqs)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_subscribers_each_receive_all_events(self, adapter):
+        """Per-subscriber delivery: two attached clients must each receive the
+        full stream — neither may steal events from the other's FIFO."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            create, captured, ready, release = _make_scripted_agent()
+            with patch.object(adapter, "_create_agent", side_effect=create):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await asyncio.get_running_loop().run_in_executor(None, ready.wait, 5.0)
+
+                client_a = asyncio.ensure_future(cli.get(f"/v1/runs/{run_id}/events"))
+                client_b = asyncio.ensure_future(cli.get(f"/v1/runs/{run_id}/events"))
+                await asyncio.sleep(0.3)
+
+                captured["stream_delta_callback"]("shared-delta")
+                await asyncio.sleep(0.2)
+                release.set()
+
+                resp_a = await asyncio.wait_for(client_a, timeout=10.0)
+                resp_b = await asyncio.wait_for(client_b, timeout=10.0)
+                body_a = await asyncio.wait_for(resp_a.text(), timeout=10.0)
+                body_b = await asyncio.wait_for(resp_b.text(), timeout=10.0)
+                for body in (body_a, body_b):
+                    frames = _parse_sse_frames(body)
+                    deltas = [d.get("delta") for _, d in frames if d.get("event") == "message.delta"]
+                    assert "shared-delta" in deltas
+                    assert frames[-1][1].get("event") == "run.completed"
+
+    @pytest.mark.asyncio
+    async def test_reattach_after_completion_replays_terminal_event(self, adapter):
+        """Transport must outlive completion: a client that disconnects before
+        the terminal event can reconnect afterwards and replay it."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            create, captured, ready, release = _make_scripted_agent()
+            with patch.object(adapter, "_create_agent", side_effect=create):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await asyncio.get_running_loop().run_in_executor(None, ready.wait, 5.0)
+
+                captured["stream_delta_callback"]("seen")
+                await asyncio.sleep(0.2)
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                frame = await asyncio.wait_for(_read_one_frame(first), timeout=5.0)
+                last_seq = _parse_sse_frames(frame)[0][0]
+                first.close()
+                await asyncio.sleep(0.2)
+
+                release.set()  # run completes with no client attached
+                await asyncio.sleep(0.5)
+
+                second = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={"Last-Event-ID": str(last_seq)},
+                )
+                assert second.status == 200
+                body = await asyncio.wait_for(second.text(), timeout=10.0)
+                frames = _parse_sse_frames(body)
+                assert [d.get("event") for _, d in frames] == ["run.completed"]
+
+    @pytest.mark.asyncio
+    async def test_attach_after_completion_without_last_event_id_replays_all(self, adapter):
+        """A fresh client attaching after completion gets the full backlog."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            create, captured, ready, release = _make_scripted_agent()
+            with patch.object(adapter, "_create_agent", side_effect=create):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await asyncio.get_running_loop().run_in_executor(None, ready.wait, 5.0)
+
+                captured["stream_delta_callback"]("early")
+                await asyncio.sleep(0.2)
+                release.set()
+                await asyncio.sleep(0.5)
+
+                resp_events = await cli.get(f"/v1/runs/{run_id}/events")
+                assert resp_events.status == 200
+                body = await asyncio.wait_for(resp_events.text(), timeout=10.0)
+                frames = _parse_sse_frames(body)
+                deltas = [d.get("delta") for _, d in frames if d.get("event") == "message.delta"]
+                assert deltas == ["early"]
+                assert frames[-1][1].get("event") == "run.completed"
+
+
+def test_run_stream_backlog_is_bounded():
+    """Backlog must be bounded; replay returns the retained window only."""
+    from gateway.platforms.api_server import _RunStream
+
+    stream = _RunStream()
+    for i in range(_RunStream.BACKLOG_LIMIT + 500):
+        stream.put_nowait({"event": "message.delta", "delta": str(i)})
+    q, replay = stream.attach(last_seq=-1)
+    assert len(replay) == _RunStream.BACKLOG_LIMIT
+    assert replay[0][0] == 500  # oldest retained sequence
+    stream.detach(q)
+
+
+def test_run_stream_ignores_events_after_sentinel():
+    """Once the terminal sentinel lands, later emissions are dropped."""
+    from gateway.platforms.api_server import _RunStream
+
+    stream = _RunStream()
+    stream.put_nowait({"event": "run.completed"})
+    stream.put_nowait(None)
+    assert stream.terminal
+    stream.put_nowait({"event": "message.delta", "delta": "late"})
+    q, replay = stream.attach(last_seq=-1)
+    assert [d.get("event") for _, d in replay if d] == ["run.completed"]
+    assert replay[-1][1] is None
+    stream.detach(q)

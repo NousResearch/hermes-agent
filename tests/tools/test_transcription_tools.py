@@ -919,6 +919,17 @@ class TestTranscribeAudioDispatch:
 
         assert mock_groq.call_args[0][1] == DEFAULT_GROQ_STT_MODEL
 
+    def test_config_groq_model_used(self, sample_ogg):
+        config = {"groq": {"model": "whisper-large-v3"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._transcribe_groq",
+                   return_value={"success": True, "transcript": "hi"}) as mock_groq:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_groq.call_args[0][1] == "whisper-large-v3"
+
     def test_config_local_model_used(self, sample_ogg):
         config = {"local": {"model": "small"}}
         with patch("tools.transcription_tools._load_stt_config", return_value=config), \

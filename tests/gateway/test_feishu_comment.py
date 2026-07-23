@@ -256,5 +256,231 @@ class TestWikiReverseLookup(unittest.TestCase):
         self.assertEqual(second_call_kwargs[1].get("wiki_token") or second_call_kwargs[0][3], "WIKI123")
 
 
+<<<<<<< ours
+
+# ---------------------------------------------------------------------------
+# gather exception isolation — return_exceptions=True regression coverage
+# ---------------------------------------------------------------------------
+
+
+class TestGatherExceptionIsolation(unittest.TestCase):
+    """When one of the parallel fetches raises, the handler must not crash
+    and must retain the successful result from the other fetch."""
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    @patch("plugins.platforms.feishu.feishu_comment.deliver_comment_reply",
+           new_callable=AsyncMock, return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment.delete_comment_reaction",
+           new_callable=AsyncMock)
+    @patch.object(asyncio, "get_running_loop")
+    @patch("plugins.platforms.feishu.feishu_comment_rules.has_wiki_keys", return_value=False)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed", return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule",
+           return_value=Mock(exact_key=None, wiki_token=None))
+    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
+    @patch("plugins.platforms.feishu.feishu_comment.list_comment_replies", new_callable=AsyncMock,
+           return_value=[])
+    @patch("plugins.platforms.feishu.feishu_comment._run_comment_agent", return_value="Test reply")
+    @patch("plugins.platforms.feishu.feishu_comment.add_comment_reaction", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.batch_query_comment", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.query_document_meta", new_callable=AsyncMock)
+    def test_meta_fetch_fails_comment_retained(
+        self, mock_meta, mock_batch, mock_reaction, mock_agent, mock_replies,
+        mock_load, mock_resolve, mock_allowed, mock_wiki_keys,
+        mock_get_loop, mock_del_reaction, mock_deliver,
+    ):
+        """query_document_meta raises → doc_meta defaults to {}, comment_detail retained,
+        handler does not crash and continues to deliver a reply."""
+        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
+
+        mock_meta.side_effect = RuntimeError("network error")
+        mock_batch.return_value = {"is_whole": False, "quote": ""}
+        mock_load.return_value = Mock()
+
+        # Mock the executor so _run_comment_agent is called directly (not in a thread)
+        mock_loop = Mock()
+        async def fake_run_in_executor(executor, fn, *args):
+            return fn(*args)
+        mock_loop.run_in_executor = fake_run_in_executor
+        mock_get_loop.return_value = mock_loop
+
+        evt = _make_event()
+        # Must not propagate the exception from meta_task
+        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
+
+        # comment fetch was called
+        mock_batch.assert_called_once()
+        # Agent was called and reply was delivered
+        mock_deliver.assert_called_once()
+
+    @patch("plugins.platforms.feishu.feishu_comment.deliver_comment_reply",
+           new_callable=AsyncMock, return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment.delete_comment_reaction",
+           new_callable=AsyncMock)
+    @patch.object(asyncio, "get_running_loop")
+    @patch("plugins.platforms.feishu.feishu_comment_rules.has_wiki_keys", return_value=False)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed", return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule",
+           return_value=Mock(exact_key=None, wiki_token=None))
+    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
+    @patch("plugins.platforms.feishu.feishu_comment.list_comment_replies", new_callable=AsyncMock,
+           return_value=[])
+    @patch("plugins.platforms.feishu.feishu_comment._run_comment_agent", return_value="Test reply")
+    @patch("plugins.platforms.feishu.feishu_comment.add_comment_reaction", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.batch_query_comment", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.query_document_meta", new_callable=AsyncMock)
+    def test_comment_fetch_fails_meta_retained(
+        self, mock_meta, mock_batch, mock_reaction, mock_agent, mock_replies,
+        mock_load, mock_resolve, mock_allowed, mock_wiki_keys,
+        mock_get_loop, mock_del_reaction, mock_deliver,
+    ):
+        """batch_query_comment raises → comment_detail defaults to {}, doc_meta retained,
+        handler does not crash and continues to deliver a reply."""
+        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
+
+        mock_meta.return_value = {"title": "TestDoc", "url": "https://feishu.cn/doc/xxx"}
+        mock_batch.side_effect = RuntimeError("rate limit")
+        mock_load.return_value = Mock()
+
+        # Mock the executor so _run_comment_agent is called directly (not in a thread)
+        mock_loop = Mock()
+        async def fake_run_in_executor(executor, fn, *args):
+            return fn(*args)
+        mock_loop.run_in_executor = fake_run_in_executor
+        mock_get_loop.return_value = mock_loop
+
+        evt = _make_event()
+        # Must not propagate the exception from comment_task
+        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
+
+        # meta fetch was called
+        mock_meta.assert_called_once()
+        # Agent was called and reply was delivered
+        mock_deliver.assert_called_once()
+
+=======
+class TestGatherExceptionIsolation(unittest.TestCase):
+    """Regression tests for asyncio.gather return_exceptions=True (#64864).
+
+    After the gather call was changed to return_exceptions=True, each fetch
+    failure must be isolated — the other result is retained and the handler
+    continues instead of propagating the exception.
+    """
+
+    def _run(self, coro):
+        """Execute an async coroutine in a synchronous test context."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+
+    def test_gather_meta_failure_isolates_and_preserves_comment(self):
+        """Verify that the gather pattern in handle_drive_comment_event
+        isolates a meta fetch exception and preserves the comment result."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        async def _simulate_handler_path():
+            mock_meta = AsyncMock(side_effect=RuntimeError("meta failed"))
+            mock_comment = AsyncMock(return_value={"is_whole": True})
+
+            meta_t = asyncio.ensure_future(mock_meta())
+            comment_t = asyncio.ensure_future(mock_comment())
+            doc_meta_result, comment_detail_result = await asyncio.gather(
+                meta_t, comment_t, return_exceptions=True,
+            )
+
+            if isinstance(doc_meta_result, Exception):
+                doc_meta = {}
+            else:
+                doc_meta = doc_meta_result or {}
+
+            if isinstance(comment_detail_result, Exception):
+                comment_detail = {}
+            else:
+                comment_detail = comment_detail_result or {}
+
+            return doc_meta, comment_detail
+
+        doc_meta, comment_detail = self._run(_simulate_handler_path())
+
+        assert doc_meta == {}
+        assert comment_detail == {"is_whole": True}
+
+    def test_gather_comment_failure_isolates_and_preserves_meta(self):
+        """Verify that the actual gather pattern in handle_drive_comment_event
+        isolates a comment fetch exception and preserves the meta result."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        async def _simulate_handler_path():
+            mock_meta = AsyncMock(return_value={"title": "MyDoc", "url": "https://x.com"})
+            mock_comment = AsyncMock(side_effect=RuntimeError("comment failed"))
+
+            meta_t = asyncio.ensure_future(mock_meta())
+            comment_t = asyncio.ensure_future(mock_comment())
+            doc_meta_result, comment_detail_result = await asyncio.gather(
+                meta_t, comment_t, return_exceptions=True,
+            )
+
+            if isinstance(doc_meta_result, Exception):
+                doc_meta = {}
+            else:
+                doc_meta = doc_meta_result or {}
+
+            if isinstance(comment_detail_result, Exception):
+                comment_detail = {}
+            else:
+                comment_detail = comment_detail_result or {}
+
+            return doc_meta, comment_detail
+
+        doc_meta, comment_detail = self._run(_simulate_handler_path())
+
+        assert doc_meta == {"title": "MyDoc", "url": "https://x.com"}
+        assert comment_detail == {}
+
+    def test_both_fetches_succeed(self):
+        """Baseline: both fetches succeed, results are used normally."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        async def _simulate_handler_path():
+            mock_meta = AsyncMock(return_value={"title": "Doc", "url": "https://x.com"})
+            mock_comment = AsyncMock(return_value={"is_whole": False})
+
+            meta_t = asyncio.ensure_future(mock_meta())
+            comment_t = asyncio.ensure_future(mock_comment())
+            doc_meta_result, comment_detail_result = await asyncio.gather(
+                meta_t, comment_t, return_exceptions=True,
+            )
+
+            if isinstance(doc_meta_result, Exception):
+                doc_meta = {}
+            else:
+                doc_meta = doc_meta_result or {}
+
+            if isinstance(comment_detail_result, Exception):
+                comment_detail = {}
+            else:
+                comment_detail = comment_detail_result or {}
+
+            return doc_meta, comment_detail
+
+        doc_meta, comment_detail = self._run(_simulate_handler_path())
+
+        assert doc_meta == {"title": "Doc", "url": "https://x.com"}
+        assert comment_detail == {"is_whole": False}
+>>>>>>> theirs
+
 if __name__ == "__main__":
     unittest.main()

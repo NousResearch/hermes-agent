@@ -198,7 +198,7 @@ async def _lifespan(app: "FastAPI"):
     # and Defender real-time scans that can stall the event loop for 15-30s.
     # Running in an executor means the cost is paid in a worker thread while
     # the server socket is already open and accepting probes.
-    asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    asyncio.get_running_loop().run_in_executor(None, _warm_gateway_module)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -10545,7 +10545,7 @@ async def _start_device_code_flow(
                     code_challenge=challenge,
                     state=state,
                 )
-        device_data = await asyncio.get_event_loop().run_in_executor(
+        device_data = await asyncio.get_running_loop().run_in_executor(
             None, _do_minimax_request
         )
         sid, sess = _new_oauth_session("minimax-oauth", "device_code", profile=profile)

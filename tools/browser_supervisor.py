@@ -341,6 +341,9 @@ class CDPSupervisor:
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
+        # Track fire-and-forget dialog tasks so the GC doesn't destroy them
+        # mid-flight (produces "Task was destroyed but it is pending!" warnings).
+        self._dialog_tasks: set[asyncio.Task] = set()
         # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
 
@@ -918,17 +921,21 @@ class CDPSupervisor:
             # re-archive it as "remote".
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._auto_handle_dialog(dialog, accept=False, prompt_text="")
             )
+            self._dialog_tasks.add(task)
+            task.add_done_callback(self._dialog_tasks.discard)
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._auto_handle_dialog(
                     dialog, accept=True, prompt_text=dialog.default_prompt
                 )
             )
+            self._dialog_tasks.add(task)
+            task.add_done_callback(self._dialog_tasks.discard)
         else:
             # must_respond → add to pending and arm watchdog.
             with self._state_lock:
@@ -1138,17 +1145,21 @@ class CDPSupervisor:
         if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._fulfill_bridge_request(dialog, accept=False, prompt_text="")
             )
+            self._dialog_tasks.add(task)
+            task.add_done_callback(self._dialog_tasks.discard)
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._fulfill_bridge_request(
                     dialog, accept=True, prompt_text=default_prompt
                 )
             )
+            self._dialog_tasks.add(task)
+            task.add_done_callback(self._dialog_tasks.discard)
         else:
             # must_respond — add to pending + arm watchdog.
             with self._state_lock:

@@ -1206,7 +1206,27 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             ]
             
             # Run all tasks concurrently (semaphore limits actual concurrency)
-            await asyncio.gather(*tasks)
+            gather_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, r in enumerate(gather_results):
+                if isinstance(r, BaseException):
+                    # KeyboardInterrupt/SystemExit must propagate — they are not
+                    # recoverable and the caller expects the process to terminate.
+                    if isinstance(r, (KeyboardInterrupt, SystemExit)):
+                        raise r
+                    # For other exceptions, the process_single handler already
+                    # logged the error and populated results[file_path][entry_idx]
+                    # with the original entry (or None on timeout). The exception
+                    # here means something escaped that handler's except block,
+                    # so we log and preserve the original entry to avoid data loss.
+                    fp, idx, orig_entry = all_entries[i]
+                    self.logger.error(
+                        "Trajectory processing task failed for %s:%s: %s",
+                        fp, idx, r,
+                    )
+                    # Preserve original entry if not already populated
+                    if idx not in results[fp]:
+                        results[fp][idx] = (orig_entry, TrajectoryMetrics())
+                        self.aggregate_metrics.trajectories_failed += 1
             
             # Remove status task
             progress.remove_task(status_task)

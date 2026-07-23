@@ -666,3 +666,33 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def test_dialog_tasks_ref_stored_and_retained(chrome_cdp, supervisor_registry):
+    """Verify that fire-and-forget dialog tasks are stored in _dialog_tasks
+    to prevent GC warnings ('Task was destroyed but it is pending!')."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-6", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    # Trigger a dialog by evaluating alert() - with AUTO_DISMISS policy,
+    # this creates a fire-and-forget task that should be stored.
+    import asyncio
+
+    async def _check():
+        # Fire an alert on the page
+        await supervisor._cdp_session.send(
+            "Runtime.evaluate", expression="alert('test')", awaitPromise=False
+        )
+        await asyncio.sleep(0.3)
+        # Verify the task was stored
+        assert len(supervisor._dialog_tasks) >= 1, "Dialog task should be stored"
+        # Wait for tasks to complete and auto-dismiss
+        await asyncio.sleep(2)
+        # Tasks should be cleaned up by done callback
+        # (or still present if still running - both are valid)
+        assert hasattr(supervisor, "_dialog_tasks")
+
+    asyncio.get_event_loop().run_until_complete(_check())

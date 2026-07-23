@@ -2201,9 +2201,54 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
+def _resolve_cron_interpreter(interpreter: Optional[str]) -> tuple[bool, str, str]:
+    """Resolve and validate a cron job's configured Python interpreter.
+
+    Args:
+        interpreter: Raw ``interpreter`` field from the job record (may be a
+            ``~``-prefixed path). ``None``/empty means "use Hermes Python".
+
+    Returns:
+        ``(ok, python_exe, message)``. When ``ok`` is True, ``python_exe`` is
+        the absolute path to invoke and ``message`` is empty. When ``ok`` is
+        False, ``python_exe`` is empty and ``message`` explains the failure so
+        the caller can surface it as a script-run error.
+    """
+    if not interpreter or not str(interpreter).strip():
+        return True, sys.executable, ""
+
+    raw = str(interpreter).strip()
+    resolved = Path(raw).expanduser()
+    # Bare names like ``python3`` are rejected: they are not stable across PATH
+    # changes and would silently pick up a different interpreter after a
+    # profile/env change. Require an absolute or ``~``-prefixed path.
+    if not resolved.is_absolute():
+        return (
+            False,
+            "",
+            f"Interpreter must be an absolute or ~-prefixed path (got {raw!r}). "
+            "Bare names like 'python3' are not stable across PATH changes.",
+        )
+    if not resolved.exists():
+        return False, "", f"Interpreter not found: {resolved}"
+    if not resolved.is_file():
+        return False, "", f"Interpreter path is not a file: {resolved}"
+    # On POSIX the interpreter must be executable. Skipped on Windows, where
+    # the executable bit is not meaningful and the launcher re-execs anyway.
+    if sys.platform != "win32":
+        try:
+            if not (resolved.stat().st_mode & 0o111):
+                return False, "", f"Interpreter is not executable: {resolved}"
+        except OSError as exc:
+            return False, "", f"Interpreter check failed for {resolved}: {exc}"
+
+    return True, str(resolved), ""
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
+    interpreter: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2216,8 +2261,9 @@ def _run_job_script(
 
     * ``.sh`` / ``.bash`` — run with ``/bin/bash``
     * anything else — run with the current Python interpreter
-      (``sys.executable``), preserving the original behaviour for
-      Python-based pre-check and data-collection scripts.
+      (``sys.executable``), or — when ``interpreter`` is set — the
+      configured Python executable.  Preserving the original behaviour
+      for Python-based pre-check and data-collection scripts.
 
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
@@ -2236,6 +2282,10 @@ def _run_job_script(
             mutated, avoiding the global-side-effect bug where a cron
             job's ``os.chdir()`` leaks into concurrent gateway sessions
             (#69396).
+        interpreter: Optional Python interpreter for the Python script branch.
+            An absolute or ``~``-prefixed path to a user-managed venv's
+            ``python``. Ignored for ``.sh`` / ``.bash`` scripts. ``None``/empty
+            keeps the default (``sys.executable``). Validated at run time.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2272,6 +2322,8 @@ def _run_job_script(
     # everything else.  We deliberately do NOT honour the file's own
     # shebang: the scripts dir is trusted, but keeping the interpreter
     # choice explicit here keeps the allowed surface small and auditable.
+    # A configured ``interpreter`` overrides the default Python only for the
+    # Python branch — bash always wins for shell scripts.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
         # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
@@ -2291,7 +2343,17 @@ def _run_job_script(
         argv = [_bash, str(path)]
         env_overlay: dict[str, str] = {}
     else:
-        python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
+        # Resolve the configured interpreter (or fall back to Hermes' Python).
+        # Validated here, at run time, so a missing/moved venv produces a clear
+        # script failure that flows through normal cron delivery — rather than
+        # silently picking up a different interpreter from PATH.
+        ok, python_base, err = _resolve_cron_interpreter(interpreter)
+        if not ok:
+            return False, err
+        # Still pass the selected Python through the Windows invocation helper
+        # so output capture and no-window behaviour stay intact (uv launcher
+        # bypass, pythonw→python sibling, PYTHONPATH overlay).
+        python_exe, env_overlay = _windows_cron_python_invocation(python_base)
         argv = [python_exe, str(path)]
 
     try:
@@ -2363,7 +2425,11 @@ def _run_job_script_with_claim_heartbeat(
     The claim owner is captured from the dispatched job and never re-read from
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
+
+    The job's configured ``interpreter`` is forwarded to ``_run_job_script`` on
+    every internal call path so the override survives the heartbeat wrapper.
     """
+    interpreter = job.get("interpreter")
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2372,7 +2438,9 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(
+            script_path, workdir=workdir, interpreter=interpreter
+        )
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2403,10 +2471,14 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(
+            script_path, workdir=workdir, interpreter=interpreter
+        )
 
     try:
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(
+            script_path, workdir=workdir, interpreter=interpreter
+        )
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2467,7 +2539,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(
+                script_path, interpreter=job.get("interpreter")
+            )
         if success:
             if script_output:
                 prompt = (

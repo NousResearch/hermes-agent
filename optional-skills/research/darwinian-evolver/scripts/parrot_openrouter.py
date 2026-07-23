@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import jinja2
+from jinja2.sandbox import SandboxedEnvironment
 from openai import OpenAI
 
 # Vendored problem types from upstream (AGPL — only run via subprocess in production)
@@ -33,6 +34,19 @@ from darwinian_evolver.problem import Organism
 from darwinian_evolver.problem import Problem
 
 DEFAULT_MODEL = os.environ.get("EVOLVER_MODEL", "openai/gpt-4o-mini")
+
+# Prompt templates rendered here come from LLM output (the mutator asks the model
+# to propose a new prompt template and stores it on the organism), so the
+# template *source* is untrusted. Rendering untrusted source with the default
+# ``jinja2.Template`` allows server-side template injection — e.g.
+# ``{{ ''.__class__.__mro__[1].__subclasses__() }}`` reaches arbitrary Python
+# objects and, from there, code execution. Render through a SandboxedEnvironment
+# instead, which blocks access to unsafe attributes/builtins while still
+# evaluating ordinary expressions (so a legitimate ``{{ phrase }}`` template
+# keeps working). Autoescape is intentionally left off: these templates build a
+# plaintext prompt for an LLM (not HTML), and the evolver compares the model's
+# echo against the exact phrase, so HTML-escaping would corrupt the output.
+_JINJA_SANDBOX = SandboxedEnvironment()
 
 
 def _client() -> OpenAI:
@@ -62,7 +76,13 @@ class ParrotOrganism(Organism):
 
     def run(self, phrase: str) -> str:
         try:
-            prompt = jinja2.Template(self.prompt_template).render(phrase=phrase)
+            # self.prompt_template is LLM-proposed (untrusted source) — render it
+            # in the sandbox. SecurityError subclasses TemplateError, so a
+            # blocked injection attempt is caught here and the organism simply
+            # scores low instead of executing attacker-controlled code.
+            prompt = _JINJA_SANDBOX.from_string(self.prompt_template).render(
+                phrase=phrase
+            )
         except jinja2.exceptions.TemplateError as e:
             return f"Error rendering prompt: {e}"
         if not prompt:
@@ -104,7 +124,10 @@ template in the LAST triple-backtick block of your response.
         learning_log_entries: list[LearningLogEntry],
     ) -> list[ParrotOrganism]:
         fc = failure_cases[0]
-        prompt = jinja2.Template(self.IMPROVEMENT_PROMPT_TEMPLATE).render(
+        # IMPROVEMENT_PROMPT_TEMPLATE is a trusted constant, but it interpolates
+        # model-derived values (organism.prompt_template, fc.response); render in
+        # the sandbox too for consistency and defense in depth.
+        prompt = _JINJA_SANDBOX.from_string(self.IMPROVEMENT_PROMPT_TEMPLATE).render(
             organism=organism, failure_case=fc
         )
         try:

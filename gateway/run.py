@@ -4228,6 +4228,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
+        # Platform-based default model routing (config.platform_models).
+        # Only applies when there is no /model session override — the user's
+        # explicit /model command always wins.  Reads platform_models.<platform>
+        # from config; resolves a custom_providers name (e.g. "bailian") via
+        # resolve_runtime_provider("custom:bailian") which handles env-var
+        # expansion and credential lookup.  Silent no-op if field missing.
+        platform_runtime = None
+        platform_model_override = None
+        if not override and resolved_session_key:
+            try:
+                cfg = user_config if user_config is not None else _load_gateway_config()
+                pm = cfg.get("platform_models") if isinstance(cfg, dict) else None
+                parsed = _parse_session_key(resolved_session_key) if pm else None
+                platform = parsed.get("platform") if parsed else None
+                entry = pm.get(platform) if (isinstance(pm, dict) and platform) else None
+                if isinstance(entry, dict):
+                    prov_name = str(entry.get("provider") or "").strip()
+                    mdl = str(entry.get("model") or "").strip()
+                    if prov_name:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        requested = prov_name if prov_name.startswith("custom:") else f"custom:{prov_name}"
+                        platform_runtime = resolve_runtime_provider(requested=requested)
+                        platform_model_override = mdl or platform_runtime.get("model")
+                        logger.debug(
+                            "Platform model routing: platform=%s provider=%s model=%s",
+                            platform, requested, platform_model_override,
+                        )
+            except Exception as _pm_exc:
+                logger.debug("platform_models routing skipped: %s", _pm_exc)
+                platform_runtime = None
+
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
@@ -4273,6 +4304,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+        elif platform_runtime:
+            # Apply platform default (provider/api_key/base_url/api_mode + model).
+            for _k in ("provider", "api_key", "base_url", "api_mode"):
+                _v = platform_runtime.get(_k)
+                if _v is not None:
+                    runtime_kwargs[_k] = _v
+            if platform_model_override:
+                model = platform_model_override
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),

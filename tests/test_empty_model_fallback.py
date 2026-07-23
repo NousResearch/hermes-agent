@@ -221,6 +221,160 @@ class TestGatewayEmptyModelFallback:
         assert model == ""
 
 
+class TestPlatformModelsRouting:
+    """Test config.platform_models — per-platform default model/provider routing."""
+
+    def test_platform_models_routes_to_correct_provider_and_model(self):
+        """When platform_models matches the session platform, use that provider+model."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "platform_models": {
+                "weixin": {"provider": "qwen", "model": "qwen3.6-plus"},
+            },
+        }
+
+        fake_runtime = {
+            "provider": "custom:qwen",
+            "api_key": "qwen-key",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_mode": "chat_completions",
+            "model": "qwen3.6-plus",
+        }
+
+        with patch(
+            "gateway.run._resolve_gateway_model", return_value="gpt-5.4"
+        ), patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"provider": "openai-codex"},
+        ), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                session_key="agent:main:weixin:dm:u1",
+                user_config=cfg,
+            )
+
+        assert model == "qwen3.6-plus"
+        assert kwargs["provider"] == "custom:qwen"
+        assert kwargs["api_key"] == "qwen-key"
+        assert kwargs["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert kwargs["api_mode"] == "chat_completions"
+
+    def test_session_override_wins_over_platform_models(self):
+        """Session /model override takes precedence over platform_models."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {
+            "agent:main:weixin:dm:u1": {
+                "model": "override-model",
+                "provider": "override-prov",
+                "api_key": "override-key",
+            }
+        }
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "platform_models": {
+                "weixin": {"provider": "qwen", "model": "qwen3.6-plus"},
+            },
+        }
+
+        with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                session_key="agent:main:weixin:dm:u1",
+                user_config=cfg,
+            )
+
+        # Session override should win — platform_models ignored
+        assert model == "override-model"
+        assert kwargs["provider"] == "override-prov"
+        assert kwargs["api_key"] == "override-key"
+
+    def test_platform_models_missing_key_is_silent_noop(self):
+        """When session platform isn't in platform_models, fall through gracefully."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "platform_models": {
+                "weixin": {"provider": "qwen", "model": "qwen3.6-plus"},
+            },
+        }
+
+        with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"provider": "openai-codex"},
+        ):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                session_key="agent:main:dingtalk:dm:u1",
+                user_config=cfg,
+            )
+
+        # Should fall through to global default — no error
+        assert model == "gpt-5.4"
+        assert kwargs["provider"] == "openai-codex"
+
+    def test_no_platform_models_section_is_noop(self):
+        """When config has no platform_models key, behave as before."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        cfg = {"model": {"default": "gpt-5.4"}}
+
+        with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"provider": "openai-codex"},
+        ):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                session_key="agent:main:weixin:dm:u1",
+                user_config=cfg,
+            )
+
+        assert model == "gpt-5.4"
+
+    def test_platform_models_resolution_failure_is_caught(self):
+        """If resolve_runtime_provider explodes, the block degrades silently."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "platform_models": {
+                "weixin": {"provider": "nonexistent-prov", "model": "should-not-matter"},
+            },
+        }
+
+        with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"provider": "openai-codex"},
+        ), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=RuntimeError("simulated credential failure"),
+        ):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                session_key="agent:main:weixin:dm:u1",
+                user_config=cfg,
+            )
+
+        # Exception caught — falls through to global default
+        assert model == "gpt-5.4"
+        assert kwargs["provider"] == "openai-codex"
+
+
 class TestResolveGatewayModel:
     """Test _resolve_gateway_model reads model from config correctly."""
 

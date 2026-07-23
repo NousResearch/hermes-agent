@@ -46,6 +46,13 @@ TOOL_CALL_NAME = "tool_call"
 
 BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
 
+# ``send_message`` is not a core tool because it is an explicit opt-in, but
+# once an operator grants that outbound side-effect capability it must remain
+# visible to the model rather than being hidden behind the generic tool-search
+# bridge. This preserves the direct-call safety posture it had before the
+# toolset became default-off.
+_ALWAYS_VISIBLE_BUILTIN_TOOLS = frozenset({"send_message"})
+
 # When estimating tokens from char count without a real tokenizer, this is
 # the cheap rule of thumb that's stable across providers. Roughly 4 chars
 # per token for English+JSON. Underestimating leads to false negatives
@@ -169,6 +176,8 @@ def is_deferrable_tool_name(name: str) -> bool:
     against accidental shadowing).
     """
     if name in BRIDGE_TOOL_NAMES:
+        return False
+    if name in _ALWAYS_VISIBLE_BUILTIN_TOOLS:
         return False
     if name in _core_tool_names():
         return False

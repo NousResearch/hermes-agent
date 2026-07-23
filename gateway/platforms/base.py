@@ -4776,7 +4776,9 @@ class BasePlatformAdapter(ABC):
             # condition fix — issue #18912).  Previously the send happened
             # after cancel_session_processing, which could silently drop the
             # "/new" confirmation when an agent was actively running.
-            if _text:
+            if _text and not bool(
+                event.metadata.get("suppress_command_response", False)
+            ):
                 logger.info(
                     "[%s] Sending command '/%s' response (%d chars) to %s",
                     self.name,

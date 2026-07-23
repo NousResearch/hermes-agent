@@ -101,6 +101,20 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_stop_can_suppress_response_for_interactive_controls(self):
+        """Card controls may stop a run without adding a second chat message."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        event = _make_event("/stop")
+        event.metadata["suppress_command_response"] = True
+
+        await adapter.handle_message(event)
+
+        assert sk not in adapter._pending_messages
+        assert adapter.sent_responses == []
+
+    @pytest.mark.asyncio
     async def test_new_bypasses_guard(self):
         """/new must be dispatched directly, not queued."""
         adapter = _make_adapter()

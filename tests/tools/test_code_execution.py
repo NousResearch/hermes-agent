@@ -861,26 +861,38 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("all imports ok", result["output"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_empty_enabled_tools_uses_all(self):
-        """When enabled_tools is [] (empty), all sandbox tools should be available."""
+    def test_empty_enabled_tools_grants_no_tools(self):
+        """When enabled_tools is [] (an explicit empty scope), the sandbox must
+        expose NO tools — an empty allow-list means "deny", not "allow all".
+
+        Only ``enabled_tools is None`` (the unscoped legacy case) falls back to
+        the full SANDBOX_ALLOWED_TOOLS set.
+        """
         code = (
-            "from hermes_tools import terminal, web_search\n"
-            "print('imports ok')\n"
+            "import hermes_tools as ht\n"
+            "print('terminal:', hasattr(ht, 'terminal'))\n"
+            "print('web_search:', hasattr(ht, 'web_search'))\n"
         )
         with patch("model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(code, task_id="test-empty",
                                              enabled_tools=[]))
         self.assertEqual(result["status"], "success")
-        self.assertIn("imports ok", result["output"])
+        self.assertIn("terminal: False", result["output"])
+        self.assertIn("web_search: False", result["output"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
+    def test_nonoverlapping_tools_grants_no_tools(self):
+        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS, the
+        sandbox must expose NO tools rather than failing open to the full set.
+
+        A disjoint scope is still an explicit scope: re-granting terminal/
+        write_file/patch here would defeat a session that deliberately disabled
+        them.
+        """
         code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
+            "import hermes_tools as ht\n"
+            "print('terminal:', hasattr(ht, 'terminal'))\n"
         )
         with patch("model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
@@ -889,7 +901,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
         self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertIn("terminal: False", result["output"])
 
 
 # ---------------------------------------------------------------------------

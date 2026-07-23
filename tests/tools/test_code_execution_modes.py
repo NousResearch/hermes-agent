@@ -467,14 +467,18 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
 )
 class TestSecurityInvariantsAcrossModes(unittest.TestCase):
 
-    def _run(self, code, mode):
+    def _run(self, code, mode, enabled_tools=None):
         with _mock_mode(mode):
             with patch("model_tools.handle_function_call",
                        side_effect=_mock_handle_function_call):
                 raw = execute_code(
                     code=code,
                     task_id=f"test-sec-{mode}",
-                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                    enabled_tools=(
+                        enabled_tools
+                        if enabled_tools is not None
+                        else list(SANDBOX_ALLOWED_TOOLS)
+                    ),
                 )
         return json.loads(raw)
 
@@ -562,6 +566,44 @@ class TestSecurityInvariantsAcrossModes(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("execute_code_available: False", result["output"])
         self.assertIn("delegate_task_available: False", result["output"])
+
+    def test_disjoint_enabled_tools_grants_no_sandbox_tools(self):
+        """A session that enables execute_code but no SANDBOX_ALLOWED_TOOLS must
+        NOT have the allow-list fall open.
+
+        Regression: a non-None ``enabled_tools`` whose intersection with
+        SANDBOX_ALLOWED_TOOLS is empty used to be treated like the legacy
+        "allow everything" case, re-granting terminal()/write_file()/patch().
+        The intersection is empty here, so the sandbox must expose zero tools.
+        """
+        # Sanity: none of these names are sandbox-callable.
+        self.assertEqual(
+            SANDBOX_ALLOWED_TOOLS & {"execute_code", "todo"}, set()
+        )
+        code = (
+            "import hermes_tools as ht\n"
+            "for name in ('terminal', 'write_file', 'patch', 'read_file',\n"
+            "             'search_files', 'web_search', 'web_extract'):\n"
+            "    print(f'{name}:', hasattr(ht, name))\n"
+        )
+        for mode in ("strict", "project"):
+            result = self._run(
+                code, mode=mode, enabled_tools=["execute_code", "todo"]
+            )
+            self.assertEqual(result["status"], "success", msg=result)
+            for name in ("terminal", "write_file", "patch", "read_file",
+                         "search_files", "web_search", "web_extract"):
+                self.assertIn(f"{name}: False", result["output"])
+
+    def test_empty_enabled_tools_grants_no_sandbox_tools(self):
+        """An explicit empty allow-list means "no RPC tools", not "all"."""
+        code = (
+            "import hermes_tools as ht\n"
+            "print('terminal:', hasattr(ht, 'terminal'))\n"
+        )
+        result = self._run(code, mode="strict", enabled_tools=[])
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("terminal: False", result["output"])
 
 
 if __name__ == "__main__":

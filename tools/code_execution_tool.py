@@ -989,10 +989,18 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
+    # ``enabled_tools is None`` means the caller did not scope the session
+    # (legacy "allow everything") -> fall back to the full sandbox allow-list.
+    # A non-None list -- even one that is empty or disjoint from
+    # SANDBOX_ALLOWED_TOOLS -- is an explicit scope: grant only the
+    # intersection.  Treating a disjoint list as "grant all" would fail OPEN,
+    # silently re-enabling terminal()/write_file()/patch() in a session that
+    # deliberately disabled them (the schema layer already advertises zero
+    # sandbox tools to the model in that case).
+    if enabled_tools is None:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    else:
+        sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -1242,12 +1250,18 @@ def execute_code(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
+    # Determine which tools the sandbox can call.  ``enabled_tools is None``
+    # means the caller did not scope the session (legacy "allow everything")
+    # -> fall back to the full sandbox allow-list.  A non-None list -- even one
+    # that is empty or disjoint from SANDBOX_ALLOWED_TOOLS -- is an explicit
+    # scope: grant only the intersection.  Treating a disjoint list as "grant
+    # all" would fail OPEN, silently re-enabling terminal()/write_file()/patch()
+    # in a session that deliberately disabled them (the schema layer already
+    # advertises zero sandbox tools to the model in that case).
+    if enabled_tools is None:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    else:
+        sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")

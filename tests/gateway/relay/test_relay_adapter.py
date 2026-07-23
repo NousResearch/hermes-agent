@@ -287,6 +287,88 @@ async def test_scoped_reply_without_inbound_author_carries_scope_only():
     assert "user_id" not in t.sent["metadata"]
 
 
+@pytest.mark.asyncio
+async def test_edit_message_forwards_relay_action_with_routing_context():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=t)
+    event = _make_event(chat_id="channel-1", scope_id="workspace-1")
+    event.source.platform = Platform.SLACK
+    a._capture_scope(event)
+
+    result = await a.edit_message(
+        "channel-1",
+        "message-1",
+        "streamed answer",
+        metadata={"thread_id": "thread-1"},
+    )
+
+    assert result.success is True
+    assert t.sent == {
+        "op": "edit",
+        "chat_id": "channel-1",
+        "message_id": "message-1",
+        "content": "streamed answer",
+        "metadata": {
+            "thread_id": "thread-1",
+            "scope_id": "workspace-1",
+        },
+    }
+    assert t.sent_platform == "slack"
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_forwards_explicit_clear_with_routing_context():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=t)
+    event = _make_event(chat_id="channel-1", scope_id="workspace-1")
+    event.source.platform = Platform.SLACK
+    a._capture_scope(event)
+
+    await a.stop_typing("channel-1", metadata={"thread_id": "thread-1"})
+
+    assert t.sent == {
+        "op": "typing",
+        "chat_id": "channel-1",
+        "content": "",
+        "metadata": {
+            "thread_id": "thread-1",
+            "scope_id": "workspace-1",
+        },
+    }
+    assert t.sent_platform == "slack"
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_is_noop_for_non_slack_relay_platforms():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="telegram"), transport=t)
+    event = _make_event(chat_id="channel-1", scope_id="workspace-1")
+    event.source.platform = Platform.TELEGRAM
+    a._capture_scope(event)
+
+    await a.stop_typing("channel-1", metadata={"thread_id": "thread-1"})
+
+    assert t.sent is None
+    assert t.sent_platform is None
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_swallows_transport_errors():
+    """A WS drop at end-of-turn must not propagate out of stop_typing — status
+    clearing is cosmetic and turn completion must never fail on it."""
+
+    class _FailingTransport(_CaptureTransport):
+        async def send_outbound(self, action, *, platform=None):
+            raise RuntimeError("ws down")
+
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=_FailingTransport())
+    event = _make_event(chat_id="channel-1", scope_id="workspace-1")
+    event.source.platform = Platform.SLACK
+    a._capture_scope(event)
+
+    await a.stop_typing("channel-1")  # must not raise
+
+
 # ── typing indicator over the relay (op="typing") ────────────────────────────
 
 

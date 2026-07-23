@@ -407,6 +407,17 @@ def _run_agent(
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
 
+        # Filesystem checkpoints: oneshot bypasses HermesCLI, so the
+        # ``checkpoints:`` config parsed there never reaches this
+        # construction — wire it from config.yaml directly, tolerating the
+        # legacy boolean form the same way the gateway's
+        # ``_checkpoint_agent_kwargs`` does (#69737).
+        cp_cfg = cfg.get("checkpoints", {})
+        if isinstance(cp_cfg, bool):
+            cp_cfg = {"enabled": cp_cfg}
+        elif not isinstance(cp_cfg, dict):
+            cp_cfg = {}
+
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -419,6 +430,10 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            checkpoints_enabled=cp_cfg.get("enabled", False),
+            checkpoint_max_snapshots=cp_cfg.get("max_snapshots", 20),
+            checkpoint_max_total_size_mb=cp_cfg.get("max_total_size_mb", 500),
+            checkpoint_max_file_size_mb=cp_cfg.get("max_file_size_mb", 10),
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

@@ -114,15 +114,42 @@ def _extract_docx(path: str) -> str:
         raise ExtractionError(str(exc)) from exc
 
     w = f"{{{_NS_W}}}"
+    p_tag = f"{w}p"
+    text_tags = {f"{w}t", f"{w}tab", f"{w}br", f"{w}cr"}
+
+    # Paragraphs can nest: a text box (<w:txbxContent>) or block-level content
+    # control holds its own <w:p> elements. root.iter(p_tag) yields those nested
+    # paragraphs too, and an ancestor paragraph's iter() also descends into
+    # them — so without attribution a text box's text is emitted twice (once
+    # inline by the ancestor, once when the nested paragraph is visited).
+    # ElementTree has no parent pointers, so build one and attribute each text
+    # node to its *nearest* enclosing <w:p>.
+    parent = {child: node for node in root.iter() for child in node}
+
+    def _nearest_para(node: ET.Element) -> "ET.Element | None":
+        cur = parent.get(node)
+        while cur is not None:
+            if cur.tag == p_tag:
+                return cur
+            cur = parent.get(cur)
+        return None
+
     lines: list[str] = []
-    for para in root.iter(f"{w}p"):
+    for para in root.iter(p_tag):
         buf: list[str] = []
         for node in para.iter():
-            if node.tag == f"{w}t":
+            tag = node.tag
+            if tag not in text_tags:
+                continue
+            # Skip text owned by a nested paragraph; it is emitted when that
+            # paragraph is visited on its own, keeping each <w:p> a single line.
+            if _nearest_para(node) is not para:
+                continue
+            if tag == f"{w}t":
                 buf.append(node.text or "")
-            elif node.tag == f"{w}tab":
+            elif tag == f"{w}tab":
                 buf.append("\t")
-            elif node.tag in {f"{w}br", f"{w}cr"}:
+            else:  # w:br / w:cr
                 buf.append("\n")
         lines.extend("".join(buf).split("\n"))
     if not any(line.strip() for line in lines):

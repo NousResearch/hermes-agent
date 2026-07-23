@@ -44,6 +44,7 @@ import errno
 import hashlib
 import hmac
 import json
+from collections import deque
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from functools import wraps
@@ -55,7 +56,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -1041,9 +1042,18 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
-        # Active run streams: run_id -> asyncio.Queue of SSE event dicts
-        self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
-        # Creation timestamps for orphaned-run TTL sweep
+        # Per-run replay log: run_id -> bounded deque of (seq, event) tuples.
+        # seq is a per-run monotonically increasing id emitted as the SSE
+        # `id:` field, so reconnecting clients can resume via Last-Event-ID.
+        self._run_event_logs: Dict[str, "deque[Tuple[int, Dict]]"] = {}
+        self._run_event_seqs: Dict[str, int] = {}
+        # Live subscriber queues: run_id -> set of asyncio.Queue, one per
+        # connected SSE consumer. Events fan out to all of them; the replay
+        # log above is the source of truth for resume.
+        self._run_subscriber_queues: Dict[str, "Set[asyncio.Queue]"] = {}
+        # Orphan-TTL basis timestamps. Set at run creation and refreshed when
+        # the last SSE subscriber disconnects, so a reconnecting client gets a
+        # full _RUN_STREAM_TTL window to resume before the log is swept.
         self._run_streams_created: Dict[str, float] = {}
         # Runs with a connected SSE consumer; their queue is actively draining.
         self._run_stream_subscribers: set[str] = set()
@@ -4838,6 +4848,38 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_EVENT_LOG_CAP = 4096  # per-run replay buffer bound (events)
+    _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+    def _publish_run_event(self, run_id: str, event: Optional[Dict]) -> int:
+        """Append a run event to the replay log and fan out to live subscribers.
+
+        Returns the assigned seq (monotonic per run), or -1 when the event was
+        dropped. `None` is the stream-close sentinel: delivered to live
+        subscribers but never stored — a late subscriber recovers the terminal
+        state from the replayed log / GET /v1/runs/{run_id} instead. Events
+        for a swept run (replay log gone) are dropped so an unconsumed run
+        cannot grow buffers without bound.
+        """
+        if event is None:
+            for q in list(self._run_subscriber_queues.get(run_id, ())):
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            return -1
+        log = self._run_event_logs.get(run_id)
+        if log is None:
+            return -1
+        seq = self._run_event_seqs.get(run_id, 0)
+        self._run_event_seqs[run_id] = seq + 1
+        log.append((seq, event))
+        for q in list(self._run_subscriber_queues.get(run_id, ())):
+            try:
+                q.put_nowait((seq, event))
+            except Exception:
+                pass
+        return seq
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -4855,18 +4897,17 @@ class APIServerAdapter(BasePlatformAdapter):
         return current
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
-        """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        """Return a tool_progress_callback that pushes structured events to the run's SSE log."""
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
-            q = self._run_streams.get(run_id)
-            if q is None:
+            if run_id not in self._run_event_logs:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                loop.call_soon_threadsafe(self._publish_run_event, run_id, event)
             except Exception:
                 pass
 
@@ -4984,24 +5025,23 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
-        self._run_streams[run_id] = q
+        self._run_event_logs[run_id] = deque(maxlen=self._RUN_EVENT_LOG_CAP)
+        self._run_event_seqs[run_id] = 0
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
-            """Enqueue only while this run still owns live transport state."""
-            if self._run_streams.get(run_id) is q:
-                q.put_nowait(event)
+            """Publish only while this run's replay log still exists (drops after sweep)."""
+            self._publish_run_event(run_id, event)
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
                 return
-            if run_id not in self._run_streams:
+            if run_id not in self._run_event_logs:
                 return
             try:
                 loop.call_soon_threadsafe(_put_event_if_active, {
@@ -5264,23 +5304,43 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events.
+
+        Resume support: every event frame carries an SSE `id:` field (per-run
+        monotonic seq). A reconnecting client passes `Last-Event-ID` (or the
+        `?since=<seq>` query param) and first receives buffered events newer
+        than the cursor, then continues live. The replay buffer is bounded
+        (_RUN_EVENT_LOG_CAP) and swept with the orphan TTL; when the cursor is
+        older than the oldest buffered event, the stream resumes from what is
+        available — clients should treat that gap as a signal to re-sync via
+        GET /v1/runs/{run_id} (terminal status carries the final output) or
+        session history. Subscribing after a run finished replays the buffer
+        and closes immediately, so late/again consumers no longer hit 404.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
         run_id = request.match_info["run_id"]
 
+        cursor = -1
+        raw_cursor = request.headers.get("Last-Event-ID") or request.query.get("since")
+        if raw_cursor:
+            try:
+                cursor = max(-1, int(str(raw_cursor).strip()))
+            except (TypeError, ValueError):
+                return web.json_response(
+                    _openai_error(f"Invalid resume cursor: {raw_cursor!r}", code="invalid_cursor"),
+                    status=400,
+                )
+
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
-            if run_id in self._run_streams:
+            if run_id in self._run_event_logs:
                 break
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
-
-        q = self._run_streams[run_id]
-        self._run_stream_subscribers.add(run_id)
 
         response = web.StreamResponse(
             status=200,
@@ -5292,25 +5352,59 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
+        async def _write_event(seq: int, event: Dict) -> None:
+            payload = f"id: {seq}\ndata: {json.dumps(event)}\n\n"
+            await response.write(payload.encode())
+
+        q: "asyncio.Queue" = asyncio.Queue()
+        self._run_subscriber_queues.setdefault(run_id, set()).add(q)
+        self._run_stream_subscribers.add(run_id)
+        last_seq = cursor
         try:
+            # Replay buffered events newer than the cursor. Events published
+            # during the replay also land in q and are deduped by seq below.
+            for seq, event in list(self._run_event_logs.get(run_id, ())):
+                if seq > last_seq:
+                    await _write_event(seq, event)
+                    last_seq = seq
+
+            if self._run_statuses.get(run_id, {}).get("status") in self._TERMINAL_RUN_STATUSES:
+                # Late subscriber attaching after the run finished: the replay
+                # above is the whole story — close instead of waiting for a
+                # close sentinel that already went out.
+                await response.write(b": stream closed\n\n")
+                return response
+
+            # Live phase ends on the None sentinel published when the run
+            # settles (guaranteed to arrive after the terminal event, so no
+            # terminal-status polling here that could strand queued events).
             while True:
                 try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    item = await asyncio.wait_for(q.get(), timeout=30.0)
                 except asyncio.TimeoutError:
                     await response.write(b": keepalive\n\n")
                     continue
-                if event is None:
-                    # Run finished — send final SSE comment and close
-                    await response.write(b": stream closed\n\n")
+                if item is None:
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+                seq, event = item
+                if seq <= last_seq:
+                    continue  # already sent during the replay phase
+                await _write_event(seq, event)
+                last_seq = seq
+            await response.write(b": stream closed\n\n")
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
             self._run_stream_subscribers.discard(run_id)
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            queues = self._run_subscriber_queues.get(run_id)
+            if queues is not None:
+                queues.discard(q)
+                if not queues:
+                    # Last consumer gone: restart the orphan clock so a
+                    # reconnecting client gets a full TTL window to resume.
+                    self._run_subscriber_queues.pop(run_id, None)
+                    if run_id in self._run_streams_created:
+                        self._run_streams_created[run_id] = time.time()
 
         return response
 
@@ -5383,18 +5477,13 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         self._set_run_status(run_id, "running", last_event="approval.responded")
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            try:
-                q.put_nowait({
-                    "event": "approval.responded",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "choice": choice,
-                    "resolved": resolved,
-                })
-            except Exception:
-                pass
+        self._publish_run_event(run_id, {
+            "event": "approval.responded",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "choice": choice,
+            "resolved": resolved,
+        })
 
         return web.json_response({
             "object": "hermes.run.approval_response",
@@ -5434,7 +5523,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._sweep_orphaned_runs_once(time.time())
 
     def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
-        """Expire old SSE buffers without treating transport age as run age."""
+        """Expire old replay logs without treating transport age as run age."""
         if now is None:
             now = time.time()
         stale = [
@@ -5458,7 +5547,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
             # The transport TTL always bounds buffering. Live control state is
             # independent and survives until the executor-backed task returns.
-            self._run_streams.pop(run_id, None)
+            self._run_event_logs.pop(run_id, None)
+            self._run_event_seqs.pop(run_id, None)
+            self._run_subscriber_queues.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
             if task_done:
                 self._active_run_agents.pop(run_id, None)

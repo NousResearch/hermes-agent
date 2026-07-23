@@ -9,6 +9,8 @@ Covers:
 """
 
 import asyncio
+from collections import deque
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -181,7 +183,7 @@ class TestStartRun:
                 json={"input": "hello", "conversation_history": {"role": "user"}},
             )
         assert resp.status == 400
-        assert adapter._run_streams == {}
+        assert adapter._run_event_logs == {}
         assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
@@ -463,6 +465,181 @@ class TestRunEvents:
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id}/events — replay / resume
+# ---------------------------------------------------------------------------
+
+
+def _seed_live_run(adapter, run_id: str) -> None:
+    """Register a running run's replay state without booting an agent."""
+    adapter._run_event_logs[run_id] = deque(maxlen=adapter._RUN_EVENT_LOG_CAP)
+    adapter._run_event_seqs[run_id] = 0
+    adapter._run_streams_created[run_id] = time.time()
+    adapter._set_run_status(run_id, "running")
+
+
+def _parse_sse_frames(body: str) -> list[tuple[str | None, dict]]:
+    """Parse SSE body into (id, data-json) frames; skips comment-only frames."""
+    frames = []
+    for chunk in body.split("\n\n"):
+        frame_id, data_lines = None, []
+        for line in chunk.split("\n"):
+            if line.startswith("id:"):
+                frame_id = line[3:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+        if data_lines:
+            frames.append((frame_id, json.loads("\n".join(data_lines))))
+    return frames
+
+
+class TestRunEventsResume:
+    @pytest.mark.asyncio
+    async def test_event_frames_carry_sse_id(self, adapter):
+        """Every event frame carries an `id:` line for cursor-based resume."""
+        app = _create_runs_app(adapter)
+        _seed_live_run(adapter, "run_ids")
+        adapter._set_run_status("run_ids", "completed", last_event="run.completed")
+        adapter._publish_run_event("run_ids", {"event": "run.completed", "run_id": "run_ids", "output": "ok"})
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs/run_ids/events")
+            body = await resp.text()
+        frames = _parse_sse_frames(body)
+        assert frames and all(frame_id is not None for frame_id, _ in frames)
+        assert [frame_id for frame_id, _ in frames] == ["0"]
+        assert ": stream closed" in body
+
+    @pytest.mark.asyncio
+    async def test_subscribe_after_completion_replays_log(self, adapter):
+        """Late subscriber gets the full buffered history, not a 404."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "Hello!"}
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                # Let the run settle without any subscriber attached.
+                for _ in range(40):
+                    if adapter._run_statuses.get(run_id, {}).get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+                assert adapter._run_statuses[run_id]["status"] == "completed"
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+                assert "run.completed" in body
+                assert "Hello!" in body
+                assert ": stream closed" in body
+
+    @pytest.mark.asyncio
+    async def test_resume_with_since_replays_only_newer_events(self, adapter):
+        """?since=<seq> skips buffered events at/below the cursor, then goes live."""
+        app = _create_runs_app(adapter)
+        run_id = "run_resume"
+        _seed_live_run(adapter, run_id)
+        for i in range(3):
+            adapter._publish_run_event(run_id, {"event": "message.delta", "run_id": run_id, "delta": f"d{i}"})
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/v1/runs/{run_id}/events?since=1")
+            assert resp.status == 200
+            # Replay delivers only seq 2; a live publish follows on the same stream.
+            adapter._publish_run_event(run_id, {"event": "message.delta", "run_id": run_id, "delta": "d3"})
+            adapter._set_run_status(run_id, "completed", last_event="run.completed")
+            adapter._publish_run_event(run_id, {"event": "run.completed", "run_id": run_id})
+            adapter._publish_run_event(run_id, None)
+            body = await asyncio.wait_for(resp.text(), 3)
+
+        frames = _parse_sse_frames(body)
+        deltas = [event["delta"] for _, event in frames if event.get("event") == "message.delta"]
+        assert deltas == ["d2", "d3"]
+        assert [frame_id for frame_id, _ in frames] == ["2", "3", "4"]
+
+    @pytest.mark.asyncio
+    async def test_resume_with_last_event_id_header(self, adapter):
+        """The standard Last-Event-ID header is honored like ?since=."""
+        app = _create_runs_app(adapter)
+        run_id = "run_header"
+        _seed_live_run(adapter, run_id)
+        for i in range(2):
+            adapter._publish_run_event(run_id, {"event": "message.delta", "run_id": run_id, "delta": f"d{i}"})
+        adapter._set_run_status(run_id, "completed", last_event="run.completed")
+        adapter._publish_run_event(run_id, {"event": "run.completed", "run_id": run_id})
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={"Last-Event-ID": "0"},
+            )
+            body = await resp.text()
+        frames = _parse_sse_frames(body)
+        assert [event.get("event") for _, event in frames] == ["message.delta", "run.completed"]
+        assert [frame_id for frame_id, _ in frames] == ["1", "2"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_cursor_returns_400(self, adapter):
+        app = _create_runs_app(adapter)
+        _seed_live_run(adapter, "run_bad_cursor")
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs/run_bad_cursor/events?since=abc")
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_multiple_subscribers_each_receive_events(self, adapter):
+        """Fan-out: two concurrent consumers each receive every event."""
+        app = _create_runs_app(adapter)
+        run_id = "run_multi"
+        _seed_live_run(adapter, run_id)
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.get(f"/v1/runs/{run_id}/events")
+            resp2 = await cli.get(f"/v1/runs/{run_id}/events")
+            assert resp1.status == 200 and resp2.status == 200
+
+            adapter._publish_run_event(run_id, {"event": "message.delta", "run_id": run_id, "delta": "hi"})
+            adapter._set_run_status(run_id, "completed", last_event="run.completed")
+            adapter._publish_run_event(run_id, {"event": "run.completed", "run_id": run_id})
+            adapter._publish_run_event(run_id, None)
+
+            for resp in (resp1, resp2):
+                body = await asyncio.wait_for(resp.text(), 3)
+                frames = _parse_sse_frames(body)
+                assert [event.get("event") for _, event in frames] == ["message.delta", "run.completed"]
+                assert ": stream closed" in body
+
+    @pytest.mark.asyncio
+    async def test_last_subscriber_disconnect_refreshes_orphan_ttl(self, adapter):
+        """After the last consumer detaches, the resume window restarts (full TTL)."""
+        app = _create_runs_app(adapter)
+        run_id = "run_ttl"
+        _seed_live_run(adapter, run_id)
+        adapter._set_run_status(run_id, "completed", last_event="run.completed")
+        adapter._publish_run_event(run_id, {"event": "run.completed", "run_id": run_id})
+        adapter._run_streams_created[run_id] -= 100  # pretend the run is old
+
+        before = adapter._run_streams_created[run_id]
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/v1/runs/{run_id}/events")
+            await resp.text()
+        assert adapter._run_streams_created[run_id] > before
+
+    @pytest.mark.asyncio
+    async def test_publish_after_sweep_is_dropped(self, adapter):
+        """Once the log is swept, late events buffer nothing (memory bound)."""
+        run_id = "run_swept"
+        _seed_live_run(adapter, run_id)
+        adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
+        adapter._sweep_orphaned_runs_once(time.time())
+        assert adapter._publish_run_event(run_id, {"event": "message.delta", "delta": "x"}) == -1
+        assert run_id not in adapter._run_event_logs
+
+
+# ---------------------------------------------------------------------------
 # Run lifecycle TTL sweeping
 # ---------------------------------------------------------------------------
 
@@ -470,14 +647,13 @@ class TestRunEvents:
 class TestRunLifecycleSweep:
     def test_sweep_keeps_transport_with_active_subscriber(self, adapter):
         run_id = "run_subscribed"
-        queue = asyncio.Queue()
-        adapter._run_streams[run_id] = queue
+        adapter._run_event_logs[run_id] = deque(maxlen=adapter._RUN_EVENT_LOG_CAP)
         adapter._run_streams_created[run_id] = 0
         adapter._run_stream_subscribers.add(run_id)
 
         adapter._sweep_orphaned_runs_once(time.time())
 
-        assert adapter._run_streams[run_id] is queue
+        assert run_id in adapter._run_event_logs
         assert run_id in adapter._run_streams_created
 
     @pytest.mark.asyncio
@@ -519,7 +695,7 @@ class TestRunLifecycleSweep:
 
                 assert adapter._active_run_tasks[run_id] is task
                 assert adapter._active_run_agents[run_id] is mock_agent
-                assert run_id not in adapter._run_streams
+                assert run_id not in adapter._run_event_logs
                 assert run_id not in adapter._run_streams_created
                 assert adapter._run_approval_sessions[run_id] == run_id
 
@@ -541,7 +717,7 @@ class TestRunLifecycleSweep:
 
     @pytest.mark.asyncio
     async def test_expired_transport_stops_buffering_new_deltas(self, adapter):
-        """An unconsumed expired queue must not grow for the rest of a live run."""
+        """A swept replay log must not grow for the rest of a live run."""
         app = _create_runs_app(adapter)
 
         async with TestClient(TestServer(app)) as cli:
@@ -552,12 +728,12 @@ class TestRunLifecycleSweep:
                 start_resp = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await start_resp.json())["run_id"]
                 assert agent_ready.wait(timeout=3.0)
-                expired_queue = adapter._run_streams[run_id]
+                expired_log = adapter._run_event_logs[run_id]
                 stream_delta = mock_create.call_args.kwargs["stream_delta_callback"]
 
                 adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
                 adapter._sweep_orphaned_runs_once(time.time())
-                before = expired_queue.qsize()
+                before = len(expired_log)
                 stream_delta("must-not-buffer")
                 mock_agent.interrupt("finish test")
                 for _ in range(40):
@@ -565,12 +741,12 @@ class TestRunLifecycleSweep:
                         break
                     await asyncio.sleep(0.05)
 
-                assert expired_queue.qsize() == before
+                assert len(expired_log) == before
 
     @pytest.mark.asyncio
     async def test_expired_orphan_run_state_is_reaped(self, adapter):
         run_id = "run_expired_orphan"
-        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_event_logs[run_id] = deque(maxlen=adapter._RUN_EVENT_LOG_CAP)
         adapter._run_streams_created[run_id] = 0
         adapter._run_approval_sessions[run_id] = run_id
 
@@ -589,7 +765,7 @@ class TestRunLifecycleSweep:
             with pytest.raises(asyncio.CancelledError):
                 await adapter._sweep_orphaned_runs()
 
-        assert run_id not in adapter._run_streams
+        assert run_id not in adapter._run_event_logs
         assert run_id not in adapter._run_streams_created
         assert run_id not in adapter._run_approval_sessions
         assert pending.event.is_set()

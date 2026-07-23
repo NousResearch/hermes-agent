@@ -211,6 +211,7 @@ export interface Translations {
       turnErrorTitle: string
       backgroundDoneTitle: string
       backgroundFailedTitle: string
+      creditsTitle: string
     }
   }
 
@@ -314,7 +315,7 @@ export interface Translations {
       enableAllDesc: string
       focusedHint: string
       kinds: Record<
-        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
+        'approval' | 'backgroundDone' | 'credits' | 'input' | 'turnDone' | 'turnError',
         { label: string; description: string }
       >
       test: string

@@ -252,3 +252,26 @@ Imported skills land in `~/.hermes/skills/openclaw-imports/`. Start a new sessio
 ### TTS voice not migrated
 
 OpenClaw stores TTS settings in two places: `messages.tts.providers.*` and the top-level `talk` config. The migration checks both. If your voice ID was set via the OpenClaw UI (stored in a different path), you may need to set it manually: `hermes config set tts.elevenlabs.voice_id YOUR_VOICE_ID`.
+
+### OpenClaw process keeps restarting after `kill` (macOS)
+
+On macOS, OpenClaw is typically installed as a launchd LaunchAgent. Killing the process directly won't work — launchd will restart it immediately. You must unload the LaunchAgent first:
+
+```bash
+# Stop and disable the LaunchAgent
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+
+# Verify it's gone
+pgrep -fl openclaw
+```
+
+If you also want to fully remove OpenClaw:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+rm ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+rm -rf ~/.openclaw
+npm uninstall -g openclaw
+```
+
+After stopping OpenClaw, re-run the migration or cleanup command.

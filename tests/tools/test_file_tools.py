@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -77,7 +78,12 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        # The tool resolves symlinks (e.g. macOS /tmp -> /private/tmp), so
+        # compare the realpath rather than the literal string.
+        mock_ops.write_file.assert_called_once()
+        called_path, called_content = mock_ops.write_file.call_args[0]
+        assert os.path.realpath(called_path) == os.path.realpath("/tmp/out.txt")
+        assert called_content == "hello world!\n"
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -182,7 +188,11 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        # Path is resolved (symlink-canonicalized) before dispatch.
+        mock_ops.patch_replace.assert_called_once()
+        args = mock_ops.patch_replace.call_args[0]
+        assert os.path.realpath(args[0]) == os.path.realpath("/tmp/f.py")
+        assert args[1:] == ("foo", "bar", False)
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_replace_all_flag(self, mock_get):
@@ -195,7 +205,10 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         patch_tool(mode="replace", path="/tmp/f.py",
                    old_string="x", new_string="y", replace_all=True)
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
+        mock_ops.patch_replace.assert_called_once()
+        args = mock_ops.patch_replace.call_args[0]
+        assert os.path.realpath(args[0]) == os.path.realpath("/tmp/f.py")
+        assert args[1:] == ("x", "y", True)
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):
@@ -234,6 +247,51 @@ class TestPatchHandler:
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
         assert "Unknown mode" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_repeated_missing_path_escalates_hint(self, mock_get):
+        """Identical malformed patch calls must escalate a break-the-loop hint
+        instead of returning the same bare error forever (issue #63880)."""
+        import tools.file_tools as ft
+        from tools.file_tools import patch_tool
+        ft._patch_failure_tracker.pop("loop-task", None)
+        results = [
+            json.loads(patch_tool(mode="replace", path=None, old_string="a",
+                                  new_string="b", task_id="loop-task"))
+            for _ in range(4)
+        ]
+        # Every call still reports the error with actionable context.
+        assert all("path required" in r["error"] for r in results)
+        # First two rejects: no hint yet; from the third the loop-breaker fires.
+        assert "_hint" not in results[0]
+        assert "_hint" not in results[1]
+        assert "_hint" in results[2]
+        assert "#3" in results[2]["_hint"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_valid_patch_resets_arg_failure_escalation(self, mock_get):
+        """A call that passes arg validation clears the malformed-call counter
+        so escalation only ever counts *consecutive* bad calls."""
+        import tools.file_tools as ft
+        from tools.file_tools import patch_tool
+        ft._patch_failure_tracker.pop("reset-task", None)
+
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "operations": 1}
+        mock_get.return_value.patch_replace.return_value = result_obj
+
+        # Two bad calls, then a good one, then a bad one again.
+        for _ in range(2):
+            patch_tool(mode="replace", path=None, old_string="a",
+                       new_string="b", task_id="reset-task")
+        patch_tool(mode="replace", path="/tmp/f.py", old_string="a",
+                   new_string="b", task_id="reset-task")
+        after_reset = json.loads(patch_tool(
+            mode="replace", path=None, old_string="a", new_string="b",
+            task_id="reset-task"))
+        # Counter was reset by the valid call, so this lone bad call is #1
+        # again — no premature escalation.
+        assert "_hint" not in after_reset
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):

@@ -197,6 +197,22 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
+def _command_basename(token: str) -> str:
+    """Return an executable token's basename across POSIX/Windows spellings."""
+
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    return name[:-4] if name.lower().endswith(".exe") else name
+
+
+def _executable_basename_variant(tokens: list[str]) -> list[str]:
+    if not tokens:
+        return []
+    first = _command_basename(tokens[0])
+    if first == tokens[0]:
+        return tokens
+    return [first, *tokens[1:]]
+
+
 def _find_canonical_match(command: str, canonical_commands: list[str]) -> Optional[tuple[str, list[str]]]:
     """Return ``(canonical, trailing_args)`` for the first detected command."""
 
@@ -207,9 +223,14 @@ def _find_canonical_match(command: str, canonical_commands: list[str]) -> Option
             continue
         for tokens in segments:
             candidate_tokens = _strip_command_prefix(tokens)
-            for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate:
-                    return canonical, candidate_tokens[len(candidate):]
+            token_variants = [candidate_tokens]
+            basename_variant = _executable_basename_variant(candidate_tokens)
+            if basename_variant != candidate_tokens:
+                token_variants.append(basename_variant)
+            for candidate_tokens in token_variants:
+                for candidate in _equivalent_needles(needle):
+                    if candidate_tokens[:len(candidate)] == candidate:
+                        return canonical, candidate_tokens[len(candidate):]
     return None
 
 
@@ -409,7 +430,13 @@ def classify_verification_command(
     verify_commands = list(facts.get("verifyCommands") or [])
     match = _find_canonical_match(command, verify_commands)
     is_ad_hoc = False
-    if match is None and not verify_commands:
+    # Allow ad-hoc evidence even when canonical verifyCommands exist.
+    # A passing ad-hoc run (tempfile.mkstemp + hermes-verify-* prefix) is valid
+    # evidence that the workspace verification is green. We gate on exit_code==0
+    # (not on heredoc-wrapper shape) because the intent is "passed = valid",
+    # not "specific implementation shape = valid". This fixes #47237 where
+    # passing ad-hoc runs were silently dropped when verifyCommands were present.
+    if match is None and (not verify_commands or int(exit_code) == 0):
         ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"))
         if ad_hoc_args is not None:
             match = ("ad-hoc verification script", ad_hoc_args)
@@ -614,6 +641,9 @@ def verification_status(
         status = "stale"
     else:
         status = evidence["status"]
+        verify_commands = [str(cmd).strip() for cmd in (facts.get("verifyCommands") or []) if str(cmd).strip()]
+        if status == "passed" and evidence.get("kind") == "ad_hoc" and verify_commands:
+            status = "targeted_passed"
     return {
         "status": status,
         "evidence": evidence,

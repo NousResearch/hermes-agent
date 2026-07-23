@@ -317,6 +317,43 @@ def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
 
 
+def test_targeted_ad_hoc_pass_gets_one_canonical_nudge_then_stops(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-stop-{tmp_path.name}.py"
+    script.write_text("print('targeted ok')\n", encoding="utf-8")
+    try:
+        record_terminal_result(
+            command=f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="targeted ok",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    first_nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+        attempts=0,
+    )
+    assert first_nudge is not None
+    assert "targeted ad-hoc verification passed" in first_nudge
+    assert "canonical" in first_nudge
+    assert "`pnpm run test`" in first_nudge
+
+    assert build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+        attempts=1,
+    ) is None
+
+
 def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)

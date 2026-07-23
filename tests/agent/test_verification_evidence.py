@@ -64,6 +64,50 @@ def test_classifies_python_module_pytest_as_detected_pytest(tmp_path, monkeypatc
     assert evidence.status == "failed"
 
 
+def test_classifies_venv_pytest_spellings_as_detected_pytest(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    commands = [
+        ".venv/bin/pytest -q",
+        str(tmp_path / ".venv" / "bin" / "pytest") + " -q",
+        ".venv/bin/python -m pytest -q",
+        str(tmp_path / ".venv" / "bin" / "python") + " -m pytest -q",
+    ]
+
+    for command in commands:
+        evidence = classify_verification_command(
+            command,
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="15 passed",
+        )
+
+        assert evidence is not None, command
+        assert evidence.canonical_command == "pytest"
+        assert evidence.kind == "test"
+        assert evidence.scope == "full"
+        assert evidence.status == "passed"
+
+
+def test_records_venv_pytest_as_fresh_suite_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "app.py")])
+
+    event = record_terminal_result(
+        command=".venv/bin/pytest -q",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="15 passed",
+    )
+
+    assert event is not None
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "passed"
+
+
 def test_records_passed_then_marks_stale_after_edit(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
@@ -213,6 +257,8 @@ def test_unprefixed_temp_script_is_not_ad_hoc_evidence(tmp_path, monkeypatch):
 
 
 def test_temp_script_does_not_replace_detected_suite(tmp_path, monkeypatch):
+    # A passing temporary script is worth recording as targeted evidence, but
+    # it must not masquerade as the detected canonical suite.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
     script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
@@ -228,7 +274,88 @@ def test_temp_script_does_not_replace_detected_suite(tmp_path, monkeypatch):
     finally:
         script.unlink(missing_ok=True)
 
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+    assert evidence.canonical_command == "ad-hoc verification script"
+    assert evidence.scope == "targeted"
+    assert evidence.status == "passed"
+
+
+def test_passed_ad_hoc_with_verify_commands_is_targeted_not_suite_green(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "src/index.ts")])
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        record_terminal_result(
+            command=f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+        status = verification_status(session_id="s1", cwd=tmp_path)
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert status["status"] == "targeted_passed"
+    assert status["evidence"] is not None
+    assert status["evidence"]["kind"] == "ad_hoc"
+
+
+def test_failed_ad_hoc_is_skipped_when_verify_commands_exist(tmp_path, monkeypatch):
+    # Regression: a *failing* ad-hoc run in a workspace with canonical
+    # verifyCommands does not prove the workspace is green, so it must
+    # still be dropped.  The exit_code==0 gate in classify_verification_command
+    # is what separates the passing case (recorded) from the failing case (skipped).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
+    script.write_text("import sys; sys.exit(1)\n", encoding="utf-8")
+    try:
+        evidence = classify_verification_command(
+            f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=1,
+            output="assertion failed",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
     assert evidence is None
+
+
+def test_passed_ad_hoc_recorded_when_verify_commands_exist_clears_stale_to_targeted(
+    tmp_path, monkeypatch,
+):
+    # End-to-end verification_status() behavior: after mark_workspace_edited()
+    # on the node project, a passing ad-hoc run (with verifyCommands present)
+    # records targeted evidence so verification_status() reports
+    # "targeted_passed", not full suite "passed".
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "src/index.ts")])
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        record_terminal_result(
+            command=f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+        status = verification_status(session_id="s1", cwd=tmp_path)
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert status["status"] == "targeted_passed"
+    assert status["evidence"] is not None
+    assert status["evidence"]["kind"] == "ad_hoc"
 
 
 def test_non_temp_script_is_not_ad_hoc_evidence(tmp_path, monkeypatch):

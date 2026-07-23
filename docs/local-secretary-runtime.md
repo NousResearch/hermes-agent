@@ -37,13 +37,15 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/test-irodori-tts.ps1
 
 ### 16GB (RTX 5060 Ti 16GB) ← **現行環境**
 
-- `HERMES_LLAMA_CTX=131072` (4B F16 ≈ 8GB + オーバーヘッド 1.5GB → 残 ~6.5GB でKV余裕大)
+- `HERMES_LLAMA_CTX=131072` (4B F16 ≈ 8GB + オーバーヘッド 1.5GB → 残 ~6.5GB で128k KVキャッシュ余裕大)
 - `HERMES_LLAMA_GPU_LAYERS=99`
-- `HERMES_LLAMA_CACHE_TYPE_K=q8_0` / `HERMES_LLAMA_CACHE_TYPE_V=turbo3`
-  - 16GB なら f16 KV でも 64K ctx OK。q8_0 で 128K+ 快適。
+- `HERMES_LLAMA_CACHE_TYPE_K=q8_0` (または `tq4_1s` / `q4_0`) / `HERMES_LLAMA_CACHE_TYPE_V=turbo3` (または `q4_0`)
+- **TurboQuant / Triality / SO8 モード**:
+  - `zapabob/llama.cpp` ビルド環境では `--cache-type-k tq4_1s` および `--so8-triality-k` が自動適用され、Keyベクトルの $SO(8)$ 直交変換＋Triality選定により長文文脈時の外れ値崩壊を抑圧。
+  - 標準 llama.cpp ビルドでは `q4_0` / `q8_0` KV cache にフォールバックし、128k context 時でも VRAM を約4.7GB〜9.4GBに抑圧。
 - `HERMES_LLAMA_SPEC_TYPE=ngram-mod`
 - `HERMES_LLAMA_SPEC_NGRAM_MATCH=24` / `HERMES_LLAMA_SPEC_NGRAM_MIN=48` / `HERMES_LLAMA_SPEC_NGRAM_MAX=64`
-- `HERMES_LLAMA_THREADS=6` / `HERMES_LLAMA_PARALLEL=2`
+- `HERMES_LLAMA_THREADS=8` / `HERMES_LLAMA_PARALLEL=2`
 - `HERMES_LLAMA_PROFILE=rtx5060ti`
 
 ### 12GB (RTX 3060 参考値)

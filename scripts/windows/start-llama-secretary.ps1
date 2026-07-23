@@ -70,7 +70,7 @@ $SpecDraftNMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_DRAFT_N_MAX" "64")
 $BatchSize = [int](Resolve-Default "HERMES_LLAMA_BATCH_SIZE" "2048")
 $UbatchSize = [int](Resolve-Default "HERMES_LLAMA_UBATCH_SIZE" "512")
 # Threads: physical core count (avoid HT contention when GPU handles inference)
-$Threads = [int](Resolve-Default "HERMES_LLAMA_THREADS" "6")
+$Threads = [int](Resolve-Default "HERMES_LLAMA_THREADS" "8")
 # Parallel slots: 2 allows Hermes + subagent concurrent requests without queuing
 $Parallel = [int](Resolve-Default "HERMES_LLAMA_PARALLEL" "2")
 $Profile = Resolve-Default "HERMES_LLAMA_PROFILE" "rtx5060ti"
@@ -93,6 +93,7 @@ if ($existing) {
 
 $helpText = Get-LlamaHelpText -ServerExe $ServerExe
 $supportsCacheK = Test-HelpFlag $helpText '--cache-type-k'
+$supportsSo8Triality = Test-HelpFlag $helpText '--so8-triality-k'
 $supportsSpecType = Test-HelpFlag $helpText '--spec-type'
 $supportsHfRepoLong = Test-HelpFlag $helpText '--hf-repo'
 $supportsHfRepoShort = Test-HelpFlag $helpText '(^|[\s,])-hf([\s,]|$)'
@@ -113,7 +114,8 @@ function Build-ServerArgs {
     param(
         [int]$GpuLayers,
         [bool]$IncludeSpec,
-        [bool]$IncludeCache
+        [bool]$IncludeCache,
+        [bool]$IncludeSo8
     )
     $args = @()
     if ($ModelPath -and (Test-Path -LiteralPath $ModelPath)) {
@@ -146,6 +148,9 @@ function Build-ServerArgs {
     }
     if ($IncludeCache -and $supportsCacheK) {
         $args += @("--cache-type-k", $CacheK, "--cache-type-v", $CacheV)
+        if ($IncludeSo8 -and $supportsSo8Triality) {
+            $args += @("--so8-triality-k")
+        }
     }
     if ($IncludeSpec -and $supportsSpecType -and $SpecType -and $SpecType -ne "none") {
         $args += @("--spec-type", $SpecType)
@@ -177,9 +182,10 @@ function Start-LlamaAttempt {
     param(
         [int]$GpuLayers,
         [bool]$IncludeSpec,
-        [bool]$IncludeCache
+        [bool]$IncludeCache,
+        [bool]$IncludeSo8
     )
-    $attemptArgs = Build-ServerArgs -GpuLayers $GpuLayers -IncludeSpec $IncludeSpec -IncludeCache $IncludeCache
+    $attemptArgs = Build-ServerArgs -GpuLayers $GpuLayers -IncludeSpec $IncludeSpec -IncludeCache $IncludeCache -IncludeSo8 $IncludeSo8
     $env:HF_HOME = if ($env:HF_HOME) { $env:HF_HOME } else { $env:HF_HUB_CACHE }
     $proc = Start-Process `
         -FilePath $ServerExe `
@@ -193,9 +199,10 @@ function Start-LlamaAttempt {
 
 $modelsUrl = "http://${HostName}:${Port}/v1/models"
 $attemptPlans = @(
-    @{ IncludeSpec = $true; IncludeCache = $true },
-    @{ IncludeSpec = $true; IncludeCache = $false },
-    @{ IncludeSpec = $false; IncludeCache = $false }
+    @{ IncludeSpec = $true; IncludeCache = $true; IncludeSo8 = $true },
+    @{ IncludeSpec = $true; IncludeCache = $true; IncludeSo8 = $false },
+    @{ IncludeSpec = $true; IncludeCache = $false; IncludeSo8 = $false },
+    @{ IncludeSpec = $false; IncludeCache = $false; IncludeSo8 = $false }
 )
 
 $started = $false
@@ -208,7 +215,7 @@ foreach ($plan in $attemptPlans) {
     }
     foreach ($layers in $gpuLayerSteps) {
         if ($started) { break }
-        $attempt = Start-LlamaAttempt -GpuLayers $layers -IncludeSpec $plan.IncludeSpec -IncludeCache $plan.IncludeCache
+        $attempt = Start-LlamaAttempt -GpuLayers $layers -IncludeSpec $plan.IncludeSpec -IncludeCache $plan.IncludeCache -IncludeSo8 $plan.IncludeSo8
         $deadline = (Get-Date).AddSeconds($WaitSeconds)
         while ((Get-Date) -lt $deadline) {
             if ($attempt.Process.HasExited) {
@@ -216,8 +223,9 @@ foreach ($plan in $attemptPlans) {
                     Write-Warning "CUDA OOM at ngl=$layers; retrying with fewer GPU layers."
                     break
                 }
-                $stderrTail = (Get-Content -LiteralPath $stderrPath -Tail 80 -ErrorAction SilentlyContinue) -join "`n"
-                throw "llama-server exited during startup (exit=$($attempt.Process.ExitCode)). stderr:`n$stderrTail"
+                $stderrTail = (Get-Content -LiteralPath $stderrPath -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
+                Write-Warning "llama-server exited with exit code $($attempt.Process.ExitCode) for plan (Spec:$($plan.IncludeSpec), Cache:$($plan.IncludeCache), SO8:$($plan.IncludeSo8), ngl:$layers). stderr:`n$stderrTail"
+                break
             }
             try {
                 $null = Invoke-RestMethod -Uri $modelsUrl -TimeoutSec 3

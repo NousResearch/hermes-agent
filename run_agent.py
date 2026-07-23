@@ -43,6 +43,7 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 import threading
 import uuid
 from typing import List, Dict, Any, Optional, Callable
@@ -1538,8 +1539,22 @@ class AIAgent:
         last = stripped[-1]
         if last in '.!?:)"\']}。！？：）】」』》^':
             return True
-        # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
-        if ord(last) >= 0x1F300:
+
+        # Emoji sign-off. Enumerating codepoint ranges keeps missing cases —
+        # a `>= 0x1F300` cutoff starts above Misc Symbols (U+2600-26FF) and
+        # Dingbats (U+2700-27BF), so ✨ U+2728 and ✅ U+2705 still read as
+        # unfinished. Ask Unicode instead: emoji and pictographs carry general
+        # category So. Trailing modifiers are not the sign-off character, so
+        # peel them off first: variation selectors (U+FE0E/U+FE0F), ZWJ
+        # (U+200D) joining a sequence like 👨‍💻, and skin-tone modifiers
+        # (U+1F3FB-1F3FF) as in 👍🏽.
+        tail = stripped
+        while tail and (
+            ord(tail[-1]) in (0xFE0E, 0xFE0F, 0x200D)
+            or 0x1F3FB <= ord(tail[-1]) <= 0x1F3FF
+        ):
+            tail = tail[:-1]
+        if tail and unicodedata.category(tail[-1]) == "So":
             return True
         return False
 

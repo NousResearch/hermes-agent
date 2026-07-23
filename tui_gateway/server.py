@@ -5172,6 +5172,34 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _ensure_shell_hooks(cfg) -> None:
+    """Wire config-declared shell hooks into the plugin manager.
+
+    The desktop backend (``hermes serve`` and the spawned
+    ``tui_gateway.entry`` profile children) never passes through
+    ``hermes_cli.main._prepare_agent_startup`` — ``"serve"`` is not in
+    ``_AGENT_COMMANDS`` — so ``hooks:`` entries from config.yaml were never
+    registered on this surface and every lifecycle shell hook
+    (``pre_llm_call`` context injection, ``post_tool_call``, ...) silently
+    no-opped while the identical profile worked under ``hermes chat``.
+
+    Register at the shared agent-build chokepoint instead.
+    ``register_from_config`` is idempotent (keyed on event/matcher/command),
+    so per-build calls are safe and cheap; consent is resolved inside it via
+    the allowlist, ``hooks_auto_accept: true``, or ``HERMES_ACCEPT_HOOKS=1``
+    — never a TTY prompt on this headless path.
+    """
+    try:
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(cfg)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed in tui_gateway._make_agent",
+            exc_info=True,
+        )
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -5214,6 +5242,9 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+    # Desktop surface fix: hooks: from config are registered here because no
+    # hermes_cli.main startup path runs for `hermes serve` / entry children.
+    _ensure_shell_hooks(cfg)
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()

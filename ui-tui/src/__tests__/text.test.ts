@@ -124,13 +124,13 @@ describe('fmtK', () => {
   })
 
   it('formats thousands as lowercase k', () => {
-    expect(fmtK(1000)).toBe('1k')
-    expect(fmtK(1500)).toBe('1.5k')
+    expect(fmtK(1024)).toBe('1k')
+    expect(fmtK(1536)).toBe('1.5k')
   })
 
   it('formats millions and billions with lowercase suffixes', () => {
-    expect(fmtK(1_000_000)).toBe('1m')
-    expect(fmtK(1_000_000_000)).toBe('1b')
+    expect(fmtK(1_048_576)).toBe('1M')
+    expect(fmtK(1_073_741_824)).toBe('1B')
   })
 })
 

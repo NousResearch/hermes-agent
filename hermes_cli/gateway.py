@@ -4398,6 +4398,25 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _write_planned_restart_marker() -> None:
+    """Write the .restart_pending.json marker so the next gateway startup
+    sends the \"♻️ Gateway online\" notification to home channels.
+
+    Mirrors the marker written by the graceful SIGUSR1 path inside the
+    gateway process (gateway/run.py ~line 5925).
+    """
+    try:
+        marker = get_hermes_home() / ".restart_pending.json"
+        data = {
+            "requested_at": time.time(),
+            "via_service": True,
+            "detached": False,
+        }
+        marker.write_text(json.dumps(data, indent=None), encoding="utf-8")
+    except Exception as e:
+        print(f"⚠ Failed to write restart notification marker: {e}")
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -4410,6 +4429,11 @@ def launchd_restart():
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
             return
+        # SIGUSR1 path failed (terminal is not a gateway child) or no PID found.
+        # Write the planned-restart marker so the next gateway startup sends
+        # "♻️ Gateway online" — mirroring what the graceful SIGUSR1 path does
+        # inside the gateway process (gateway/run.py ~line 5925).
+        _write_planned_restart_marker()
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway

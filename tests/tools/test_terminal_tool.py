@@ -1,11 +1,19 @@
 """Regression tests for sudo detection and sudo password handling."""
 
 import json
+import queue
+import threading
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import cli as cli_module
 import tools.terminal_tool as terminal_tool
+from cli import HermesCLI
 from tools.environments.base import BaseEnvironment
+from tools.interrupt import is_interrupted, set_interrupt
 
 
 def setup_function():
@@ -197,6 +205,182 @@ def test_nonlocal_sudo_dismissal_has_foreground_background_parity(
         "status": "cancelled",
     }
     assert calls == ["background" if background else "foreground"]
+
+
+@pytest.mark.parametrize("env_type", ["local", "docker"])
+def test_approved_background_clears_stale_interrupt_once_before_spawn(
+    monkeypatch, tmp_path, env_type
+):
+    import tools.interrupt as interrupt_module
+    import tools.process_registry as process_registry_module
+
+    task_id = f"approved-background-stale-{env_type}"
+    clear_calls = []
+    interrupt_states_at_spawn = []
+    real_clear = interrupt_module.clear_current_thread_interrupt
+
+    class FakeEnvironment:
+        cwd = str(tmp_path)
+        env = {}
+
+    class FakeRegistry:
+        pending_watchers = []
+
+        @staticmethod
+        def _session():
+            return SimpleNamespace(id="proc_approved", pid=1234)
+
+        def spawn_local(self, **_kwargs):
+            interrupt_states_at_spawn.append(is_interrupted())
+            return self._session()
+
+        def spawn_via_env(self, **_kwargs):
+            interrupt_states_at_spawn.append(is_interrupted())
+            return self._session()
+
+    def tracking_clear():
+        clear_calls.append("clear")
+        real_clear()
+
+    config = {
+        "env_type": env_type,
+        "cwd": str(tmp_path),
+        "timeout": 60,
+    }
+    if env_type == "docker":
+        config["docker_image"] = "inert-test-image"
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(interrupt_module, "clear_current_thread_interrupt", tracking_clear)
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, FakeEnvironment())
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    monkeypatch.setattr(process_registry_module, "process_registry", FakeRegistry())
+
+    set_interrupt(True)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(
+                "echo approved",
+                background=True,
+                task_id=task_id,
+                force=True,
+            )
+        )
+    finally:
+        set_interrupt(False)
+
+    assert result["output"] == "Background process started"
+    assert result["exit_code"] == 0
+    assert interrupt_states_at_spawn == [False]
+    assert clear_calls == ["clear"]
+
+
+def test_global_interrupt_after_sudo_response_dequeue_stops_process_start(
+    monkeypatch, tmp_path
+):
+    task_id = "sudo-post-dequeue-interrupt-test"
+    response_dequeued = threading.Event()
+    resume_callback = threading.Event()
+    real_queue = queue.Queue
+
+    class PausingQueue(real_queue):
+        def get(self, block=True, timeout=None):
+            result = super().get(block=block, timeout=timeout)
+            response_dequeued.set()
+            assert resume_callback.wait(timeout=2), "callback did not resume"
+            return result
+
+    class MinimalEnvironment(BaseEnvironment):
+        def __init__(self):
+            super().__init__(cwd=str(tmp_path), timeout=60)
+            self.run_bash_calls = 0
+
+        def _run_bash(self, *_args, **_kwargs):
+            self.run_bash_calls += 1
+            return object()
+
+        def _wait_for_process(self, *_args, **_kwargs):
+            return {"output": "executed", "returncode": 0}
+
+        def cleanup(self):
+            pass
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._approval_state = None
+    cli._clarify_state = None
+    cli._clarify_freetext = False
+    cli._sudo_state = None
+    cli._sudo_deadline = 0
+    cli._sudo_lock = threading.Lock()
+    cli._sudo_state_lock = threading.Lock()
+    cli._sudo_interrupt_generation = 0
+    cli._secret_state = None
+    cli._modal_input_snapshot = None
+    cli._app = SimpleNamespace(current_buffer=MagicMock())
+    cli._paint_now = MagicMock()
+    cli._capture_modal_input_snapshot = MagicMock()
+    cli._restore_modal_input_snapshot = MagicMock()
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {"env_type": "local", "cwd": str(tmp_path), "timeout": 60},
+    )
+    environment = MinimalEnvironment()
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, environment)
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+
+    result = {}
+
+    def run_terminal():
+        terminal_tool.set_sudo_password_callback(cli._sudo_password_callback)
+        try:
+            result["value"] = json.loads(
+                terminal_tool.terminal_tool("sudo shutdown now", force=True)
+            )
+        finally:
+            terminal_tool.set_sudo_password_callback(None)
+
+    with patch.object(
+        cli_module, "_sudo_response_queue_factory", PausingQueue
+    ), patch.object(cli_module, "_cprint"):
+        worker = threading.Thread(target=run_terminal, daemon=True)
+        worker.start()
+
+        deadline = time.time() + 2
+        while cli._sudo_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        state = cli._sudo_state
+        assert state is not None
+        assert cli._resolve_sudo_prompt(state, "typed-password")
+        assert response_dequeued.wait(timeout=2), "sudo response was not dequeued"
+
+        generation_before = cli._sudo_interrupt_generation
+        cli._clear_active_overlays_for_interrupt()
+        assert cli._sudo_interrupt_generation == generation_before + 1
+        set_interrupt(True, thread_id=worker.ident)
+        resume_callback.set()
+
+        worker.join(timeout=2)
+        set_interrupt(False, thread_id=worker.ident)
+
+    assert not worker.is_alive()
+    assert result["value"] == {
+        "output": "[Command interrupted]",
+        "exit_code": 130,
+        "error": "Command cancelled before process start.",
+        "status": "cancelled",
+    }
+    assert environment.run_bash_calls == 0
 
 
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():

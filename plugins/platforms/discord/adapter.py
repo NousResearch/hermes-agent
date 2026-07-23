@@ -2708,6 +2708,34 @@ class DiscordAdapter(BasePlatformAdapter):
             "options": canonical["options"],
         }
 
+    @staticmethod
+    def _requires_app_command_recreate(
+        current_payload: Dict[str, Any], desired_payload: Dict[str, Any]
+    ) -> bool:
+        """Return whether a command shape transition requires delete+create.
+
+        Discord rejects in-place edits that switch between nested command
+        options (subcommands or groups) and flat arguments. This occurs when
+        migrating the legacy nested ``/skill`` command to its current flat,
+        autocomplete-based form.
+        """
+
+        def _option_shape(payload: Dict[str, Any]) -> tuple[int, ...]:
+            return tuple(
+                int(item.get("type", 0) or 0)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            )
+
+        current_shape = _option_shape(current_payload)
+        desired_shape = _option_shape(desired_payload)
+        if current_shape == desired_shape:
+            return False
+
+        current_has_subcommands = any(option_type in (1, 2) for option_type in current_shape)
+        desired_has_subcommands = any(option_type in (1, 2) for option_type in desired_shape)
+        return current_has_subcommands != desired_has_subcommands
+
     async def _safe_sync_slash_commands(self) -> Dict[str, int]:
         """Diff existing global commands and only mutate the commands that changed."""
         if not self._client:
@@ -2782,7 +2810,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 unchanged += 1
                 continue
 
-            if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+            if (
+                self._patchable_app_command_payload(current_existing_payload)
+                == self._patchable_app_command_payload(desired)
+                or self._requires_app_command_recreate(current_existing_payload, desired)
+            ):
                 await mutate(http.delete_global_command, app_id, current.id)
                 await mutate(http.upsert_global_command, app_id, desired)
                 recreated += 1

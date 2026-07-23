@@ -532,8 +532,16 @@ async function startSocket() {
 
       const chatId = msg.key.remoteJid;
       const senderId = msg.key.participant || chatId;
+      // Baileys provides the authenticated phone JID as msg.key.senderPn on
+      // multi-device LID chats.  When present, treat it as the canonical
+      // sender identity — opaque LIDs are ephemeral and no lid-mapping file
+      // may exist yet on first contact (fixes #63415).
+      const senderPnRaw = msg.key.senderPn || null;
+      const senderPnJid = senderPnRaw
+        ? (senderPnRaw.includes('@') ? normalizeWhatsAppId(senderPnRaw) : `${senderPnRaw}@s.whatsapp.net`)
+        : null;
       const isGroup = chatId.endsWith('@g.us');
-      const senderNumber = senderId.replace(/@.*/, '');
+      const senderNumber = (senderPnJid || senderId).replace(/@.*/, '');
       emitDebugEvent({
         stage: 'upsert',
         type,
@@ -635,15 +643,20 @@ async function startSocket() {
           continue;
         }
         if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
+          // Fall back to senderPn when no lid-mapping file exists yet for
+          // first-contact LID senders (#63415).
+          const senderPnOk = senderPnJid && matchesAllowedUser(senderPnJid, ALLOWED_USERS, SESSION_DIR);
+          if (!senderPnOk) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'allowlist_mismatch',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
         }
       }
 
@@ -710,7 +723,7 @@ async function startSocket() {
       const event = await extractBridgeEvent({
         msg,
         chatId,
-        senderId,
+        senderId: senderPnJid || senderId,
         senderNumber,
         botIds,
         isGroup,

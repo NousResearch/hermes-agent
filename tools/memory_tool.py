@@ -202,6 +202,21 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Warn if loaded content exceeds char limits (can happen from external
+        # writes).  Entries remain loaded — the snapshot below still passes
+        # through normal sanitization — but further additions will be blocked
+        # until the store is back under its limit.
+        for target in ("memory", "user"):
+            count = self._char_count(target)
+            limit = self._char_limit(target)
+            if count > limit:
+                logger.warning(
+                    "%s.md exceeds char limit on load: %d/%d chars (%.0f%%). "
+                    "Entries remain loaded (snapshot sanitization still applies); "
+                    "further additions will be blocked until under the limit.",
+                    target.upper(), count, limit, count / limit * 100,
+                )
+
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.

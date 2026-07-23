@@ -503,6 +503,45 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestMemoryStoreCharLimitOnLoad:
+    @pytest.mark.parametrize(
+        "filename,target,label",
+        [
+            ("MEMORY.md", "memory", "MEMORY.md"),
+            ("USER.md", "user", "USER.md"),
+        ],
+    )
+    def test_warns_when_loaded_content_exceeds_limit(
+        self, tmp_path, monkeypatch, caplog, filename, target, label
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        # 600 chars exceeds both fixture-style limits (memory=500, user=300)
+        (tmp_path / filename).write_text("x" * 600, encoding="utf-8")
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+            store.load_from_disk()
+
+        assert "exceeds char limit" in caplog.text
+        assert label in caplog.text
+        # Content still loaded (no truncation) — snapshot sanitization applies
+        # separately at snapshot-build time.
+        assert len(store._entries_for(target)) == 1
+
+    def test_no_warning_when_under_limit(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text("short entry", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("short user note", encoding="utf-8")
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+            store.load_from_disk()
+
+        assert "exceeds char limit" not in caplog.text
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

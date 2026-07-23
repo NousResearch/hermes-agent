@@ -972,7 +972,14 @@ def test_worker_termination_kills_parent_and_grandchild(tmp_path):
         parent.wait(timeout=5)
 
         assert termination["process_group"] is True
-        assert termination["terminated"] is True
+        assert termination["termination_attempted"] is True
+        settle_deadline = time.time() + 5
+        while (
+            kb._process_group_alive(parent.pid)
+            and time.time() < settle_deadline
+        ):
+            time.sleep(0.05)
+        assert kb._process_group_alive(parent.pid) is False
         assert kb._pid_alive(parent.pid) is False
         assert kb._pid_alive(child_pid) is False
     finally:

@@ -1068,6 +1068,49 @@ class TestWebServerEndpoints:
 
 
 
+    def test_custom_endpoints_list_recognizes_environment_api_key_references(self):
+        """Desktop treats both env-key spellings as configured credentials."""
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "direct/model",
+                "base_url": "https://direct.example/v1",
+                "api_key_env": "DIRECT_API_KEY",
+            },
+            "providers": {
+                "canonical": {
+                    "base_url": "https://canonical.example/v1",
+                    "model": "canonical/model",
+                    "key_env": "CANONICAL_API_KEY",
+                },
+                "alias": {
+                    "base_url": "https://alias.example/v1",
+                    "model": "alias/model",
+                    "api_key_env": "ALIAS_API_KEY",
+                },
+                "empty": {
+                    "base_url": "https://empty.example/v1",
+                    "model": "empty/model",
+                    "key_env": "   ",
+                },
+            },
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        endpoints = {entry["id"]: entry for entry in resp.json()["endpoints"]}
+        assert endpoints["canonical"]["has_api_key"] is True
+        assert endpoints["canonical"]["api_key_preview"] == "${CANONICAL_API_KEY}"
+        assert endpoints["alias"]["has_api_key"] is True
+        assert endpoints["alias"]["api_key_preview"] == "${ALIAS_API_KEY}"
+        assert endpoints["custom"]["has_api_key"] is True
+        assert endpoints["custom"]["api_key_preview"] == "${DIRECT_API_KEY}"
+        assert endpoints["empty"]["has_api_key"] is False
+        assert endpoints["empty"]["api_key_preview"] is None
+
     def test_custom_endpoints_list_returns_canonical_and_legacy_api_modes(self):
         """Desktop receives one stable field across both config spellings."""
         from hermes_cli.config import save_config
@@ -1382,36 +1425,6 @@ class TestWebServerEndpoints:
         endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
-
-    def test_custom_endpoint_response_reports_api_key_env_aliases(self):
-        """Both provider and direct-config rows recognize api_key_env."""
-        from hermes_cli.config import save_config
-
-        save_config({
-            "model": {
-                "provider": "custom",
-                "default": "direct/model",
-                "base_url": "https://direct.example/v1",
-                "api_key_env": "DIRECT_API_KEY",
-            },
-            "providers": {
-                "proxy": {
-                    "name": "Proxy",
-                    "base_url": "https://proxy.example/v1",
-                    "model": "proxy/model",
-                    "api_key_env": "PROXY_API_KEY",
-                },
-            },
-        })
-
-        resp = self.client.get("/api/providers/custom-endpoints")
-
-        assert resp.status_code == 200
-        endpoints = {entry["id"]: entry for entry in resp.json()["endpoints"]}
-        assert endpoints["proxy"]["has_api_key"] is True
-        assert endpoints["proxy"]["api_key_preview"] == "${PROXY_API_KEY}"
-        assert endpoints["custom"]["has_api_key"] is True
-        assert endpoints["custom"]["api_key_preview"] == "${DIRECT_API_KEY}"
 
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
@@ -3688,4 +3701,3 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
-

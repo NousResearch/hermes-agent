@@ -90,6 +90,76 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
+def _extract_markdown_entries(text: str) -> List[str]:
+    """Parse raw markdown/plaintext memories into compact entries."""
+    entries: List[str] = []
+    headings: List[str] = []
+    paragraph_lines: List[str] = []
+
+    def context_prefix() -> str:
+        filtered = [
+            heading
+            for heading in headings
+            if heading and not re.search(r"\b(MEMORY|USER)\.md\b", heading, re.IGNORECASE)
+        ]
+        return " > ".join(filtered)
+
+    def append_entry(content: str) -> None:
+        content = content.strip()
+        if not content:
+            return
+        prefix = context_prefix()
+        entries.append(f"{prefix}: {content}" if prefix else content)
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph_lines
+        if not paragraph_lines:
+            return
+        append_entry(" ".join(line.strip() for line in paragraph_lines))
+        paragraph_lines = []
+
+    in_code_block = False
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            flush_paragraph()
+            continue
+        if in_code_block:
+            continue
+
+        heading_match = re.match(r"^(#{1,6})\s+(.*\S)\s*$", stripped)
+        if heading_match:
+            flush_paragraph()
+            level = len(heading_match.group(1))
+            heading_text = heading_match.group(2).strip()
+            while len(headings) >= level:
+                headings.pop()
+            headings.append(heading_text)
+            continue
+
+        bullet_match = re.match(r"^\s*(?:[-*]|\d+\.)\s+(.*\S)\s*$", line)
+        if bullet_match:
+            flush_paragraph()
+            append_entry(bullet_match.group(1).strip())
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            flush_paragraph()
+            continue
+
+        paragraph_lines.append(stripped)
+
+    flush_paragraph()
+    return [entry for entry in entries if entry]
+
+
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     """Build the error dict returned when external drift is detected.
 
@@ -706,10 +776,19 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
-        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
+        if ENTRY_DELIMITER in raw:
+            # Use ENTRY_DELIMITER for consistency with _write_file. Splitting
+            # by "§" alone would incorrectly split entries that contain "§"
+            # in their content.
+            entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
+            return [e for e in entries if e]
+
+        logger.warning(
+            "Memory file %s has no %r delimiters; parsing as markdown/plaintext compatibility mode.",
+            path,
+            ENTRY_DELIMITER.strip(),
+        )
+        return _extract_markdown_entries(raw)
 
     def _detect_external_drift(self, target: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
@@ -745,13 +824,17 @@ class MemoryStore:
         if not raw.strip():
             return None
 
-        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-        roundtrip = ENTRY_DELIMITER.join(parsed)
+        if ENTRY_DELIMITER in raw:
+            parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+            roundtrip_mismatch = raw.strip() != ENTRY_DELIMITER.join(parsed)
+        else:
+            parsed = _extract_markdown_entries(raw)
+            roundtrip_mismatch = False
 
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = roundtrip_mismatch or (max_entry_len > char_limit)
         if not drift_detected:
             return None
 
@@ -1156,7 +1239,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

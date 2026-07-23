@@ -502,6 +502,46 @@ class TestMemoryStorePersistence:
         store.load_from_disk()
         assert len(store.memory_entries) == 2
 
+    def test_loads_raw_markdown_memory_as_multiple_entries(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "# MEMORY.md - Long-Term Memory\n\n"
+            "## Schedule\n"
+            "- Daily: website check\n"
+            "- Weekly: backup\n\n"
+            "## Projects\n"
+            "FOAF network at /data/dossiers/\n",
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        with caplog.at_level("WARNING"):
+            store.load_from_disk()
+
+        assert store.memory_entries == [
+            "Schedule: Daily: website check",
+            "Schedule: Weekly: backup",
+            "Projects: FOAF network at /data/dossiers/",
+        ]
+        assert "compatibility mode" in caplog.text
+
+    def test_raw_markdown_memory_can_be_mutated_without_drift_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "## Projects\n"
+            "- FOAF network at /data/dossiers/\n",
+            encoding="utf-8",
+        )
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        result = store.add("memory", "Infra: nightly backup")
+
+        assert result["success"] is True
+        assert "Projects: FOAF network at /data/dossiers/" in result["entries"]
+        assert "Infra: nightly backup" in result["entries"]
+        assert not list(tmp_path.glob("MEMORY.md.bak.*"))
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):

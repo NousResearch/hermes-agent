@@ -2583,7 +2583,13 @@ class TestSilentDelivery:
         assert not sil("Daily report: 4 PRs merged.")
         assert not sil("I stayed [SILENT] but here is the report: 3 items.")
         assert not sil("Silent retry succeeded after 2 attempts.")
-        assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
+        # Malformed open-bracket is tolerated ONLY when it is the whole
+        # response or its own line (smaller models often drop the trailing
+        # bracket at end-of-turn). Mid-sentence malformed tokens still count
+        # as real content so a genuine report is never swallowed.
+        assert sil("[SILENT")
+        assert sil("2 deals filtered.\n\n[SILENT")
+        assert not sil("I almost wrote [SILENT but then remembered the report.")
         assert not sil("")
         assert not sil("   \n\t ")
 

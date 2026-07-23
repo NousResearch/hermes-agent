@@ -263,6 +263,12 @@ def _is_cron_silence_response(text: str) -> bool:
     variants the model emits when it drops the brackets (#51438, #46917).
     Whitespace-trimmed and case-insensitive.  A token buried mid-sentence is
     treated as real content and delivered.
+
+    Tolerates a missing trailing ``]`` ONLY when the malformed token is the
+    entire response or its own line — smaller models (e.g. MiniMax-M3) often
+    emit ``[SILENT`` at end-of-turn and nothing else. Mid-sentence malformed
+    tokens are still treated as real content so a genuine report is never
+    swallowed.
     """
     if not isinstance(text, str):
         return False
@@ -273,13 +279,25 @@ def _is_cron_silence_response(text: str) -> bool:
     def _is_token(line: str) -> bool:
         return " ".join(line.strip().upper().split()) in _CRON_SILENCE_TOKENS
 
+    def _is_malformed_silent(line: str) -> bool:
+        # "[SILENT" with no closing bracket, nothing else on the line.
+        return line.strip().upper() == "[SILENT"
+
     # Whole response is exactly a token.
     if _is_token(stripped):
+        return True
+    # Whole response is the malformed open-bracket sentinel alone.
+    if _is_malformed_silent(stripped):
         return True
     # Marker on its own first or last line (trailing/leading note on a
     # separate line — e.g. "2 deals filtered\n\n[SILENT]").
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
-    if lines and (_is_token(lines[0]) or _is_token(lines[-1])):
+    if lines and (
+        _is_token(lines[0])
+        or _is_token(lines[-1])
+        or _is_malformed_silent(lines[0])
+        or _is_malformed_silent(lines[-1])
+    ):
         return True
     # Bracketed sentinel used as a same-line prefix — the documented cron
     # pattern "[SILENT] No changes detected".  Restricted to the bracketed

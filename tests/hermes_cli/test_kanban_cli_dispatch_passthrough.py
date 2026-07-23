@@ -40,6 +40,7 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     fake_config = {
         "kanban": {
             "max_in_progress": 3,
+            "global_max_in_progress": 4,
             "max_spawn": 5,
             "default_assignee": "default",
             "max_in_progress_per_profile": 2,
@@ -64,6 +65,7 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     assert captured.get("max_in_progress") == 3, (
         f"CLI must pass kanban.max_in_progress from config; got {captured.get('max_in_progress')!r}"
     )
+    assert captured.get("global_max_in_progress") == 4
     assert captured.get("max_spawn") == 5, (
         f"CLI must pass kanban.max_spawn from config when --max is not provided; got {captured.get('max_spawn')!r}"
     )
@@ -114,6 +116,56 @@ def test_cli_invalid_max_in_progress_silently_disables(isolated_kanban_home, mon
             f"invalid max_in_progress={bad_val!r} should fall through to None, "
             f"got {captured.get('max_in_progress')!r}"
         )
+
+
+def test_cli_invalid_global_max_in_progress_silently_disables(
+    isolated_kanban_home, monkeypatch
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    for bad_val in (0, -1, "abc", "1.5"):
+        fake_config = {"kanban": {"global_max_in_progress": bad_val}}
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+        captured = {}
+        monkeypatch.setattr(
+            kanban_db,
+            "dispatch_once",
+            lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+        )
+        args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
+        kb_cli._cmd_dispatch(args)
+        assert captured.get("global_max_in_progress") is None
+
+
+def test_forced_daemon_passes_global_cap_from_config(
+    isolated_kanban_home, monkeypatch
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"global_max_in_progress": 2}},
+    )
+    monkeypatch.setattr(kanban_db, "init_db", lambda: None)
+    captured = {}
+    monkeypatch.setattr(
+        kanban_db,
+        "run_daemon",
+        lambda **kwargs: captured.update(kwargs),
+    )
+    args = argparse.Namespace(
+        force=True,
+        interval=60.0,
+        max=None,
+        failure_limit=2,
+        pidfile=None,
+        verbose=False,
+    )
+
+    assert kb_cli._cmd_daemon(args) == 0
+    assert captured["global_max_in_progress"] == 2
 
 
 def test_kanban_swarm_uses_existing_humanizer_skill():

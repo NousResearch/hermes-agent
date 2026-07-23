@@ -764,6 +764,26 @@ def test_dispatch_dry_run(client):
     assert isinstance(body, dict)
 
 
+def test_dispatch_passes_global_cap_from_config(client, monkeypatch):
+    from hermes_cli import kanban_db
+
+    captured = {}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"global_max_in_progress": 2}},
+    )
+
+    def fake_dispatch_once(_conn, **kwargs):
+        captured.update(kwargs)
+        return kanban_db.DispatchResult()
+
+    monkeypatch.setattr(kanban_db, "dispatch_once", fake_dispatch_once)
+    response = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
+
+    assert response.status_code == 200
+    assert captured["global_max_in_progress"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Triage column (new v1 status)
 # ---------------------------------------------------------------------------

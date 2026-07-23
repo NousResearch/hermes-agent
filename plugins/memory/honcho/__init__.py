@@ -732,9 +732,10 @@ class HonchoMemoryProvider(MemoryProvider):
         filtered_injection: list[str] = []
         filtered_historical: list[str] = []
         for line in lines:
-            stripped = line.lstrip()
+            stripped = re.sub(r"^[\s\-*#>\d\.]+", "", line).strip()
+            upper = stripped.upper()
             lower = stripped.lower()
-            if any(stripped.startswith(prefix) for prefix in cls._IMPERATIVE_LINE_PREFIXES):
+            if any(upper.startswith(prefix) for prefix in cls._IMPERATIVE_LINE_PREFIXES):
                 filtered_injection.append(line)
             elif any(lower.startswith(prefix) for prefix in cls._SELF_NARRATION_PREFIXES):
                 filtered_historical.append(line)

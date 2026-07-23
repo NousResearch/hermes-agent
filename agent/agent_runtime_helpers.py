@@ -1361,7 +1361,8 @@ def restore_primary_runtime(agent) -> bool:
         # _fallback_activated stays False.  The next turn skips this block
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
-        agent._fallback_index = 0
+        from agent.chat_completion_helpers import _reset_fallback_episode
+        _reset_fallback_episode(agent)
         return False
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
@@ -1521,9 +1522,8 @@ def restore_primary_runtime(agent) -> bool:
             agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
-        agent._fallback_activated = False
-        agent._fallback_index = 0
-        agent._fallback_exhaustion_notified = False
+        from agent.chat_completion_helpers import _reset_fallback_episode
+        _reset_fallback_episode(agent)
 
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves
@@ -2355,8 +2355,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         })
 
     # ── Reset fallback state ──
-    agent._fallback_activated = False
-    agent._fallback_index = 0
+    from agent.chat_completion_helpers import _reset_fallback_episode
+    _reset_fallback_episode(agent)
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary

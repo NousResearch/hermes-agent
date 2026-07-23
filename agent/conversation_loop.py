@@ -4419,8 +4419,8 @@ def run_conversation(
                         # still activate fallback_providers after stale
                         # pre-recovery fallback/credential-pool bookkeeping.
                         _retry.has_retried_429 = False
-                        agent._fallback_index = 0
-                        agent._fallback_activated = False
+                        from agent.chat_completion_helpers import _reset_fallback_episode
+                        _reset_fallback_episode(agent)
                         continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():

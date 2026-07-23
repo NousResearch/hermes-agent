@@ -86,6 +86,27 @@ class TestExhaustionArmsCooldown:
             assert agent._try_activate_fallback(reason=FailoverReason.timeout) is False
         invoke.assert_not_called()
 
+    def test_second_fallback_episode_fires_a_second_exhaustion_observer(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "kimi-coding", "model": "kimi-k2.7-code"}]
+        )
+        agent._fallback_index = len(agent._fallback_chain)
+
+        with (
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as invoke,
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.timeout) is False
+
+            # Start a new episode through the normal new-turn reset path.
+            agent._rate_limited_until = 0
+            assert agent._restore_primary_runtime() is False
+            agent._fallback_index = len(agent._fallback_chain)
+
+            assert agent._try_activate_fallback(reason=FailoverReason.timeout) is False
+
+        assert invoke.call_count == 2
+
     def test_non_retryable_exhaustion_arms_cooldown(self):
         """Walking a non-empty chain to exhaustion on a non-rate-limit
         failure arms a short ``_rate_limited_until`` cooldown.

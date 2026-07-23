@@ -607,11 +607,14 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`on_fallback_activated`](/user-guide/features/hooks#provider-fallback-lifecycle-hooks) | Fallback provider/model activation succeeds | `from_provider: str, from_model: str, to_provider: str, to_model: str, reason: str \| None, session_id: str, platform: str` | ignored |
+| [`on_fallback_chain_exhausted`](/user-guide/features/hooks#provider-fallback-lifecycle-hooks) | A non-empty fallback episode has no remaining route | `provider: str, model: str, primary_provider: str, primary_model: str, reason: str \| None, chain_length: int, session_id: str, platform: str` | ignored |
+| [`on_primary_restored`](/user-guide/features/hooks#provider-fallback-lifecycle-hooks) | Primary provider/model restoration succeeds | `provider: str, model: str, session_id: str, platform: str` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation. Provider fallback lifecycle hooks are strictly observer-only: their callbacks cannot alter routing or recovery behavior.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

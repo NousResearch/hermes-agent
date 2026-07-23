@@ -1533,6 +1533,13 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _reset_fallback_episode(agent) -> None:
+    """Reset all state scoped to one fallback-chain episode."""
+    agent._fallback_activated = False
+    agent._fallback_index = 0
+    agent._fallback_exhaustion_notified = False
+
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.

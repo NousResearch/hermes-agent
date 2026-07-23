@@ -1616,6 +1616,44 @@ PY
     log_success "All dependencies installed"
 }
 
+# Ensure ~/.local/bin/env exists as a PATH-extending stub.
+#
+# Background: `uv`'s installer (https://astral.sh/uv/install.sh) writes
+# `. "$HOME/.local/bin/env"` into the user's shell rc files and also creates
+# the matching stub at $HOME/.local/bin/env. If that stub is ever removed
+# (manual cleanup, uv reinstall via a different channel, etc.) the source
+# line in shell rc keeps firing and prints
+#   -bash: ~/.local/bin/env: No such file or directory
+# on every interactive shell. Re-running our installer doesn't fix it
+# because check_uv() short-circuits when ~/.local/bin/uv already exists,
+# so uv's installer (which would recreate the stub) never runs again.
+#
+# We can't safely rewrite the user's shell rc (it may be a symlink into a
+# dotfiles repo), but we own $HOME/.local/bin during install — so recreate
+# the stub. Behavior matches the uv-shipped version, so uv is free to
+# overwrite it later with no conflict.
+ensure_local_bin_env_stub() {
+    local env_file="$HOME/.local/bin/env"
+    if [ -e "$env_file" ]; then
+        return 0
+    fi
+    mkdir -p "$HOME/.local/bin"
+    cat > "$env_file" <<'STUB_EOF'
+#!/bin/sh
+# Hermes Agent stub — keeps shell init working if uv's env file is missing.
+# Matches the behavior of the file uv's installer normally writes.
+case ":${PATH}:" in
+    *:"$HOME/.local/bin":*)
+        ;;
+    *)
+        export PATH="$HOME/.local/bin:$PATH"
+        ;;
+esac
+STUB_EOF
+    chmod +x "$env_file"
+    log_info "Created ~/.local/bin/env stub (heals orphaned shell-rc source line)"
+}
+
 setup_path() {
     log_info "Setting up hermes command..."
 
@@ -1770,6 +1808,12 @@ EOF
     else
         log_info "~/.local/bin already on PATH"
     fi
+
+    # Repair orphaned `. "$HOME/.local/bin/env"` lines (commonly left
+    # behind by uv's installer when its stub was later removed). Runs
+    # regardless of whether we just added the PATH line or found it
+    # already present — both paths can have orphan source lines.
+    ensure_local_bin_env_stub
 
     # Export for current session so hermes works immediately
     export PATH="$command_link_dir:$PATH"

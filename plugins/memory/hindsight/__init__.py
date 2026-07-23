@@ -140,6 +140,90 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+def _probe_http_health(url: str, timeout: float = 5.0) -> bool:
+    """Return True when a local Hindsight API URL answers /health."""
+    if not url:
+        return False
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(f"{url.rstrip('/')}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return getattr(resp, "status", resp.getcode()) == 200
+    except Exception:
+        return False
+
+
+def _install_embedded_readiness_fallback(client, profile: str) -> None:
+    """Patch a HindsightEmbedded instance to recover from false startup timeouts.
+
+    Some hindsight-embed versions can return False from ensure_running() even
+    after the daemon reached "Application startup complete" and /health is
+    already green. Without this fallback, every proxied method call raises
+    "Failed to start daemon" despite a usable local API. Keep the workaround
+    instance-local so we do not monkey-patch the third-party package globally.
+    """
+    original = client.__dict__.get("_ensure_started") or getattr(type(client), "_ensure_started", None)
+    if original is None or client.__dict__.get("_hermes_readiness_fallback", False):
+        return
+
+    def _connect_if_healthy() -> bool:
+        manager = getattr(client, "_manager", None)
+        if manager is None:
+            return False
+        try:
+            daemon_url = manager.get_url(profile)
+        except Exception:
+            return False
+        if not _probe_http_health(daemon_url):
+            return False
+        if (
+            client.__dict__.get("_hermes_direct_health_client", False)
+            and client.__dict__.get("_started", False)
+            and client.__dict__.get("_client") is not None
+        ):
+            return True
+
+        from hindsight_client import Hindsight
+
+        stale_client = client.__dict__.get("_client")
+        if stale_client is not None:
+            try:
+                stale_client.close()
+            except Exception:
+                logger.debug("Error closing stale embedded Hindsight client", exc_info=True)
+
+        client._client = Hindsight(base_url=daemon_url, timeout=float(_DEFAULT_TIMEOUT))
+        client._started = True
+        client._hermes_direct_health_client = True
+        logger.info(
+            "Hindsight embedded daemon for profile %r is healthy; using existing daemon at %s",
+            profile,
+            daemon_url,
+        )
+        return True
+
+    def _ensure_started_with_health_fallback():
+        if _connect_if_healthy():
+            return None
+        try:
+            return original(client)
+        except TypeError:
+            try:
+                return original()
+            except RuntimeError as exc:
+                if "Failed to start daemon" not in str(exc) or not _connect_if_healthy():
+                    raise
+                return None
+        except RuntimeError as exc:
+            if "Failed to start daemon" not in str(exc) or not _connect_if_healthy():
+                raise
+            return None
+
+    client._ensure_started = _ensure_started_with_health_fallback
+    client._hermes_readiness_fallback = True
+
+
 def _ensure_cloud_client_dependency() -> None:
     """Install the Hindsight cloud client lazily before importing it."""
     try:
@@ -1050,6 +1134,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._idle_timeout = idle_timeout
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
+                _install_embedded_readiness_fallback(self._client, kwargs["profile"])
             else:
                 _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
@@ -1942,7 +2027,10 @@ class HindsightMemoryProvider(MemoryProvider):
                         except Exception:
                             pass
                     try:
-                        self._client.close()
+                        if getattr(self._client, "__dict__", {}).get("_hermes_direct_health_client", False):
+                            setattr(self._client, "_closed", True)
+                        else:
+                            self._client.close()
                     except RuntimeError:
                         pass
                 else:

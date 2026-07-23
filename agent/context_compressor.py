@@ -3011,7 +3011,29 @@ This compaction should PRIORITISE preserving all information related to the focu
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     @staticmethod
-    def _is_context_summary_content(content: Any) -> bool:
+    def _starts_with_summary_prefix(text: str) -> bool:
+        """Return True if *text* begins with any known handoff prefix."""
+        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+            return True
+        return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
+
+    @classmethod
+    def classify_summary_content(cls, content: Any) -> Optional[str]:
+        """Classify how *content* relates to a compaction summary.
+
+        Returns:
+            ``"standalone"``: the entire message IS a compaction handoff
+            (current, legacy, or historical prefix at the start). Frontends
+            may restyle/collapse the whole message as a summary.
+
+            ``"merged"``: a merge-into-tail message — real preserved turn
+            content wrapped under ``_MERGED_PRIOR_CONTEXT_HEADER``, followed by
+            ``_MERGED_SUMMARY_DELIMITER`` and the summary body. The message
+            *contains* a summary but is not only a summary; collapsing the
+            whole message would hide the preserved content.
+
+            ``None``: no compaction summary detected.
+        """
         text = _content_text_for_contains(content).lstrip()
         # Merge-into-tail summaries wrap prior tail content before the summary,
         # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
@@ -3019,10 +3041,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         # (auto-focus skip, carry-forward summary find, last-real-user anchor)
         # mistake a merged summary message for a real user turn.
         if _MERGED_SUMMARY_DELIMITER in text:
-            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
-            return True
-        return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
+            after = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
+            return "merged" if cls._starts_with_summary_prefix(after) else None
+        return "standalone" if cls._starts_with_summary_prefix(text) else None
+
+    @classmethod
+    def _is_context_summary_content(cls, content: Any) -> bool:
+        return cls.classify_summary_content(content) is not None
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:

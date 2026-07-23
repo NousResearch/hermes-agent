@@ -97,3 +97,152 @@ class TestMetadataFlagNeverReachesWire:
             isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
             for m in out
         )
+
+
+class TestClassifySummaryContent:
+    """classify_summary_content distinguishes standalone handoffs from
+    merge-into-tail messages so wire consumers (ACP replay) can flag them
+    differently — collapsing a merged message would hide the preserved
+    tail content that precedes the summary."""
+
+    def test_standalone_summary(self):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        content = SUMMARY_PREFIX + "\n## Active Task\nstuff"
+        assert ContextCompressor.classify_summary_content(content) == "standalone"
+        assert ContextCompressor._is_context_summary_content(content) is True
+
+    def test_legacy_and_historical_prefixes_are_standalone(self):
+        from agent.context_compressor import (
+            LEGACY_SUMMARY_PREFIX,
+            _HISTORICAL_SUMMARY_PREFIXES,
+        )
+
+        assert ContextCompressor.classify_summary_content(
+            LEGACY_SUMMARY_PREFIX + " body"
+        ) == "standalone"
+        for prefix in _HISTORICAL_SUMMARY_PREFIXES:
+            assert ContextCompressor.classify_summary_content(
+                prefix + " body"
+            ) == "standalone"
+
+    def test_merged_tail_summary(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+        )
+
+        merged = (
+            _MERGED_PRIOR_CONTEXT_HEADER + "\n"
+            "old tail content\n\n"
+            + _MERGED_SUMMARY_DELIMITER + "\n\n"
+            + SUMMARY_PREFIX + "\nBODY\n\n"
+            + _SUMMARY_END_MARKER
+        )
+        assert ContextCompressor.classify_summary_content(merged) == "merged"
+        assert ContextCompressor._is_context_summary_content(merged) is True
+
+    def test_plain_messages_classify_none(self):
+        assert ContextCompressor.classify_summary_content("just a question") is None
+        assert ContextCompressor.classify_summary_content("") is None
+        assert ContextCompressor.classify_summary_content(None) is None
+
+    def test_delimiter_without_summary_prefix_is_none(self):
+        """A message merely quoting the merged delimiter (e.g. a user pasting
+        logs) is not a summary unless a handoff prefix follows it."""
+        from agent.context_compressor import _MERGED_SUMMARY_DELIMITER
+
+        content = "look at this:\n" + _MERGED_SUMMARY_DELIMITER + "\nnot a summary"
+        assert ContextCompressor.classify_summary_content(content) is None
+        assert ContextCompressor._is_context_summary_content(content) is False
+
+
+class TestClassifyAgreesWithPredicatesOnLiveEmissions:
+    """Behavior contract: classify_summary_content must agree with the
+    boolean summary predicates (``_is_context_summary_content`` and the
+    module-level ``is_compaction_summary_message``) on every handoff shape
+    the CURRENT compressor actually emits — not just hand-built fixtures.
+
+    If the emission format drifts (prefix rewording, new merge framing),
+    these tests fail on the real output rather than on a stale snapshot,
+    signalling that ACP replay flagging and the internal summary detectors
+    have diverged.
+    """
+
+    @staticmethod
+    def _live_compress(msgs):
+        # Match the emission-probe compressor shape (wide context, minimal
+        # protection) so the transcript geometry — not protection budgets —
+        # decides the merge-vs-standalone path deterministically.
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            cc = ContextCompressor(
+                model="test-model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        out = _compress(cc, msgs)
+        flagged = [
+            m for m in out
+            if isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        ]
+        return flagged
+
+    @staticmethod
+    def _assert_agreement(message):
+        from agent.context_compressor import is_compaction_summary_message
+
+        kind = ContextCompressor.classify_summary_content(message.get("content"))
+        detected = ContextCompressor._is_context_summary_content(
+            message.get("content")
+        )
+        assert (kind is not None) == detected
+        # is_compaction_summary_message also honors the metadata flag, so it
+        # must detect every message classify flags — and on a flag-stripped
+        # copy (the DB-reload shape) content classification alone must carry.
+        assert is_compaction_summary_message(message) is True
+        stripped = {
+            k: v for k, v in message.items()
+            if k != COMPRESSED_SUMMARY_METADATA_KEY
+        }
+        assert is_compaction_summary_message(stripped) == (kind is not None)
+        return kind
+
+    def test_merged_emission_classifies_merged_and_predicates_agree(self):
+        """Alternating transcripts take the merge-into-tail path on current
+        main — the emitted handoff must classify 'merged'."""
+        flagged = self._live_compress(_make_messages())
+        assert len(flagged) == 1
+        kind = self._assert_agreement(flagged[0])
+        assert kind == "merged"
+
+    def test_standalone_emission_classifies_standalone_and_predicates_agree(self):
+        """A degenerate all-user transcript forces the standalone-insertion
+        path — the emitted handoff must classify 'standalone'."""
+        msgs = [{"role": "system", "content": "sys"}]
+        msgs.extend(
+            {"role": "user", "content": f"user only {i} " + "x" * 400}
+            for i in range(60)
+        )
+        flagged = self._live_compress(msgs)
+        assert len(flagged) == 1
+        kind = self._assert_agreement(flagged[0])
+        assert kind == "standalone"
+
+    def test_non_summary_messages_agree_on_none(self):
+        from agent.context_compressor import is_compaction_summary_message
+
+        for msg in (
+            {"role": "user", "content": "plain question"},
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": None},
+        ):
+            assert ContextCompressor.classify_summary_content(msg["content"]) is None
+            assert ContextCompressor._is_context_summary_content(msg["content"]) is False
+            assert is_compaction_summary_message(msg) is False

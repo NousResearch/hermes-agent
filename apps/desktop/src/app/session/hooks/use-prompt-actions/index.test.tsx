@@ -469,7 +469,9 @@ describe('usePromptActions /compress', () => {
       ])
     )
     expect($notifications.get()).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ kind: 'success', message: expect.stringContaining('Compression aborted') })])
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'success', message: expect.stringContaining('Compression aborted') })
+      ])
     )
   })
 
@@ -1049,6 +1051,44 @@ describe('usePromptActions submit / queue drain semantics', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'hello after a stop'
+      },
+      1_800_000
+    )
+  })
+
+  it('flags prompt.submit with interrupted:true after a voice-playback barge', async () => {
+    const { markVoicePlaybackInterrupted } = await import('@/lib/voice-playback')
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    markVoicePlaybackInterrupted()
+    await handle!.submitText('stop! rude interruption')
+
+    // The latch is one-shot: the flag rides this submit, the next is clean.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'stop! rude interruption',
+        interrupted: true
+      },
+      1_800_000
+    )
+
+    await handle!.submitText('follow-up without a barge')
+    expect(requestGateway).toHaveBeenLastCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'follow-up without a barge'
       },
       1_800_000
     )

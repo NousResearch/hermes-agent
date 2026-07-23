@@ -122,6 +122,22 @@ async def test_exec_approval_smart_denied_and_flag_gating():
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_accepts_approval_id_kwarg():
+    # run.py passes approval_id= to whichever adapter is live, and builds the
+    # call inside a try/except that degrades to the plain-text prompt on any
+    # exception. An implementer missing the kwarg raises TypeError at call
+    # construction, gets swallowed, and silently drops this platform from
+    # native buttons to text. The relay still resolves FIFO -- adopting
+    # by-id resolution here is a separate step.
+    adapter, stub = _adapter()
+    result = await adapter.send_exec_approval(
+        "c1", "cmd", "sess:1", approval_id="req-abc"
+    )
+    assert result.success is True
+    assert stub.sent[-1]["prompt_kind"] == "approval"
+
+
+@pytest.mark.asyncio
 async def test_slash_confirm_renders_three_options():
     adapter, stub = _adapter()
     result = await adapter.send_slash_confirm(

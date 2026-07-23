@@ -3814,7 +3814,7 @@ class TelegramAdapter(TelegramWisdomMixin, BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, approval_id: Optional[str] = None) -> SendResult:
         """Send an inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
         def build():

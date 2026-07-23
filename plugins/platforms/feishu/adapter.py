@@ -1646,6 +1646,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False,
+        approval_id: Optional[str] = None,
     ) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
         route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""

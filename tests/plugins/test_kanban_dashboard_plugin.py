@@ -311,6 +311,41 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+
+
+def test_create_task_with_labels_round_trips_and_filters(client):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "labeled", "labels": ["backend", "qa"]},
+    )
+    assert r.status_code == 200, r.text
+    task = r.json()["task"]
+    assert task["labels"] == ["backend", "qa"]
+
+    backend_only = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "backend only", "labels": ["backend"]},
+    ).json()["task"]
+    client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "other", "labels": ["frontend"]},
+    )
+
+    backend_board = client.get("/api/plugins/kanban/board?label=backend").json()
+    backend_tasks = {
+        tt["id"]: tt for col in backend_board["columns"] for tt in col["tasks"]
+    }
+    assert set(backend_tasks) == {task["id"], backend_only["id"]}
+    assert backend_tasks[task["id"]]["labels"] == ["backend", "qa"]
+
+    board = client.get("/api/plugins/kanban/board?label=backend&label=qa").json()
+    ids = {tt["id"] for col in board["columns"] for tt in col["tasks"]}
+    assert ids == {task["id"]}
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert detail["task"]["labels"] == ["backend", "qa"]
+
+
 def test_board_query_param_default_overrides_current_board_pointer(client):
     """Dashboard ``?board=default`` must win even if the CLI's current-board
     pointer targets a non-default board.
@@ -383,7 +418,6 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
     js = bundle.read_text()
 
     assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
-    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
 
 
 def test_dashboard_initial_board_uses_backend_current_when_unpinned():

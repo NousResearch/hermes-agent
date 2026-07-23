@@ -378,6 +378,7 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 @router.get("/board")
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
+    label: list[str] = Query(default_factory=list, description="Require label(s); repeat for AND semantics"),
     include_archived: bool = Query(False),
     board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
     workflow_template_id: Optional[str] = Query(
@@ -402,6 +403,7 @@ def get_board(
         tasks = kanban_db.list_tasks(
             conn,
             tenant=tenant,
+            labels=label or None,
             include_archived=include_archived,
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
@@ -606,6 +608,7 @@ class CreateTaskBody(BaseModel):
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
+    labels: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
 
@@ -630,6 +633,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
+            labels=payload.labels,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
         )

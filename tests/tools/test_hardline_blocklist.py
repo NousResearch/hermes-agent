@@ -305,6 +305,132 @@ def test_root_wipe_at_command_position_is_hardline(command):
 
 
 # -------------------------------------------------------------------------
+# Multi-call applet bypass (busybox / toybox)
+# -------------------------------------------------------------------------
+#
+# BusyBox and toybox package many applets into one binary. `busybox reboot`
+# runs the reboot applet as argv[1] of busybox itself, so the destructive
+# verb is never a command-position word. Without peeling the multi-call
+# prefix, the hardline floor only saw `busybox` / `toybox` and approved
+# host power-off with no prompt (including default mode). The reboot family
+# has no DANGEROUS_PATTERNS backstop.
+_MULTI_CALL_BYPASS = [
+    # Shutdown / reboot / halt / poweroff applets
+    "busybox reboot",
+    "busybox poweroff",
+    "busybox halt",
+    "busybox shutdown",
+    "toybox reboot",
+    "toybox poweroff",
+    "toybox halt",
+    # Path-qualified multi-call binary
+    "/bin/busybox reboot",
+    "/usr/bin/busybox poweroff",
+    "./busybox reboot",
+    "usr/bin/busybox reboot",
+    "bin/busybox halt",
+    "/bin/toybox reboot",
+    # Multi-call after ordinary wrappers already in _CMDPOS
+    "sudo busybox reboot",
+    "sudo -E busybox poweroff",
+    "env FOO=1 busybox reboot",
+    "nohup busybox reboot",
+    "setsid busybox poweroff",
+    # Multi-call after separators / subshell
+    "ls; busybox reboot",
+    "true && busybox poweroff",
+    "false || busybox halt",
+    "$(busybox reboot)",
+    "(busybox reboot)",
+    "{ busybox poweroff; }",
+    # init as multi-call applet (next word is the applet)
+    "busybox init 0",
+    "busybox init 6",
+    # Root wipe via multi-call rm (hardline floor is the only yolo residual)
+    "busybox rm -rf /",
+    "toybox rm -rf /",
+    "busybox rm -rf ~",
+    "/bin/busybox rm -rf /",
+    "sudo busybox rm -rf /",
+    "busybox rm -rf /etc",
+    'busybox rm -rf "/"',
+]
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_BYPASS)
+def test_multicall_applet_hardline_is_blocked(command):
+    """A hardline verb packaged as a busybox/toybox applet still hits the floor."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"multi-call applet leaked past the floor: {command!r}"
+    assert desc
+
+
+# Multi-call binary with a non-destructive applet, or the words as data only.
+# Option-first forms (busybox --help reboot) are not applet selection: the
+# documented form is busybox <applet> [args...], so dash tokens must not be
+# peeled before declaring the next word the applet.
+_MULTI_CALL_NOT_HARDLINE = [
+    "busybox ls",
+    "busybox cat /etc/hosts",
+    "busybox echo reboot",
+    "toybox ps",
+    "toybox echo poweroff",
+    "echo busybox reboot",
+    "echo 'busybox reboot'",
+    "grep busybox reboot.log",
+    "find . -name busybox",
+    "git commit -m 'busybox reboot note'",
+    'gh pr create --title "block busybox reboot"',
+    "busybox",  # no applet selected
+    "toybox",
+    # Benign multi-call after wrappers
+    "sudo busybox ls",
+    "env FOO=1 busybox true",
+    "nohup busybox sleep 1",
+    # Option-first: next token is a flag, not the hardline applet
+    "busybox --help reboot",
+    "busybox -h reboot",
+    "busybox --list reboot",
+    "toybox --help poweroff",
+    "toybox -h halt",
+    "busybox --help",
+    "busybox --login reboot",
+    "/bin/busybox --help reboot",
+    "sudo busybox --help reboot",
+]
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_NOT_HARDLINE)
+def test_multicall_benign_applet_is_not_hardline(command):
+    """Benign busybox/toybox applets and data-only uses stay runnable."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"false positive on multi-call form: {command!r} ({desc})"
+
+
+def test_multicall_reboot_blocked_in_default_mode(clean_session):
+    """busybox/toybox reboot has no dangerous backstop; default mode must block."""
+    for cmd in (
+        "busybox reboot",
+        "toybox poweroff",
+        "/bin/busybox halt",
+        "sudo busybox reboot",
+    ):
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"multi-call reboot approved with no prompt: {cmd!r}"
+        assert "hardline" in (result.get("message") or "").lower() or "BLOCKED" in (
+            result.get("message") or ""
+        )
+
+
+def test_multicall_root_wipe_blocked_under_yolo(clean_session, monkeypatch):
+    """busybox rm -rf / cannot be waived by yolo; the floor runs first."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    for cmd in ("busybox rm -rf /", "toybox rm -rf /", "/bin/busybox rm -rf /"):
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked multi-call root wipe on {cmd!r}"
+
+
+# -------------------------------------------------------------------------
 # Shell line-continuation bypass
 # -------------------------------------------------------------------------
 #

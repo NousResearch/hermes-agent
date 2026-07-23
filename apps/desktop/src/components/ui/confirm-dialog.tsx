@@ -30,9 +30,10 @@ interface ConfirmDialogProps {
   dismissOnConfirm?: boolean
 }
 
-// Shared confirmation dialog: Enter confirms (from anywhere in the dialog),
-// Esc/Cancel/backdrop dismiss. Owns the pending → done → close beat and inline
-// error, so callers pass only an async onConfirm that does the work.
+// Shared confirmation dialog. Native button semantics own Enter/Space so a
+// focused Cancel button cannot accidentally trigger the confirm action. Owns
+// the pending → done → close beat and inline error, so callers pass only an
+// async onConfirm that does the work.
 export function ConfirmDialog({
   open,
   onClose,
@@ -94,25 +95,19 @@ export function ConfirmDialog({
 
   return (
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
-      <DialogContent
-        className="max-w-md"
-        onKeyDown={event => {
-          // Enter/Space confirm regardless of which button holds focus
-          // (preventDefault stops a focused Cancel from swallowing it).
-          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
-            event.preventDefault()
-            void run()
-          }
-        }}
-      >
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
 
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div
+            aria-atomic="true"
+            className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            role="alert"
+          >
+            <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
             <span>{error}</span>
           </div>
         )}

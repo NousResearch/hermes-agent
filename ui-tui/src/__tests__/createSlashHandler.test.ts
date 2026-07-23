@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -453,18 +457,74 @@ describe('createSlashHandler', () => {
   })
 
   it('keeps visible scrollback when branching a TUI session', async () => {
-    patchUiState({ sid: 'sid-parent' })
-    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
-    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-tui-branch-'))
+    const path = join(dir, 'active.json')
+    const previousFile = process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+    process.env.HERMES_TUI_ACTIVE_SESSION_FILE = path
 
-    expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+    try {
+      patchUiState({ sid: 'sid-parent' })
 
-    expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
-    await vi.waitFor(() => {
-      expect(getUiState().sid).toBe('sid-branch')
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
-    })
-    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+      const rpc = vi.fn(() =>
+        Promise.resolve({
+          session_id: 'sid-branch',
+          stored_session_id: 'durable-branch',
+          title: 'branch title'
+        })
+      )
+
+      const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+      expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+
+      expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
+      await vi.waitFor(() => {
+        expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'durable-branch' })
+        expect(getUiState().sid).toBe('sid-branch')
+        expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
+      })
+      expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+      } else {
+        process.env.HERMES_TUI_ACTIVE_SESSION_FILE = previousFile
+      }
+
+      rmSync(dir, { force: true, recursive: true })
+    }
+  })
+
+  it('keeps the parent active when a branch response omits its durable session id', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-tui-branch-'))
+    const path = join(dir, 'active.json')
+    const previousFile = process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+    process.env.HERMES_TUI_ACTIVE_SESSION_FILE = path
+
+    try {
+      patchUiState({ sid: 'sid-parent' })
+
+      const response = Promise.resolve({ session_id: 'sid-branch', title: 'branch title' })
+      const rpc = vi.fn(() => response)
+      const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+      expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+      await response
+
+      expect(ctx.session.closeSession).not.toHaveBeenCalled()
+      expect(ctx.session.setSessionStartedAt).not.toHaveBeenCalled()
+      expect(getUiState().sid).toBe('sid-parent')
+      expect(() => readFileSync(path, 'utf8')).toThrow()
+      expect(ctx.transcript.sys).not.toHaveBeenCalledWith('branched → branch title')
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+      } else {
+        process.env.HERMES_TUI_ACTIVE_SESSION_FILE = previousFile
+      }
+
+      rmSync(dir, { force: true, recursive: true })
+    }
   })
 
   it('reloads skills in the live gateway and refreshes the catalog', async () => {

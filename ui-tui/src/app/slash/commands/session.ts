@@ -19,6 +19,7 @@ import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { writeActiveSessionFile } from '../../useSessionLifecycle.js'
 import type { SlashCommand } from '../types.js'
 
 const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
@@ -288,11 +289,12 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
-          if (!r.session_id) {
+          if (!r.session_id || !r.stored_session_id) {
             return
           }
 
           void ctx.session.closeSession(prevSid)
+          writeActiveSessionFile(r.stored_session_id)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)

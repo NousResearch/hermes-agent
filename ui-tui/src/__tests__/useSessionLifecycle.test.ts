@@ -1,19 +1,71 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 
+import { renderSync } from '@hermes/ink'
+import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
+  useSessionLifecycle,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
+
+const makeStreams = () => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 20 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', () => {})
+
+  return { stderr, stdin, stdout }
+}
+
+const mountSessionLifecycle = (rpc: ReturnType<typeof vi.fn>, request: ReturnType<typeof vi.fn>) => {
+  const expose = { current: null as null | ReturnType<typeof useSessionLifecycle> }
+
+  function Harness() {
+    expose.current = useSessionLifecycle({
+      colsRef: { current: 80 },
+      composerActions: { setPasteSnips: vi.fn() } as any,
+      gw: { request } as any,
+      panel: vi.fn(),
+      rpc: rpc as any,
+      scrollRef: { current: null },
+      setHistoryItems: vi.fn(),
+      setLastUserMsg: vi.fn(),
+      setSessionStartedAt: vi.fn(),
+      setStickyPrompt: vi.fn(),
+      setVoiceProcessing: vi.fn(),
+      setVoiceRecording: vi.fn(),
+      sys: vi.fn()
+    })
+
+    return null
+  }
+
+  const streams = makeStreams()
+
+  const instance = renderSync(React.createElement(Harness), {
+    patchConsole: false,
+    stderr: streams.stderr as NodeJS.WriteStream,
+    stdin: streams.stdin as NodeJS.ReadStream,
+    stdout: streams.stdout as NodeJS.WriteStream
+  })
+
+  return { expose, instance }
+}
 
 describe('fresh session boundary', () => {
   it('signals only when a live session is replaced by a different session', () => {
@@ -46,6 +98,69 @@ describe('writeActiveSessionFile', () => {
     writeActiveSessionFile('actual_session', path)
 
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'actual_session' })
+  })
+
+  it('tracks durable keys for create, resume, and live activation without replacing the runtime sid', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'hermes-tui-active-'))
+    const path = join(dir, 'active.json')
+    const previousFile = process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+    process.env.HERMES_TUI_ACTIVE_SESSION_FILE = path
+
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
+      if (method === 'session.create') {
+        return { info: null, session_id: 'runtime-create', stored_session_id: 'durable-create' }
+      }
+
+      return null
+    })
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: null,
+          messages: [],
+          resumed: 'durable-resume',
+          session_id: 'runtime-resume',
+          session_key: 'durable-resume'
+        }
+      }
+
+      return {
+        info: null,
+        messages: [],
+        session_id: 'runtime-activate',
+        session_key: 'durable-activate'
+      }
+    })
+
+    const { expose, instance } = mountSessionLifecycle(rpc, request)
+
+    try {
+      await expose.current!.newSession()
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'durable-create' })
+      expect(getUiState().sid).toBe('runtime-create')
+
+      expose.current!.resumeById('durable-resume')
+      await vi.waitFor(() => expect(getUiState().sid).toBe('runtime-resume'))
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'durable-resume' })
+
+      expose.current!.activateLiveSession('runtime-activate')
+      await vi.waitFor(() => expect(getUiState().sid).toBe('runtime-activate'))
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'durable-activate' })
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+
+      if (previousFile === undefined) {
+        delete process.env.HERMES_TUI_ACTIVE_SESSION_FILE
+      } else {
+        process.env.HERMES_TUI_ACTIVE_SESSION_FILE = previousFile
+      }
+    }
   })
 })
 

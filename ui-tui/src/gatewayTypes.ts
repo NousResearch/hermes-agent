@@ -159,6 +159,7 @@ export interface SystemBatteryResponse {
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  stored_session_id: string
 }
 
 export interface SessionResumeResponse {
@@ -292,6 +293,7 @@ export interface SessionCompressResponse {
 
 export interface SessionBranchResponse {
   session_id?: string
+  stored_session_id?: string
   title?: string
 }
 

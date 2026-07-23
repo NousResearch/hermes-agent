@@ -68,9 +68,59 @@ def _coerce_int_or_none(value: Any) -> int | None:
 
 
 def _coerce_fanout(value: Any) -> str:
-    """Normalize the fan-out cadence; unknown values fall back to default."""
+    """Normalize the fan-out cadence; unknown values fall back to default.
+
+    Canonical values are the strings ``per_iteration``, ``user_turn``, and
+    ``every_n:<N>`` (N >= 2). The ``every_n`` cadence also accepts the mapping
+    form ``{mode: every_n, n: N}`` from hand-edited YAML and normalizes it to
+    the canonical string, so the rest of the pipeline (presets, flattened
+    view, runtime) only ever sees one shape. ``every_n:1`` means "run every
+    iteration" and collapses to ``per_iteration``; anything unparseable falls
+    back to ``per_iteration`` (the tolerant-read contract of this module).
+    """
+    if isinstance(value, dict):
+        # Mapping form: {mode: every_n, n: 3}. Non-every_n mapping modes fall
+        # through to the string path below (e.g. {mode: user_turn}).
+        mode = str(value.get("mode") or "").strip().lower()
+        if mode == "every_n":
+            n = _coerce_int(value.get("n"), 0)
+            return f"every_n:{n}" if n >= 2 else "per_iteration"
+        value = mode
     mode = str(value or "").strip().lower()
-    return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
+    if mode in {"per_iteration", "user_turn"}:
+        return mode
+    if mode.startswith("every_n"):
+        _, sep, rest = mode.partition(":")
+        n = _coerce_int(rest.strip(), 0) if sep else 0
+        if n >= 2:
+            return f"every_n:{n}"
+    return "per_iteration"
+
+
+def coerce_privacy_filter(value: Any) -> str:
+    """Normalize ``moa.privacy_filter`` to '' (off), 'display', or 'full'.
+
+    - ``''`` (empty string): filter off — the default. ``false``/``None``/
+      unknown values land here so a hand-edited config degrades to prior
+      behavior (tolerant-read contract).
+    - ``'display'``: redact user-visible surfaces only — the reference blocks
+      shown in the UI and the saved MoA trace records. The aggregator still
+      sees raw advisor text, so answer quality is unaffected.
+    - ``'full'``: additionally redact the advisor text injected into the
+      aggregator prompt (issue #59959's literal ask). A hand-edited boolean
+      ``true`` maps here because the issue framed the toggle as "redact
+      before passing to the aggregator".
+    """
+    if value is True:
+        return "full"
+    if value is None or value is False:
+        return ""
+    mode = str(value).strip().lower()
+    if mode in {"display", "full"}:
+        return mode
+    if mode in {"true", "on", "yes", "1"}:
+        return "full"
+    return ""
 
 
 def _clean_reasoning_effort(value: Any) -> str | None:
@@ -246,7 +296,11 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # iteration, so advice tracks live task state. "user_turn" runs the
         # advisors ONCE per user turn (the original MoA shape): the
         # aggregator gets their upfront plan-level advice, then acts alone
-        # for the rest of the tool loop.
+        # for the rest of the tool loop. "every_n:<N>" (N >= 2) is the middle
+        # ground: advisors run on the first iteration of each user turn and
+        # every Nth tool iteration after it; in-between iterations reuse the
+        # cached guidance from the last advisor run. Also accepts the mapping
+        # form {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
     }
 
@@ -296,6 +350,10 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
+        # MoA-level (not per-preset) toggles ride at the top level alongside
+        # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'
+        # — see coerce_privacy_filter for the semantics of each mode.
+        "privacy_filter": coerce_privacy_filter(raw.get("privacy_filter")),
     }
 
 

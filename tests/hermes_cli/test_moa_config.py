@@ -583,3 +583,74 @@ def test_slot_max_tokens_absent_by_default():
     )
     ref = cfg["presets"]["p"]["reference_models"][0]
     assert "max_tokens" not in ref
+
+
+# --- fanout cadence normalization (every_n) ---
+
+
+def test_fanout_defaults_to_per_iteration():
+    cfg = normalize_moa_config({})
+    assert cfg["fanout"] == "per_iteration"
+
+
+def test_fanout_every_n_string_form_normalized():
+    cfg = normalize_moa_config({"fanout": "every_n:3"})
+    assert cfg["fanout"] == "every_n:3"
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["fanout"] == "every_n:3"
+
+
+def test_fanout_every_n_mapping_form_normalized_to_string():
+    cfg = normalize_moa_config({"fanout": {"mode": "every_n", "n": 4}})
+    assert cfg["fanout"] == "every_n:4"
+
+
+def test_fanout_every_n_degenerate_n_falls_back():
+    # n=1 means "every iteration" — that IS per_iteration; n=0 / negative /
+    # garbage must never produce a broken cadence string.
+    assert normalize_moa_config({"fanout": "every_n:1"})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": "every_n:0"})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": "every_n:-2"})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": "every_n:x"})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": "every_n"})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": {"mode": "every_n"}})["fanout"] == "per_iteration"
+
+
+def test_fanout_every_n_round_trips_through_normalize():
+    once = normalize_moa_config({"fanout": "every_n:3"})
+    twice = normalize_moa_config(once)
+    assert twice["fanout"] == "every_n:3"
+    assert twice["presets"][DEFAULT_MOA_PRESET_NAME]["fanout"] == "every_n:3"
+
+
+def test_fanout_mapping_user_turn_mode_accepted():
+    cfg = normalize_moa_config({"fanout": {"mode": "user_turn"}})
+    assert cfg["fanout"] == "user_turn"
+
+
+# --- privacy_filter normalization ---
+
+
+def test_privacy_filter_defaults_off():
+    cfg = normalize_moa_config({})
+    assert cfg["privacy_filter"] == ""
+
+
+def test_privacy_filter_modes_normalized():
+    from hermes_cli.moa_config import coerce_privacy_filter
+
+    assert coerce_privacy_filter("display") == "display"
+    assert coerce_privacy_filter("FULL") == "full"
+    assert coerce_privacy_filter(True) == "full"       # legacy boolean → issue #59959 ask
+    assert coerce_privacy_filter("true") == "full"
+    assert coerce_privacy_filter(False) == ""
+    assert coerce_privacy_filter(None) == ""
+    assert coerce_privacy_filter("bogus") == ""
+    assert coerce_privacy_filter("off") == ""
+
+
+def test_privacy_filter_round_trips_through_normalize():
+    once = normalize_moa_config({"privacy_filter": "display"})
+    assert once["privacy_filter"] == "display"
+    assert normalize_moa_config(once)["privacy_filter"] == "display"
+    full = normalize_moa_config({"privacy_filter": "full"})
+    assert normalize_moa_config(full)["privacy_filter"] == "full"

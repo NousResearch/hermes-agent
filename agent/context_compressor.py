@@ -329,6 +329,10 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 # ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making
 # re-injection fire even when the marker had survived).
 SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
+# skill_view results at or below this size stay verbatim in pruned
+# summaries — small skills are cheap to keep and their loss is unlikely to
+# ghost the model. Shared by the emit site and the summarizer-input scan.
+_SKILL_VIEW_PRUNE_MIN_CHARS = 5000
 # Cap for the deterministic marker re-injection list — keeps a very long
 # session from growing an unbounded "## Pruned Skills" block in every
 # iterative summary update. Newest-referenced skills win.
@@ -364,6 +368,51 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
         name = match.group(1)
         if name not in names:
             names.append(name)
+    return names
+
+
+def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
+    """Skill names whose instructions are about to be lost in compaction.
+
+    Covers BOTH shapes a compacted middle window can carry:
+
+    - a ``skill_view`` result already demoted by Phase-1 pruning — the
+      canonical ``[SKILL_PRUNED: ...]`` marker is in the row content;
+    - a RAW ``skill_view`` body that was never demoted (it sat inside the
+      protected tail of an earlier prune, then aged into the compression
+      window). The summarizer will paraphrase the instructions away, which
+      is exactly the ghost-skill failure — so it needs a marker too.
+    """
+    names: list[str] = []
+
+    def _add(name: str) -> None:
+        if name and name not in names:
+            names.append(name)
+
+    call_id_to_skill: dict[str, str] = {}
+    for idx, skill in _skill_view_call_sites(turns):
+        msg = turns[idx]
+        for tc in msg.get("tool_calls") or []:
+            tc_fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+            tc_name = tc_fn.get("name", "") if isinstance(tc_fn, dict) else getattr(tc_fn, "name", "")
+            if tc_name != "skill_view":
+                continue
+            cid = tc.get("id", "") if isinstance(tc, dict) else (getattr(tc, "id", "") or "")
+            if cid:
+                call_id_to_skill[cid] = skill
+    for msg in turns:
+        content = msg.get("content")
+        text = content if isinstance(content, str) else _content_text_for_contains(content)
+        for name in _extract_pruned_skill_names(text):
+            _add(name)
+        if (
+            msg.get("role") == "tool"
+            and isinstance(content, str)
+            and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS
+        ):
+            skill = call_id_to_skill.get(str(msg.get("tool_call_id") or ""))
+            if skill:
+                _add(skill)
     return names
 
 
@@ -1059,7 +1108,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
 
     if tool_name == "skill_view":
         name = args.get("name", "?")
-        if content_len > 5000:
+        if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS:
             # Ghost-skill defense (#32106): a metadata-only summary makes the
             # model believe the skill is still loaded. The canonical marker
             # tells it the instructions are gone AND how to get them back.
@@ -2950,16 +2999,10 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
         # Ghost-skill defense (#32106): the fallback's per-turn truncation
         # (``_FALLBACK_TURN_MAX_CHARS``) routinely cuts [SKILL_PRUNED: ...]
-        # markers out of the compacted turns. Re-derive them from the raw
-        # turn contents and re-inject deterministically, exactly like the
-        # LLM-summary path.
-        _pruned_names: list[str] = []
-        for _turn in turns_to_summarize:
-            for _name in _extract_pruned_skill_names(
-                _content_text_for_contains(_turn.get("content"))
-            ):
-                if _name not in _pruned_names:
-                    _pruned_names.append(_name)
+        # markers out of the compacted turns. Re-derive the ghosted skills
+        # from the raw turn contents and re-inject deterministically,
+        # exactly like the LLM-summary path.
+        _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
@@ -3078,13 +3121,15 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # P2 ghost-skill defense (#32106): [SKILL_PRUNED: ...] markers entering
         # the summarizer are prompt INPUT only — LLMs routinely paraphrase them
         # into vague prose ("some skills were loaded"), which erases the reload
-        # instruction. Extract the referenced skill names deterministically
-        # BEFORE the call; ``_reinject_pruned_skill_markers`` restores any
-        # marker the model dropped AFTER the call. Markers already carried by
-        # the previous summary must survive iterative rewrites the same way.
-        # Extraction runs on the UNBOUNDED serialization so a marker that
-        # falls into the input bound's omitted middle is still re-injected.
-        _pruned_skill_names = _extract_pruned_skill_names(content_to_summarize)
+        # instruction. Collect the ghosted skills deterministically BEFORE the
+        # call (both already-pruned marker rows AND raw skill_view bodies whose
+        # instructions are about to be summarized away);
+        # ``_reinject_pruned_skill_markers`` restores any marker the model
+        # dropped AFTER the call. Markers already carried by the previous
+        # summary must survive iterative rewrites the same way. Collection
+        # walks the turn LIST, so the serialized input bound below cannot
+        # hide a marker in its omitted middle.
+        _pruned_skill_names = _collect_ghosted_skill_names(turns_to_summarize)
         for _name in _extract_pruned_skill_names(self._previous_summary or ""):
             if _name not in _pruned_skill_names:
                 _pruned_skill_names.append(_name)

@@ -378,3 +378,45 @@ def test_cron_deny_not_bypassed_by_exec_ask_flag(monkeypatch):
         assert result.get("status") != "approval_required"
     finally:
         _VAR_MAP["HERMES_CRON_SESSION"].set(_UNSET)
+
+
+def test_stale_env_does_not_block_execute_code_in_gateway_session(monkeypatch):
+    """A stale HERMES_CRON_SESSION=1 in os.environ must not push a bound
+    interactive gateway session's execute_code into the cron deny path.
+
+    Companion to test_stale_process_env_does_not_reclassify_bound_gateway_session
+    which covers the same scenario for check_dangerous_command. The
+    execute_code guard has its own cron branch, so it needs its own
+    assertion that the stale-env fallback is suppressed when a gateway
+    session is live.
+
+    Production trigger (#73195): a Feishu user replies to a cron-delivered
+    message card. The gateway process still has HERMES_CRON_SESSION=1 in
+    os.environ from the prior cron tick, but the interactive turn should
+    reach the normal approval path, not the cron hard-block.
+    """
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools.approval import check_execute_code_guard
+
+    # Simulate a leaked process env from a prior cron tick
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setattr("tools.approval._get_cron_approval_mode", lambda: "deny")
+
+    # Gateway binds an interactive session (e.g. Feishu reply)
+    tokens = set_session_vars(platform="feishu", chat_id="c1", chat_name="Chat")
+    try:
+        result = check_execute_code_guard(
+            "print('hello world')", "local", has_host_access=False
+        )
+        # Must NOT be hard-blocked by cron deny. The gateway path returns
+        # approval_pending (interactive prompt queued) which is correct.
+        msg = (result.get("message") or "").lower()
+        assert "without a user present" not in msg, (
+            f"Cron deny message reached an interactive gateway session: {result}"
+        )
+        # approval_pending or approved are both fine — cron hard-block is not.
+        assert result.get("approval_pending") or result.get("approved") is True, (
+            f"execute_code was cron-blocked despite a live gateway session: {result}"
+        )
+    finally:
+        clear_session_vars(tokens)

@@ -659,6 +659,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "dispatch",
         help="One dispatcher pass: reclaim stale, promote ready, spawn workers",
     )
+    p_disp.add_argument("task_id", nargs="?",
+                        help="Dispatch this task only; never falls back to another ready task")
     p_disp.add_argument("--dry-run", action="store_true",
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,

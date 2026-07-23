@@ -6507,6 +6507,21 @@ class DispatchResult:
     actively preventing two dispatchers from racing on ``kanban.db``."""
 
 
+@dataclass
+class ExactDispatchResult:
+    """Machine-readable outcome for dispatching one requested task only."""
+
+    task_id: str
+    state: str
+    spawned: bool = False
+    run_id: Optional[int] = None
+    pid: Optional[int] = None
+    assignee: Optional[str] = None
+    workspace: Optional[str] = None
+    reason: Optional[str] = None
+    capacity: list[dict[str, Any]] = field(default_factory=list)
+
+
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
 # ``detect_crashed_workers`` to classify a dead-pid task.
@@ -7648,6 +7663,193 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
 
+def _profile_occupancy(assignee: str) -> list[dict[str, Any]]:
+    """Return live current runs for ``assignee`` across visible boards."""
+    now = int(time.time())
+    occupied: list[dict[str, Any]] = []
+    for meta in list_boards(include_archived=False):
+        board = meta["slug"]
+        path = kanban_db_path(board=board)
+        if not path.exists():
+            continue
+        with connect_closing(board=board) as other:
+            rows = other.execute(
+                "SELECT t.id, t.worker_pid, t.claim_expires, t.last_heartbeat_at, "
+                "       t.started_at, t.current_run_id "
+                "FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+                "WHERE t.status = 'running' AND t.assignee = ? "
+                "  AND r.ended_at IS NULL",
+                (assignee,),
+            ).fetchall()
+        for row in rows:
+            pid = int(row["worker_pid"]) if row["worker_pid"] is not None else None
+            if pid is not None:
+                started_at = int(row["started_at"] or 0)
+                live = _pid_alive(pid) or now - started_at < _resolve_crash_grace_seconds()
+            else:
+                heartbeat = int(row["last_heartbeat_at"] or 0)
+                live = int(row["claim_expires"] or 0) > now or (
+                    heartbeat > 0
+                    and now - heartbeat <= DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+                )
+            if live:
+                occupied.append({
+                    "board": board,
+                    "task_id": row["id"],
+                    "run_id": int(row["current_run_id"]),
+                    "pid": pid,
+                })
+    return occupied
+
+
+def dispatch_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    spawn_fn=None,
+    ttl_seconds: Optional[int] = None,
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    board: Optional[str] = None,
+) -> ExactDispatchResult:
+    """Dispatch exactly ``task_id`` or return a fail-closed structured result."""
+    requested = (task_id or "").strip()
+    if not requested:
+        return ExactDispatchResult(task_id=requested, state="refused", reason="task_id_required")
+
+    with _dispatch_tick_lock(kanban_db_path(board=board)) as held:
+        if not held:
+            return ExactDispatchResult(
+                task_id=requested, state="capacity", reason="dispatcher_locked"
+            )
+
+        reap_worker_zombies()
+        release_stale_claims(conn)
+        detect_crashed_workers(conn)
+        enforce_max_runtime(conn)
+        recompute_ready(conn, failure_limit=failure_limit)
+
+        task = get_task(conn, requested)
+        if task is None:
+            return ExactDispatchResult(task_id=requested, state="refused", reason="not_found")
+        base = {
+            "task_id": requested,
+            "assignee": task.assignee,
+            "workspace": task.workspace_path,
+        }
+        if task.status == "running" and task.current_run_id is not None:
+            return ExactDispatchResult(
+                **base,
+                state="already_running",
+                run_id=task.current_run_id,
+                pid=task.worker_pid,
+            )
+        if task.status != "ready":
+            return ExactDispatchResult(
+                **base, state="refused", reason=f"state:{task.status}"
+            )
+        undone = conn.execute(
+            "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            (requested,),
+        ).fetchone()
+        if undone:
+            return ExactDispatchResult(
+                **base, state="refused", reason="parents_not_done"
+            )
+        if not task.assignee:
+            return ExactDispatchResult(**base, state="refused", reason="unassigned")
+        try:
+            from hermes_cli.profiles import profile_exists
+        except Exception:
+            profile_exists = None  # type: ignore[assignment]
+        if profile_exists is not None and not profile_exists(task.assignee):
+            return ExactDispatchResult(
+                **base, state="refused", reason="assignee_not_spawnable"
+            )
+
+        try:
+            resolved_branch_name = None
+            if task.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _resolve_worktree_workspace(task, board=board)
+            else:
+                workspace = resolve_workspace(task, board=board)
+        except Exception as exc:
+            return ExactDispatchResult(
+                **base, state="refused", reason=f"workspace:{exc}"
+            )
+
+        occupied = _profile_occupancy(task.assignee)
+        if occupied:
+            return ExactDispatchResult(
+                task_id=requested,
+                state="capacity",
+                assignee=task.assignee,
+                workspace=str(workspace),
+                reason="profile_occupied",
+                capacity=occupied,
+            )
+
+        claimed = claim_task(conn, requested, ttl_seconds=ttl_seconds)
+        if claimed is None:
+            current = get_task(conn, requested)
+            if current and current.status == "running" and current.current_run_id is not None:
+                return ExactDispatchResult(
+                    task_id=requested,
+                    state="already_running",
+                    assignee=current.assignee,
+                    workspace=current.workspace_path,
+                    run_id=current.current_run_id,
+                    pid=current.worker_pid,
+                )
+            return ExactDispatchResult(
+                **base, state="refused", reason="claim_failed"
+            )
+
+        set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            set_branch_name(
+                conn,
+                claimed.id,
+                resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}",
+            )
+        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        try:
+            import inspect
+            try:
+                sig = inspect.signature(_spawn)
+                if "board" in sig.parameters:
+                    pid = _spawn(claimed, str(workspace), board=board)
+                else:
+                    pid = _spawn(claimed, str(workspace))
+            except (TypeError, ValueError):
+                pid = _spawn(claimed, str(workspace))
+            if not pid:
+                raise RuntimeError("spawn returned no PID")
+            _set_worker_pid(conn, claimed.id, int(pid))
+        except Exception as exc:
+            _record_spawn_failure(
+                conn, claimed.id, str(exc), failure_limit=failure_limit,
+            )
+            return ExactDispatchResult(
+                task_id=requested,
+                state="refused",
+                assignee=claimed.assignee,
+                workspace=str(workspace),
+                reason=f"spawn:{exc}",
+            )
+        current = get_task(conn, requested)
+        return ExactDispatchResult(
+            task_id=requested,
+            state="spawned",
+            spawned=True,
+            run_id=current.current_run_id if current else None,
+            pid=int(pid),
+            assignee=claimed.assignee,
+            workspace=str(workspace),
+        )
+
+
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """Reset the unified consecutive-failures counter.
 
@@ -8003,40 +8205,32 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
-    # Count tasks already running so max_spawn enforces concurrency rather
-    # than a per-tick spawn budget. See the docstring above for the full
-    # rationale; the short version is that a 60-second tick interval with a
-    # per-tick budget of N would grow concurrency by N every tick on a busy
-    # board, since "running" tasks aren't reclaimed by completion alone —
-    # they sit in status='running' until the worker calls
-    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
+    # Count tasks already running so max_spawn/max_in_progress enforce live
+    # concurrency rather than per-tick spawn budgets. Treat both knobs as caps
+    # on the same board-wide worker pool and honor the stricter one. The old
+    # implementation first converted max_in_progress into a *remaining-slot*
+    # value, then still compared it against ``running_count + spawned``; when
+    # both caps were set, existing running tasks were double-counted and an
+    # available slot could be skipped entirely.
+    concurrency_limits = [
+        limit for limit in (max_spawn, max_in_progress) if limit is not None
+    ]
+    concurrency_limit = min(concurrency_limits) if concurrency_limits else None
     running_count = 0
-    if max_spawn is not None:
+    if concurrency_limit is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
+        if running_count >= concurrency_limit:
+            return result
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
-    # Honour kanban.max_in_progress: if the board already has enough running
-    # tasks, skip spawning this tick so slow workers (local LLMs,
-    # resource-constrained hosts) can finish what they have before more tasks
-    # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
-            return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -8075,7 +8269,10 @@ def _dispatch_once_locked(
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
     for row in ready_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if (
+            concurrency_limit is not None
+            and running_count + spawned >= concurrency_limit
+        ):
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -8180,6 +8377,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
+            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -8266,7 +8464,10 @@ def _dispatch_once_locked(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if (
+            concurrency_limit is not None
+            and running_count + spawned >= concurrency_limit
+        ):
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
@@ -8278,8 +8479,20 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row["assignee"], 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row["assignee"], current)
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
+            if _per_profile_cap is not None and row["assignee"]:
+                _per_profile_running[row["assignee"]] = (
+                    _per_profile_running.get(row["assignee"], 0) + 1
+                )
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -8324,6 +8537,10 @@ def _dispatch_once_locked(
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

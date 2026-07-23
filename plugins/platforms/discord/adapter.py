@@ -5955,6 +5955,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
+        # Local import (matches the build_session_key usage below) so this
+        # adapter doesn't force gateway.session at module load.
+        from gateway.session import neutralize_untrusted_inline_text
+
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
         include_other_bots = allow_bots_raw != "none"
@@ -6033,7 +6037,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     if is_authorized is False:
                         trust_tag = "[unverified] "
                         has_unverified = True
-                return f"{trust_tag}[{name}] {content}"
+                # ``name`` (display name) and ``content`` are attacker-
+                # influenceable: any channel participant sets their own display
+                # name and message text. These lines are joined with newlines
+                # into the backfill block that GatewayRunner prepends raw into
+                # the model turn, so an embedded newline lets a nearby message
+                # break out of its ``[name] content`` line and pose as a fresh
+                # markdown section (a fake "## Override" heading) — the same
+                # indirect-prompt-injection vector the sender-name prefix, reply
+                # quote, and relay channel-context already neutralize. Collapse
+                # each field to a single inert line. ``max_chars=0`` keeps the
+                # body untruncated (backfill caps the message *count*, never
+                # per-message length); the display name keeps the default bound
+                # since Discord already caps names far below it.
+                safe_name = neutralize_untrusted_inline_text(name)
+                safe_content = neutralize_untrusted_inline_text(content, max_chars=0)
+                return f"{trust_tag}[{safe_name}] {safe_content}"
 
             # ── Primary window: recent channel activity since the last bot turn ──
             collected: List[Tuple[str, str]] = []  # (message_id, line)

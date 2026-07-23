@@ -2341,6 +2341,52 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     )
 
 
+_DOCUMENT_TEXT_INLINE_CHAR_LIMIT = 60_000
+
+
+async def _build_document_context_note_with_extraction(
+    display_name: str,
+    host_path: str,
+    agent_path: str,
+    mtype: str,
+) -> str:
+    """Build an attachment note, offloading supported Office extraction."""
+    context_note = _build_document_context_note(display_name, agent_path, mtype)
+    if mtype.startswith("text/"):
+        return context_note
+
+    from tools.read_extract import (
+        ExtractionError,
+        extract_document_text,
+        is_extractable_document,
+    )
+
+    if not is_extractable_document(host_path):
+        return context_note
+    try:
+        text = await asyncio.to_thread(extract_document_text, host_path)
+    except ExtractionError:
+        logger.debug("document extraction failed for %s", host_path, exc_info=True)
+        return context_note
+
+    text = text.strip()
+    truncated = len(text) > _DOCUMENT_TEXT_INLINE_CHAR_LIMIT
+    if truncated:
+        text = text[:_DOCUMENT_TEXT_INLINE_CHAR_LIMIT].rstrip()
+    suffix = (
+        "\n\n[Document text truncated for prompt size. Use the saved file path "
+        "if more detail is needed.]"
+        if truncated
+        else ""
+    )
+    return (
+        f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
+        "Its text has been automatically extracted below. Use the saved file path "
+        f"if more detail is needed.]\n\n[Extracted content of {display_name}]:\n"
+        f"{text}{suffix}"
+    )
+
+
 def _format_duration(seconds: float) -> str:
     total = int(round(seconds))
     if total < 0:
@@ -12170,7 +12216,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                context_note = _build_document_context_note(display_name, agent_path, mtype)
+                context_note = await _build_document_context_note_with_extraction(
+                    display_name,
+                    path,
+                    agent_path,
+                    mtype,
+                )
                 message_text = f"{context_note}\n\n{message_text}"
 
         # Discord: surface the triggering message id per-turn on the user

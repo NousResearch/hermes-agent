@@ -219,3 +219,6 @@ _fork_assets_backup/
 nul
 
 .venv312/
+
+# Local build/run artifacts (not part of the codebase)
+bin/

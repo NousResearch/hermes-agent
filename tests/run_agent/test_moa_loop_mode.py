@@ -2067,3 +2067,65 @@ def test_run_reference_forwards_configured_timeout(monkeypatch):
     assert (label, text) == ("openrouter:advisor", "advice")
     assert calls[0]["timeout"] == 23.5
     assert isinstance(accounting, moa_loop._RefAccounting)
+
+
+def test_aggregate_skips_aggregator_when_all_references_failed(monkeypatch):
+    """When every reference returns [failed: …], the aggregator is skipped entirely."""
+    from agent.moa_loop import aggregate_moa_context
+
+    call_count = {"n": 0}
+
+    def fake_call_llm(**kwargs):
+        call_count["n"] += 1
+        if kwargs["task"] == "moa_reference":
+            raise RuntimeError("provider down key=super-secret")
+        raise AssertionError("aggregator should not be called when all references fail")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        "agent.moa_loop._slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    result = aggregate_moa_context(
+        user_prompt="do something",
+        api_messages=[{"role": "user", "content": "do something"}],
+        reference_models=[
+            {"provider": "openai", "model": "gpt-4"},
+            {"provider": "anthropic", "model": "claude-opus"},
+        ],
+        aggregator={"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    )
+
+    # The aggregator LLM call was never made.
+    assert call_count["n"] == 2  # only the two reference calls
+    # The result carries a sanitized unavailability notice (never raw
+    # provider error text) so the main agent can still act.
+    assert "all reference models failed" in result
+    assert "Reference models unavailable" in result
+    assert "super-secret" not in result
+
+
+def test_aggregate_skips_aggregator_when_all_references_skipped(monkeypatch):
+    """References that are skipped (MoA recursion guard) also trigger the early return."""
+    from agent.moa_loop import aggregate_moa_context
+
+    def fake_call_llm(**kwargs):
+        raise AssertionError("aggregator should not be called when all references are skipped")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    # Both reference models are "moa" — they hit the recursion guard and are
+    # returned as "[skipped: …]" without calling call_llm at all.
+    result = aggregate_moa_context(
+        user_prompt="do something",
+        api_messages=[{"role": "user", "content": "do something"}],
+        reference_models=[
+            {"provider": "moa", "model": "preset-a"},
+            {"provider": "moa", "model": "preset-b"},
+        ],
+        aggregator={"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    )
+
+    assert "all reference models failed" in result
+    assert "Reference models unavailable" in result

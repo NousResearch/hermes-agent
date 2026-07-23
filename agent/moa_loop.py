@@ -963,6 +963,26 @@ def aggregate_moa_context(
     degraded = _degraded_notice(failed_labels, degraded_reference_policy)
     if degraded:
         joined = f"{joined}\n\n{degraded}" if joined else degraded
+
+    # Skip the aggregator call when every reference failed or was skipped —
+    # synthesising over zero real advice wastes tokens and can block for the
+    # full provider timeout (observed: ~6 min on SenseNova) before returning
+    # a non-retryable error that leaves the session hanging. The early return
+    # carries only the sanitized unavailability notice (never raw provider
+    # error text) so the main agent loop can still act in single-model mode.
+    if reference_outputs and not successful_outputs:
+        logger.warning(
+            "MoA: all %d reference(s) failed — skipping aggregator synthesis",
+            len(reference_outputs),
+        )
+        notice = degraded or "[Reference models unavailable]"
+        return (
+            "[Mixture of Agents context — all reference models failed. "
+            "Proceeding without aggregated guidance.]\n"
+            f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
+            f"{notice}"
+        )
+
     synth_prompt = (
         "You are the aggregator in a Mixture of Agents process. Synthesize the "
         "reference responses into concise, actionable guidance for the main "

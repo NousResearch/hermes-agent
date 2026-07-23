@@ -195,3 +195,25 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_session_var(name: str, default: str = "") -> str:
+    """Read a session context variable from the ContextVar **only**.
+
+    Unlike :func:`get_session_env`, this accessor never falls back to
+    ``os.environ``. If the ContextVar was never bound in the current
+    context (holds the ``_UNSET`` sentinel), *default* is returned.
+
+    Use this for audit / attribution metadata where a stale legacy
+    ``HERMES_SESSION_*`` environment value must NOT be mistaken for the
+    identity of the current turn. An unbound CLI or cron process therefore
+    reads as *default* even if the process environment carries leftover
+    ``HERMES_SESSION_*`` values.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    if value is _UNSET:
+        return default
+    return value

@@ -121,24 +121,31 @@ def _collect_session_context() -> Dict[str, str]:
     but carries no identity, which is the right behaviour for background /
     single-user local sessions.
 
+    Identity is read via ``get_session_var`` (ContextVar-only) rather than
+    ``get_session_env``. The latter falls back to ``os.environ`` when a
+    ContextVar is unset, which would let stale legacy ``HERMES_SESSION_*``
+    environment values from an unbound CLI/cron process be recorded as the
+    requester of this write. For audit metadata that is exactly the wrong
+    behaviour, so we deliberately ignore the environment here.
+
     The result is intentionally a plain ``Dict[str, str]`` so that
     ``json.dumps`` can serialise it without any custom encoder.
     """
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import get_session_var
     except ImportError:
         return {}
 
     ctx: Dict[str, str] = {
-        "user_id":    get_session_env("HERMES_SESSION_USER_ID",   ""),
-        "user_name":  get_session_env("HERMES_SESSION_USER_NAME", ""),
-        "platform":   get_session_env("HERMES_SESSION_PLATFORM",  ""),
-        "chat_id":    get_session_env("HERMES_SESSION_CHAT_ID",   ""),
+        "user_id":    get_session_var("HERMES_SESSION_USER_ID",   ""),
+        "user_name":  get_session_var("HERMES_SESSION_USER_NAME", ""),
+        "platform":   get_session_var("HERMES_SESSION_PLATFORM",  ""),
+        "chat_id":    get_session_var("HERMES_SESSION_CHAT_ID",   ""),
         # session_key is a non-secret routing identifier constructed from
         # platform + user/chat IDs (e.g. "agent:main:telegram:dm:12345").
         # It is NOT a credential and cannot be used for authentication or
         # session takeover.
-        "session_key": get_session_env("HERMES_SESSION_KEY",      ""),
+        "session_key": get_session_var("HERMES_SESSION_KEY",      ""),
     }
     # Drop empty-string fields so the record stays compact for CLI sessions
     # where all values are "" — an empty dict is more self-evident than a

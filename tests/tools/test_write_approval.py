@@ -529,3 +529,53 @@ def test_collect_session_context_survives_import_failure(hermes_home, monkeypatc
     monkeypatch.setattr(builtins, "__import__", _blocked_import)
     ctx = wa_mod._collect_session_context()
     assert ctx == {}
+
+
+
+def test_stage_write_ignores_legacy_env_without_bound_contextvars(
+    hermes_home, monkeypatch
+):
+    # Regression for the #45047 review: an unbound CLI/cron process may still
+    # carry stale legacy HERMES_SESSION_* *environment* values (e.g. exported
+    # by a previous run or a wrapper script). Those must NOT be recorded as the
+    # requester of a staged write -- audit attribution reads the ContextVar only
+    # and must never fall back to os.environ.
+    import threading
+    from gateway import session_context as sc
+    from tools import write_approval as wa
+
+    # Legacy environment values present, with NO bound session ContextVars.
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "legacy-user")
+    monkeypatch.setenv("HERMES_SESSION_USER_NAME", "legacy-name")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "legacy-platform")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "legacy-chat")
+    monkeypatch.setenv("HERMES_SESSION_KEY", "legacy-key")
+
+    result: dict = {}
+
+    def _run():
+        # A freshly-spawned thread starts with an empty contextvars.Context, so
+        # every session ContextVar reads its _UNSET default here -- precisely the
+        # state of an unbound CLI/cron process, independent of test ordering.
+        result["env_fallback"] = sc.get_session_env("HERMES_SESSION_USER_ID", "")
+        result["ctx_only"] = sc.get_session_var("HERMES_SESSION_USER_ID", "")
+        result["rec"] = wa.stage_write(
+            "memory",
+            {"action": "add", "target": "user", "content": "x"},
+            summary="add x",
+            origin="foreground",
+        )
+
+    tr = threading.Thread(target=_run)
+    tr.start()
+    tr.join()
+
+    # The env-falling accessor would still leak the stale identity ...
+    assert result["env_fallback"] == "legacy-user"
+    # ... but the ContextVar-only accessor used for audit metadata does not.
+    assert result["ctx_only"] == ""
+    # Therefore the staged record carries NO identity -- an empty dict.
+    assert result["rec"]["session_context"] == {}
+    persisted = wa.get_pending("memory", result["rec"]["id"])
+    assert persisted is not None
+    assert persisted["session_context"] == {}

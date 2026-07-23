@@ -51,6 +51,97 @@ class TestGenerateTitle:
         assert "Write the title in Japanese" in system_prompt
         assert "same language the user" not in system_prompt
 
+    # Regression tests for #63478: dashboard/API-originated chats whose first
+    # user message begins with a machine-injected <workspace_context .../>
+    # block must not surface that block (or any of its contents) in the
+    # auto-generated session title. We assert on the user-content handed
+    # to the LLM, since the LLM is the actual title-producer and could
+    # otherwise pick up any leaked metadata.
+    def test_workspace_context_block_is_stripped_before_llm(self):
+        """#63478: <workspace_context .../> at the start of the user
+        message must not appear in the prompt sent to the LLM."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "User wants reset password"
+
+        user_with_ctx = (
+            '<workspace_context active="true" name="Home" '
+            'path="/home/sean/hermes-work" />\n\n'
+            "where do I set reset password? When LDAP change password "
+            "is set the auth failed..."
+        )
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title(user_with_ctx, "Let me look up the LDAP config.")
+
+        user_content = llm.call_args.kwargs["messages"][1]["content"]
+        assert "workspace_context" not in user_content, (
+            "workspace_context block leaked into the LLM prompt — "
+            "title generation may surface machine metadata (#63478)"
+        )
+        assert "/home/sean/hermes-work" not in user_content, (
+            "workspace_context path leaked into the LLM prompt"
+        )
+        # The actual user prompt must still be present.
+        assert "where do I set reset password" in user_content
+
+    def test_workspace_context_paired_tags_stripped(self):
+        """The block can also be paired (<workspace_context ...>...</workspace_context>).
+        Both shapes must be stripped before the LLM sees the message."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Title"
+
+        user_with_ctx = (
+            "<workspace_context active=\"true\">\n"
+            "  some nested metadata\n"
+            "</workspace_context>\n\n"
+            "Real user question here"
+        )
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title(user_with_ctx, "Reply")
+
+        user_content = llm.call_args.kwargs["messages"][1]["content"]
+        assert "workspace_context" not in user_content
+        assert "nested metadata" not in user_content
+        assert "Real user question here" in user_content
+
+    def test_workspace_context_only_at_start_is_stripped(self):
+        """If the block appears mid-message (unusual), don't strip — it may
+        be user-content. Only leading whitespace + workspace_context blocks
+        at the very start should be removed, leaving the actual prompt
+        intact."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Title"
+
+        user_mid = (
+            "Real user question\n\n"
+            '<workspace_context active="true" name="Home" />\n\n'
+            "second paragraph"
+        )
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title(user_mid, "Reply")
+
+        user_content = llm.call_args.kwargs["messages"][1]["content"]
+        # Mid-message workspace_context is preserved (it's part of the
+        # user's actual message in this scenario).
+        assert "workspace_context" in user_content
+        assert "Real user question" in user_content
+
+    def test_message_without_workspace_context_unchanged(self):
+        """Regression guard: messages with no workspace_context block must
+        pass through unchanged (no spurious whitespace stripping, etc.)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Title"
+
+        original = "Just a normal user prompt, no metadata prepended."
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title(original, "Reply")
+
+        user_content = llm.call_args.kwargs["messages"][1]["content"]
+        assert original in user_content
+
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
 

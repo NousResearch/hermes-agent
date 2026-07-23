@@ -1,12 +1,13 @@
 ---
 sidebar_position: 11
-title: "ACP Editor Integration"
-description: "Use Hermes Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains"
+title: "ACP Host Integration"
+description: "Use Hermes Agent inside ACP-compatible editors and collaboration platforms"
 ---
 
-# ACP Editor Integration
+# ACP Host Integration
 
-Hermes Agent can run as an ACP server, letting ACP-compatible editors talk to Hermes over stdio and render:
+Hermes Agent can run as an ACP server, letting ACP-compatible hosts talk to
+Hermes over stdio. Editors can render:
 
 - chat messages
 - tool activity
@@ -15,7 +16,10 @@ Hermes Agent can run as an ACP server, letting ACP-compatible editors talk to He
 - approval prompts
 - streamed thinking / response chunks
 
-ACP is a good fit when you want Hermes to behave like an editor-native coding agent instead of a standalone CLI or messaging bot.
+Other hosts can use the same protocol to route collaboration events into
+Hermes. ACP is a good fit when you want Hermes to keep its existing identity,
+provider setup, memory, skills, and tools while another application owns the
+conversation transport.
 
 ## What Hermes exposes in ACP mode
 
@@ -91,7 +95,65 @@ What it does:
 
 The bootstrap is idempotent — re-running it is fast and skips work that's already done.
 
-## Editor setup
+## Host setup
+
+### Buzz
+
+[Buzz](https://github.com/block/buzz) is a Nostr-based collaboration platform
+for people and agents. Its `buzz-acp` harness connects Buzz channels to any ACP
+agent over stdio:
+
+```text
+Buzz relay <-- WebSocket --> buzz-acp <-- ACP over stdio --> Hermes Agent
+```
+
+This is a transport integration, not a second Hermes installation. The
+subprocess launched by `buzz-acp` uses the same Hermes configuration,
+credentials, memory, skills, and state as `hermes` on that host.
+
+Prerequisites:
+
+- Complete the ACP installation and `hermes acp --check` above.
+- Build or install `buzz-acp` and the `buzz` CLI from the
+  [Buzz repository](https://github.com/block/buzz).
+- Provision a dedicated Buzz/Nostr identity for Hermes.
+- Add that identity to the intended Buzz channels with the `bot` role.
+
+Start a local bridge with:
+
+```bash
+export BUZZ_RELAY_URL="wss://community.example.com"
+export BUZZ_PRIVATE_KEY="nsec1..."
+export BUZZ_API_TOKEN="..."
+export BUZZ_ACP_AGENT_COMMAND="hermes"
+export BUZZ_ACP_AGENT_ARGS="acp"
+
+buzz-acp
+```
+
+`BUZZ_API_TOKEN` is needed only when the relay enforces token authentication.
+Do not commit or paste the private key, API token, or owner authorization.
+
+For a persistent server deployment, run `buzz-acp` under a service manager as
+the same operating-system user that owns the intended Hermes home. The Buzz
+operator guide covers dedicated identities, author allowlists, channel
+membership, secret-file permissions, `systemd`, live round-trip verification,
+and troubleshooting:
+
+- [Run a Hermes Agent in Buzz](https://github.com/block/buzz/blob/main/docs/hermes-agent-acp.md)
+
+The bridge discovers every Buzz channel where the Hermes identity is a member
+and automatically subscribes when it is added to another channel. Buzz channel
+membership therefore remains the access boundary; Hermes does not need a
+separate channel list in its own configuration.
+
+Headless bridges commonly run with ACP permission bypass enabled because no
+editor is present to answer approval dialogs. Treat that as privileged
+automation: use a dedicated operating-system account, restrict which Buzz users
+can prompt the agent, and grant membership only in channels where Hermes is
+expected to work.
+
+### Editors
 
 ### VS Code
 
@@ -205,7 +267,7 @@ The ACP bridge maps these options onto Hermes' internal approval semantics — `
 
 Check:
 
-- For manual/local development, verify the custom `agent_servers` command points to `hermes acp`.
+- For manual/local development, verify the host command points to `hermes acp`.
 - Hermes is installed and on your PATH.
 - The ACP extra is installed (`cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'`).
 
@@ -232,6 +294,7 @@ or by editing `~/.hermes/.env`. The terminal auth flow (`hermes acp --setup`) ca
 
 ## See also
 
+- [Buzz ACP harness](https://github.com/block/buzz/tree/main/crates/buzz-acp)
 - [ACP Internals](../../developer-guide/acp-internals.md)
 - [Provider Runtime Resolution](../../developer-guide/provider-runtime.md)
 - [Tools Runtime](../../developer-guide/tools-runtime.md)

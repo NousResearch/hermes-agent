@@ -21,6 +21,7 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: trusted-automation
     steps:
       - name: Probe live index
         id: probe
@@ -108,10 +109,18 @@ jobs:
             echo "Summary:      ${{ steps.probe.outputs.summary }}"
           fi
 
+      - name: Get GitHub App token
+        if: steps.probe.outputs.status != 'ok'
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
         run: |

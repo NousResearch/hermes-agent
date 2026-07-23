@@ -2451,7 +2451,7 @@ def text_to_speech_tool(
                 return json.dumps({
                     "success": False,
                     "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
+                             "Run `hermes setup` to install Mistral support."
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
@@ -2716,11 +2716,8 @@ def _has_openai_audio_backend() -> bool:
 
 
 # ===========================================================================
-# Streaming TTS: sentence-by-sentence pipeline for ElevenLabs
+# Streaming TTS: sentence-by-sentence pipeline
 # ===========================================================================
-# Sentence boundary pattern: punctuation followed by space or newline
-_SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
-
 # Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
@@ -2732,10 +2729,15 @@ _MD_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
 _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
+# Emoji + variation selectors/ZWJ — TTS providers render these as awkward
+# pauses or literal descriptions ("smiling face"), breaking the speech flow.
+_EMOJI = re.compile(
+    '[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\U000E0020-\U000E007F]+'
+)
 
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown formatting that shouldn't be spoken aloud."""
+    """Remove markdown formatting (and emoji) that shouldn't be spoken aloud."""
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)
@@ -2745,6 +2747,7 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_HEADER.sub('', text)
     text = _MD_LIST_ITEM.sub('', text)
     text = _MD_HR.sub('', text)
+    text = _EMOJI.sub(' ', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
 
@@ -2754,75 +2757,62 @@ def stream_tts_to_speaker(
     stop_event: threading.Event,
     tts_done_event: threading.Event,
     display_callback: Optional[Callable[[str], None]] = None,
+    provider: Optional[str] = None,
 ):
-    """Consume text deltas from *text_queue*, buffer them into sentences,
-    and stream each sentence through ElevenLabs TTS to the speaker in
-    real-time.
+    """Consume text deltas from *text_queue*, buffer them into sentences, and
+    speak each sentence the moment it's ready — the conversational path.
+
+    Provider-agnostic. A registered streaming provider (ElevenLabs, OpenAI, …)
+    plays chunked PCM through one sounddevice stream for the lowest latency;
+    every other provider (edge, the default) is spoken per-sentence via the sync
+    ``text_to_speech_tool`` path, so audio still starts on sentence one instead
+    of after the whole reply.
 
     Protocol:
         * The producer puts ``str`` deltas onto *text_queue*.
         * A ``None`` sentinel signals end-of-text (flush remaining buffer).
-        * *stop_event* can be set to abort early (e.g. user interrupt).
+        * *stop_event* can be set to abort early (barge-in / user interrupt).
         * *tts_done_event* is **set** in the ``finally`` block so callers
           waiting on it (continuous voice mode) know playback is finished.
     """
     tts_done_event.clear()
 
     try:
-        # --- TTS client setup (optional -- display_callback works without it) ---
-        client = None
         output_stream = None
-        voice_id = DEFAULT_ELEVENLABS_VOICE_ID
-        model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
-
         tts_config = _load_tts_config()
-        el_config = tts_config.get("elevenlabs") or {}
-        voice_id = el_config.get("voice_id", voice_id)
-        model_id = el_config.get("streaming_model_id",
-                                 el_config.get("model_id", model_id))
-        # Per-sentence cap for the streaming path. Look up the cap against
-        # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
-        # not the sync model_id. A user override
-        # (tts.elevenlabs.max_text_length) still wins.
-        stream_max_len = _resolve_max_text_length(
-            "elevenlabs",
-            {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
-        )
 
-        api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
-        if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
-        else:
+        # Prefer a chunked streamer for low time-to-first-audio; fall back to
+        # per-sentence sync synthesis (universal — edge + every non-streamer).
+        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
+        streamer = resolve_streaming_provider(tts_config, preferred=provider)
+
+        stream_max_len = 0
+        if streamer is not None:
             try:
-                ElevenLabs = _import_elevenlabs()
-                client = ElevenLabs(api_key=api_key)
-            except ImportError:
-                logger.warning("elevenlabs package not installed; streaming TTS disabled")
+                stream_max_len = _resolve_max_text_length(
+                    provider or _get_provider(tts_config), tts_config
+                )
+            except Exception:
+                stream_max_len = 0
+            try:
+                sd = _import_sounddevice()
+                output_stream = sd.OutputStream(
+                    samplerate=streamer.sample_rate,
+                    channels=streamer.channels,
+                    dtype="int16",
+                )
+                output_stream.start()
+            except (ImportError, OSError) as exc:
+                logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+                output_stream = None
+            except Exception as exc:
+                logger.warning("sounddevice OutputStream failed: %s", exc)
+                output_stream = None
 
-            # Open a single sounddevice output stream for the lifetime of
-            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-            # little-endian mono PCM at 24 kHz.
-            if client is not None:
-                try:
-                    sd = _import_sounddevice()
-                    output_stream = sd.OutputStream(
-                        samplerate=24000, channels=1, dtype="int16",
-                    )
-                    output_stream.start()
-                except (ImportError, OSError) as exc:
-                    logger.debug("sounddevice not available: %s", exc)
-                    output_stream = None
-                except Exception as exc:
-                    logger.warning("sounddevice OutputStream failed: %s", exc)
-                    output_stream = None
-
-        sentence_buf = ""
-        min_sentence_len = 20
+        chunker = SentenceChunker()
         long_flush_len = 100
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
-        # Regex to strip complete <think>...</think> blocks from buffer
-        _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
         def _speak_sentence(sentence: str):
             """Display sentence and optionally generate + play audio."""
@@ -2840,33 +2830,51 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # Skip audio generation if no TTS client available
-            if client is None:
+            # No chunked streamer → per-sentence sync synthesis (universal).
+            if streamer is None:
+                _speak_via_sync(cleaned)
                 return
-            # Truncate very long sentences (ElevenLabs streaming path)
-            if len(cleaned) > stream_max_len:
+            # Truncate very long sentences to the provider's per-request cap.
+            if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
+                audio_iter = streamer.stream(cleaned)
                 if output_stream is not None:
+                    import numpy as _np
                     for chunk in audio_iter:
                         if stop_event.is_set():
                             break
-                        import numpy as _np
-                        audio_array = _np.frombuffer(chunk, dtype=_np.int16)
-                        output_stream.write(audio_array.reshape(-1, 1))
+                        output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
                 else:
-                    # Fallback: write chunks to temp file and play via system player
-                    _play_via_tempfile(audio_iter, stop_event)
+                    # No audio device: buffer chunks to a temp WAV and play it.
+                    _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)
 
-        def _play_via_tempfile(audio_iter, stop_evt):
+        def _speak_via_sync(cleaned: str):
+            """Synthesize one sentence via the proven sync tool, then block on
+            playback. No chunked API, but per-*sentence* granularity keeps the
+            flow conversational for edge and every other non-streaming provider.
+            """
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                text_to_speech_tool(text=cleaned, output_path=tmp_path)
+                if (not stop_event.is_set() and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
             """Write PCM chunks to a temp WAV file and play it."""
             tmp_path = None
             try:
@@ -2876,7 +2884,7 @@ def stream_tts_to_speaker(
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(24000)
+                    wf.setframerate(sample_rate)
                     for chunk in audio_iter:
                         if stop_evt.is_set():
                             break
@@ -2897,43 +2905,19 @@ def stream_tts_to_speaker(
             try:
                 delta = text_queue.get(timeout=queue_timeout)
             except queue.Empty:
-                # Timeout: if we have accumulated a long buffer, flush it
-                if len(sentence_buf) > long_flush_len:
-                    _speak_sentence(sentence_buf)
-                    sentence_buf = ""
+                # Idle producer: flush a long buffer instead of sitting on it
+                if len(chunker.buf) > long_flush_len:
+                    for sentence in chunker.flush():
+                        _speak_sentence(sentence)
                 continue
 
             if delta is None:
-                # End-of-text sentinel: strip any remaining think blocks, flush
-                sentence_buf = _think_block_re.sub('', sentence_buf)
-                if sentence_buf.strip():
-                    _speak_sentence(sentence_buf)
+                # End-of-text sentinel: flush whatever remains
+                for sentence in chunker.flush():
+                    _speak_sentence(sentence)
                 break
 
-            sentence_buf += delta
-
-            # --- Think block filtering ---
-            # Strip complete <think>...</think> blocks from buffer.
-            # Works correctly even when tags span multiple deltas.
-            sentence_buf = _think_block_re.sub('', sentence_buf)
-
-            # If an incomplete <think tag is at the end, wait for more data
-            # before extracting sentences (the closing tag may arrive next).
-            if '<think' in sentence_buf and '</think>' not in sentence_buf:
-                continue
-
-            # Check for sentence boundaries
-            while True:
-                m = _SENTENCE_BOUNDARY_RE.search(sentence_buf)
-                if m is None:
-                    break
-                end_pos = m.end()
-                sentence = sentence_buf[:end_pos]
-                sentence_buf = sentence_buf[end_pos:]
-                # Merge short fragments into the next sentence
-                if len(sentence.strip()) < min_sentence_len:
-                    sentence_buf = sentence + sentence_buf
-                    break
+            for sentence in chunker.feed(delta):
                 _speak_sentence(sentence)
 
         # Drain any remaining items from the queue

@@ -83,7 +83,7 @@ interface ScreenProps {
 function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   // Full charge menu only for an admin with the org kill-switch on; otherwise it
   // collapses to Manage-on-portal / Close + a one-line note. NOTE: this is the
-  // ORG-level gate (cli_billing_enabled), NOT the per-terminal billing scope —
+  // ORG-level gate (cli_billing_enabled), NOT the per-terminal remote spending scope —
   // that's discovered reactively at pay time (a charge 403s insufficient_scope
   // and the confirm screen routes into the resumable step-up). We deliberately
   // do NOT preflight the scope here.
@@ -92,7 +92,7 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const note = !s.is_admin
     ? 'Billing actions need someone with billing permissions (owner, admin, or finance admin).'
     : !s.cli_billing_enabled
-      ? 'Terminal billing is off for this org — manage it on the portal.'
+      ? "Remote spending is off for this org — a billing admin can turn it on from the portal's Hermes Agent page."
       : null
 
   // Always show the full billing menu for an admin/billing-on org — a missing
@@ -340,7 +340,7 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
         <Text color={t.color.label}>Enter a custom amount:</Text>
         <Box>
           <Text color={t.color.label}>{'$'}</Text>
-          <TextInput columns={20} onChange={setCustom} onSubmit={submitCustom} value={custom} />
+          <TextInput color={t.color.text} columns={20} onChange={setCustom} onSubmit={submitCustom} value={custom} />
         </Box>
         {error && <Text color={t.color.error}>{error}</Text>}
         <Text />
@@ -495,14 +495,14 @@ function ConfirmScreen({
   )
 }
 
-// ── Screen: Step-up (resumable "Enable terminal billing") ────────────
+// ── Screen: Step-up (resumable "Allow Remote Spending") ─────────────
 // Reached ONLY when a charge returns insufficient_scope — there is no preflight
 // or scope check anywhere; the buy path discovers it reactively. The modal stays
 // MOUNTED through the browser device-flow:
 //   prompt (heads-up) → waiting (browser authorize) → granted (press Enter to
 //   resume) → replay the held charge (pendingCharge.amount) → settle → close.
 // Never leaks the raw billing:manage scope — the user-facing concept is
-// "terminal billing".
+// "Remote Spending".
 
 function StepUpScreen({
   amount,
@@ -526,12 +526,12 @@ function StepUpScreen({
     }
 
     setPhase('waiting')
-    ctx.sys('Opening your browser to enable terminal billing…')
+    ctx.sys('Opening your browser to allow Remote Spending…')
 
     void ctx.requestRemoteSpending().then(granted => {
       if (!granted) {
         ctx.sys(
-          "! Couldn't enable terminal billing — someone with billing permissions (owner, admin, or finance admin) has to approve it. Your card was not charged."
+          "! Couldn't allow Remote Spending — someone with billing permissions (owner, admin, or finance admin) has to approve it. Your card was not charged."
         )
         onClose()
 
@@ -550,12 +550,12 @@ function StepUpScreen({
     }
 
     setPhase('resuming')
-    ctx.sys('✓ Terminal billing enabled — resuming your purchase.')
+    ctx.sys('✓ Remote Spending allowed — resuming your purchase.')
     void ctx.charge(amount, idempotencyKey).then(outcome => {
       // If the replay STILL can't spend (grant raced/expired or downscoped),
       // say so — don't close on a reassuring line with no charge made.
       if (outcome === 'needs_remote_spending') {
-        ctx.sys('! Terminal billing still needs approval — run /topup to try again. Your card was not charged.')
+        ctx.sys('! Remote Spending still needs approval — run /topup to try again. Your card was not charged.')
       }
 
       onClose()
@@ -563,7 +563,7 @@ function StepUpScreen({
   }
 
   const decline = () => {
-    ctx.sys('No charge made. Run /topup when you want to enable terminal billing.')
+    ctx.sys('No charge made. Run /topup when you want to allow Remote Spending.')
     onClose()
   }
 
@@ -622,7 +622,7 @@ function StepUpScreen({
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.accent}>
-          Enable terminal billing
+          Allow Remote Spending
         </Text>
         <Text color={t.color.warn}>Waiting for your browser…</Text>
         <Text color={t.color.muted}>Approve in the page that just opened.</Text>
@@ -637,7 +637,7 @@ function StepUpScreen({
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.ok}>
-          Terminal billing enabled
+          Remote Spending allowed
         </Text>
         <Text color={t.color.text}>Your ${amount} top-up is ready to finish.</Text>
         <Text />
@@ -652,7 +652,7 @@ function StepUpScreen({
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.accent}>
-          Enable terminal billing
+          Allow Remote Spending
         </Text>
         <Text color={t.color.muted}>Resuming your ${amount} top-up…</Text>
         <Text />
@@ -667,12 +667,12 @@ function StepUpScreen({
       <Text bold color={t.color.warn}>
         One-time setup
       </Text>
-      <Text color={t.color.text}>To charge this terminal, enable terminal billing once.</Text>
+      <Text color={t.color.text}>To charge from this terminal, allow Remote Spending once.</Text>
       <Text color={t.color.muted}>
         It opens your browser to authorize, then your ${amount} top-up picks up right here.
       </Text>
       <Text />
-      <ActionRow active={sel === 0} color={t.color.ok} label="Enable terminal billing" t={t} />
+      <ActionRow active={sel === 0} color={t.color.ok} label="Allow Remote Spending" t={t} />
       <ActionRow active={sel === 1} label="Not now" t={t} />
       <Text />
       {footer('↑/↓ select · Enter confirm · Y/N quick · Esc cancel', t)}
@@ -685,7 +685,7 @@ function StepUpScreen({
 function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const ar = s.auto_reload
   const enabled = Boolean(ar?.enabled)
-  const distinctCard = ar?.card.kind === 'distinct' ? ar.card : null
+  const distinctCard = ar?.card?.kind === 'distinct' ? ar.card : null
 
   const distinctCardName = distinctCard
     ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||
@@ -852,6 +852,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       <Box borderColor={focused ? t.color.accent : t.color.border} borderStyle="round" paddingX={1}>
         <Text color={t.color.label}>{'$'}</Text>
         <TextInput
+          color={t.color.text}
           columns={16}
           focus={focused}
           onChange={onChange}

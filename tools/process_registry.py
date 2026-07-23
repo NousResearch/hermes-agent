@@ -2119,6 +2119,11 @@ def _format_async_delegation(evt: dict) -> str:
                     + (f": {r_error}" if r_error else "")
                     + ")"
                 )
+            r_live = r.get("live_transcript")
+            if r_live:
+                lines.append(
+                    f"Full live transcript (complete tool/assistant trace): {r_live}"
+                )
         return "\n".join(lines)
 
     age = ""

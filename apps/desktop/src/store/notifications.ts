@@ -25,7 +25,7 @@ export interface AppNotification {
   placement?: NotificationPlacement
 }
 
-interface NotificationInput {
+export interface NotificationInput {
   id?: string
   kind?: NotificationKind
   icon?: string

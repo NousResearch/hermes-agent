@@ -15,6 +15,7 @@ import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { type AgentNoticePayload, clearAgentNotice, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
@@ -865,6 +866,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ]
           }))
         }
+      } else if (event.type === 'notification.show') {
+        // Driver-agnostic agent notice (credits usage/grant/depleted/restored
+        // from `agent/credits_tracker.py`). The Ink TUI renders these in its
+        // status bar; the desktop renders them as toasts. The notice key doubles
+        // as the toast id, so the escalating 50→75→90 credits line replaces in
+        // place instead of stacking. Account-wide signal — shown regardless of
+        // which session is focused.
+        showAgentNotice(event.payload as AgentNoticePayload | undefined)
+      } else if (event.type === 'notification.clear') {
+        // Key-matched dismissal (e.g. credits restored clears the depleted
+        // notice). notify() keys the toast by the notice key, so this maps
+        // straight to dismissNotification(key).
+        clearAgentNotice((event.payload as AgentNoticePayload | undefined)?.key)
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)

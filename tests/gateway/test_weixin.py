@@ -22,7 +22,7 @@ def _make_adapter() -> WeixinAdapter:
         PlatformConfig(
             enabled=True,
             token="test-token",
-            extra={"account_id": "test-account"},
+            extra={"account_id": "test-account", "dm_policy": "open"},
         )
     )
 
@@ -410,6 +410,76 @@ class TestWeixinChunkDelivery:
         retry = send_message_mock.await_args_list[2].kwargs
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_retries_transient_rate_limit_with_default_circuit_threshold(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 4
+        adapter._send_chunk_retry_delay_seconds = 0
+        # The production default is retries + 1, so a single iLink frequency
+        # response should exercise the retry path instead of opening the
+        # breaker immediately and dropping cron pushes.
+        adapter._rate_limit_circuit_threshold = adapter._send_chunk_retries + 1
+
+        send_message_mock.side_effect = [
+            {
+                "ret": weixin.RATE_LIMIT_ERRCODE,
+                "errcode": weixin.RATE_LIMIT_ERRCODE,
+                "errmsg": "frequency limit",
+            },
+            {"errcode": 0},
+        ]
+
+        result = asyncio.run(adapter.send("wxid_test123", "brief text"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 2
+        assert sleep_mock.await_count == 1
+        assert adapter._rate_limit_events == []
+        assert adapter._rate_limit_circuit_until == 0.0
+
+    def test_stale_session_detection_includes_empty_and_rate_limited_messages(self):
+        assert weixin._is_stale_session_ret(weixin.RATE_LIMIT_ERRCODE, None, "") is True
+        assert weixin._is_stale_session_ret(None, weixin.RATE_LIMIT_ERRCODE, None) is True
+        assert weixin._is_stale_session_ret(weixin.RATE_LIMIT_ERRCODE, None, "unknown error") is True
+        assert weixin._is_stale_session_ret(weixin.RATE_LIMIT_ERRCODE, None, "rate limited") is True
+        assert weixin._is_stale_session_ret(weixin.RATE_LIMIT_ERRCODE, None, "frequency limit") is False
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_rate_limit_retries_use_exponential_backoff(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 4
+        adapter._send_chunk_retry_delay_seconds = 1.0
+        adapter._rate_limit_circuit_threshold = 10
+
+        send_message_mock.side_effect = [
+            {"ret": weixin.RATE_LIMIT_ERRCODE, "errcode": weixin.RATE_LIMIT_ERRCODE, "errmsg": "frequency limit"},
+            {"ret": weixin.RATE_LIMIT_ERRCODE, "errcode": weixin.RATE_LIMIT_ERRCODE, "errmsg": "frequency limit"},
+            {"errcode": 0},
+        ]
+
+        result = asyncio.run(adapter.send("wxid_test123", "brief text"))
+
+        assert result.success is True
+        assert [call.args[0] for call in sleep_mock.await_args_list] == [3.0, 6.0]
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_long_replies_use_slower_inter_chunk_pacing(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        setattr(adapter, "MAX_MESSAGE_LENGTH", 5)
+        adapter._send_chunk_delay_seconds = 0.1
+        adapter._long_reply_chunk_threshold = 3
+        adapter._long_reply_chunk_delay_seconds = 5.0
+        send_message_mock.return_value = {"errcode": 0}
+
+        result = asyncio.run(adapter.send("wxid_test123", "one\n\ntwo\n\nthree\n\nfour"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 4
+        assert [call.args[0] for call in sleep_mock.await_args_list] == [5.0, 5.0, 5.0]
 
     @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
@@ -923,9 +993,9 @@ class TestIsStaleSessionRet:
         # Genuine rate limit — must NOT be treated as stale session.
         assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
 
-    def test_ret_minus_2_with_no_errmsg_is_not_stale(self):
-        assert weixin._is_stale_session_ret(-2, None, None) is False
-        assert weixin._is_stale_session_ret(-2, None, "") is False
+    def test_ret_minus_2_with_no_errmsg_is_stale(self):
+        assert weixin._is_stale_session_ret(-2, None, None) is True
+        assert weixin._is_stale_session_ret(-2, None, "") is True
 
     def test_errcode_minus_14_is_not_matched_here(self):
         # -14 is handled by the separate SESSION_EXPIRED_ERRCODE path; the

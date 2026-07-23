@@ -1768,6 +1768,8 @@ def _ensure_tui_node() -> None:
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=300,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return
@@ -4699,6 +4701,7 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
             cwd=cwd,
             capture_output=True,
             text=True,
+            timeout=5,
             check=True,
         )
         return result.stdout.strip() or None
@@ -5669,7 +5672,7 @@ def _redownload_electron_dist(
     if mirror:
         dl_env["ELECTRON_MIRROR"] = mirror
     try:
-        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
+        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False, timeout=600, stdin=subprocess.DEVNULL)
     except OSError:
         return False
     return _electron_dist_ok(project_root)

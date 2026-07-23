@@ -1,6 +1,7 @@
 """_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
 
 import os
+import subprocess
 import types
 from pathlib import Path
 
@@ -677,3 +678,34 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+def test_ensure_tui_node_passes_timeout_and_stdin_devnull(
+    main_mod, monkeypatch
+) -> None:
+    """_ensure_tui_node must pass timeout=300 and stdin=subprocess.DEVNULL
+    to the node-bootstrap subprocess.run call to prevent hangs and
+    unwanted TTY interaction. Regression for #62773."""
+    # Bypass early-return guards: pretend node/npm aren't on PATH,
+    # and make sure HERMES_SKIP_NODE_BOOTSTRAP is not set.
+    monkeypatch.setattr(main_mod.shutil, "which", lambda _name: None)
+    monkeypatch.delenv("HERMES_SKIP_NODE_BOOTSTRAP", raising=False)
+
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake_run(*args: object, **kwargs: object) -> object:
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="/usr/bin/node", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._ensure_tui_node()
+
+    assert len(calls) == 1, "expected one subprocess.run call"
+    call_kwargs = calls[0][1]
+    assert call_kwargs.get("timeout") == 300, (
+        f"expected timeout=300, got {call_kwargs.get('timeout')}"
+    )
+    assert call_kwargs.get("stdin") is subprocess.DEVNULL, (
+        f"expected stdin=subprocess.DEVNULL, got {call_kwargs.get('stdin')}"
+    )

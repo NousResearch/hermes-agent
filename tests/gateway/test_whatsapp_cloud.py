@@ -2539,3 +2539,76 @@ class TestReplyContextResolution:
             rich_sent_store.lookup("15551234567", "wamid.OUT")
             == "here is your answer"
         )
+
+
+class TestConvertToOpus:
+    """_convert_to_opus ffmpeg subprocess, timeout, and error handling."""
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_timeout_returns_none(self, monkeypatch):
+        """When ffmpeg hangs, asyncio.wait_for raises TimeoutError and
+        _convert_to_opus returns None (caller falls back to MP3 attachment).
+
+        Regression test for the fix that wraps proc.communicate() in
+        asyncio.wait_for(..., timeout=60). Without the timeout, a stuck
+        ffmpeg process would block the event loop indefinitely.
+        """
+        import gateway.platforms.whatsapp_cloud as wp
+
+        # Pretend ffmpeg is on PATH so the method attempts conversion.
+        monkeypatch.setattr(wp, "_FFMPEG_PATH", "/usr/bin/ffmpeg")
+        adapter = _make_adapter()
+
+        # Mock subprocess so no real process is spawned.
+        proc = MagicMock()
+        proc.communicate = AsyncMock()  # coroutine that never resolves
+        proc.returncode = None
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        )
+
+        # Simulate the timeout: wait_for raises TimeoutError.
+        async def _raise_timeout(*_a, **_kw):
+            raise asyncio.TimeoutError()
+        monkeypatch.setattr(asyncio, "wait_for", _raise_timeout)
+
+        result = await adapter._convert_to_opus("/tmp/test.mp3")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_ffmpeg_timeout_kills_and_reaps_child(self, monkeypatch):
+        """On timeout, the ffmpeg child must be killed and then reaped via
+        a second communicate() call — preventing zombie / orphan processes.
+        """
+        import gateway.platforms.whatsapp_cloud as wp
+
+        monkeypatch.setattr(wp, "_FFMPEG_PATH", "/usr/bin/ffmpeg")
+        adapter = _make_adapter()
+
+        proc = MagicMock()
+        proc.communicate = AsyncMock()
+        proc.kill = MagicMock()
+        proc.returncode = None
+
+        call_count = [0]
+        async def fake_wait_for(coro, timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call (communicate with 60s timeout) → timeout
+                raise asyncio.TimeoutError()
+            # Second call (communicate with 10s timeout after kill) → success
+            return (b"", b"")
+
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        )
+        monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+        result = await adapter._convert_to_opus("/tmp/test.mp3")
+        assert result is None
+        proc.kill.assert_called_once()
+        # communicate was called twice: once for the timed-out wait, once
+        # for the post-kill reap.
+        assert proc.communicate.call_count == 2

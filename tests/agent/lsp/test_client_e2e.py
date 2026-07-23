@@ -126,6 +126,34 @@ async def test_client_shutdown_idempotent(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_client_shutdown_timeout_on_kill_wait(tmp_path: Path):
+    """When both the terminate wait and the post-kill wait time out,
+    _cleanup_process must call kill() and return normally (no exception)."""
+    kill_called = False
+
+    class FakeProc:
+        returncode = None  # still running -> enters the terminate path
+
+        async def wait(self):
+            raise asyncio.TimeoutError()
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            nonlocal kill_called
+            kill_called = True
+
+    client = _client(tmp_path, "clean")
+    # Don't start -- inject a fake process directly so we can control wait()
+    client._proc = FakeProc()
+    # _reader_task / _stderr_task are None on a fresh client, which
+    # _cleanup_process handles gracefully.
+    await client._cleanup_process()
+    assert kill_called, "kill() must be called when both waits time out"
+
+
+@pytest.mark.asyncio
 async def test_client_diagnostics_are_deduped(tmp_path: Path):
     """Repeated identical pushes must not produce duplicate diagnostics."""
     f = tmp_path / "x.py"

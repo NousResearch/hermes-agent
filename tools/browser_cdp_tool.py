@@ -86,7 +86,7 @@ def _run_async(coro):
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+            future = pool.submit(asyncio.run, asyncio.wait_for(coro, timeout=60))
             return future.result()
     return asyncio.run(coro)
 

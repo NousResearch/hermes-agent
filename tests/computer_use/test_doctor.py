@@ -327,6 +327,7 @@ class TestDriverCmdResolution:
         # First (and only) which call should have used the env var.
         which_mock.assert_called_with("/env/path/cua-driver")
 
+<<<<<<< ours
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
     def test_user_local_driver_is_found_when_path_omits_it(self, tmp_path, monkeypatch):
         """Doctor must inspect the same user-local driver as the runtime."""
@@ -346,3 +347,113 @@ class TestDriverCmdResolution:
             assert doctor.run_doctor() == 0
 
         health.assert_called_once_with(str(driver), include=(), skip=())
+=======
+
+# ── stderr draining / pipe deadlock regression ─────────────────────────────
+
+
+class TestStderrDraining:
+    """Regression tests for the stderr concurrent drain that prevents
+    pipe deadlock when cua-driver emits verbose diagnostics on stderr."""
+
+    def _make_proc_with_stderr(self, init_resp: dict, call_resp: dict,
+                                stderr_lines: list[str]) -> MagicMock:
+        """Build a mock subprocess with stderr that yields given lines."""
+        from tools.computer_use import doctor
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+
+        lines = [json.dumps(init_resp) + "\n", json.dumps(call_resp) + "\n", ""]
+        proc.stdout = MagicMock()
+        proc.stdout.readline = MagicMock(side_effect=lines)
+
+        proc.stderr = MagicMock()
+        # Simulate iterating over stderr lines
+        proc.stderr.__iter__ = MagicMock(return_value=iter(stderr_lines))
+        proc.wait = MagicMock(return_value=0)
+        proc.kill = MagicMock()
+        return proc
+
+    def test_large_stderr_does_not_corrupt_stdout_protocol(self):
+        """Even when cua-driver writes many lines to stderr, the JSON-RPC
+        protocol on stdout remains uncorrupted and the handshake succeeds."""
+        from tools.computer_use import doctor
+
+        ok = _ok_report()
+        # Simulate 50 lines of stderr diagnostic output
+        big_stderr = [f"[diag] diagnostic line {i}" for i in range(50)]
+
+        proc = self._make_proc_with_stderr(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": ok}},
+            big_stderr,
+        )
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor()
+
+        assert code == 0
+        # Verify stdout was clean (only our output, no stderr leakage)
+        output = out.getvalue()
+        assert "[diag]" not in output
+
+    def test_stderr_tail_included_on_protocol_failure(self):
+        """When initialize fails (EOF on stdout), the error message includes
+        the stderr tail collected by the concurrent drain thread."""
+        from tools.computer_use import doctor
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline = MagicMock(return_value="")  # EOF
+        proc.wait = MagicMock(return_value=0)
+        proc.kill = MagicMock()
+
+        # Give stderr a bounded pipe that yields lines when iterated
+        import collections
+        stderr_buf = collections.deque(maxlen=10)
+
+        class FakeStderr:
+            def __iter__(self):
+                for line in ["error: cuia init failed", "diagnostic: foo", "diagnostic: bar"]:
+                    yield line + "\n"
+
+        proc.stderr = FakeStderr()
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc):
+            code = doctor.run_doctor()
+
+        assert code == 2
+
+    def test_interleaved_stderr_diagnostic(self):
+        """Verify that stderr lines arriving between the initialize and
+        health_report calls are drained without blocking the child process."""
+        from tools.computer_use import doctor
+
+        ok = _ok_report()
+        stderr_data = [
+            "[driver] initializing subsystems",
+            "[driver] TCC check passed",
+            "[driver] accessibility granted",
+        ]
+
+        proc = self._make_proc_with_stderr(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": ok}},
+            stderr_data,
+        )
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor()
+
+        assert code == 0
+        output = out.getvalue()
+        # Stderr must not leak into stdout
+        assert "[driver]" not in output
+>>>>>>> theirs

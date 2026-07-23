@@ -234,12 +234,15 @@ def uninstall_gateway_service():
 
                     cmd = _systemctl_cmd(is_system)
                     subprocess.run(cmd + ["stop", svc_name],
-                                   capture_output=True, check=False)
+                                   capture_output=True, check=False, timeout=30,
+                                   stdin=subprocess.DEVNULL)
                     subprocess.run(cmd + ["disable", svc_name],
-                                   capture_output=True, check=False)
+                                   capture_output=True, check=False, timeout=30,
+                                   stdin=subprocess.DEVNULL)
                     unit_path.unlink()
                     subprocess.run(cmd + ["daemon-reload"],
-                                   capture_output=True, check=False)
+                                   capture_output=True, check=False, timeout=30,
+                                   stdin=subprocess.DEVNULL)
                     log_success(f"Removed {scope} gateway service ({unit_path})")
                     stopped_something = True
                 except Exception as e:

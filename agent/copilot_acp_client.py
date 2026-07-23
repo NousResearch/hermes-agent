@@ -746,6 +746,10 @@ class CopilotACPClient:
                 f"ACP client method '{method}' is not supported by Hermes yet.",
             )
 
-        process.stdin.write(json.dumps(response) + "\n")
-        process.stdin.flush()
+        try:
+            process.stdin.write(json.dumps(response) + "\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError):
+            # Subprocess already exited or closed stdin — nothing to send.
+            pass
         return True

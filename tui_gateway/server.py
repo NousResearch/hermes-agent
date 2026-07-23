@@ -167,6 +167,59 @@ _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
+# ── Kanban worker session guard (#68779) ─────────────────────────────
+# A Kanban-dispatched worker session can reach a terminal state (blocked,
+# done, archived) where the task's current_run_id is cleared. If the
+# operator later resumes that session via the Desktop/TUI, a new
+# _SlashWorker is spawned that can still write to the Kanban worktree
+# but is invisible to the Kanban board/dispatcher — a "ghost writer".
+# This guard detects terminal Kanban sessions and prevents slash-worker
+# creation for them.
+
+_KANBAN_TERMINAL_STATUSES = frozenset({"blocked", "done", "archived"})
+_kanban_task_cache: dict[str, tuple[str | None, float]] = {}
+_kanban_cache_ttl = 30.0  # seconds
+
+
+def _is_terminal_kanban_session(session_key: str) -> bool:
+    """Return True if *session_key* belongs to a Kanban task in a terminal
+    state.  The caller should skip slash-worker creation in that case.
+
+    Checks the kanban DB for tasks whose ``session_id`` matches the given
+    key and whose status is blocked/done/archived.  Results are cached
+    briefly to avoid hitting SQLite on every slash-worker spawn/restart.
+    """
+    now = time.time()
+    cached = _kanban_task_cache.get(session_key)
+    if cached is not None:
+        status, ts = cached
+        if now - ts < _kanban_cache_ttl:
+            return status in _KANBAN_TERMINAL_STATUSES
+
+    status: str | None = None
+    try:
+        from hermes_cli import kanban_db as kb
+
+        conn = kb.connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE session_id = ? AND status IN "
+                "(?, ?, ?) LIMIT 1",
+                (session_key, "blocked", "done", "archived"),
+            ).fetchone()
+            if row is not None:
+                status = row[0]
+        finally:
+            conn.close()
+    except Exception:
+        # If the kanban DB is unavailable or the query fails, fall back to
+        # allowing the slash worker — better to have an observable writer
+        # than to silently suppress a legitimate session.
+        status = None
+
+    _kanban_task_cache[session_key] = (status, now)
+    return status in _KANBAN_TERMINAL_STATUSES
+
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
@@ -1699,12 +1752,18 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["config_model_seen"] = _config_model_target()
 
             try:
-                worker = _SlashWorker(
-                    key,
-                    getattr(agent, "model", _resolve_model()),
-                    profile_home=current.get("profile_home"),
-                )
-                _attach_worker(sid, current, worker)
+                if not _is_terminal_kanban_session(key):
+                    worker = _SlashWorker(
+                        key,
+                        getattr(agent, "model", _resolve_model()),
+                        profile_home=current.get("profile_home"),
+                    )
+                    _attach_worker(sid, current, worker)
+                else:
+                    logger.debug(
+                        "skipping slash-worker for terminal kanban session %s",
+                        key,
+                    )
             except Exception:
                 pass
 
@@ -3308,6 +3367,14 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
 
 
 def _restart_slash_worker(sid: str, session: dict):
+    # Terminal Kanban sessions must not get a slash worker — they would be
+    # unobservable ghost writers in the Kanban worktree (#68779).
+    if _is_terminal_kanban_session(session.get("session_key", "")):
+        logger.debug(
+            "skipping slash-worker restart for terminal kanban session %s",
+            session.get("session_key"),
+        )
+        return
     worker = session.get("slash_worker")
     if worker:
         try:
@@ -5414,15 +5481,21 @@ def _init_session(
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
     try:
-        _attach_worker(
-            sid,
-            _sessions[sid],
-            _SlashWorker(
+        if not _is_terminal_kanban_session(key):
+            _attach_worker(
+                sid,
+                _sessions[sid],
+                _SlashWorker(
+                    key,
+                    getattr(agent, "model", _resolve_model()),
+                    profile_home=_sessions[sid].get("profile_home"),
+                ),
+            )
+        else:
+            logger.debug(
+                "skipping slash-worker for terminal kanban session %s",
                 key,
-                getattr(agent, "model", _resolve_model()),
-                profile_home=_sessions[sid].get("profile_home"),
-            ),
-        )
+            )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
         _sessions[sid]["slash_worker"] = None
@@ -15620,6 +15693,12 @@ def _(rid, params: dict) -> dict:
 
     worker = session.get("slash_worker")
     if not worker:
+        if _is_terminal_kanban_session(session.get("session_key", "")):
+            return _err(
+                rid, 5031,
+                "slash commands disabled: this is a terminal Kanban worker session — "
+                "resume via the kanban board instead",
+            )
         try:
             worker = _SlashWorker(
                 session["session_key"],

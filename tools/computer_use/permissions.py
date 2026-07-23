@@ -186,8 +186,12 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
                 [binary, "permissions", "grant"],
                 env=_child_env(),
                 stdin=subprocess.DEVNULL,
+                timeout=300,
             ).returncode
         )
+    except subprocess.TimeoutExpired:
+        print("cua-driver permissions grant timed out after 5 minutes.", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except Exception as exc:  # pragma: no cover - defensive

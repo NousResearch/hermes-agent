@@ -599,4 +599,15 @@ async def _run_with_concurrency(
         async with sem:
             await thunk()
 
-    await asyncio.gather(*(_wrap(t) for t in tasks))
+<<<<<<< ours
+    results = await asyncio.gather(
+        *(_wrap(t) for t in tasks), return_exceptions=True,
+    )
+    for r in results:
+        if isinstance(r, Exception):
+=======
+    results = await asyncio.gather(*(_wrap(t) for t in tasks), return_exceptions=True)
+    for r in results:
+        if isinstance(r, BaseException):
+>>>>>>> theirs
+            raise r

@@ -1246,6 +1246,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
 
         out_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 _FFMPEG_PATH, "-y", "-i", mp3_path,
@@ -1254,7 +1255,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
             if proc.returncode != 0 or not Path(out_path).exists():
                 logger.error(
                     "[whatsapp_cloud] ffmpeg opus conversion failed "
@@ -1264,6 +1265,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 )
                 return None
             return out_path
+        except asyncio.TimeoutError:
+            if proc is not None:
+                proc.kill()
+            logger.error("[whatsapp_cloud] ffmpeg opus conversion timed out after 60s")
+            return None
         except Exception:
             logger.exception("[whatsapp_cloud] ffmpeg subprocess raised")
             return None

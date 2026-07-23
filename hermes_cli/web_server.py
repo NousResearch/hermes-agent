@@ -8791,6 +8791,9 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                         record.error = str(payload.get("error") or "WhatsApp pairing failed.")
                     elif event == "disconnected" and record.status == "starting":
                         record.status = "waiting"
+        returncode = proc.wait(timeout=300)
+    except subprocess.TimeoutExpired:
+        proc.kill()
         returncode = proc.wait()
     except Exception as exc:
         with _whatsapp_onboarding_lock:

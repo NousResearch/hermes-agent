@@ -125,8 +125,58 @@ def preprocess_context_references(
         loop = None
     if loop and loop.is_running():
         import concurrent.futures
+<<<<<<< ours
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+            future = pool.submit(asyncio.run, asyncio.wait_for(coro, timeout=300))
+            try:
+                return future.result()
+            except concurrent.futures.TimeoutError:
+                return ContextReferenceResult(
+                    message=message,
+                    original_message=message,
+                    warnings=["Context reference resolution timed out after 300s"],
+                )
+=======
+        import threading
+
+        worker_loop = None  # type: ignore[assignment]
+        loop_ready = threading.Event()
+
+        def _run_in_worker():
+            nonlocal worker_loop
+            worker_loop = asyncio.new_event_loop()
+            loop_ready.set()
+            try:
+                asyncio.set_event_loop(worker_loop)
+                return worker_loop.run_until_complete(coro)
+            finally:
+                try:
+                    pending = asyncio.all_tasks(worker_loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        worker_loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
+                worker_loop.close()
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(_run_in_worker)
+        try:
+            return future.result(timeout=120)
+        except concurrent.futures.TimeoutError:
+            if loop_ready.wait(timeout=1.0) and worker_loop is not None:
+                try:
+                    for t in asyncio.all_tasks(worker_loop):
+                        worker_loop.call_soon_threadsafe(t.cancel)
+                except RuntimeError:
+                    pass
+            raise
+        finally:
+            pool.shutdown(wait=False)
+>>>>>>> theirs
     return asyncio.run(coro)
 
 

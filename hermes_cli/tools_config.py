@@ -1242,7 +1242,11 @@ def _run_post_setup(post_setup_key: str):
                 # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
                 [npm_bin, "install", "--silent", "--workspaces=false"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+<<<<<<< ours
                 creationflags=_post_setup_no_window_flags(),
+=======
+                timeout=300, stdin=subprocess.DEVNULL,
+>>>>>>> theirs
             )
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
@@ -1356,7 +1360,11 @@ def _run_post_setup(post_setup_key: str):
                 # --workspaces=false avoids resolving apps/desktop. See #38772.
                 [_npm_bin, "install", "--silent", "--workspaces=false"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+<<<<<<< ours
                 creationflags=_post_setup_no_window_flags(),
+=======
+                timeout=300, stdin=subprocess.DEVNULL,
+>>>>>>> theirs
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")

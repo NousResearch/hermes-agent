@@ -381,6 +381,7 @@ def _git_clone(url: str, dest: Path) -> None:
             ["git", "clone", "--depth", "1", url, str(dest)],
             check=True,
             capture_output=True,
+            timeout=300,
         )
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc

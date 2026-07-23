@@ -265,7 +265,7 @@ class SSHEnvironment(BaseEnvironment):
                 )
             except Exception:
                 tar_proc.kill()
-                tar_proc.wait()
+                tar_proc.wait(timeout=10)
                 raise
 
             # Allow tar_proc to receive SIGPIPE if ssh_proc exits early
@@ -283,8 +283,8 @@ class SSHEnvironment(BaseEnvironment):
             except subprocess.TimeoutExpired:
                 tar_proc.kill()
                 ssh_proc.kill()
-                tar_proc.wait()
-                ssh_proc.wait()
+                tar_proc.wait(timeout=10)
+                ssh_proc.wait(timeout=10)
                 raise RuntimeError("SSH bulk upload timed out")
 
             if tar_proc.returncode != 0:

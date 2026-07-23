@@ -540,3 +540,102 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
 
+
+# ---------------------------------------------------------------------------
+# NeuTTS espeak-ng setup helpers — regression coverage for timeout /
+# stdin=DEVNULL subprocess kwargs and TimeoutExpired fallback.
+# ---------------------------------------------------------------------------
+
+
+class TestNeuTTSSetup:
+    """_install_neutts_deps / _check_espeak_ng subprocess safety."""
+
+    def test_check_espeak_ng_found(self, monkeypatch):
+        from hermes_cli.setup import _check_espeak_ng
+        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/espeak-ng" if x == "espeak-ng" else None)
+        assert _check_espeak_ng() is True
+
+    def test_check_espeak_ng_not_found(self, monkeypatch):
+        from hermes_cli.setup import _check_espeak_ng
+        monkeypatch.setattr("shutil.which", lambda x: None)
+        assert _check_espeak_ng() is False
+
+    def test_install_espeak_ng_macos_timeout_returns_false(self, monkeypatch, tmp_path):
+        import subprocess
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("sys.platform", "darwin", raising=False)
+        monkeypatch.setattr("hermes_cli.setup._check_espeak_ng", lambda: False)
+
+        called = {}
+
+        def _fake_run(*a, **kw):
+            called["kwargs"] = kw
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=300)
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: True)
+
+        from hermes_cli.setup import _install_neutts_deps
+        result = _install_neutts_deps()
+        assert result is False
+        assert called["kwargs"].get("timeout") == 300
+        assert called["kwargs"].get("stdin") == subprocess.DEVNULL
+
+    def test_install_espeak_ng_linux_timeout_returns_false(self, monkeypatch, tmp_path):
+        import subprocess
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("sys.platform", "linux", raising=False)
+        monkeypatch.setattr("hermes_cli.setup._check_espeak_ng", lambda: False)
+
+        called = {}
+
+        def _fake_run(*a, **kw):
+            called["kwargs"] = kw
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=300)
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: True)
+
+        from hermes_cli.setup import _install_neutts_deps
+        result = _install_neutts_deps()
+        assert result is False
+        assert called["kwargs"].get("timeout") == 300
+        assert called["kwargs"].get("stdin") == subprocess.DEVNULL
+
+    def test_install_espeak_ng_windows_timeout_returns_false(self, monkeypatch, tmp_path):
+        import subprocess
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("sys.platform", "win32", raising=False)
+        monkeypatch.setattr("hermes_cli.setup._check_espeak_ng", lambda: False)
+
+        called = {}
+
+        def _fake_run(*a, **kw):
+            called["kwargs"] = kw
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=300)
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: True)
+
+        from hermes_cli.setup import _install_neutts_deps
+        result = _install_neutts_deps()
+        assert result is False
+        assert called["kwargs"].get("timeout") == 300
+        assert called["kwargs"].get("stdin") == subprocess.DEVNULL
+
+    def test_install_espeak_ng_user_declines_continues_to_pip(self, monkeypatch, tmp_path):
+        """When user declines espeak-ng, the function continues to the pip install step."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("hermes_cli.setup._check_espeak_ng", lambda: False)
+        monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
+
+        import subprocess
+        from unittest.mock import MagicMock
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        monkeypatch.setattr("hermes_cli.tools_config._pip_install", lambda *a, **kw: fake_result)
+
+        from hermes_cli.setup import _install_neutts_deps
+        result = _install_neutts_deps()
+        # pip install succeeds → True
+        assert result is True

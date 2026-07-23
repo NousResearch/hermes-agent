@@ -596,17 +596,26 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # treated as stale by definition.
                                 running_hash = data.get("scriptHash", "")
                                 disk_hash = _file_content_hash(bridge_path)
-                                if running_hash and disk_hash and running_hash == disk_hash:
+                                running_read_receipts = bool(data.get("sendReadReceipts", False))
+                                config_matches = running_read_receipts == self._send_read_receipts
+                                if (
+                                    running_hash
+                                    and disk_hash
+                                    and running_hash == disk_hash
+                                    and config_matches
+                                ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
-                                print(
-                                    f"[{self.name}] Running bridge is stale "
-                                    f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
+                                stale_reason = (
+                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+                                    if running_hash != disk_hash
+                                    else "send_read_receipts config changed"
                                 )
+                                print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -1260,6 +1269,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
+                                await self._send_read_receipt(msg_data)
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
@@ -1275,6 +1285,30 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _send_read_receipt(self, data: Dict[str, Any]) -> None:
+        """Mark a policy-accepted inbound message as read via the bridge."""
+        if not self._send_read_receipts or not self._http_session:
+            return
+        key = data.get("readReceiptKey")
+        if not isinstance(key, dict):
+            return
+        try:
+            import aiohttp
+
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/read",
+                json={"key": key},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "[%s] WhatsApp read receipt failed with HTTP %s",
+                        self.name,
+                        resp.status,
+                    )
+        except Exception as exc:
+            logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
 
     # ── Text debounce batching ──────────────────────────────────────
 

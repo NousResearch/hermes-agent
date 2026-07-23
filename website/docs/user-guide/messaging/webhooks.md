@@ -1,12 +1,12 @@
 ---
 sidebar_position: 13
 title: "Webhooks"
-description: "Receive events from GitHub, GitLab, and other services to trigger Hermes agent runs"
+description: "Receive events from GitHub, GitLab, Linear, and other services to trigger Hermes agent runs"
 ---
 
 # Webhooks
 
-Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
+Receive events from external services (GitHub, GitLab, Linear, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
 
 The agent processes the event and can respond by posting comments on PRs, sending messages to Telegram/Discord, or logging the result.
 
@@ -453,10 +453,14 @@ The webhook adapter includes multiple layers of security:
 
 The adapter validates incoming webhook signatures using the appropriate method for each source:
 
-- **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
-- **GitLab**: `X-Gitlab-Token` header — plain secret string match
-- **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
-- **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
+| Source | Header | Signed content and validation |
+|--------|--------|-------------------------------|
+| GitHub | `X-Hub-Signature-256` | HMAC-SHA256 hex digest of the exact raw request body, prefixed with `sha256=`. |
+| GitLab | `X-Gitlab-Token` | Plain secret string match. |
+| Linear | `Linear-Signature` | Lowercase hex HMAC-SHA256 digest of the exact raw request body, using the route or global secret as the signing key. This body-only scheme has no timestamp-based replay protection. |
+| Svix / AgentMail | `svix-id`, `svix-timestamp`, `svix-signature` | Base64 HMAC-SHA256 of `<id>.<timestamp>.<body>`; the timestamp must be within ±300 seconds of the server clock. |
+| Generic (V2, recommended) | `X-Webhook-Signature-V2`, `X-Webhook-Timestamp` | HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later. |
+| Generic (V1, legacy) | `X-Webhook-Signature` | Raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2. |
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
 
@@ -523,6 +527,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- For Linear, check `Linear-Signature` and ensure the sender signs the exact raw request body
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored

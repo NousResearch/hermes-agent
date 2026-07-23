@@ -467,6 +467,10 @@ EOF
 )"
 ```
 
+### Step 8b: Cross-PR Conflict Check (Optional)
+
+Run the cross-PR conflict check (see Section 6).
+
 ### Step 9: Clean up
 
 ```bash
@@ -479,3 +483,67 @@ git branch -D pr-$PR_NUMBER
 - **Approve** — no critical or warning-level issues, only minor suggestions or all clear
 - **Request Changes** — any critical or warning-level issue that should be fixed before merge
 - **Comment** — observations and suggestions, but nothing blocking (use when you're unsure or the PR is a draft)
+
+---
+
+## 6. Cross-PR Conflict Analysis (Optional)
+
+Check whether the current PR modifies functions also changed by other open PRs.
+
+### During PR Review — Conflict Check
+
+After posting your code review (Steps 7-8), run the cross-PR conflict check:
+
+```bash
+# Install codegraph if not present
+if ! command -v codegraph &>/dev/null; then
+  pip install codegraph-ai
+fi
+
+# Build index if not present (one-time, takes a few minutes)
+if [ ! -d ".codegraph" ]; then
+  codegraph init --repo . --db .codegraph
+  # Re-run periodically (e.g. weekly) to keep the index fresh
+  codegraph pr-review prepare --db .codegraph --limit 500
+  echo ".codegraph/" >> .gitignore
+fi
+
+# Ensure this PR is in the index (idempotent — safe to re-run on existing PRs)
+codegraph pr-review update --db .codegraph --pr $PR_NUMBER
+
+# Check for conflicts (dry-run to preview)
+codegraph pr-review label --db .codegraph --pr $PR_NUMBER --comment-only --dry-run
+```
+
+If conflicts are found, post the conflict comment:
+
+```bash
+codegraph pr-review label --db .codegraph --pr $PR_NUMBER --comment-only
+```
+
+If no conflicts are found, skip — no comment needed.
+
+The conflict comment looks like:
+
+```markdown
+### :warning: Cross-PR Conflict Detected
+
+This PR shares modified code with #37398, #37442, #37966.
+
+**Shared functions:**
+
+| Function | File | Also modified by |
+|----------|------|-----------------|
+| `_run_single_child` | `tools/delegate_tool.py` | #37633, #37724 |
+| `delegate_task` | `tools/delegate_tool.py` | #37398, #37442, #37966 |
+
+**Recommendation:** Coordinate with #37398, #37442, #37633, #37724, #37966 before merging.
+```
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `Database locked` after interrupted `prepare` | `rm .codegraph/graph.db/neugdb.lock` |
+| `prepare`/`update` fails to fetch PR diffs | Run `gh auth login` first — codegraph uses `gh` CLI for GitHub access |
+| `prepare` seems stuck | Normal — indexing 500 PRs takes a few minutes. Let it finish |

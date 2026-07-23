@@ -13758,6 +13758,13 @@ def cmd_dashboard_register(args):
     _impl(args)
 
 
+def cmd_dashboard_proxy(args):
+    """Run the hardened API-only remote-access proxy."""
+    from hermes_cli.remote_proxy import run_remote_proxy
+
+    sys.exit(run_remote_proxy(args))
+
+
 def cmd_gateway_enroll(args):
     """Enroll a self-hosted gateway with a relay connector."""
     from hermes_cli.gateway_enroll import cmd_gateway_enroll as _impl
@@ -16268,6 +16275,7 @@ def main():
         subparsers,
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
+        cmd_dashboard_proxy=cmd_dashboard_proxy,
     )
 
 

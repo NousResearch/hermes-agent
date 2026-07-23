@@ -105,15 +105,24 @@ def test_config_get_unset_subcommands_parse():
     assert ns.key == "terminal.backend"
 
 
-def test_dashboard_builder_two_handlers():
+def test_dashboard_builder_three_handlers():
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")
-    dash, reg = _h("dashboard"), _h("dashboard_register")
-    build_dashboard_parser(sub, cmd_dashboard=dash, cmd_dashboard_register=reg)
+    dash = _h("dashboard")
+    reg = _h("dashboard_register")
+    proxy = _h("dashboard_proxy")
+    build_dashboard_parser(
+        sub,
+        cmd_dashboard=dash,
+        cmd_dashboard_register=reg,
+        cmd_dashboard_proxy=proxy,
+    )
     # bare dashboard -> launch handler
     assert parser.parse_args(["dashboard"]).func is dash
     # dashboard register -> register handler
     assert parser.parse_args(["dashboard", "register"]).func is reg
+    # dashboard proxy -> proxy handler
+    assert parser.parse_args(["dashboard", "proxy"]).func is proxy
 
 
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────

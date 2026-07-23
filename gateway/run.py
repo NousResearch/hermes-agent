@@ -14302,6 +14302,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    def _memory_recall_requester_is_operator(self, source: SessionSource) -> bool:
+        """Is the account driving this turn the operator (the memory owner)?
+
+        Derived from the operator's explicit admin allowlist
+        (``allow_admin_from`` / ``group_allow_admin_from``) — the codebase's
+        existing "these accounts own this bot" signal. When no admin list is
+        configured for the scope we cannot positively identify an operator, so
+        this returns ``False`` and recall is suppressed (safe default): an
+        operator enables gateway recall by listing their own account as an
+        admin. Note the deliberate ``policy.enabled`` guard — with gating
+        disabled ``SlashAccessPolicy.is_admin()`` returns ``True`` for
+        everyone, which is correct for slash commands but unsafe here.
+        """
+        try:
+            from gateway.slash_access import policy_for_source as _policy_for_source
+
+            policy = _policy_for_source(self.config, source)
+        except Exception:
+            return False
+        user_id = getattr(source, "user_id", None)
+        return bool(policy.enabled and user_id and policy.is_admin(user_id))
+
+    def _apply_memory_recall_gate(self, agent, source: SessionSource) -> None:
+        """Set the identity-derived auto-recall gate on a freshly built agent.
+
+        Replaces the old ad-hoc customer-platform name set: recall is injected
+        only for operator-scoped turns (see :mod:`agent.memory_recall_policy`).
+        Applied at every gateway agent construction site so the guard enforced
+        in ``build_turn_context()`` actually receives a decision. Fails safe —
+        a decision error suppresses recall rather than leaking it.
+        """
+        from agent.memory_recall_policy import suppress_memory_recall
+
+        try:
+            agent._skip_memory_injection = suppress_memory_recall(
+                platform=_platform_config_key(source.platform),
+                chat_type=getattr(source, "chat_type", None),
+                requester_is_operator=self._memory_recall_requester_is_operator(source),
+            )
+        except Exception:
+            agent._skip_memory_injection = True
+
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
     ) -> Optional[str]:
@@ -15316,6 +15358,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # Security: gate auto-recall to operator-scoped turns so
+                # operator memory can't leak to customers (#40170).
+                self._apply_memory_recall_gate(agent, source)
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -20977,6 +21022,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # Security: gate auto-recall to operator-scoped turns so
+                # operator memory can't leak to customers (#40170). The main
+                # conversation path previously left this unset, so the primary
+                # leak path was never guarded.
+                self._apply_memory_recall_gate(agent, source)
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         # Record the session_id the snapshot was taken for

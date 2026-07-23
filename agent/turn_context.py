@@ -1086,8 +1086,16 @@ def build_turn_context(
             pass
 
     # External memory provider: prefetch once before the tool loop.
+    #
+    # Security: auto-recall is gated to operator-scoped turns so operator-level
+    # memory is not leaked to customers via indirect prompt injection (#40170).
+    # The gateway derives the decision from the requester's identity (not a
+    # platform-name list) and sets ``_skip_memory_injection`` per turn; local
+    # operator surfaces (CLI/TUI/desktop) leave it off. Memory tools stay
+    # available for explicit use; only the automatic prefetch is suppressed.
     ext_prefetch_cache = ""
-    if agent._memory_manager:
+    skip_memory_injection = getattr(agent, "_skip_memory_injection", False)
+    if agent._memory_manager and not skip_memory_injection:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""

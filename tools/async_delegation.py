@@ -115,7 +115,8 @@ def _connect() -> sqlite3.Connection:
             owner_started_at INTEGER,
             task_json TEXT,
             delivery_claim TEXT,
-            delivery_claimed_at REAL
+            delivery_claimed_at REAL,
+            origin_session_id TEXT NOT NULL DEFAULT ''
         )"""
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
@@ -125,6 +126,11 @@ def _connect() -> sqlite3.Connection:
         ("task_json", "TEXT"),
         ("delivery_claim", "TEXT"),
         ("delivery_claimed_at", "REAL"),
+        # Raw api_server session id (X-Hermes-Session-Id) of the ORIGINATING
+        # request — the wake self-post target. Without persisting it,
+        # completions recovered after a process restart are unroutable on
+        # api_server (the in-memory record that carried it is gone).
+        ("origin_session_id", "TEXT"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
@@ -149,12 +155,13 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
-             owner_started_at, json.dumps(task_payload)),
+             owner_started_at, json.dumps(task_payload),
+             record.get("origin_session_id", "")),
         )
     _prune_durable_records()
 
@@ -235,11 +242,12 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json
+                      owner_started_at, task_json, origin_session_id
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json = row
+            (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
+             pid, started, task_json, origin_session_id) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -251,6 +259,9 @@ def recover_abandoned_delegations() -> int:
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
+                # Restore the durable wake target so completions recovered
+                # after a restart remain routable to api_server sessions.
+                "origin_session_id": origin_session_id or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
@@ -427,7 +438,8 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
     with _DB_LOCK, _connect() as conn:
         row = conn.execute(
             """SELECT origin_session, state, dispatched_at, completed_at,
-                      result_json, delivery_state, delivery_attempts
+                      result_json, delivery_state, delivery_attempts,
+                      origin_session_id
                FROM async_delegations WHERE delegation_id=?""", (delegation_id,),
         ).fetchone()
     if row is None:
@@ -437,6 +449,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
         "dispatched_at": row[2], "completed_at": row[3],
         "result": json.loads(row[4]) if row[4] else None,
         "delivery_state": row[5], "delivery_attempts": row[6],
+        "origin_session_id": row[7] or "",
     }
 
 

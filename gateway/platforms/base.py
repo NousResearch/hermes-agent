@@ -5182,6 +5182,78 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _reply_anchor = _reply_anchor_for_event(event)
+                attachment_failures: set[str] = set()
+
+                async def _dispatch_final_attachment(
+                    kind: str,
+                    operation: Callable[
+                        ["BasePlatformAdapter"], Awaitable[Optional[SendResult]]
+                    ],
+                    *,
+                    report_failure: bool = True,
+                ) -> Optional[SendResult]:
+                    """Send one new final attachment through the current adapter."""
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    try:
+                        result = await operation(delivery_adapter)
+                    except Exception:
+                        if report_failure:
+                            attachment_failures.add(kind)
+                        logger.warning(
+                            "[%s] final_attachment_dispatch_failed: kind=%s",
+                            delivery_adapter.name,
+                            kind,
+                        )
+                        return None
+                    if result is not None and not getattr(result, "success", False):
+                        if report_failure:
+                            attachment_failures.add(kind)
+                        logger.warning(
+                            "[%s] final_attachment_dispatch_failed: kind=%s",
+                            delivery_adapter.name,
+                            kind,
+                        )
+                    return result
+
+                async def _dispatch_final_image_batch(
+                    batch_images: List[Tuple[str, str]], human_delay: float
+                ) -> None:
+                    """Send one new image batch through the current adapter."""
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    batch_sender = delivery_adapter.send_multiple_images
+                    uses_default_loop = (
+                        getattr(batch_sender, "__func__", None)
+                        is BasePlatformAdapter.send_multiple_images
+                    )
+                    try:
+                        if uses_default_loop:
+                            # The base implementation sends images one by one.
+                            # Re-resolve after each pacing delay so a reconnect
+                            # between items cannot stale-bind the remaining sends.
+                            for image in batch_images:
+                                if human_delay > 0:
+                                    await asyncio.sleep(human_delay)
+                                item_adapter = self._final_delivery_adapter(event.source)
+                                await item_adapter.send_multiple_images(
+                                    chat_id=event.source.chat_id,
+                                    images=[image],
+                                    metadata=_final_thread_metadata,
+                                    human_delay=0,
+                                )
+                            return
+                        await batch_sender(
+                            chat_id=event.source.chat_id,
+                            images=batch_images,
+                            metadata=_final_thread_metadata,
+                            human_delay=human_delay,
+                        )
+                    except Exception:
+                        attachment_failures.add("image")
+                        logger.warning(
+                            "[%s] final_attachment_dispatch_failed: kind=image",
+                            delivery_adapter.name,
+                        )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5218,14 +5290,22 @@ class BasePlatformAdapter(ABC):
                             and text_content[:1024] == text_content
                         ):
                             telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
-                            chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            caption=telegram_tts_caption,
-                            metadata=_final_thread_metadata,
+                        tts_result = await _dispatch_final_attachment(
+                            "audio",
+                            lambda delivery_adapter: delivery_adapter.play_tts(
+                                chat_id=event.source.chat_id,
+                                audio_path=_tts_path,
+                                caption=telegram_tts_caption,
+                                metadata=_final_thread_metadata,
+                            ),
+                            # A successful Telegram TTS caption owns the text.
+                            # On failure, the regular text path below is already
+                            # the user-visible fallback, so avoid a second notice.
+                            report_failure=not bool(telegram_tts_caption),
                         )
                         _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
+                            telegram_tts_caption
+                            and getattr(tts_result, "success", False)
                         )
                     finally:
                         try:
@@ -5245,7 +5325,6 @@ class BasePlatformAdapter(ABC):
                         len(text_content),
                         event.source.chat_id,
                     )
-                    _reply_anchor = _reply_anchor_for_event(event)
                     # Delivery-obligation ledger: durably record the final
                     # response BEFORE the send attempt so a gateway crash
                     # between finalize and platform ACK can redeliver it on
@@ -5333,15 +5412,7 @@ class BasePlatformAdapter(ABC):
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-                    try:
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
-                            images=images,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
-                        )
-                    except Exception as batch_err:
-                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                    await _dispatch_final_image_batch(images, human_delay)
 
 
                 # Send extracted media files — route by file type
@@ -5374,66 +5445,81 @@ class BasePlatformAdapter(ABC):
                         _non_image_local.append(file_path)
 
                 if _image_paths:
-                    try:
-                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
-                            images=_batch,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
-                        )
-                    except Exception as batch_err:
-                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                    _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
+                    await _dispatch_final_image_batch(_batch, human_delay)
 
                 for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
-                    try:
-                        ext = Path(media_path).suffix.lower()
-                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                            media_result = await self.send_voice(
+                    ext = Path(media_path).suffix.lower()
+                    if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+                        await _dispatch_final_attachment(
+                            "audio",
+                            lambda delivery_adapter: delivery_adapter.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
-                            )
-                        elif ext in _VIDEO_EXTS:
-                            media_result = await self.send_video(
+                            ),
+                        )
+                    elif ext in _VIDEO_EXTS:
+                        await _dispatch_final_attachment(
+                            "video",
+                            lambda delivery_adapter: delivery_adapter.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
                                 metadata=_final_thread_metadata,
-                            )
-                        else:
-                            media_result = await self.send_document(
+                            ),
+                        )
+                    else:
+                        await _dispatch_final_attachment(
+                            "document",
+                            lambda delivery_adapter: delivery_adapter.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
                                 metadata=_final_thread_metadata,
-                            )
-
-                        if not media_result.success:
-                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
-                    except Exception as media_err:
-                        logger.warning("[%s] Error sending media: %s", self.name, media_err)
+                            ),
+                        )
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
-                    try:
-                        ext = Path(file_path).suffix.lower()
-                        if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                    ext = Path(file_path).suffix.lower()
+                    if ext in _VIDEO_EXTS:
+                        await _dispatch_final_attachment(
+                            "video",
+                            lambda delivery_adapter: delivery_adapter.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
-                            )
-                        else:
-                            await self.send_document(
+                            ),
+                        )
+                    else:
+                        await _dispatch_final_attachment(
+                            "document",
+                            lambda delivery_adapter: delivery_adapter.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
-                            )
-                    except Exception as file_err:
-                        logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+                            ),
+                        )
+
+                if attachment_failures:
+                    notice_adapter = self._final_delivery_adapter(event.source)
+                    try:
+                        notice_result = await notice_adapter._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content="⚠️ Couldn't deliver one or more attachments from the final response.",
+                            reply_to=_reply_anchor,
+                            metadata=_final_thread_metadata,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[%s] final_attachment_notice_dispatch_failed",
+                            notice_adapter.name,
+                        )
+                    else:
+                        _record_delivery(notice_result)
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.

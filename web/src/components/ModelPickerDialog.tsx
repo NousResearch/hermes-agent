@@ -12,6 +12,11 @@ import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
+import {
+  DASHBOARD_MODAL_BACKDROP,
+  DASHBOARD_MODAL_PANEL,
+} from "@/lib/dashboard-modal-shell";
 
 /**
  * Two-stage model picker modal.
@@ -116,6 +121,7 @@ export function ModelPickerDialog(props: Props) {
   const [pendingConfirm, setPendingConfirm] =
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
+  const modalRef = useModalBehavior({ open: true, onClose });
 
   const applyOptions = (r: ModelOptionsResponse) => {
     const next = r?.providers ?? [];
@@ -189,18 +195,6 @@ export function ModelPickerDialog(props: Props) {
     // Deliberately omit props from deps — stable for the dialog's lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Esc closes.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const selectedProvider = useMemo(
     () => providers.find((p) => p.slug === selectedSlug) ?? null,
@@ -341,50 +335,63 @@ export function ModelPickerDialog(props: Props) {
   // Toast.tsx for the same pattern.
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
+      ref={modalRef}
+      className={DASHBOARD_MODAL_BACKDROP}
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="model-picker-title"
     >
-      <div className={cn(themedBody, "relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col")}>
+      <div
+        className={cn(
+          themedBody,
+          DASHBOARD_MODAL_PANEL,
+          "flex h-[calc(100dvh-1.5rem)] max-w-3xl flex-col overflow-hidden sm:h-auto sm:max-h-[80vh]",
+        )}
+      >
         <Button
           ghost
           size="icon"
           onClick={onClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
           aria-label="Close"
         >
           <X />
         </Button>
 
-        <header className="p-5 pb-3 border-b border-border">
+        <header className="border-b border-border p-3 pr-14 sm:p-5 sm:pb-3 sm:pr-14">
           <h2
             id="model-picker-title"
             className="font-mondwest text-display text-base tracking-wider"
           >
             {title}
           </h2>
-          <p className="text-xs text-muted-foreground mt-1 font-mono">
+          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
             current: {currentModel || "(unknown)"}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>
 
-        <div className="px-5 pt-3 pb-2 border-b border-border">
+        <div className="border-b border-border px-3 pb-2 pt-3 sm:px-5">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               placeholder="Filter providers and models…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="pl-7 h-8 text-sm"
+              className="min-h-11 pl-7 text-sm sm:min-h-8"
             />
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 grid grid-cols-[200px_1fr] overflow-hidden">
+        <div
+          className="grid min-h-0 flex-1 grid-rows-[minmax(7rem,0.75fr)_minmax(8rem,1.25fr)] overflow-hidden sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-none"
+          data-testid="model-picker-responsive-grid"
+        >
           <ProviderColumn
             loading={loading}
             error={error}
@@ -418,13 +425,13 @@ export function ModelPickerDialog(props: Props) {
           />
         </div>
 
-        <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
+        <footer className="flex flex-col gap-3 border-t border-border p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
               Saves to config.yaml — applies to new sessions.
             </span>
           ) : (
-            <div className="flex items-center gap-2">
+            <div className="flex min-h-11 items-center gap-2 sm:min-h-0">
               <Checkbox
                 checked={persistGlobal}
                 id="model-picker-persist-global"
@@ -442,19 +449,20 @@ export function ModelPickerDialog(props: Props) {
             </div>
           )}
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="grid w-full grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-auto sm:items-center">
             <Button
               outlined
+              className="col-span-2 min-h-11 sm:col-span-1 sm:min-h-0"
               onClick={refreshOptions}
               disabled={applying || loading || refreshing}
             >
               {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
               Refresh Models
             </Button>
-            <Button outlined onClick={onClose} disabled={applying}>
+            <Button className="min-h-11 sm:min-h-0" outlined onClick={onClose} disabled={applying}>
               Cancel
             </Button>
-            <Button onClick={confirm} disabled={!canConfirm}>
+            <Button className="min-h-11 sm:min-h-0" onClick={confirm} disabled={!canConfirm}>
               {applying ? <Spinner /> : "Switch"}
             </Button>
           </div>
@@ -503,7 +511,11 @@ function ProviderColumn({
   onSelect(slug: string): void;
 }) {
   return (
-    <div className="border-r border-border overflow-y-auto">
+    <div
+      className="overflow-y-auto border-b border-border sm:border-b-0 sm:border-r"
+      aria-label="Model providers"
+      role="region"
+    >
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
           <Spinner className="text-xs" /> loading…
@@ -529,16 +541,16 @@ function ProviderColumn({
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`items-start text-xs border-l-2 ${
+            className={`min-h-11 items-start border-l-2 text-xs sm:min-h-0 ${
               active ? "border-l-primary" : "border-l-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="font-medium truncate">{p.name}</span>
+                <span className="break-all font-medium sm:truncate">{p.name}</span>
                 {p.is_current && <CurrentTag />}
               </div>
-              <div className="text-xs text-text-secondary font-mono truncate">
+              <div className="break-all font-mono text-xs text-text-secondary sm:truncate">
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
               </div>
             </div>
@@ -574,7 +586,7 @@ function ModelColumn({
 }) {
   if (!provider) {
     return (
-      <div className="overflow-y-auto">
+      <div className="overflow-y-auto" aria-label="Models" role="region">
         <div className="p-4 text-xs text-muted-foreground italic">
           pick a provider →
         </div>
@@ -583,7 +595,7 @@ function ModelColumn({
   }
 
   return (
-    <div className="overflow-y-auto">
+    <div className="overflow-y-auto" aria-label="Models" role="region">
       {provider.warning && (
         <div className="p-3 text-xs text-destructive border-b border-border">
           {provider.warning}
@@ -608,12 +620,12 @@ function ModelColumn({
               active={active}
               onClick={() => onSelect(m)}
               onDoubleClick={() => onConfirm(m)}
-              className="px-3 py-1.5 text-xs font-mono"
+              className="min-h-11 px-3 py-1.5 font-mono text-xs sm:min-h-0"
             >
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
-              <span className="flex-1 truncate">
+              <span className="min-w-0 flex-1 break-all sm:truncate">
                 <HighlightedText text={m} positions={positions} />
               </span>
               {isCurrent && <CurrentTag />}

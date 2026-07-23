@@ -26,6 +26,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { OperationalActionGroup } from "@/components/OperationalActionGroup";
 
 interface CreatedWebhook {
   url: string;
@@ -50,7 +51,7 @@ function CopyButton({ value }: { value: string }) {
       title="Copy"
       aria-label="Copy"
       onClick={handleCopy}
-      className="text-muted-foreground hover:text-foreground"
+      className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
     >
       {copied ? <Check /> : <Copy />}
     </Button>
@@ -255,7 +256,7 @@ export default function WebhooksPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
-        className="uppercase"
+        className="min-h-11 uppercase sm:min-h-0"
         size="sm"
         disabled={!enabled || enabling}
         prefix={<Plus />}
@@ -283,7 +284,7 @@ export default function WebhooksPage() {
   const pendingName = webhookDelete.pendingId ?? "";
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-4 sm:gap-6">
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -309,18 +310,18 @@ export default function WebhooksPage() {
           aria-modal="true"
           aria-labelledby="create-webhook-title"
         >
-          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto")}>
+          <div className={cn(themedBody, "relative flex h-[calc(100dvh-1.5rem)] w-full max-w-lg flex-col overflow-y-auto border border-border bg-card shadow-2xl sm:h-auto sm:max-h-[90vh]")}>
             <Button
               ghost
               size="icon"
               onClick={closeCreateModal}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute right-2 top-2 min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
               aria-label="Close"
             >
               <X />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="border-b border-border p-3 pr-14 sm:p-5 sm:pb-3 sm:pr-14">
               <h2
                 id="create-webhook-title"
                 className="font-mondwest text-display text-base tracking-wider"
@@ -330,7 +331,7 @@ export default function WebhooksPage() {
             </header>
 
             {created ? (
-              <div className="p-5 grid gap-4">
+              <div className="grid gap-4 p-3 sm:p-5">
                 <p className="text-sm text-muted-foreground">
                   Subscription created. Copy the secret now — it is only shown
                   once.
@@ -338,8 +339,8 @@ export default function WebhooksPage() {
 
                 <div className="grid gap-2">
                   <Label>Webhook URL</Label>
-                  <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
+                  <div className="flex min-w-0 items-center gap-2 border border-border bg-background/40 px-3 py-2">
+                    <span className="min-w-0 flex-1 break-all font-mono text-xs">
                       {created.url}
                     </span>
                     <CopyButton value={created.url} />
@@ -348,15 +349,15 @@ export default function WebhooksPage() {
 
                 <div className="grid gap-2">
                   <Label>Secret (shown once)</Label>
-                  <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
+                  <div className="flex min-w-0 items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs">
                       {created.secret}
                     </span>
                     <CopyButton value={created.secret} />
                   </div>
                 </div>
 
-                <div className="flex justify-end">
+                <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
                   <Button
                     className="uppercase"
                     size="sm"
@@ -367,7 +368,7 @@ export default function WebhooksPage() {
                 </div>
               </div>
             ) : (
-              <div className="p-5 grid gap-4">
+              <div className="grid gap-4 p-3 sm:p-5">
                 <div className="grid gap-2">
                   <Label htmlFor="webhook-name">Name</Label>
                   <Input
@@ -376,6 +377,9 @@ export default function WebhooksPage() {
                     placeholder="e.g. github-push"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                 </div>
 
@@ -396,6 +400,9 @@ export default function WebhooksPage() {
                     placeholder="comma-separated, leave empty for all"
                     value={events}
                     onChange={(e) => setEvents(e.target.value)}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                 </div>
 
@@ -420,7 +427,7 @@ export default function WebhooksPage() {
 
                   <div className="grid gap-2">
                     <Label htmlFor="webhook-deliver-only">Deliver only</Label>
-                    <label className="flex items-center gap-2 text-sm text-muted-foreground h-9">
+                    <label className="flex min-h-11 items-center gap-2 text-sm text-muted-foreground sm:min-h-9">
                       <input
                         id="webhook-deliver-only"
                         type="checkbox"
@@ -443,7 +450,7 @@ export default function WebhooksPage() {
                   />
                 </div>
 
-                <div className="flex justify-end">
+                <div className="flex justify-end [&_button]:min-h-11 sm:[&_button]:min-h-0">
                   <Button
                     className="uppercase"
                     size="sm"
@@ -477,7 +484,7 @@ export default function WebhooksPage() {
             </div>
             <Button
               size="sm"
-              className="uppercase shrink-0"
+              className="min-h-11 shrink-0 uppercase sm:min-h-0"
               onClick={handleEnableWebhooks}
               disabled={enabling}
               prefix={enabling ? <Spinner /> : <Webhook className="h-4 w-4" />}
@@ -509,7 +516,7 @@ export default function WebhooksPage() {
             </div>
             <Button
               size="sm"
-              className="uppercase shrink-0"
+              className="min-h-11 shrink-0 uppercase sm:min-h-0"
               onClick={handleRestart}
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
@@ -544,10 +551,10 @@ export default function WebhooksPage() {
 
         {subscriptions.map((sub: WebhookRoute) => (
           <Card key={sub.name}>
-            <CardContent className="flex items-start gap-4 py-4">
+            <CardContent className="flex min-w-0 flex-col items-stretch gap-3 p-3 sm:flex-row sm:items-start sm:gap-4 sm:py-4">
               <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className="font-medium text-sm truncate">
+                  <span className="min-w-0 break-all text-sm font-medium sm:truncate">
                     {sub.name}
                   </span>
                   <Badge tone="outline">{sub.deliver}</Badge>
@@ -558,7 +565,7 @@ export default function WebhooksPage() {
                 </div>
 
                 {sub.description && (
-                  <p className="text-xs text-muted-foreground mb-2">
+                  <p className="mb-2 break-words text-xs text-muted-foreground">
                     {sub.description}
                   </p>
                 )}
@@ -575,15 +582,15 @@ export default function WebhooksPage() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex-1 min-w-0 truncate font-mono">
+                <div className="flex min-w-0 items-start gap-2 text-xs text-muted-foreground">
+                  <span className="min-w-0 flex-1 break-all font-mono">
                     {sub.url}
                   </span>
                   <CopyButton value={sub.url} />
                 </div>
               </div>
 
-              <div className="flex items-center gap-1 shrink-0">
+              <OperationalActionGroup separated aria-label={`Actions for ${sub.name}`}>
                 <Button
                   ghost
                   size="sm"
@@ -603,7 +610,7 @@ export default function WebhooksPage() {
                 >
                   <Trash2 />
                 </Button>
-              </div>
+              </OperationalActionGroup>
             </CardContent>
           </Card>
         ))}

@@ -4,6 +4,7 @@ import {
   useState,
   useCallback,
   useRef,
+  type RefObject,
 } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
@@ -52,14 +53,127 @@ const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
 
 const segmentedClass =
-  "w-fit max-w-full flex-wrap justify-start self-start";
+  "w-full max-w-full flex-wrap justify-start self-start [&_button]:min-h-11 [&_button]:flex-1 sm:w-fit sm:[&_button]:min-h-0 sm:[&_button]:flex-none";
+
+type LogFile = (typeof FILES)[number];
+type LogLevel = (typeof LEVELS)[number];
+type LogComponent = (typeof COMPONENTS)[number];
+type LogLineCount = (typeof LINE_COUNTS)[number];
+
+interface LogsFilterBarProps {
+  component: LogComponent;
+  file: LogFile;
+  level: LogLevel;
+  lineCount: LogLineCount;
+  labels: {
+    component: string;
+    file: string;
+    level: string;
+    lines: string;
+    title: string;
+  };
+  onComponentChange(value: LogComponent): void;
+  onFileChange(value: LogFile): void;
+  onLevelChange(value: LogLevel): void;
+  onLineCountChange(value: LogLineCount): void;
+}
+
+export function LogsFilterBar({
+  component,
+  file,
+  labels,
+  level,
+  lineCount,
+  onComponentChange,
+  onFileChange,
+  onLevelChange,
+  onLineCountChange,
+}: LogsFilterBarProps) {
+  return (
+    <div
+      role="toolbar"
+      aria-label={labels.title}
+      className="flex min-w-0 max-w-full flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:gap-x-6 sm:gap-y-3"
+    >
+      <FilterGroup label={labels.file} className={filterGroupClass}>
+        <Segmented
+          className={segmentedClass}
+          value={file}
+          onChange={(value) => onFileChange(value as LogFile)}
+          options={toSegmentOptions(FILES)}
+        />
+      </FilterGroup>
+
+      <FilterGroup label={labels.level} className={filterGroupClass}>
+        <Segmented
+          className={segmentedClass}
+          value={level}
+          onChange={(value) => onLevelChange(value as LogLevel)}
+          options={toSegmentOptions(LEVELS)}
+        />
+      </FilterGroup>
+
+      <FilterGroup label={labels.component} className={filterGroupClass}>
+        <Segmented
+          className={segmentedClass}
+          value={component}
+          onChange={(value) => onComponentChange(value as LogComponent)}
+          options={toSegmentOptions(COMPONENTS)}
+        />
+      </FilterGroup>
+
+      <FilterGroup label={labels.lines} className={filterGroupClass}>
+        <Segmented
+          className={segmentedClass}
+          value={String(lineCount)}
+          onChange={(value) => onLineCountChange(Number(value) as LogLineCount)}
+          options={LINE_COUNTS.map((count) => ({
+            value: String(count),
+            label: String(count),
+          }))}
+        />
+      </FilterGroup>
+    </div>
+  );
+}
+
+interface LogOutputProps {
+  emptyLabel: string;
+  lines: string[];
+  loading: boolean;
+  scrollRef?: RefObject<HTMLDivElement | null>;
+}
+
+export function LogOutput({ emptyLabel, lines, loading, scrollRef }: LogOutputProps) {
+  return (
+    <div
+      ref={scrollRef}
+      data-testid="log-output"
+      className="h-[45dvh] min-h-48 max-w-full overflow-auto p-3 font-mono-ui text-xs leading-5 sm:h-auto sm:min-h-[400px] sm:max-h-[calc(100vh-220px)] sm:p-4"
+    >
+      {lines.length === 0 && !loading ? (
+        <p className="py-8 text-center text-muted-foreground">{emptyLabel}</p>
+      ) : null}
+      {lines.map((line, index) => {
+        const cls = classifyLine(line);
+        return (
+          <div
+            key={index}
+            className={`${LINE_COLORS[cls]} -mx-1 min-w-max whitespace-pre px-1 hover:bg-secondary/20`}
+          >
+            {line}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function LogsPage() {
-  const [file, setFile] = useState<(typeof FILES)[number]>("agent");
-  const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
-  const [component, setComponent] =
-    useState<(typeof COMPONENTS)[number]>("all");
-  const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
+  const [file, setFile] = useState<LogFile>("agent");
+  const [level, setLevel] = useState<LogLevel>("ALL");
+  const [component, setComponent] = useState<LogComponent>("all");
+  const [lineCount, setLineCount] = useState<LogLineCount>(100);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -96,7 +210,7 @@ export default function LogsPage() {
           type="button"
           ghost
           size="icon"
-          className="text-muted-foreground hover:text-foreground"
+          className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground sm:min-h-0 sm:min-w-0"
           onClick={fetchLogs}
           disabled={loading}
           aria-label={t.common.refresh}
@@ -107,7 +221,7 @@ export default function LogsPage() {
     );
     setEnd(
       <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex min-h-11 items-center gap-2 sm:min-h-0">
           <Label htmlFor="logs-auto-refresh" className="text-xs cursor-pointer">
             {t.logs.autoRefresh}
           </Label>
@@ -156,52 +270,23 @@ export default function LogsPage() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
       <PluginSlot name="logs:top" />
-      <div
-        role="toolbar"
-        aria-label={t.logs.title}
-        className="flex min-w-0 max-w-full flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:gap-x-6 sm:gap-y-3"
-      >
-        <FilterGroup label={t.logs.file} className={filterGroupClass}>
-          <Segmented
-            className={segmentedClass}
-            value={file}
-            onChange={setFile}
-            options={toSegmentOptions(FILES)}
-          />
-        </FilterGroup>
-
-        <FilterGroup label={t.logs.level} className={filterGroupClass}>
-          <Segmented
-            className={segmentedClass}
-            value={level}
-            onChange={setLevel}
-            options={toSegmentOptions(LEVELS)}
-          />
-        </FilterGroup>
-
-        <FilterGroup label={t.logs.component} className={filterGroupClass}>
-          <Segmented
-            className={segmentedClass}
-            value={component}
-            onChange={setComponent}
-            options={toSegmentOptions(COMPONENTS)}
-          />
-        </FilterGroup>
-
-        <FilterGroup label={t.logs.lines} className={filterGroupClass}>
-          <Segmented
-            className={segmentedClass}
-            value={String(lineCount)}
-            onChange={(v) =>
-              setLineCount(Number(v) as (typeof LINE_COUNTS)[number])
-            }
-            options={LINE_COUNTS.map((n) => ({
-              value: String(n),
-              label: String(n),
-            }))}
-          />
-        </FilterGroup>
-      </div>
+      <LogsFilterBar
+        component={component}
+        file={file}
+        level={level}
+        lineCount={lineCount}
+        labels={{
+          component: t.logs.component,
+          file: t.logs.file,
+          level: t.logs.level,
+          lines: t.logs.lines,
+          title: t.logs.title,
+        }}
+        onComponentChange={setComponent}
+        onFileChange={setFile}
+        onLevelChange={setLevel}
+        onLineCountChange={setLineCount}
+      />
 
       <Card className="min-w-0 max-w-full overflow-hidden">
         <CardHeader className="py-3 px-4">
@@ -217,27 +302,12 @@ export default function LogsPage() {
             </div>
           )}
 
-          <div
-            ref={scrollRef}
-            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
-          >
-            {lines.length === 0 && !loading && (
-              <p className="text-muted-foreground text-center py-8">
-                {t.logs.noLogLines}
-              </p>
-            )}
-            {lines.map((line, i) => {
-              const cls = classifyLine(line);
-              return (
-                <div
-                  key={i}
-                  className={`${LINE_COLORS[cls]} hover:bg-secondary/20 px-1 -mx-1`}
-                >
-                  {line}
-                </div>
-              );
-            })}
-          </div>
+          <LogOutput
+            emptyLabel={t.logs.noLogLines}
+            lines={lines}
+            loading={loading}
+            scrollRef={scrollRef}
+          />
         </CardContent>
       </Card>
       <PluginSlot name="logs:bottom" />

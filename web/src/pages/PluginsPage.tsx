@@ -28,6 +28,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { OperationalActionGroup } from "@/components/OperationalActionGroup";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
@@ -197,7 +198,7 @@ function MemoryProviderSetupHint({
 
       {needsDependencySetup ? (
         <Button
-          className="w-fit uppercase"
+          className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
           disabled={installing}
           onClick={onInstall}
           size="sm"
@@ -517,7 +518,7 @@ export default function PluginsPage() {
     memoryConfig?.fields.filter((field) => fieldIsVisible(field, memoryValues)) ?? [];
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4">
       <PluginSlot name="plugins:top" />
 
       <div className={cn("flex w-full flex-col gap-8")}>
@@ -618,6 +619,9 @@ export default function PluginsPage() {
                       {visibleMemoryFields.map((field) => {
                         const value = memoryValues[field.key];
                         const secretIsVisible = !!secretVisible[field.key];
+                        const technicalField =
+                          field.kind === "secret" ||
+                          /(?:url|host|token|key|path|namespace)/i.test(field.key);
                         return (
                           <div key={field.key} className="grid gap-2 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
@@ -661,7 +665,7 @@ export default function PluginsPage() {
                                 }
                               />
                             ) : (
-                              <div className="flex items-center gap-2">
+                            <div className="flex min-w-0 items-center gap-2">
                                 <Input
                                   id={`memory-${field.key}`}
                                   type={field.kind === "secret" && !secretIsVisible ? "password" : "text"}
@@ -677,12 +681,16 @@ export default function PluginsPage() {
                                       [field.key]: event.target.value,
                                     }))
                                   }
+                                  autoCapitalize={technicalField ? "none" : undefined}
+                                  autoCorrect={technicalField ? "off" : undefined}
+                                  spellCheck={technicalField ? false : undefined}
                                 />
                                 {field.kind === "secret" && (
                                   <Button
                                     ghost
                                     size="icon"
                                     aria-label={secretIsVisible ? "Hide secret" : "Show secret"}
+                                    className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
                                     onClick={() =>
                                       setSecretVisible((current) => ({
                                         ...current,
@@ -710,7 +718,7 @@ export default function PluginsPage() {
                   )}
 
                   <Button
-                    className="w-fit uppercase"
+                    className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
                     size="sm"
                     disabled={memoryBusy || memoryConfigBusy || memorySetupBusy}
                     onClick={() => void onSaveMemoryProvider()}
@@ -741,7 +749,7 @@ export default function PluginsPage() {
                   </Select>
 
                   <Button
-                    className="w-fit uppercase"
+                    className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
                     size="sm"
                     disabled={contextBusy}
                     onClick={() => void onSaveContextEngine()}
@@ -775,6 +783,8 @@ export default function PluginsPage() {
                 id="install-url"
                 placeholder="owner/repo, owner/repo/subdir, or https://..."
                 spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}
               />
@@ -783,7 +793,7 @@ export default function PluginsPage() {
 
             <div className="flex flex-wrap items-center gap-8">
 
-              <div className="flex items-center gap-3">
+              <div className="flex min-h-11 items-center gap-3 sm:min-h-0">
 
                 <Switch checked={installForce} onCheckedChange={setInstallForce} />
 
@@ -792,7 +802,7 @@ export default function PluginsPage() {
                 </span>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex min-h-11 items-center gap-3 sm:min-h-0">
 
                 <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
 
@@ -803,7 +813,7 @@ export default function PluginsPage() {
             </div>
 
             <Button
-              className="w-fit uppercase"
+              className="min-h-11 w-full uppercase sm:min-h-0 sm:w-fit"
               size="sm"
               disabled={installBusy}
               onClick={() => void onInstall()}
@@ -870,7 +880,7 @@ export default function PluginsPage() {
 
               {hub!.orphan_dashboard_plugins.map((m) => (
 
-                <li className="text-xs text-text-secondary" key={m.name}>
+                <li className="break-words text-xs text-text-secondary" key={m.name}>
 
 
                   {m.label ?? m.name} — {m.description || m.tab?.path}
@@ -941,14 +951,14 @@ function PluginRowCard(props: PluginRowCardProps) {
     <Card className={cn(busy ? "opacity-70" : undefined)}>
 
 
-      <CardContent className="flex flex-col gap-4 px-6 py-4">
+      <CardContent className="flex min-w-0 flex-col gap-3 p-3 sm:gap-4 sm:px-6 sm:py-4">
 
 
         <div className="flex flex-wrap items-start justify-between gap-4">
 
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
 
-            <span className="truncate font-semibold">{row.name}</span>
+            <span className="min-w-0 break-all font-semibold sm:truncate">{row.name}</span>
 
             <Badge tone="outline">
               {t.pluginsPage.sourceBadge}: {row.source}
@@ -963,7 +973,7 @@ function PluginRowCard(props: PluginRowCardProps) {
             ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <OperationalActionGroup separated aria-label={`Actions for ${row.name}`}>
             {row.runtime_status === "enabled" ? (
               <Button
                 disabled={busy}
@@ -1061,7 +1071,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                 {busy ? <Spinner /> : <Trash2 className="h-3.5 w-3.5" />}
               </Button>
             ) : null}
-          </div>
+          </OperationalActionGroup>
         </div>
 
         {row.description ? (
@@ -1072,7 +1082,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         {dm?.slots?.length ? (
 
-          <p className="text-xs tracking-[0.05em] text-text-tertiary">
+          <p className="break-words text-xs tracking-[0.05em] text-text-tertiary">
             {t.pluginsPage.dashboardSlots}: {dm.slots.join(", ")}
           </p>
         ) : null}

@@ -25,6 +25,7 @@ Lifecycle:
      gateway session expiry) — NOT per-turn
 """
 
+import copy
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -136,6 +137,18 @@ class ContextEngine(ABC):
                 their handoff prompt. Older engines may omit this parameter; the
                 host filters unsupported optional arguments by signature.
         """
+
+    # -- Optional: agent instance lifecycle --------------------------------
+
+    def clone_for_agent(self) -> "ContextEngine":
+        """Return an isolated runtime engine for one agent.
+
+        Registered plugin engines are process-wide templates. The default
+        preserves the historical deepcopy isolation while allowing engines
+        with locks, connections, or other uncopyable state to override this
+        boundary explicitly.
+        """
+        return copy.deepcopy(self)
 
     # -- Optional: pre-flight check ----------------------------------------
 

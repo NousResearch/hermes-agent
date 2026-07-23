@@ -4,6 +4,7 @@ Regression test for #9071 — plugin engines were never initialized with
 context_length, causing the CLI status bar to show 'ctx --'.
 """
 
+import threading
 from unittest.mock import MagicMock, patch
 
 from agent.context_engine import ContextEngine
@@ -35,6 +36,28 @@ class _ToolEngine(_StubEngine):
                 "parameters": {"type": "object", "properties": {}},
             }
         ]
+
+
+class _CustomCloneEngine(_StubEngine):
+    """Stateful singleton whose runtime must be created through its clone hook."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self.clones = []
+        self.shutdown_count = 0
+
+    def clone_for_agent(self):
+        clone = type(self)()
+        self.clones.append(clone)
+        return clone
+
+    def shutdown(self):
+        self.shutdown_count += 1
+
+
+class _AliasingCloneEngine(_StubEngine):
+    def clone_for_agent(self):
+        return self
 
 
 def test_plugin_engine_gets_context_length_on_init():
@@ -139,6 +162,74 @@ def test_plugin_engine_update_model_args():
     assert "model" in kw
     assert "provider" in kw
     assert "api_mode" in kw
+
+
+def test_general_plugin_engine_uses_custom_clone_and_closes_owned_runtime():
+    """Uncopyable plugin engines can define the explicit per-agent clone boundary."""
+    registered = _CustomCloneEngine()
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=None),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=registered),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    clone = registered.clones[0]
+    assert agent.context_compressor is clone
+    assert clone.context_length == 204_800
+    assert registered.context_length == 0
+    assert agent._owns_context_engine is True
+
+    agent.release_clients()
+
+    assert clone.shutdown_count == 1
+    assert registered.shutdown_count == 0
+    assert agent._owns_context_engine is False
+
+    # Full close after soft eviction must not shut the clone down twice.
+    agent.close()
+    assert clone.shutdown_count == 1
+
+
+def test_general_plugin_engine_rejects_clone_that_aliases_registered_template():
+    registered = _AliasingCloneEngine()
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=None),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=registered),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.context_compressor is not registered
+    assert agent._owns_context_engine is False
+    agent.close()
 
 
 def _codex_agent_kwargs():

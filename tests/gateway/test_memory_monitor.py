@@ -89,9 +89,11 @@ def test_stop_without_start_is_noop():
 
 def test_periodic_timer_fires(caplog):
     caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
-    # Short interval so we can observe multiple ticks inside the test budget.
+    # Use enough slack for a busy parallel test runner; the contract is that
+    # multiple periodic samples are emitted, not that they occur at an exact
+    # wall-clock cadence.
     mm.start_memory_monitoring(interval_seconds=0.1)
-    time.sleep(0.45)
+    time.sleep(0.8)
     mm.stop_memory_monitoring(timeout=1.0)
 
     periodic = [

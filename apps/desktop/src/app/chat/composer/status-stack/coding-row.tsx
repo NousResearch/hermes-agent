@@ -1,18 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 
+import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
 import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
 import { DiffCount } from '@/components/ui/diff-count'
 import {
   DropdownMenu,
@@ -22,30 +14,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { SanitizedInput } from '@/components/ui/sanitized-input'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { gitRef } from '@/lib/sanitize'
 import { $repoStatus, $repoWorktrees } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
-
-interface BranchActionCopy {
-  branchCreateWorktree: string
-  branchOpenExisting: string
-  branchSwitchHome: string
-}
-
-const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
-  if (branch.checkedOut) {
-    return copy.branchOpenExisting
-  }
-
-  return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
-}
 
 interface CodingStatusRowProps {
   /** Branch the current draft off into a fresh worktree + session, based on
@@ -64,6 +40,8 @@ interface CodingStatusRowProps {
   onOpenWorktree?: (path: string) => void
   /** Switch the current repo checkout to another branch. */
   onSwitchBranch?: (branch: string) => Promise<void>
+  /** Repo root path for the worktree dialog. */
+  repoPath?: null | string
 }
 
 /**
@@ -79,7 +57,8 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   onListBranches,
   onOpen,
   onOpenWorktree,
-  onSwitchBranch
+  onSwitchBranch,
+  repoPath
 }: CodingStatusRowProps) {
   const { t } = useI18n()
   const s = t.statusStack.coding
@@ -87,113 +66,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const status = useStore($repoStatus)
   const worktrees = useStore($repoWorktrees)
 
-  const [branchOpen, setBranchOpen] = useState(false)
-  const [branchName, setBranchName] = useState('')
-  const [branchBase, setBranchBase] = useState<string | undefined>(undefined)
-  const [branchPending, setBranchPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
-  const [branches, setBranches] = useState<HermesGitBranch[]>([])
-  const [branchesLoading, setBranchesLoading] = useState(false)
-
-  const loadBranches = useCallback(async () => {
-    if (!onListBranches) {
-      return
-    }
-
-    setBranchesLoading(true)
-
-    try {
-      setBranches(await onListBranches())
-    } catch {
-      setBranches([])
-    } finally {
-      setBranchesLoading(false)
-    }
-  }, [onListBranches])
-
-  // Open the name dialog for a chosen base. Deferred so the dropdown finishes
-  // closing before the dialog grabs focus (Radix focus-trap handoff races
-  // otherwise).
-  const startBranch = (base: string | undefined) => {
-    setBranchBase(base)
-    setBranchName('')
-    setConvertMode(false)
-    setTimeout(() => setBranchOpen(true), 0)
-  }
-
-  const startConvert = () => {
-    setBranchBase(undefined)
-    setBranchName('')
-    setConvertMode(true)
-    void loadBranches()
-    setTimeout(() => setBranchOpen(true), 0)
-  }
-
-  const enterConvert = () => {
-    setConvertMode(true)
-    void loadBranches()
-  }
-
-  const convertBranch = async (branch: HermesGitBranch) => {
-    if (branchPending || !branch || !onConvertBranch) {
-      return
-    }
-
-    setBranchPending(true)
-
-    try {
-      await onConvertBranch(branch.name, branch.worktreePath, branch.isDefault)
-      setBranchOpen(false)
-    } catch (err) {
-      notifyError(err, p.startWorkFailed)
-    } finally {
-      setBranchPending(false)
-    }
-  }
-
-  // Global ⌘⇧B (workspace.newWorktree): open the name dialog for a worktree off
-  // current HEAD. The rail only renders inside a repo, so the hotkey naturally
-  // no-ops elsewhere. Guarded by a token ref so it fires on the keypress, not on
-  // mount or unrelated re-renders.
-  const worktreeReq = useStore($newWorktreeRequest)
-  const lastWorktreeReqRef = useRef(worktreeReq)
-
-  useEffect(() => {
-    if (worktreeReq === lastWorktreeReqRef.current) {
-      return
-    }
-
-    lastWorktreeReqRef.current = worktreeReq
-
-    if (!onBranchOff) {
-      return
-    }
-
-    setBranchBase(undefined)
-    setBranchName('')
-    setConvertMode(false)
-    setBranchOpen(true)
-  }, [onBranchOff, worktreeReq])
-
-  const submitBranch = async () => {
-    const branch = branchName.trim()
-
-    if (branchPending || !branch || !onBranchOff) {
-      return
-    }
-
-    setBranchPending(true)
-
-    try {
-      await onBranchOff(branch, branchBase)
-      setBranchOpen(false)
-      setBranchName('')
-    } catch (err) {
-      notifyError(err, p.startWorkFailed)
-    } finally {
-      setBranchPending(false)
-    }
-  }
+  // Shared worktree dialog — replaces the old inline dialog. Opened by the
+  // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
+  const [worktreeOpen, setWorktreeOpen] = useState(false)
+  const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
+  const resolvedRepoPath = repoPath?.trim() || undefined
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {
@@ -205,6 +82,34 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     } catch (err) {
       notifyError(err, s.switchFailed(branch))
     }
+  }
+
+  // Global ⌘⇧B (workspace.newWorktree): open the shared worktree dialog. The
+  // coding row only renders inside a repo, so the hotkey naturally no-ops
+  // elsewhere. Guarded by a token ref so it fires on the keypress, not on
+  // mount or unrelated re-renders.
+  const worktreeReq = useStore($newWorktreeRequest)
+  const lastWorktreeReqRef = useRef(worktreeReq)
+
+  useEffect(() => {
+    if (worktreeReq === lastWorktreeReqRef.current) {
+      return
+    }
+
+    lastWorktreeReqRef.current = worktreeReq
+
+    if (!resolvedRepoPath || !onOpenWorktree) {
+      return
+    }
+
+    setWorktreeBase(undefined)
+    setWorktreeOpen(true)
+  }, [onOpenWorktree, resolvedRepoPath, worktreeReq])
+
+  // Open the worktree dialog from the dropdown menu with a pre-selected base.
+  const startBranch = (base: string | undefined) => {
+    setWorktreeBase(base)
+    setTimeout(() => setWorktreeOpen(true), 0)
   }
 
   if (!status) {
@@ -320,9 +225,10 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 <DropdownMenuItem onSelect={() => startBranch(undefined)}>
                   <span className="truncate">{p.startWork}</span>
                 </DropdownMenuItem>
-                {/* Check an EXISTING branch out into a worktree (no new branch). */}
+                {/* Create a fresh worktree off the current HEAD (the generic
+                    "spin up a worktree here", mirroring the sidebar's + button). */}
                 {onConvertBranch && (
-                  <DropdownMenuItem onSelect={() => startConvert()}>
+                  <DropdownMenuItem onSelect={() => startBranch(undefined)}>
                     <span className="truncate">{p.convertBranch}</span>
                   </DropdownMenuItem>
                 )}
@@ -363,107 +269,15 @@ export const CodingStatusRow = memo(function CodingStatusRow({
         ) : null}
       </StatusRow>
 
-      <Dialog onOpenChange={open => !branchPending && setBranchOpen(open)} open={branchOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-            <DialogDescription>
-              {convertMode ? p.convertBranchDesc : p.newWorktreeDesc}
-              {!convertMode && branchBase && (
-                <span className="mt-1 block text-(--ui-text-secondary)">{s.branchOffFrom(branchBase)}</span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          {convertMode ? (
-            <Command
-              className="rounded-md border border-(--ui-stroke-tertiary)"
-              // The branch name is the authoritative key; filter on it directly.
-              filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
-            >
-              <CommandInput autoFocus disabled={branchPending} placeholder={p.convertBranchPlaceholder} />
-              <CommandList className="max-h-64">
-                <CommandEmpty>{branchesLoading ? p.branchesLoading : p.noBranches}</CommandEmpty>
-                <CommandGroup>
-                  {branches.map(branch => (
-                    <CommandItem
-                      disabled={branchPending}
-                      key={branch.name}
-                      onSelect={() => void convertBranch(branch)}
-                      value={branch.name}
-                    >
-                      <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
-                      <span className="truncate">{branch.name}</span>
-                      <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
-                        {branchActionLabel(branch, p)}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          ) : (
-            <SanitizedInput
-              autoFocus
-              disabled={branchPending}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void submitBranch()
-                } else if (event.key === 'Escape') {
-                  setBranchOpen(false)
-                }
-              }}
-              onValueChange={setBranchName}
-              placeholder={p.branchPlaceholder}
-              sanitize={gitRef}
-              value={branchName}
-            />
-          )}
-
-          {convertMode ? (
-            <DialogFooter className="sm:justify-start">
-              <Button
-                className="px-0 text-(--ui-text-secondary) hover:text-foreground"
-                disabled={branchPending}
-                onClick={() => setConvertMode(false)}
-                type="button"
-                variant="link"
-              >
-                {t.common.cancel}
-              </Button>
-            </DialogFooter>
-          ) : (
-            <DialogFooter className="sm:justify-between">
-              {onConvertBranch ? (
-                <Button
-                  className="px-0 text-(--ui-text-secondary) hover:text-foreground"
-                  disabled={branchPending}
-                  onClick={enterConvert}
-                  type="button"
-                  variant="link"
-                >
-                  {p.convertBranchInstead}
-                </Button>
-              ) : (
-                <span />
-              )}
-              <div className="flex items-center gap-2">
-                <Button disabled={branchPending} onClick={() => setBranchOpen(false)} type="button" variant="ghost">
-                  {t.common.cancel}
-                </Button>
-                <Button
-                  disabled={branchPending || !branchName.trim()}
-                  onClick={() => void submitBranch()}
-                  type="button"
-                >
-                  {p.startWork}
-                </Button>
-              </div>
-            </DialogFooter>
-          )}
-        </DialogContent>
-      </Dialog>
+      {resolvedRepoPath && onOpenWorktree && (
+        <WorktreeDialog
+          initialBase={worktreeBase}
+          onOpenChange={setWorktreeOpen}
+          onStarted={onOpenWorktree}
+          open={worktreeOpen}
+          repoPath={resolvedRepoPath}
+        />
+      )}
     </>
   )
 })

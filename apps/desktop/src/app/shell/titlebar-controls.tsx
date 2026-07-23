@@ -1,25 +1,25 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
+import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
-import { toggleKeybindPanel } from '@/store/keybinds'
 import {
   $fileBrowserOpen,
-  $panesFlipped,
   $sidebarOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { appViewForPath, isOverlayView } from '../routes'
+import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -32,7 +32,9 @@ export interface TitlebarTool {
   hidden?: boolean
   href?: string
   icon: ReactNode
-  onSelect?: () => void
+  onSelect?: (event?: MouseEvent) => void
+  /** Keybind action id — when set, the tooltip shows the label + keybind hint. */
+  actionId?: string
   title?: string
   to?: string
 }
@@ -46,14 +48,60 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
   onOpenSettings: () => void
 }
 
+/**
+ * The layout button's glyph. Morphs into its composite reset form — the
+ * layout icon wearing a small counter-clockwise arrow badge ("layout, back
+ * to how it was") — ONLY while the pointer is on the button AND ⌘/Ctrl is
+ * held: hover gates via CSS (`group/tool` on the button), the modifier via
+ * the window listener. Pressing the modifier elsewhere changes nothing.
+ */
+function LayoutGlyph({ modHeld }: { modHeld: boolean }) {
+  return (
+    <>
+      <span className={cn('inline-flex', modHeld && 'group-hover/tool:hidden')}>
+        <Codicon name="layout" />
+      </span>
+      <span className={cn('relative hidden', modHeld && 'group-hover/tool:inline-flex')}>
+        <Codicon name="layout" />
+        <span className="absolute -bottom-1 -right-1.5 grid place-items-center rounded-full bg-(--ui-bg-chrome) p-px">
+          <Codicon className="-scale-x-100" name="refresh" size="0.5625rem" />
+        </span>
+      </span>
+    </>
+  )
+}
+
+/** Live ⌘/Ctrl tracking — mod-click affordances telegraph themselves (the
+ *  layout button morphs into its reset form while the modifier is down). */
+function useModifierHeld(): boolean {
+  const [held, setHeld] = useState(false)
+
+  useEffect(() => {
+    const sync = (event: KeyboardEvent) => setHeld(event.metaKey || event.ctrlKey)
+    const clear = () => setHeld(false)
+
+    window.addEventListener('keydown', sync)
+    window.addEventListener('keyup', sync)
+    window.addEventListener('blur', clear)
+
+    return () => {
+      window.removeEventListener('keydown', sync)
+      window.removeEventListener('keyup', sync)
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
+  return held
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
+  const modHeld = useModifierHeld()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
-  const panesFlipped = useStore($panesFlipped)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -67,17 +115,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   }
 
-  // Each titlebar button controls the pane physically on its side, so a flip
-  // swaps which pane each one toggles. Default: sessions left, file browser
-  // right. Flipped: file browser left, sessions right. Sidebar toggles never
-  // carry an active highlight — they're plain show/hide affordances.
-  const fileBrowserEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
-  const sessionsEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
-  const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
-  const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
+  // POSITIONAL toggles: each button shows/hides everything on its physical
+  // side of the main zone (the layout tree collapses the whole side), so they
+  // stay correct through flips and rearranges. $sidebarOpen ≙ left side,
+  // $fileBrowserOpen ≙ right side. Never an active highlight — plain
+  // show/hide affordances.
+  const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
+  const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
 
   const leftToolbarTools: TitlebarTool[] = [
     {
+      actionId: 'view.toggleSidebar',
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
       label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
@@ -87,6 +135,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     },
     {
+      actionId: 'view.flipPanes',
       icon: <Codicon name="arrow-swap" />,
       id: 'flip-panes',
       label: t.titlebar.swapSidebarSides,
@@ -100,6 +149,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   ]
 
   const rightSidebarTool: TitlebarTool = {
+    actionId: 'view.toggleRightSidebar',
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
     label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
@@ -112,6 +162,26 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
     {
+      className: 'group/tool',
+      // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
+      // LayoutGlyph) — the mod-click telegraphs itself before it happens.
+      icon: <LayoutGlyph modHeld={modHeld} />,
+      id: 'layout',
+      label: t.titlebar.layoutEditor,
+      onSelect: event => {
+        if (event?.metaKey || event?.ctrlKey) {
+          triggerHaptic('warning')
+          resetLayoutTree()
+
+          return
+        }
+
+        triggerHaptic('open')
+        toggleLayoutEditMode()
+      },
+      title: t.titlebar.layoutEditorTitle
+    },
+    {
       active: hapticsMuted,
       icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
@@ -119,15 +189,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: toggleHaptics
     },
     {
+      actionId: 'keybinds.openPanel',
       icon: <Codicon name="keyboard" />,
       id: 'keybinds',
       label: t.titlebar.openKeybinds,
       onSelect: () => {
         triggerHaptic('open')
-        toggleKeybindPanel()
+        navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
       }
     },
     {
+      actionId: 'nav.settings',
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
       label: t.titlebar.openSettings,
@@ -147,8 +219,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
-  const settingsTool = visibleSystemTools.find(tool => tool.id === 'settings')
-  const visibleSystemToolsBeforeSettings = visibleSystemTools.filter(tool => tool.id !== 'settings')
   const visiblePaneTools = tools.filter(tool => !tool.hidden)
 
   return (
@@ -187,10 +257,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         aria-label={t.shell.appControls}
         className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
       >
-        {visibleSystemToolsBeforeSettings.map(tool => (
+        {visibleSystemTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
     </>
@@ -203,9 +272,15 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   // for a11y.
   const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
 
+  const tooltipLabel = tool.actionId ? (
+    <TipKeybindLabel actionId={tool.actionId} text={tool.title ?? tool.label} />
+  ) : (
+    (tool.title ?? tool.label)
+  )
+
   if (tool.href) {
     return (
-      <Tip label={tool.title ?? tool.label}>
+      <Tip label={tooltipLabel}>
         <Button asChild className={className} size="icon-titlebar" variant="ghost">
           <a
             aria-label={tool.label}
@@ -222,18 +297,18 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   }
 
   return (
-    <Tip label={tool.title ?? tool.label}>
+    <Tip label={tooltipLabel}>
       <Button
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}
         className={className}
         disabled={tool.disabled}
-        onClick={() => {
+        onClick={event => {
           if (tool.to) {
             navigate(tool.to)
           }
 
-          tool.onSelect?.()
+          tool.onSelect?.(event)
         }}
         onPointerDown={event => event.stopPropagation()}
         size="icon-titlebar"

@@ -269,103 +269,37 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
-def _live_cwd_if_owned(env, task_id: str) -> str | None:
-    """The env's live cwd, but only when THIS session owns it.
-
-    The terminal env is shared (collapsed to the ``"default"`` container), so its
-    ``cwd`` tracks the LAST session that ran a command. With two worktree
-    sessions open, trusting it blindly routes one session's edits into the other
-    session's checkout (the wrong-worktree-patch bug). ``terminal_tool`` stamps
-    ``env.cwd_owner`` with the session that last drove the env; return its cwd
-    only when that owner matches the resolving session, else ``None`` so the
-    caller falls through to this session's own registered cwd override. Unknown
-    owner / ``default`` keys keep the prior behavior (single-session / CLI).
-    """
-    if env is None:
-        return None
-    live = getattr(env, "cwd", None)
-    if not live:
-        return None
-    owner = str(getattr(env, "cwd_owner", "") or "")
-    tid = str(task_id or "")
-    if owner and tid and owner != "default" and tid != "default" and owner != tid:
-        return None
-    return live
-
-
-def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
-    """Return the task's live terminal cwd for bookkeeping when available."""
-    try:
-        from tools.terminal_tool import _resolve_container_task_id
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        container_key = task_id
-
-    with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
-    if cached is not None:
-        env = getattr(cached, "env", None)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
-        # Legacy: a cache entry carrying its own cwd with no env to own it.
-        if env is None and getattr(cached, "cwd", None):
-            legacy_cwd = getattr(cached, "cwd", None)
-            _remember_last_known_cwd(container_key, legacy_cwd)
-            return legacy_cwd
-
-    try:
-        from tools.terminal_tool import _active_environments, _env_lock
-
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
-    except Exception:
-        pass
-
-    return None
-
-
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
-    Prefers the live terminal cwd (the directory the agent is actually working
-    in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a registered task/session cwd override (TUI/Desktop/ACP
-    sessions register a raw-keyed cwd before any tool runs), then to a
-    sentinel-free absolute ``$TERMINAL_CWD``. This is what lets a worktree or
-    Desktop session warn about (and resolve into) its workspace from the very
-    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
+    Resolution:
+
+      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
+         written on every completed terminal command and seeded by workspace
+         registration, keyed by the raw session id. Because the record is
+         per-session, one session's ``cd`` can never leak into another
+         session's resolution.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed cwd before any tool runs). Normally already
+         mirrored into the record at registration; kept as a direct fallback
+         so a cleared/never-written record still resolves the workspace.
+      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions).
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
     case callers fall back to the process cwd.
     """
-    live = _get_live_tracking_cwd(task_id)
-    if live:
-        return live
-    # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
-    # is more authoritative than the shared last-known anchor: it is keyed by
-    # the raw session id, so when two worktree sessions share the single
-    # "default" terminal env, a NON-owning session must resolve against its OWN
-    # registered worktree — never the other session's leftover cwd. (Checked
-    # before _last_known_cwd, which is keyed by the shared container id.)
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(task_id)
+    except Exception:
+        recorded = None
+    if recorded:
+        return recorded
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
-    # When the terminal env was cleaned up mid-conversation, the live cwd is
-    # gone but the directory the agent navigated to is still recorded in the
-    # durable _last_known_cwd registry. Prefer it over the config/process
-    # fallback so a relative-path write resolved BEFORE the env is rebuilt
-    # still lands in the user's directory (root cause of #26211: write happens
-    # via _resolve_path_for_task -> here, which runs before _get_file_ops
-    # rebuilds the env). Keyed by the resolved container id, same as the save.
-    preserved = _last_known_cwd_for(task_id)
-    if preserved:
-        return preserved
     return _configured_terminal_cwd()
 
 
@@ -794,45 +728,6 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
-# Per-task last-known CWD — preserved across env re-creation so
-# relative-path file writes land in the right directory after the
-# terminal environment is cleaned up and rebuilt (root cause of #26211).
-_last_known_cwd: dict = {}
-
-
-def _remember_last_known_cwd(task_id: str, cwd: str | None) -> None:
-    """Mirror a live terminal cwd into the durable ``_last_known_cwd`` registry.
-
-    Belt-and-suspenders for #26211: the cleanup thread can pop BOTH
-    ``_file_ops_cache`` and ``_active_environments`` before ``_get_file_ops``
-    reaches its stale-cache detection branch, in which case the old cwd is
-    never saved and the rebuilt env falls back to the config default — exactly
-    the silent-misplacement bug. By recording the cwd on every successful live
-    read (which happens on every relative-path file resolution while the env is
-    alive), the durable anchor no longer depends on the cleanup-detection
-    branch firing, so it survives recreation regardless of pop ordering.
-    """
-    if not cwd:
-        return
-    with _file_ops_lock:
-        if _last_known_cwd.get(task_id) != cwd:
-            _last_known_cwd[task_id] = cwd
-
-
-def _last_known_cwd_for(task_id: str = "default") -> str | None:
-    """Read the durable last-known cwd for *task_id*, container-key aware.
-
-    The registry is keyed by the resolved container id (the same key used by
-    the save sites in ``_get_file_ops`` / ``_get_live_tracking_cwd``), so look
-    up the resolved key first and fall back to the raw task id.
-    """
-    try:
-        from tools.terminal_tool import _resolve_container_task_id
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        container_key = task_id
-    with _file_ops_lock:
-        return _last_known_cwd.get(container_key) or _last_known_cwd.get(task_id)
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
@@ -1069,13 +964,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
                 return cached
             else:
-                # Environment was cleaned up -- preserve the old cwd before
-                # invalidating the stale cache entry (fixes #26211: silent
-                # file-creation failures in long-running conversations).
+                # Environment was cleaned up -- preserve the old cwd in the
+                # session record before invalidating the stale cache entry
+                # (fixes #26211: silent file-creation failures in long-running
+                # conversations). Usually a no-op: every completed command
+                # already recorded its cwd.
                 old_cwd = getattr(cached, "cwd", None)
                 if old_cwd:
-                    with _file_ops_lock:
-                        _last_known_cwd[task_id] = old_cwd
+                    try:
+                        from tools.terminal_tool import record_session_cwd
+                        record_session_cwd(raw_task_id, old_cwd)
+                    except Exception:
+                        pass
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
@@ -1113,7 +1013,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
+            try:
+                from tools.terminal_tool import get_session_cwd
+                recorded_cwd = get_session_cwd(raw_task_id)
+            except Exception:
+                recorded_cwd = None
+            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
             # Re-apply the container cwd guard that _get_env_config() already
             # ran on config["cwd"] (see #50636).  A per-task cwd override
             # registered by the gateway/TUI/ACP for workspace tracking is a

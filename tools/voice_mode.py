@@ -6,7 +6,7 @@ sounddevice or system audio players.
 
 Dependencies (optional):
     pip install sounddevice numpy
-    or: pip install hermes-agent[voice]
+    or: uv sync --extra voice
 """
 
 import logging
@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 import wave
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -900,6 +900,12 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
         logger.info("Filtered Whisper hallucination: %r", result["transcript"])
         return {"success": True, "transcript": "", "filtered": True}
 
+    # Providers that flag no_speech (empty transcript) failed to hear words,
+    # not to transcribe — treat like silence so the voice loop re-listens
+    # quietly instead of surfacing "Transcription failed".
+    if result.get("no_speech"):
+        return {"success": True, "transcript": "", "no_speech": True}
+
     return result
 
 
@@ -1116,6 +1122,94 @@ def play_audio_file(file_path: str) -> bool:
 
     logger.warning("No audio player available for %s", file_path)
     return False
+
+
+# ============================================================================
+# Barge-in — detect the user speaking over TTS playback
+# ============================================================================
+def listen_for_speech(
+    should_stop: Callable[[], bool],
+    threshold: Optional[int] = None,
+    sustained_ms: int = 300,
+    calibration_ms: int = 400,
+    capture: bool = False,
+    on_trigger: Optional[Callable[[], None]] = None,
+    pre_roll_ms: int = 1200,
+    endpoint_silence_ms: int = 1250,
+    max_utterance_ms: int = 30_000,
+):
+    """Block until sustained speech is heard on the mic, or *should_stop*.
+
+    Barge-in monitor: run in a side thread while TTS is playing. Without
+    *capture* it returns ``True`` when the user started talking (cut playback).
+    With ``capture=True`` it ALSO records the interruption — a rolling
+    *pre_roll_ms* buffer means the utterance is kept from its first syllable,
+    not from the moment detection tripped — and keeps rolling until the user
+    goes quiet for *endpoint_silence_ms*, then returns the WAV path (or
+    ``None`` if speech never tripped). *on_trigger* fires at the moment of
+    detection so the caller can stop playback while capture continues.
+
+    The noise floor is calibrated from the first *calibration_ms* of input —
+    playback is already audible then, so speaker bleed is baked into the
+    floor and only louder-than-playback speech trips the trigger. Requiring
+    *sustained_ms* of consecutive above-threshold blocks filters out coughs,
+    keyboard thumps, and playback transients.
+    """
+    try:
+        sd, np = _import_audio()
+    except (ImportError, OSError):
+        return None if capture else False
+
+    from collections import deque
+
+    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    calib_blocks = max(1, calibration_ms // 30)
+    trip_blocks = max(1, sustained_ms // 30)
+    endpoint_blocks = max(1, endpoint_silence_ms // 30)
+    max_blocks = max(1, max_utterance_ms // 30)
+    floor_samples: List[float] = []
+    pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
+    consecutive = 0
+
+    try:
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+            while not should_stop():
+                data, _ = stream.read(block)
+                rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                if capture:
+                    pre_roll.append(data.copy())
+                if len(floor_samples) < calib_blocks:
+                    floor_samples.append(rms)
+                    continue
+                trigger = max(float(threshold or SILENCE_RMS_THRESHOLD * 2), float(np.median(floor_samples)) * 3.5)
+                consecutive = consecutive + 1 if rms >= trigger else 0
+                if consecutive < trip_blocks:
+                    continue
+
+                # Tripped — the user is talking over playback.
+                if on_trigger:
+                    try:
+                        on_trigger()
+                    except Exception as e:
+                        logger.debug("Barge-in trigger callback failed: %s", e)
+                if not capture:
+                    return True
+
+                # Keep rolling until the user goes quiet. Playback is stopped
+                # now, so plain silence endpointing (recorder threshold) works.
+                frames: List[Any] = list(pre_roll)
+                quiet = 0
+                for _ in range(max_blocks):
+                    data, _ = stream.read(block)
+                    frames.append(data.copy())
+                    rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
+                    if quiet >= endpoint_blocks:
+                        break
+                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+    except Exception as e:
+        logger.debug("Barge-in listener failed: %s", e)
+    return None if capture else False
 
 
 # ============================================================================

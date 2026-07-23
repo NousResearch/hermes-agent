@@ -15,6 +15,8 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | If you want to add… | Read |
 |---|---|
 | Custom tools, hooks, slash commands, skills, or CLI subcommands | **This guide** (the general plugin surface) |
+| A **native desktop app** extension (panes, pages, status bar, palette, themes) | [Desktop Plugin SDK](/developer-guide/desktop-plugin-sdk) |
+| A **web dashboard** extension (tabs, shell slots, themes) | [Extending the Dashboard](/user-guide/features/extending-the-dashboard) |
 | An **LLM / inference backend** (new provider) | [Model Provider Plugins](/developer-guide/model-provider-plugin) |
 | A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
 | A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/developer-guide/memory-provider-plugin) |

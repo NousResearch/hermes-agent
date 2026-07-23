@@ -7,7 +7,7 @@ import time
 import types
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -15,6 +15,26 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
+
+
+@pytest.fixture(autouse=True)
+def _neuter_agent_prewarm_timer(request, monkeypatch):
+    """Stub the deferred agent pre-warm timer for every test in this module.
+
+    ``session.create`` and non-eager ``session.resume`` fire a 50 ms
+    background ``threading.Timer`` (``_schedule_agent_build``) that calls
+    whatever ``server._make_agent`` is patched in AT FIRE TIME. Left live,
+    a timer armed by one test outlives it and lands in the NEXT test's
+    ``_make_agent`` mock, racily corrupting its captured state (the
+    ``'tip' == 'cont_tip'`` flakes in the session_resume tests). Tests that
+    exercise the deferred build itself opt back in with
+    ``@pytest.mark.real_agent_prewarm``.
+    """
+    if request.node.get_closest_marker("real_agent_prewarm"):
+        yield
+        return
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    yield
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
@@ -128,6 +148,390 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         assert completed.failed_with is None
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_dashboard_process_isolation_config_defaults_without_default_merge(monkeypatch):
+    """tui_gateway.server::_load_cfg is raw YAML, so defaults live at read site."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    assert server._load_dashboard_process_isolation_config() == {
+        "turn_isolation": False,
+        "compute_host_heartbeat_secs": 15,
+        "compute_host_respawn_max": 3,
+    }
+
+
+def test_dashboard_process_isolation_config_coerces_raw_values():
+    cfg = {
+        "dashboard": {
+            "turn_isolation": "yes",
+            "compute_host_heartbeat_secs": "30",
+            "compute_host_respawn_max": "0",
+        }
+    }
+
+    assert server._load_dashboard_process_isolation_config(cfg) == {
+        "turn_isolation": True,
+        "compute_host_heartbeat_secs": 30,
+        "compute_host_respawn_max": 0,
+    }
+
+    malformed = {"dashboard": "enabled"}
+    assert server._load_dashboard_process_isolation_config(malformed) == {
+        "turn_isolation": False,
+        "compute_host_heartbeat_secs": 15,
+        "compute_host_respawn_max": 3,
+    }
+
+
+def test_default_config_seeds_dashboard_process_isolation_keys():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    dashboard = DEFAULT_CONFIG["dashboard"]
+    assert dashboard["turn_isolation"] is False
+    assert dashboard["compute_host_heartbeat_secs"] == 15
+    assert dashboard["compute_host_respawn_max"] == 3
+
+
+def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(monkeypatch):
+    class FakeSupervisor:
+        def __init__(self):
+            self.frames = []
+            self.callback = None
+
+        def submit_turn(self, frame, *, on_complete=None):
+            self.frames.append(frame)
+            self.callback = on_complete
+            return frame["request_id"]
+
+    fake_supervisor = FakeSupervisor()
+    seed_history = [{"role": "user", "content": "previous"}]
+    server._sessions["iso-sid"] = _session(history=list(seed_history))
+    server._sessions["iso-sid"]["agent"] = None
+    server._sessions["iso-sid"]["agent_ready"] = threading.Event()
+    parent_writes = {"ensure_session": 0, "persist_seed": 0}
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"dashboard": {"turn_isolation": True}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_ensure_session_db_row",
+        lambda _session: parent_writes.__setitem__(
+            "ensure_session", parent_writes["ensure_session"] + 1
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_persist_branch_seed",
+        lambda _session: parent_writes.__setitem__(
+            "persist_seed", parent_writes["persist_seed"] + 1
+        ),
+    )
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake_supervisor)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "submit",
+                "method": "prompt.submit",
+                "params": {"session_id": "iso-sid", "text": "hello"},
+            }
+        )
+        assert resp["result"] == {"status": "streaming", "turn_isolation": True}
+        assert fake_supervisor.frames[0]["type"] == "turn.start"
+        assert fake_supervisor.frames[0]["sid"] == "iso-sid"
+        assert fake_supervisor.frames[0]["text"] == "hello"
+        assert fake_supervisor.frames[0]["history"] == seed_history
+        assert server._sessions["iso-sid"]["history"] == seed_history
+        assert parent_writes == {"ensure_session": 0, "persist_seed": 0}
+        assert server._sessions["iso-sid"]["running"] is True
+
+        fake_supervisor.callback(
+            {
+                "type": "turn.end",
+                "sid": "iso-sid",
+                "request_id": "submit",
+                "history_version": 1,
+            }
+        )
+        assert server._sessions["iso-sid"]["running"] is False
+        assert server._sessions["iso-sid"]["history_version"] == 1
+    finally:
+        server._sessions.pop("iso-sid", None)
+
+
+def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
+    class _BrokenSupervisor:
+        def submit_turn(self, frame, *, on_complete=None):
+            if on_complete is not None:
+                on_complete(
+                    {
+                        "type": "turn.error",
+                        "request_id": frame["request_id"],
+                        "reason": "send_failed",
+                        "message": "broken pipe",
+                    }
+                )
+            raise BrokenPipeError("broken pipe")
+
+    class _ImmediateThread:
+        def __init__(self, target=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            assert self._target is not None
+            self._target()
+
+    session = _session(agent=None, agent_ready=threading.Event())
+    server._sessions["iso-fallback"] = session
+    inline_calls = []
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _BrokenSupervisor())
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, _session, text: inline_calls.append((rid, sid, text)),
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "fallback-turn",
+                "method": "prompt.submit",
+                "params": {"session_id": "iso-fallback", "text": "hello"},
+            }
+        )
+    finally:
+        server._sessions.pop("iso-fallback", None)
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "fallback-turn",
+        "result": {"status": "streaming"},
+    }
+    assert inline_calls == [("fallback-turn", "iso-fallback", "hello")]
+    assert session.get("_compute_host_active") is not True
+
+
+def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        history=[{"role": "user", "content": "serving process must not read this"}],
+        _compute_host_active=True,
+    )
+    server._sessions["iso-sid"] = session
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+
+    try:
+        server._on_compute_host_turn_done(
+            "turn-1",
+            "iso-sid",
+            session,
+            {
+                "type": "turn.end",
+                "sid": "iso-sid",
+                "request_id": "turn-1",
+                "session_key": "rotated-session-key",
+                "history_version": 4,
+                "message_count": 3,
+                "session_info": {
+                    "model": "host-model",
+                    "provider": "host-provider",
+                    "system_prompt": "host system prompt",
+                    "tools": {"core": ["terminal"]},
+                    "usage": {"total": 140, "context_used": 80, "context_max": 1000},
+                },
+            },
+        )
+
+        assert session["session_key"] == "rotated-session-key"
+        assert session["history_version"] == 4
+        assert session["_metadata_mirror"]["model"] == "host-model"
+        info = server._session_info(None, session)
+        assert info["model"] == "host-model"
+        assert info["provider"] == "host-provider"
+        assert info["system_prompt"] == "host system prompt"
+        assert info["tools"] == {"core": ["terminal"]}
+        assert info["usage"]["total"] == 140
+        assert "credential_warning" not in info
+        assert emitted[-1] == ("session.info", "iso-sid", info)
+    finally:
+        server._sessions.pop("iso-sid", None)
+
+
+def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for isolated /compress")
+
+    class _FakeSupervisor:
+        def __init__(self):
+            self.controls = []
+
+        def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0):
+            self.controls.append((sid, route_name, dict(payload or {}), wait))
+            return {
+                "type": "control.ack",
+                "sid": sid,
+                "request_id": (payload or {}).get("request_id", "control-1"),
+                "route_name": route_name,
+                "output": "Compressed 4 → 2 messages",
+                "session_key": "host-rotated-key",
+                "history_version": 9,
+                "message_count": 2,
+                "session_info": {
+                    "model": "host-model",
+                    "provider": "host-provider",
+                    "usage": {"total": 42},
+                },
+            }
+
+    fake = _FakeSupervisor()
+    session = _session(agent=None, agent_ready=threading.Event(), _compute_host_active=True)
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: fake)
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+    monkeypatch.setattr(server, "_compress_session_history", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parent compressed")))
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parent identity guard ran")))
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "compress focus", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["output"] == "Compressed 4 → 2 messages"
+    assert fake.controls[0][1] == "slash.compress"
+    assert fake.controls[0][2]["command"] == "/compress focus"
+    assert session["session_key"] == "host-rotated-key"
+    assert session["history_version"] == 9
+    assert server._session_info(None, session)["model"] == "host-model"
+
+
+def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            assert self._target is not None
+            self._target()
+
+    class _Agent:
+        model = "gold-model"
+        provider = "gold-provider"
+        session_id = "session-key"
+        session_input_tokens = 10
+        session_output_tokens = 5
+        session_prompt_tokens = 10
+        session_completion_tokens = 5
+        session_total_tokens = 15
+        session_api_calls = 1
+        context_compressor = None
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            if stream_callback is not None:
+                stream_callback("hi")
+            return {
+                "final_response": "hi",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "hi"},
+                ],
+            }
+
+    fixed_info = {"model": "gold-model", "provider": "gold-provider", "usage": {"total": 15}}
+    usage = server._get_usage(_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: dict(fixed_info))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    fake_title = types.ModuleType("agent.title_generator")
+    setattr(fake_title, "maybe_auto_title", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title)
+
+    def run_flag_off():
+        events = []
+        monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
+        monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": False}})
+        server._sessions["sid"] = _session(
+            agent=_Agent(), model_override={"model": "gold-model", "provider": "gold-provider"}
+        )
+        try:
+            response = server.handle_request(
+                {"id": "turn-1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
+            )
+            assert response["result"]["status"] == "streaming"
+            return events
+        finally:
+            server._sessions.pop("sid", None)
+
+    def run_flag_on():
+        events = []
+        monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
+        monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+
+        class _FakeSupervisor:
+            def submit_turn(self, frame, *, on_complete=None):
+                sid = frame["sid"]
+                server._emit("message.start", sid)
+                server._emit("message.delta", sid, {"text": "hi"})
+                server._emit("message.complete", sid, {"text": "hi", "usage": usage, "status": "complete"})
+                server._emit("session.info", sid, dict(fixed_info))
+                if on_complete is not None:
+                    on_complete(
+                        {
+                            "type": "turn.end",
+                            "sid": sid,
+                            "request_id": frame["request_id"],
+                            "session_key": "session-key",
+                            "history_version": 1,
+                            "message_count": 2,
+                            "session_info": dict(fixed_info),
+                            "session_info_emitted": True,
+                        }
+                    )
+                return frame["request_id"]
+
+        monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _FakeSupervisor())
+        session = _session(
+            agent=None,
+            agent_ready=threading.Event(),
+            _compute_host_active=True,
+            model_override={"model": "gold-model", "provider": "gold-provider"},
+        )
+        session["agent"] = None
+        server._sessions["sid"] = session
+        try:
+            response = server.handle_request(
+                {"id": "turn-1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
+            )
+            assert response["result"]["status"] == "streaming"
+            return events
+        finally:
+            server._sessions.pop("sid", None)
+
+    assert run_flag_on() == run_flag_off()
 
 
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
@@ -461,6 +865,46 @@ def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypa
     assert "result" not in events[0][2]
 
 
+def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "clarify-off-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    args = {"question": "Pick one", "choices": ["A", "B"]}
+    result = '{"question":"Pick one","choices_offered":["A","B"],"user_response":"A"}'
+
+    server._on_tool_start("clarify-off-test", "tool-clarify", "clarify", args)
+    server._on_tool_complete("clarify-off-test", "tool-clarify", "clarify", args, result)
+
+    assert [event[0] for event in events] == ["tool.start", "tool.complete"]
+    assert events[0][2]["name"] == "clarify"
+    assert events[0][2]["tool_id"] == "tool-clarify"
+    assert events[1][2]["result"]["user_response"] == "A"
+
+
+def test_tui_non_interactive_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "terminal-off-test",
+        {"tool_progress_mode": "off", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("terminal-off-test", "tool-1", "terminal", {"command": "pwd"})
+    server._on_tool_complete("terminal-off-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+
+    assert events == []
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -479,6 +923,78 @@ def test_dispatch_rejects_non_object_params():
         "id": "1",
         "error": {"code": -32602, "message": "invalid params: expected an object"},
     }
+
+
+def test_system_battery_returns_reading(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.battery",
+        types.SimpleNamespace(
+            read_battery=lambda: types.SimpleNamespace(
+                available=True, percent=77, plugged=False
+            ),
+            battery_category=lambda _s: "good",
+        ),
+    )
+
+    resp = server.dispatch({"id": "b1", "method": "system.battery", "params": {}})
+
+    assert resp["result"] == {
+        "available": True,
+        "percent": 77,
+        "plugged": False,
+        "category": "good",
+    }
+
+
+def test_system_battery_fails_open(monkeypatch):
+    def boom():
+        raise RuntimeError("no battery subsystem")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.battery",
+        types.SimpleNamespace(read_battery=boom, battery_category=lambda _s: "dim"),
+    )
+
+    resp = server.dispatch({"id": "b2", "method": "system.battery", "params": {}})
+
+    assert resp["result"]["available"] is False
+    assert resp["result"]["percent"] is None
+
+
+def test_config_set_battery_toggles_and_persists(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": False}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {"id": "c1", "method": "config.set", "params": {"key": "battery", "value": ""}}
+    )
+
+    assert resp["result"] == {"key": "battery", "value": "on"}
+    assert writes == {"display.battery": True}
+
+
+def test_config_set_battery_explicit_off(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": True}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "c2",
+            "method": "config.set",
+            "params": {"key": "battery", "value": "off"},
+        }
+    )
+
+    assert resp["result"] == {"key": "battery", "value": "off"}
+    assert writes == {"display.battery": False}
 
 
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
@@ -733,7 +1249,10 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
-    monkeypatch.delenv("HERMES_VOICE_TTS", raising=False)
+    # setenv (not delenv) — the handler writes HERMES_VOICE_TTS directly, and
+    # delenv on an absent var registers no teardown, leaking TTS=1 into every
+    # later test in the file (which now spins up the streaming TTS pipeline).
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
 
     tts_resp = server.dispatch(
         {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}
@@ -998,6 +1517,54 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
 
+def test_history_to_messages_hides_gateway_system_markers():
+    # Model-switch / personality notices are persisted as role=user [System: …]
+    # rows so strict providers accept them mid-history, but they are model-facing
+    # metadata -- never a user turn. They must not render as a user bubble on any
+    # surface, and dropping them from the display projection also stops the
+    # stored marker from shifting the desktop's user-message ordinals and
+    # duplicating the optimistic prompt (#67603).
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {
+            "role": "user",
+            "content": "[System: The active model for this chat has changed to k3.]",
+        },
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": (
+                "[System: The user has changed the assistant's personality. "
+                "Adopt the new persona going forward.]"
+            ),
+        },
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "first question"},
+        {"role": "assistant", "text": "first answer"},
+        {"role": "user", "text": "second question"},
+        {"role": "assistant", "text": "second answer"},
+    ]
+
+
+def test_history_to_messages_keeps_real_user_bracket_text():
+    # Only role=user rows whose text OPENS with the [System: marker sentinel are
+    # bookkeeping notices. A genuine user turn that merely mentions the token is
+    # a real message and stays visible.
+    history = [
+        {"role": "user", "content": "why does [System: ...] show up in my chat?"},
+        {"role": "assistant", "content": "it should not"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "why does [System: ...] show up in my chat?"},
+        {"role": "assistant", "text": "it should not"},
+    ]
+
+
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     captured = {}
 
@@ -1008,7 +1575,16 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def reopen_session(self, target):
             captured["reopened"] = target
 
-        def get_messages_as_conversation(self, target, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
             return (
                 [
@@ -1036,14 +1612,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
-    # This resume takes the deferred (non-eager) path, which fires a 50ms
-    # background Timer (`_schedule_agent_build`) that later calls whatever
-    # `server._make_agent` is patched in AT THAT MOMENT. Left un-stubbed, that
-    # timer outlives this test and lands in the *next* test's `_make_agent`
-    # mock, racily corrupting its captured state (the `assert 'tip' ==
-    # 'cont_tip'` flake in test_session_resume_follows_compression_tip). Neuter
-    # the pre-warm here — this test only asserts the returned display history.
-    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    # The deferred pre-warm timer is neutered module-wide by the autouse
+    # _neuter_agent_prewarm_timer fixture; this test only asserts the
+    # returned display history.
 
     resp = server.handle_request(
         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
@@ -1054,6 +1625,238 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "assistant", "text": "root answer"},
     ]
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
+
+
+def test_live_visible_history_prefers_db_display_with_candidate():
+    """A warm/live session must serve the persisted DISPLAY lineage, not the
+    collapsed in-memory model history.
+
+    Regression for #65919's cross-session fallout: verification candidates
+    (finish_reason=verification_required) are persisted but collapsed out of the
+    model working history by repair_message_sequence. Building the live-reuse
+    payload from ``display_history_prefix + history`` therefore dropped the
+    substantive answer, while the eager session.resume path still showed it —
+    the two payloads for the same session disagreed. This asserts the live path
+    now matches the eager/REST display projection by construction.
+    """
+    # In-memory model history: the candidate has been collapsed away.
+    in_memory = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+    # Persisted display lineage: the candidate (substantive answer) survives.
+    display_with_candidate = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+
+    class DB:
+        def get_messages_as_conversation(
+            self, key, include_ancestors=False, repair_alternation=False
+        ):
+            assert key == "s1"
+            assert include_ancestors is True
+            return list(display_with_candidate)
+
+    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
+    assert result == display_with_candidate
+
+
+def test_live_visible_history_falls_back_without_db_or_key():
+    in_memory = [{"role": "user", "content": "hi"}]
+    # No DB handle available.
+    assert server._live_visible_history({"session_key": "s"}, None, in_memory) == in_memory
+
+    # DB available but the session has no persist key yet.
+    class DB:
+        def get_messages_as_conversation(self, *a, **k):  # pragma: no cover - not reached
+            raise AssertionError("must not query without a session_key")
+
+    assert server._live_visible_history({}, DB(), in_memory) == in_memory
+
+
+def test_live_visible_history_falls_back_when_db_empty():
+    """A brand-new live session whose first turn hasn't been flushed keeps its
+    in-memory history rather than rendering empty."""
+    in_memory = [{"role": "user", "content": "fresh turn not flushed yet"}]
+
+    class EmptyDB:
+        def get_messages_as_conversation(self, *a, **k):
+            return []
+
+    assert server._live_visible_history({"session_key": "s"}, EmptyDB(), in_memory) == in_memory
+
+
+def test_live_visible_history_falls_back_when_db_raises():
+    in_memory = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+
+    class BrokenDB:
+        def get_messages_as_conversation(self, *a, **k):
+            raise RuntimeError("db exploded")
+
+    assert server._live_visible_history({"session_key": "s"}, BrokenDB(), in_memory) == in_memory
+
+
+def test_live_visible_history_keeps_candidate_and_fresh_tail():
+    """The hard case: the persisted candidate (missing from in-memory) AND a
+    not-yet-flushed live turn (missing from the DB) must BOTH survive."""
+    # Persisted display: has the verification candidate, lags the newest turn.
+    db_display = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+    # In-memory model history: candidate collapsed out, but has a fresh turn 2.
+    in_memory = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "terse verified reply"},
+        {"role": "user", "content": "turn 2 not flushed"},
+        {"role": "assistant", "content": "turn 2 reply not flushed"},
+    ]
+
+    class DB:
+        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False):
+            return list(db_display)
+
+    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
+    assert result == [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+        {"role": "user", "content": "turn 2 not flushed"},
+        {"role": "assistant", "content": "turn 2 reply not flushed"},
+    ]
+
+
+def test_reconcile_display_with_live_trusts_db_when_tail_absent():
+    """If the DB tail isn't in memory (DB ahead / diverged), don't duplicate —
+    serve the persisted display."""
+    db_display = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    in_memory = [{"role": "user", "content": "unrelated"}]
+    assert server._reconcile_display_with_live(db_display, in_memory) == db_display
+    assert server._reconcile_display_with_live([], in_memory) == in_memory
+    assert server._reconcile_display_with_live(db_display, []) == db_display
+
+
+def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
+    """E2E cross-builder consistency against a real SessionDB.
+
+    A persisted verification candidate (finish_reason=verification_required)
+    is collapsed out of the model history by repair_message_sequence but kept
+    in the display lineage (#65919). The warm/live projection
+    (_live_visible_history) must equal the eager session.resume display
+    projection — both keeping the candidate — so switching to a live session
+    shows the same substantive answer a cold resume would.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="do the thing")
+    db.append_message(
+        "s1", role="assistant", content="long substantive answer",
+        finish_reason="verification_required",
+    )
+    db.append_message(
+        "s1", role="assistant", content="terse verified reply", finish_reason="stop",
+    )
+
+    model_history, display_history = db.get_resume_conversations("s1")
+
+    # The divergence #65919 introduced: candidate absent from the model
+    # projection, present in the display projection.
+    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert any("long substantive" in (m.get("content") or "") for m in display_history)
+
+    # Eager session.resume serves the display projection.
+    eager_messages = server._history_to_messages(display_history)
+    # Warm/live reuse: in-memory history is the collapsed model projection.
+    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    # They must agree — the candidate survives the warm switch.
+    assert server._history_to_messages(live_history) == eager_messages
+    assert any(m.get("text") == "long substantive answer" for m in eager_messages)
+
+
+def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_path):
+    """Real-DB variant of the combined case: a candidate from turn 1 AND a
+    fully-flushed turn 2 both appear once."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="turn 1")
+    db.append_message(
+        "s1", role="assistant", content="candidate answer",
+        finish_reason="verification_required",
+    )
+    db.append_message("s1", role="assistant", content="verified reply", finish_reason="stop")
+    db.append_message("s1", role="user", content="turn 2")
+    db.append_message("s1", role="assistant", content="turn 2 reply", finish_reason="stop")
+
+    model_history, display_history = db.get_resume_conversations("s1")
+    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    texts = [m.get("text") for m in server._history_to_messages(live_history)]
+
+    assert texts == [
+        "turn 1",
+        "candidate answer",
+        "verified reply",
+        "turn 2",
+        "turn 2 reply",
+    ]
+
+
+def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch, tmp_path):
+    """The delegated-child watch-window cold resume (lazy=True) must serve the
+    verbatim display projection so a persisted verification candidate is not
+    collapsed out of the watch window (#65919 sibling of the warm-payload fix).
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("child1", source="tui")
+    db.append_message("child1", role="user", content="child prompt")
+    db.append_message(
+        "child1", role="assistant", content="child substantive answer",
+        finish_reason="verification_required",
+    )
+    db.append_message(
+        "child1", role="assistant", content="child terse reply", finish_reason="stop",
+    )
+
+    lease = types.SimpleNamespace(session_id="child1", release=lambda: None)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *a, **k: (lease, None)
+    )
+    monkeypatch.setattr(
+        server, "_deferred_session_record", lambda *a, **k: {"created_at": 123.0}
+    )
+    monkeypatch.setattr(server, "_claim_or_reuse_live", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "child1", "lazy": True},
+        }
+    )
+
+    assert "error" not in resp, resp
+    texts = [m.get("text") for m in resp["result"]["messages"]]
+    assert "child substantive answer" in texts
+    assert texts == ["child prompt", "child substantive answer", "child terse reply"]
 
 
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
@@ -1144,7 +1947,16 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def reopen_session(self, target):
             pass
 
-        def get_messages_as_conversation(self, target, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
@@ -1204,7 +2016,16 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def reopen_session(self, _target):
             captured["reopened"] = _target
 
-        def get_messages_as_conversation(self, _target, include_ancestors=False):
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
         def update_session_cwd(self, *_args):
@@ -1340,6 +2161,18 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
+    overrides = server._stored_session_runtime_overrides(
+        {
+            "model": "gpt-5.4",
+            "model_config": {"service_tier": "normal"},
+        }
+    )
+
+    assert "service_tier_override" in overrides
+    assert overrides["service_tier_override"] == ""
+
+
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 
@@ -1377,6 +2210,37 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
         },
         "gpt-5.4",
     )
+
+
+def test_persist_live_session_runtime_preserves_explicit_normal_tier():
+    updates = {}
+
+    class FakeDB:
+        def get_session(self, _session_id):
+            return {"model_config": '{"service_tier":"priority"}'}
+
+        def update_session_meta(self, _session_id, model_config_json, model=None):
+            updates["config"] = json.loads(model_config_json)
+
+    agent = types.SimpleNamespace(
+        model="gpt-5.4",
+        provider="openai-codex",
+        base_url=None,
+        api_mode=None,
+        reasoning_config=None,
+        service_tier="",
+        _session_db=FakeDB(),
+    )
+
+    server._persist_live_session_runtime(
+        {
+            "agent": agent,
+            "session_key": "stored-session",
+            "create_service_tier_override": "",
+        }
+    )
+
+    assert updates["config"]["service_tier"] == "normal"
 
 
 def test_status_callback_emits_kind_and_text():
@@ -1728,6 +2592,8 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setattr(
         server,
         "_load_cfg",
@@ -1879,6 +2745,50 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """One slow session finalizer must not stall unrelated session.resume RPCs."""
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+    response = {}
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "tui_close"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-close"] = _session()
+
+    def _close():
+        response.update(
+            server.handle_request(
+                {
+                    "id": "close",
+                    "method": "session.close",
+                    "params": {"session_id": "slow-close"},
+                }
+            )
+        )
+
+    thread = threading.Thread(target=_close)
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-close" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "slow teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-close", None)
+
+    assert not thread.is_alive()
+    assert response["result"] == {"closed": True}
+
+
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
     """A detached WS session past its grace window has its slash_worker closed.
 
@@ -1907,6 +2817,51 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
         assert closed["worker"] is True
     finally:
         server._sessions.pop("orphan-sid", None)
+
+
+def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """Grace reaping claims under the lock but finalizes after releasing it."""
+    scheduled = {}
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            scheduled["callback"] = callback
+
+        def start(self):
+            return None
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "ws_orphan_reap"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-orphan"] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+
+    server._schedule_ws_orphan_reap("slow-orphan")
+    thread = threading.Thread(target=scheduled["callback"])
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-orphan" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "orphan teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-orphan", None)
+
+    assert not thread.is_alive()
 
 
 def test_finalize_session_closes_slash_worker(monkeypatch):
@@ -2284,7 +3239,624 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         server._sessions.pop("trunc-sid", None)
 
 
-def test_session_create_does_not_persist_empty_row(monkeypatch):
+class _StopAfterOneNotificationPoll:
+    def __init__(self):
+        self._checks = 0
+
+    def is_set(self):
+        self._checks += 1
+        return self._checks > 1
+
+
+def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
+    monkeypatch,
+):
+    """A foreign live-loop dequeue is handed back to its proven owner."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = {"a": [], "b": []}
+    emitted = []
+    session_a = _session(session_key="session-a-live-handoff")
+    session_b = _session(session_key="session-b-live-handoff")
+    event = {
+        "type": "completion",
+        "session_id": "proc-live-handoff",
+        "session_key": "session-a-live-handoff",
+        "command": "echo owner",
+        "exit_code": 0,
+        "output": "owner",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+
+    def _deliver(_rid, sid, session, text):
+        delivered["a" if sid == "sid-a-live-handoff" else "b"].append(text)
+        session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+    server._sessions.update(
+        {
+            "sid-a-live-handoff": session_a,
+            "sid-b-live-handoff": session_b,
+        }
+    )
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-b-live-handoff", session_b
+        )
+
+        assert delivered["b"] == []
+        assert emitted == []
+        assert isolated_queue.qsize() == 1
+        assert isolated_queue.queue[0] is event
+
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-a-live-handoff", session_a
+        )
+
+        assert len(delivered["a"]) == 1
+        assert "proc-live-handoff completed normally" in delivered["a"][0]
+        assert delivered["b"] == []
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-a-live-handoff", None)
+        server._sessions.pop("sid-b-live-handoff", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
+    """A provenance lookup failure cannot turn an addressed event into ours."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    class _BrokenDB:
+        def resolve_resume_session_id(self, _session_key):
+            raise RuntimeError("lineage database unavailable")
+
+    session = _session(session_key="unrelated-live-session")
+    event = {
+        "type": "completion",
+        "session_id": "proc-unknown-lineage",
+        "session_key": "unknown-parent",
+        "command": "echo unknown",
+        "exit_code": 0,
+        "output": "unknown",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+
+    drained = process_registry.drain_notifications(
+        session_key="unrelated-live-session",
+        owns_event=lambda candidate: server._session_owns_notification_event(
+            "sid-unrelated-live", session, candidate
+        ),
+    )
+
+    assert drained == []
+    assert isolated_queue.qsize() == 1
+    assert isolated_queue.get_nowait() is event
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        {"session_key": "missing-owner-key"},
+        {"origin_ui_session_id": "missing-owner-sid"},
+    ],
+)
+def test_notification_poller_live_loop_drops_addressed_orphan(
+    monkeypatch, routing
+):
+    """A live poll never injects an addressed event whose owner is gone."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = []
+    emitted = []
+    session = _session(session_key="unrelated-live-key")
+    event = {
+        "type": "completion",
+        "session_id": "proc-live-orphan",
+        "command": "echo orphan",
+        "exit_code": 0,
+        "output": "orphan",
+        **routing,
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    server._sessions["sid-live-orphan"] = session
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-live-orphan", session
+        )
+
+        assert delivered == []
+        assert emitted == []
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-live-orphan", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        {"session_key": "session-b"},
+        {"origin_ui_session_id": "sid_gone"},
+    ],
+)
+def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
+    """Addressed completions whose owner is gone are dropped, not hijacked."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    emitted = []
+    delivered = []
+    sess = _session(session_key="session-a")
+    server._sessions["sid_a"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_ghost")
+    isolated_queue.put(
+        {
+            "type": "completion",
+            "session_id": "proc_ghost",
+            "command": "echo from ghost",
+            "exit_code": 0,
+            "output": "ghost output",
+            **routing,
+        }
+    )
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", sess)
+
+        assert [a for a in emitted if a[0] == "status.update"] == []
+        assert delivered == []
+    finally:
+        server._sessions.pop("sid_a", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+@pytest.mark.parametrize(
+    ("routing", "resolved_key"),
+    [
+        ({"session_key": "session-a"}, None),
+        (
+            {
+                "session_key": "stale-durable-key",
+                "origin_ui_session_id": "sid_a",
+            },
+            None,
+        ),
+        ({"session_key": "old-parent-key"}, "session-a"),
+    ],
+)
+def test_notification_poller_delivers_owned_events(
+    monkeypatch, routing, resolved_key
+):
+    """Direct, UI-origin, and compression-lineage owners are delivered."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    class _CompressionDB:
+        def resolve_resume_session_id(self, key):
+            return resolved_key if key == "old-parent-key" and resolved_key else key
+
+    delivered = []
+    emitted = []
+    sess = _session(session_key="session-a")
+    server._sessions["sid_a"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_mine")
+    isolated_queue.put(
+        {
+            "type": "completion",
+            "session_id": "proc_mine",
+            "command": "echo mine",
+            "exit_code": 0,
+            "output": "mine",
+            **routing,
+        }
+    )
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", sess)
+
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 1
+        assert status_calls[0][2]["kind"] == "process"
+        assert len(delivered) == 1
+        assert "proc_mine" in delivered[0]
+    finally:
+        server._sessions.pop("sid_a", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def _configure_immediate_prompt_run(
+    monkeypatch, tmp_path, *, immediate_threads=True
+):
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+        def is_alive(self):
+            return False
+
+    if immediate_threads:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_args: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: False)
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+
+class _RecordingAgent:
+    model = "test-model"
+    provider = "test-provider"
+
+    def __init__(self, turns):
+        self._turns = turns
+
+    def clear_interrupt(self):
+        return None
+
+    def run_conversation(
+        self, prompt, conversation_history=None, stream_callback=None
+    ):
+        self._turns.append(prompt)
+        return {"final_response": "", "messages": []}
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_run_prompt_submit_requeues_foreign_completion(
+    monkeypatch, tmp_path, exit_code
+):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    turns = []
+    session_a = _session(session_key="session-a")
+    session_b = _session(
+        session_key="session-b",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+    event = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{exit_code}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "foreign",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    server._sessions["sid_a"] = session_a
+    server._sessions["sid_b"] = session_b
+
+    try:
+        server._run_prompt_submit("rid-b", "sid_b", session_b, "session-b-turn")
+
+        assert turns == ["session-b-turn"]
+        assert isolated_queue.get_nowait() == event
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_a", None)
+        server._sessions.pop("sid_b", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+
+
+def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp_path):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    turns = []
+    session = _session(
+        session_key="session-a",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+    event = {
+        "type": "completion",
+        "session_id": "proc_polled",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "observed but not consumed",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard(event["session_id"])
+    process_registry._poll_observed.add(event["session_id"])
+    server._sessions["sid_a"] = session
+
+    try:
+        server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
+
+        assert turns[0] == "session-a-turn"
+        assert len(turns) == 2
+        assert "proc_polled" in turns[1]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_a", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        process_registry._poll_observed.discard(event["session_id"])
+
+
+def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_threading(
+    monkeypatch, tmp_path
+):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(
+        monkeypatch, tmp_path, immediate_threads=False
+    )
+    real_thread_class = threading.Thread
+    threads = []
+    nested_started = threading.Event()
+    release_nested = threading.Event()
+    turns = []
+
+    def _recording_thread(*args, **kwargs):
+        thread = real_thread_class(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    class _BlockingNotificationAgent(_RecordingAgent):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            turns.append(prompt)
+            if "proc_batch_1" in prompt:
+                nested_started.set()
+                if not release_nested.wait(timeout=5):
+                    raise TimeoutError("notification turn was not released")
+            return {"final_response": "", "messages": []}
+
+    monkeypatch.setattr(server.threading, "Thread", _recording_thread)
+    session = _session(
+        session_key="session-a",
+        agent=_BlockingNotificationAgent(turns),
+        running=True,
+    )
+    events = [
+        {
+            "type": "completion",
+            "session_id": f"proc_batch_{index}",
+            "session_key": "session-a",
+            "command": "safe-test-command",
+            "exit_code": 0,
+            "output": f"owned-{index}",
+        }
+        for index in range(1, 4)
+    ]
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    for event in events:
+        isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    server._sessions["sid_a"] = session
+
+    try:
+        server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
+
+        assert nested_started.wait(timeout=5)
+        threads[0].join(timeout=5)
+        assert not threads[0].is_alive()
+        # Membership, not order: the completion_queue is process-global, and
+        # notification pollers leaked by earlier session.init tests in this
+        # file legitimately steal-and-requeue foreign-session events (see
+        # _notification_poller_loop's belongs-elsewhere branch), rotating the
+        # queue. The requeue contract is that batch_2 and batch_3 both remain
+        # queued (never consumed) while batch_1's turn is in flight — so drain
+        # with a deadline (an event may be transiently held by a poller
+        # mid-cycle) and assert exactly {batch_2, batch_3} come back.
+        queued: dict = {}
+        deadline = time.time() + 5.0
+        while time.time() < deadline and set(queued) != {
+            "proc_batch_2",
+            "proc_batch_3",
+        }:
+            try:
+                evt = isolated_queue.get(timeout=0.1)
+            except _queue_mod.Empty:
+                continue
+            queued[evt["session_id"]] = evt
+        assert set(queued) == {"proc_batch_2", "proc_batch_3"}
+    finally:
+        release_nested.set()
+        for thread in threads:
+            thread.join(timeout=5)
+        server._sessions.pop("sid_a", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+        for event in events:
+            process_registry._completion_consumed.discard(event["session_id"])
+            process_registry._poll_observed.discard(event["session_id"])
+
+
+def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage(
+    monkeypatch, tmp_path
+):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    class _CompressionDB:
+        def resolve_resume_session_id(self, key):
+            return "new-child-key" if key == "old-parent-key" else key
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
+    ownership_checks = []
+    original_owns_event = server._session_owns_notification_event
+
+    def _record_ownership_check(sid, checked_session, checked_event):
+        ownership_checks.append(checked_event["session_id"])
+        return original_owns_event(sid, checked_session, checked_event)
+
+    monkeypatch.setattr(
+        server, "_session_owns_notification_event", _record_ownership_check
+    )
+    turns = []
+    session = _session(
+        session_key="new-child-key",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+    event = {
+        "type": "completion",
+        "session_id": "proc_precompression",
+        "session_key": "old-parent-key",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "owned",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    server._sessions["sid_b"] = session
+
+    try:
+        server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn")
+
+        assert turns[0] == "session-b-turn"
+        assert len(turns) == 2
+        assert "proc_precompression" in turns[1]
+        assert ownership_checks == ["proc_precompression"]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_b", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+
+
+def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    ownership_checks = []
+    original_owns_event = server._session_owns_notification_event
+
+    def _record_ownership_check(sid, checked_session, checked_event):
+        ownership_checks.append(checked_event["session_id"])
+        return original_owns_event(sid, checked_session, checked_event)
+
+    monkeypatch.setattr(
+        server, "_session_owns_notification_event", _record_ownership_check
+    )
+    turns = []
+    session = _session(
+        session_key="current-key",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+    event = {
+        "type": "completion",
+        "session_id": "proc_origin_owned",
+        "session_key": "stale-durable-key",
+        "origin_ui_session_id": "sid_b",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "owned",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    server._sessions["sid_b"] = session
+
+    try:
+        server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn")
+
+        assert turns[0] == "session-b-turn"
+        assert len(turns) == 2
+        assert "proc_origin_owned" in turns[1]
+        assert ownership_checks == ["proc_origin_owned"]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_b", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+
+
+
     """session.create must NOT eagerly write a DB row.
 
     Every TUI/desktop launch opens a session here just to paint the composer;
@@ -2328,6 +3900,8 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
 
@@ -2368,6 +3942,8 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
@@ -2896,7 +4472,12 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
 
-def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
+def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
+    """A session-targeted fast toggle updates the live agent + pins the
+    per-session override, and NEVER writes global config — the desktop's
+    per-model presets call this on every model pick, and a global write
+    flipped the tier for every other session/profile (the "switch one
+    session, switches everywhere" class)."""
     writes = []
     emits = []
     agent = types.SimpleNamespace(
@@ -2904,7 +4485,8 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         request_overrides={"foo": "bar", "speed": "slow"},
         service_tier=None,
     )
-    server._sessions["sid"] = _session(agent=agent)
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
 
     monkeypatch.setattr(
         server, "_write_config_key", lambda path, value: writes.append((path, value))
@@ -2930,7 +4512,8 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
             "foo": "bar",
             "service_tier": "priority",
         }
-        assert ("agent.service_tier", "fast") in writes
+        assert session["create_service_tier_override"] == "priority"
+        assert writes == []
         assert ("session.info", "sid", {"model": "x"}) in emits
 
         resp_normal = server.handle_request(
@@ -2943,7 +4526,10 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         assert resp_normal["result"]["value"] == "normal"
         assert agent.service_tier is None
         assert agent.request_overrides == {"foo": "bar"}
-        assert ("agent.service_tier", "normal") in writes
+        # "" (not absent) so a rebuild pins normal instead of falling back to
+        # the global default.
+        assert session["create_service_tier_override"] == ""
+        assert writes == []
     finally:
         server._sessions.pop("sid", None)
 
@@ -3315,6 +4901,20 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_probe_credentials_emits_exact_empty_key_warning():
+    agent = types.SimpleNamespace(api_key="", provider="openrouter")
+
+    assert server._probe_credentials(agent) == (
+        "No API key configured for provider 'openrouter'. First message will fail."
+    )
+
+
+def test_probe_credentials_allows_keyless_custom_runtime():
+    agent = types.SimpleNamespace(api_key="no-key-required", provider="custom")
+
+    assert server._probe_credentials(agent) == ""
+
+
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
     monkeypatch.setattr(
@@ -3328,8 +4928,13 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
 
     resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
 
-    assert resp["result"]["ok"] is False
-    assert resp["result"]["provider"] == "openrouter"
+    assert resp["result"] == {
+        "ok": False,
+        "provider": "openrouter",
+        "model": None,
+        "source": "env/config",
+        "error": "No usable credentials found for openrouter.",
+    }
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
@@ -3473,8 +5078,18 @@ def test_complete_slash_details_args():
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
 
 
+def test_complete_slash_reasoning_includes_current_efforts_and_global_scope():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/reasoning "}}
+    )
+
+    values = {item["text"] for item in resp["result"]["items"]}
+    assert {"max", "ultra", "--global"} <= values
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
 
@@ -3482,11 +5097,42 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
         {
             "id": "1",
             "method": "config.set",
-            "params": {"session_id": "sid", "key": "reasoning", "value": "low"},
+            "params": {
+                "session_id": "sid",
+                "key": "reasoning",
+                "value": "low",
+            },
         }
     )
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert server._sessions["sid"]["create_reasoning_override"] == {"enabled": True, "effort": "low"}
+    assert server._load_cfg()["agent"]["reasoning_effort"] == "medium"
+
+    resp_status = server.handle_request(
+        {
+            "id": "5",
+            "method": "config.get",
+            "params": {"session_id": "sid", "key": "reasoning"},
+        }
+    )
+    assert resp_status["result"]["value"] == "low"
+
+    resp_global_status = server.handle_request(
+        {"id": "6", "method": "config.get", "params": {"key": "reasoning"}}
+    )
+    assert resp_global_status["result"]["value"] == "medium"
+
+    del server._sessions["sid"]["create_reasoning_override"]
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    resp_agent_status = server.handle_request(
+        {
+            "id": "7",
+            "method": "config.get",
+            "params": {"session_id": "sid", "key": "reasoning"},
+        }
+    )
+    assert resp_agent_status["result"]["value"] == "high"
 
     resp_show = server.handle_request(
         {
@@ -3536,6 +5182,36 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     cfg_clamp = server._load_cfg()
     assert cfg_clamp["display"]["reasoning_full"] is False
     assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
+
+
+def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    agent = types.SimpleNamespace(reasoning_config=None)
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["create_reasoning_override"] = {"enabled": True, "effort": "low"}
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "reasoning",
+                "value": "high",
+                "scope": "global",
+            },
+        }
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert server._load_cfg()["agent"]["reasoning_effort"] == "high"
+    assert "create_reasoning_override" not in server._sessions["sid"]
+
+    status = server.handle_request(
+        {"id": "2", "method": "config.get", "params": {"session_id": "sid", "key": "reasoning"}}
+    )
+    assert status["result"]["value"] == "high"
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
@@ -4067,6 +5743,170 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         server._sessions.clear()
 
 
+def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
+    class Agent:
+        model = "old/model"
+        provider = "openrouter"
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = "sk-old"
+        api_mode = "chat_completions"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="sk-ant",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+    seen = {}
+    agent = Agent()
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    monkeypatch.setenv("HERMES_MODEL", "old/model")
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kwargs: seen.update(kwargs) or result,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic --once",
+                },
+            }
+        )
+
+        assert resp["result"]["scope"] == "once"
+        assert seen["is_global"] is False
+        assert agent.model == "claude-sonnet-4.6"
+        assert session["one_turn_model_restore"]["model"] == "old/model"
+        assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
+        assert os.environ["HERMES_MODEL"] == "old/model"
+    finally:
+        server._sessions.clear()
+
+
+def test_config_set_model_once_requires_live_session(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_: (_ for _ in ()).throw(AssertionError("switch should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic --once",
+            },
+        }
+    )
+
+    assert resp["error"]["code"] == 5001
+    assert "/model --once requires a live session" in resp["error"]["message"]
+
+
+def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):
+    class Agent:
+        model = "temp/model"
+        provider = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "sk-temp"
+        api_mode = "anthropic_messages"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+    )
+    session = _session(agent=Agent())
+    session["one_turn_model_restore"] = {"model": "old/model"}
+    server._sessions["sid"] = session
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "new/model --provider openrouter --session",
+                },
+            }
+        )
+
+        assert resp["result"]["scope"] == "session"
+        assert "one_turn_model_restore" not in session
+    finally:
+        server._sessions.clear()
+
+
+def test_restore_agent_model_runtime_falls_back_to_switch_model():
+    class Agent:
+        model = "temp/model"
+        provider = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "sk-temp"
+        api_mode = "anthropic_messages"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    agent = Agent()
+
+    server._restore_agent_model_runtime(
+        agent,
+        {
+            "model": "old/model",
+            "provider": "openrouter",
+            "api_key": "sk-old",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    assert agent.model == "old/model"
+    assert agent.provider == "openrouter"
+    assert agent.base_url == "https://openrouter.ai/api/v1"
+
+
 def test_config_set_personality_rejects_unknown_name(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -4131,6 +5971,69 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert ("session.info", "sid", {"model": "?"}) in emits
 
 
+def test_compress_session_history_passes_force():
+    """_compress_session_history is manual-only (session.compress RPC, slash
+    compress/compact, slash-worker mirror) — it must bypass the
+    summary-failure cooldown via force=True, matching the CLI and gateway
+    manual-compress handlers."""
+    from unittest.mock import MagicMock
+
+    agent = MagicMock()
+    agent.context_compressor = None  # keep _get_usage on the simple path
+    compressed = [{"role": "user", "content": "summary"}]
+    agent._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    agent._compression_skipped_due_to_lock = False
+    session = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+    )
+
+    removed, _usage = server._compress_session_history(session)
+
+    assert removed == 3
+    assert session["history"] == compressed
+    assert agent._compress_context.call_args.kwargs.get("force") is True
+
+
+def test_compress_session_history_works_when_auto_compaction_disabled():
+    """compression.enabled: false disables *automatic* compaction only —
+    manual /compress must still work on every TUI route (session.compress
+    RPC, slash compress/compact, slash-worker mirror), all of which converge
+    on _compress_session_history. Pin that the helper never gates on
+    agent.compression_enabled (#64438)."""
+    from unittest.mock import MagicMock
+
+    agent = MagicMock()
+    agent.compression_enabled = False
+    agent.context_compressor = None  # keep _get_usage on the simple path
+    compressed = [{"role": "user", "content": "summary"}]
+    agent._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    agent._compression_skipped_due_to_lock = False
+    session = _session(
+        agent=agent,
+        history=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ],
+    )
+
+    removed, _usage = server._compress_session_history(session)
+
+    assert removed == 3
+    assert session["history"] == compressed
+    agent._compress_context.assert_called_once()
+    assert agent._compress_context.call_args.kwargs.get("force") is True
+
+
 def test_session_compress_uses_compress_helper(monkeypatch):
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent)
@@ -4155,27 +6058,225 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
-def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
-    """When AIAgent._compress_context rotates session_id (compression split),
-    the gateway session_key must follow so subsequent approval routing,
-    DB title/history lookups, and slash worker resume target the new
-    continuation session — mirrors HermesCLI._manual_compress's
-    session_id sync (cli.py).
-    """
-    agent = types.SimpleNamespace(session_id="rotated-id")
-    server._sessions["sid"] = _session(agent=agent)
-    server._sessions["sid"]["session_key"] = "old-key"
-    server._sessions["sid"]["pending_title"] = "stale title"
+def test_session_compress_normalizes_messages_for_desktop_transcript(monkeypatch):
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {"name": "read_file", "arguments": '{"path":"secret.txt"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "very sensitive tool output"},
+    ]
+    agent = types.SimpleNamespace()
+    server._sessions["sid"] = _session(agent=agent, history=history)
+    monkeypatch.setattr(server, "_compress_session_history", lambda *_args, **_kwargs: (0, {}))
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    try:
+        response = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["messages"] == server._history_to_messages(history)
+    assert "very sensitive tool output" not in str(response["result"]["messages"])
+
+
+def test_session_compress_returns_compute_host_history(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    ack = {
+        "type": "control.ack",
+        "output": "Compressed 4 → 2 messages",
+        "messages": [{"role": "user", "content": "compressed context"}],
+        "session_info": {"usage": {"total": 42}},
+    }
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", lambda *args, **kwargs: ack)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {
+        "status": "compressed",
+        "turn_isolation": True,
+        "host_ack": {key: value for key, value in ack.items() if key != "messages"},
+        "info": {"usage": {"total": 42}},
+        "messages": [{"role": "user", "text": "compressed context"}],
+        "usage": {"total": 42},
+    }
+
+
+def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    calls = []
+
+    def send_control(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "type": "control.ack",
+            "result": {
+                "status": "compressed",
+                "messages": [],
+                "removed": 0,
+                "summary": {"headline": "Already compressed", "noop": True},
+            },
+        }
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "compressed"
+    assert calls == [
+        (
+            ("sid",),
+            {
+                "route_name": "session.compress",
+                "command": "/compress",
+                "wait": True,
+                "timeout": 120.0,
+            },
+        )
+    ]
+
+
+def test_session_compress_preserves_compute_host_aborted_summary(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    result = {
+        "status": "aborted",
+        "messages": [{"role": "user", "content": "preserved context"}],
+        "removed": 0,
+        "summary": {
+            "aborted": True,
+            "headline": "Compression aborted: 6 messages preserved",
+            "note": "No compression provider is configured.",
+        },
+    }
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(
+        server,
+        "_send_compute_host_control",
+        lambda *args, **kwargs: {
+            "type": "control.ack",
+            "result": result,
+            "session_key": "rotated-host-key",
+            "history_version": 7,
+            "message_count": 1,
+            "session_info": {"model": "host-model"},
+        },
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {**result, "turn_isolation": True}
+    assert session["session_key"] == "rotated-host-key"
+    assert session["history_version"] == 7
+    assert session["_metadata_message_count"] == 1
+    assert session["_metadata_mirror"]["model"] == "host-model"
+
+
+def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
+    compression_state = types.SimpleNamespace(
+        _last_compress_aborted=True,
+        _last_summary_fallback_used=False,
+        _last_summary_error=(
+            "Provider 'opencode-zen' is set in config.yaml but no API key was found."
+        ),
+    )
+    agent = types.SimpleNamespace(
+        context_compressor=compression_state,
+        _cached_system_prompt="",
+        tools=None,
+    )
+    history = [{"role": "user", "content": f"m{i}"} for i in range(6)]
+    server._sessions["sid"] = _session(agent=agent, history=history)
 
     monkeypatch.setattr(
         server,
         "_compress_session_history",
-        lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
+        lambda session, focus_topic=None, **_kw: (0, {"total": 42}),
     )
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+
+    try:
+        with patch("tui_gateway.server._emit"):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "session.compress",
+                    "params": {"session_id": "sid"},
+                }
+            )
+
+        result = resp["result"]
+        assert result["status"] == "aborted"
+        assert result["removed"] == 0
+        assert result["summary"]["aborted"] is True
+        assert result["summary"]["headline"] == (
+            "Compression aborted: 6 messages preserved"
+        )
+        assert "no API key was found" in result["summary"]["note"]
+        assert "Compressed:" not in result["summary"]["headline"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
+    """LCM notification follows the TUI's final session-key transition."""
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+    )
+
+    events = []
+    agent = types.SimpleNamespace(
+        session_id="rotated-id",
+        context_compressor=types.SimpleNamespace(
+            on_session_start=lambda *_args, **_kwargs: events.append("notify")
+        ),
+    )
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["session_key"] = "old-key"
+    server._sessions["sid"]["pending_title"] = "stale title"
+
+    def _compress(session, focus_topic=None, **_kw):
+        _queue_context_engine_compression_notification(
+            session["agent"],
+            new_session_id="rotated-id",
+            old_session_id="old-key",
+        )
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     restart_calls = []
     monkeypatch.setattr(
-        server, "_restart_slash_worker", lambda sid, s: restart_calls.append(s)
+        server,
+        "_restart_slash_worker",
+        lambda sid, s: (restart_calls.append(s), events.append("sync")),
     )
 
     try:
@@ -4191,6 +6292,143 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         assert server._sessions["sid"]["session_key"] == "rotated-id"
         assert server._sessions["sid"]["pending_title"] is None
         assert len(restart_calls) == 1
+        assert events == ["sync", "notify"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_compress_sync_failure_discards_lcm_notification(monkeypatch):
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+    )
+
+    events = []
+    agent = types.SimpleNamespace(
+        session_id="rotated-id",
+        context_compressor=types.SimpleNamespace(
+            on_session_start=lambda *_args, **_kwargs: events.append("notify")
+        ),
+    )
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["session_key"] = "old-key"
+
+    def _compress(session, focus_topic=None, **_kw):
+        _queue_context_engine_compression_notification(
+            session["agent"],
+            new_session_id="rotated-id",
+            old_session_id="old-key",
+        )
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("finalization failed")),
+    )
+
+    try:
+        with patch("tui_gateway.server._emit"):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "session.compress",
+                    "params": {"session_id": "sid"},
+                }
+            )
+        assert resp["error"]["code"] == 5005
+        assert events == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for isolated read commands")
+
+    history_from_db = [
+        {"role": "user", "content": "live question from state db"},
+        {"role": "assistant", "content": "live answer from state db"},
+    ]
+
+    class _DB:
+        def get_session(self, key):
+            assert key == "session-key"
+            return {
+                "title": "Live title",
+                "started_at": 1_700_000_000,
+                "updated_at": 1_700_000_060,
+                "pinned": True,
+            }
+
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False):
+            assert key == "session-key"
+            assert include_ancestors is True
+            return list(history_from_db)
+
+    server._sessions["sid"] = _session(
+        agent=None,
+        history=[{"role": "user", "content": "stale parent mirror"}],
+        _compute_host_active=True,
+        _metadata_mirror={
+            "model": "host-model",
+            "provider": "host-provider",
+            "system_prompt": "host system prompt",
+            "tools": {"core": ["terminal", "read_file"]},
+            "usage": {
+                "model": "host-model",
+                "input": 100,
+                "output": 20,
+                "reasoning": 5,
+                "prompt": 120,
+                "completion": 20,
+                "total": 140,
+                "calls": 2,
+                "context_used": 80,
+                "context_max": 1000,
+                "context_percent": 8,
+                "compressions": 1,
+            },
+        },
+        _metadata_message_count=2,
+    )
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+
+    cases = {
+        "usage": "Total tokens:                 140",
+        "history": "live question from state db",
+        "prompt": "host system prompt",
+        "status": "Tokens: 140",
+        "context": "Context usage: ~80 / 1,000 tokens",
+        "tools": "terminal",
+        "help": "/status",
+    }
+
+    try:
+        for command, expected in cases.items():
+            resp = server.handle_request(
+                {
+                    "id": command,
+                    "method": "slash.exec",
+                    "params": {"command": command, "session_id": "sid"},
+                }
+            )
+            assert "result" in resp, (command, resp)
+            assert expected in resp["result"]["output"]
+            assert "stale parent mirror" not in resp["result"]["output"]
+            assert "(._.)" not in resp["result"]["output"]
     finally:
         server._sessions.pop("sid", None)
 
@@ -4557,6 +6795,30 @@ def test_commands_catalog_includes_tui_mouse_command():
     assert "/mouse" in tui_pairs
 
 
+def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
+    """No command may be advertised twice, and no advertised command may
+    shadow an alias of a different command (e.g. the historical /compact
+    collision where the registry aliased compact -> compress while the TUI
+    also registered its own /compact display toggle; see #57133)."""
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    names = [name for name, _ in resp["result"]["pairs"]]
+    dupes = {n for n in names if names.count(n) > 1}
+    assert not dupes, f"duplicate commands advertised in catalog: {sorted(dupes)}"
+
+    canon = resp["result"]["canon"]
+    colliding = {
+        name
+        for name in names
+        if canon.get(name.lower(), name) != name
+    }
+    assert not colliding, (
+        f"catalog commands shadow aliases of other commands: {sorted(colliding)}"
+    )
+
+
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}
@@ -4893,6 +7155,80 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
     assert resp["error"]["code"] == 4010
 
 
+def test_session_redirect_calls_capable_core_agent(monkeypatch):
+    calls = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: calls.append(text) or True,
+    )
+    session = _session(agent=agent)
+    session["inflight_turn"] = {"user": "original request", "assistant": "partial reply"}
+    server._sessions["sid"] = session
+    try:
+        before = session.get("last_active")
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "use Postgres"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {
+        "status": "redirected",
+        "text": "use Postgres",
+    }
+    assert calls == ["use Postgres"]
+    assert session["inflight_turn"]["user"] == "use Postgres"
+    assert session.get("last_active") is not None
+    assert before is None or session["last_active"] >= before
+
+
+def test_session_redirect_queues_during_agent_build_window(monkeypatch):
+    # A fresh turn flips running=True and builds the agent asynchronously, so
+    # session["agent"] is briefly None. A correction landing here must queue
+    # (lossless, reaches the model next turn), not hard-reject as unsupported.
+    session = _session(running=True)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "wait, use SQLite"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {"status": "queued", "text": "wait, use SQLite"}
+    assert session["queued_prompt"]["text"] == "wait, use SQLite"
+
+
+def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
+    # No live turn and no agent: nothing to redirect, and we must not queue a
+    # phantom turn — keep the explicit unsupported rejection.
+    session = _session(running=False)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4010
+    assert session.get("queued_prompt") is None
+
+
 def test_session_info_includes_mcp_servers(monkeypatch):
     fake_status = [
         {"name": "github", "transport": "http", "tools": 12, "connected": True},
@@ -4923,25 +7259,6 @@ def test_session_info_includes_session_title(monkeypatch):
     )
 
     assert info["title"] == "Dashboard title"
-
-
-def test_session_info_includes_install_warning_for_pip(monkeypatch):
-    """pip installs surface install_warning; git installs don't (issue: pip/brew deprecation)."""
-    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "pip")
-
-    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider=""))
-
-    assert "install_warning" in info
-    assert "pip" in info["install_warning"]
-    assert "platform-support" in info["install_warning"]
-
-
-def test_session_info_omits_install_warning_for_git(monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "git")
-
-    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider=""))
-
-    assert "install_warning" not in info
 
 
 # ---------------------------------------------------------------------------
@@ -5696,12 +8013,197 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert "tokens" in warning
 
 
+_PARTIAL_FAKE_HISTORY = [
+    {"role": "user", "content": "msg1"},
+    {"role": "assistant", "content": "resp1"},
+    {"role": "user", "content": "msg2"},
+    {"role": "assistant", "content": "resp2"},
+    {"role": "user", "content": "keep this"},
+    {"role": "assistant", "content": "keep this too"},
+]
+_PARTIAL_COMPRESSED_HEAD = [
+    {"role": "user", "content": "[summary]"},
+    {"role": "assistant", "content": "ok"},
+]
+
+
+def _partial_compress_agent(compress_context_calls):
+    """Agent stub whose _compress_context records (history, focus_topic)."""
+    agent = types.SimpleNamespace(
+        _cached_system_prompt=None,
+        tools=None,
+        session_id="s1",
+        context_compressor=None,  # keep _get_usage on the simple path
+    )
+
+    def _fake_compress_context(history, sys, approx_tokens=0, focus_topic=None, **kw):
+        compress_context_calls.append((list(history), focus_topic))
+        return list(_PARTIAL_COMPRESSED_HEAD), {}
+
+    agent._compress_context = _fake_compress_context
+    return agent
+
+
+def test_compress_session_history_here_triggers_partial_compress():
+    """/compress here [N] must split history into head/tail and rejoin after
+    compression — the partial_compress module is used, not full compress.
+
+    Before this fix, /compress here 3 passed "here 3" as focus_topic to the
+    full compress, silently ignoring the boundary intent. The parsing lives
+    in _compress_session_history — the choke point every manual-compress
+    route (session.compress RPC, command.dispatch, slash-exec mirror)
+    converges on — so 'here [N]' works everywhere (#35533).
+    """
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+    session["history_version"] = 7
+
+    removed, _usage = server._compress_session_history(session, "here 1")
+
+    # agent._compress_context must have been called with the HEAD only
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None  # partial compress has no focus topic
+    # Session history must now contain the rejoined transcript: compressed
+    # head + the last exchange verbatim.
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+    assert session["history_version"] == 8
+    assert removed == len(_PARTIAL_FAKE_HISTORY) - len(session["history"])
+
+
+def test_compress_session_history_here_falls_back_on_degenerate_split():
+    """/compress here with keep_last >= exchanges produces an empty tail —
+    must fall back to full compression (whole history, no rejoined tail)."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+
+    # 4 messages = 2 exchanges; keep_last=5 leaves nothing to compress.
+    short_history = _PARTIAL_FAKE_HISTORY[:4]
+    session = _session(agent=agent)
+    session["history"] = list(short_history)
+
+    server._compress_session_history(session, "here 5")
+
+    # Degenerate split → full compress of the whole history, focus_topic=None
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == short_history
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD
+
+
+def test_compress_session_history_plain_focus_topic_not_parsed_as_partial():
+    """/compress my topic must still do full compress with focus_topic set."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+
+    server._compress_session_history(session, "my topic")
+
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY  # full history, no split
+    assert focus_passed == "my topic"
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD
+
+
+def test_session_compress_rpc_honors_here_argument(monkeypatch):
+    """Route 1/3: the session.compress RPC must honor 'here [N]'."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+    server._sessions["sid"] = session
+
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.compress",
+                "params": {"session_id": "sid", "focus_topic": "here 1"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "compressed"
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+
+
+def test_command_dispatch_compress_honors_here_argument(monkeypatch):
+    """Route 2/3: command.dispatch /compress must honor 'here [N]'."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+    server._sessions["sid"] = session
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_a, **_kw: False)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"session_id": "sid", "name": "compress", "arg": "here 1"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["type"] == "exec"
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+
+
+def test_mirror_slash_compress_honors_here_argument(monkeypatch):
+    """Route 3/3: the slash-exec mirror must honor 'here [N]'."""
+    compress_context_calls = []
+    agent = _partial_compress_agent(compress_context_calls)
+    session = _session(agent=agent)
+    session["history"] = list(_PARTIAL_FAKE_HISTORY)
+
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_kw: {"model": "x"})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress here 1")
+
+    assert "Compressed:" in warning
+    assert len(compress_context_calls) == 1
+    head_passed, focus_passed = compress_context_calls[0]
+    assert head_passed == _PARTIAL_FAKE_HISTORY[:-2]
+    assert focus_passed is None
+    assert session["history"] == _PARTIAL_COMPRESSED_HEAD + _PARTIAL_FAKE_HISTORY[-2:]
+
+
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # slash_worker subprocess or the global approval-notify registration.
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_agent_prewarm
 def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     """Regression guard: if session.close runs while session.create's
     _build thread is still constructing the agent, the build thread
@@ -5828,6 +8330,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
 
 
+@pytest.mark.real_agent_prewarm
 def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     """Regression guard: when session.close does NOT race, the build
     thread must install the worker + notify normally and leave them
@@ -5938,6 +8441,7 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     assert server._db_error == "locking protocol"
 
 
+@pytest.mark.real_agent_prewarm
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:
         def __init__(self, key, model, profile_home=None):
@@ -6292,6 +8796,132 @@ def test_model_options_hides_unconfigured_providers_by_default(monkeypatch):
     assert calls[-1]["include_unconfigured"] is True
 
 
+def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypatch):
+    from hermes_cli.inventory import ConfigContext
+
+    class _Agent:
+        provider = "custom"
+        model = "qwen3.6:35b-65k"
+        base_url = "http://127.0.0.1:11434/v1"
+
+    server._sessions["custom-session"] = _session(agent=_Agent())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "")
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        lambda: ConfigContext(
+            current_provider="custom:local-ollama",
+            current_model="qwen3.6:35b-65k",
+            current_base_url="http://127.0.0.1:11434/v1",
+            user_providers={},
+            custom_providers=[],
+        ),
+    )
+    canonical = Mock(return_value="custom:local-ollama")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.canonical_custom_identity",
+        canonical,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        lambda **_kwargs: [
+            {
+                "slug": "custom:local-ollama",
+                "name": "Local Ollama",
+                "is_current": True,
+                "is_user_defined": True,
+                "models": ["qwen3.6:35b-65k"],
+                "total_models": 1,
+            },
+            {
+                "slug": "anthropic",
+                "name": "Anthropic",
+                "is_current": False,
+                "is_user_defined": False,
+                "models": ["claude-sonnet-4.6"],
+                "total_models": 1,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda _slug: False,
+    )
+    monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
+
+    resp = server._methods["model.options"](
+        102,
+        {"session_id": "custom-session", "explicit_only": True},
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"]["provider"] == "custom:local-ollama"
+    assert [row["slug"] for row in resp["result"]["providers"]] == [
+        "custom:local-ollama"
+    ]
+    canonical.assert_called_once_with(
+        base_url="http://127.0.0.1:11434/v1",
+        config_provider="custom:local-ollama",
+    )
+
+
+def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch):
+    env_var = "TEST_PROVIDER_API_KEY"
+    agent = object()
+    picker_ctx = object()
+    provider = {
+        "slug": "test-provider",
+        "name": "Test Provider",
+        "models": ["test-model"],
+        "total_models": 1,
+    }
+    server._sessions["save-key-session"] = _session(agent=agent)
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "test-provider": types.SimpleNamespace(
+                name="Test Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    save_credential = Mock()
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        save_credential,
+    )
+    picker_context = Mock(return_value=picker_ctx)
+    monkeypatch.setattr(server, "_model_picker_context", picker_context)
+    build_payload = Mock(return_value={"providers": [provider]})
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        build_payload,
+    )
+    monkeypatch.setenv(env_var, "previous-value")
+    fake_key = "replacement-" + "value"
+
+    resp = server._methods["model.save_key"](
+        103,
+        {
+            "slug": "test-provider",
+            "api_key": fake_key,
+            "session_id": "save-key-session",
+        },
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"]["provider"] == {**provider, "authenticated": True}
+    save_credential.assert_called_once_with(env_var, fake_key)
+    picker_context.assert_called_once_with(agent)
+    build_payload.assert_called_once_with(
+        picker_ctx,
+        picker_hints=True,
+        max_models=50,
+    )
+
+
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------
@@ -6328,6 +8958,12 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     """maybe_auto_title is called after a successful (complete) prompt."""
 
     class _Agent:
+        model = "gpt-5.6-sol"
+        provider = "openai-codex"
+        base_url = "https://chatgpt.example.test/backend-api/codex"
+        api_key = object()
+        api_mode = "codex_responses"
+
         def run_conversation(
             self, prompt, conversation_history=None, stream_callback=None
         ):
@@ -6360,6 +8996,13 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     assert args[1] == "session-key"
     assert args[2] == "Tell me about Rome"
     assert args[3] == "Rome was founded in 753 BC."
+    assert mock_title.call_args.kwargs["main_runtime"] == {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.example.test/backend-api/codex",
+        "api_key": _Agent.api_key,
+        "api_mode": "codex_responses",
+    }
 
 
 def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
@@ -6717,6 +9360,46 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         server._sessions.pop("sid-live", None)
 
 
+def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
+    """A full client restart must recover an accepted next-turn prompt.
+
+    Busy prompts are intentionally not durable until they drain. Their only
+    authoritative copy is ``queued_prompt``, so the live projection must expose
+    that copy without leaking the transport object.
+    """
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    agent = types.SimpleNamespace(model="model-live")
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={
+            "assistant": "partial answer",
+            "streaming": True,
+            "user": "current prompt",
+        },
+    )
+    server._sessions["sid-live"] = session
+    try:
+        queued = server._handle_busy_submit(
+            "submit", "sid-live", session, "newest prompt", object()
+        )
+        assert queued["result"]["status"] == "queued"
+
+        activated = server.handle_request(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+
+        assert activated["result"]["queued"] == {"user": "newest prompt"}
+        assert "transport" not in activated["result"]["queued"]
+    finally:
+        server._sessions.pop("sid-live", None)
+
+
 def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
     server._sessions["sid-a"] = _session(
@@ -7013,7 +9696,9 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
+    assert resp["result"]["messages"] == [
+        "Chromium-family browser is already listening at http://127.0.0.1:9222"
+    ]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
@@ -7033,12 +9718,15 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
+    assert resp["result"]["messages"] == [
+        "Chromium-family browser is already listening at http://127.0.0.1:9222"
+    ]
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         server,
@@ -7056,6 +9744,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=ChromeDebugLaunch(),
             ),
+            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
             patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
@@ -7188,9 +9877,13 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         def __exit__(self, *_):
             return False
 
+    # IPv4 answers only from the 3rd probe onwards (browser still starting);
+    # the IPv6 loopback never answers.
     attempts = {"n": 0}
 
-    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if "[::1]" in url:
+            raise OSError("no IPv6 listener")
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise OSError("not ready")
@@ -7199,9 +9892,14 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    launched = ChromeDebugLaunch(launched=True)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+        with (
+            patch(
+                "hermes_cli.browser_connect.launch_chrome_debug",
+                return_value=launched,
+            ),
+            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -7214,6 +9912,94 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+
+
+def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
+    """Regression: an IDE debugger squatting 127.0.0.1:9222 pushes the debug
+    browser onto [::1]:9222. Connect must discover and adopt the IPv6
+    endpoint instead of timing out against the squatter."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if "[::1]" in url:
+            return _Resp()
+        raise OSError("IPv4 loopback held by a non-CDP squatter")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://[::1]:9222"
+    assert os.environ["BROWSER_CDP_URL"] == "http://[::1]:9222"
+
+
+def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch):
+    """When neither loopback speaks CDP but the port is held by another
+    application, connect must pick an alternate port for the launch and
+    say so — never fight the squatter for 9222."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if ":9223" in url and "127.0.0.1" in url:
+            return _Resp()  # relaunched browser comes up on the alternate port
+        raise OSError("9222 squatted / nothing else listening")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    launch_ports: list[int] = []
+
+    def _launch(port, _system):
+        launch_ports.append(port)
+        return ChromeDebugLaunch(launched=True)
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with (
+            patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
+            patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
+            patch("hermes_cli.browser_connect.find_free_debug_port", return_value=9223),
+        ):
+            resp = server.handle_request(
+                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+            )
+
+    assert launch_ports == [9223]
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9223"
+    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9223"
+    assert any("occupied by another application" in m for m in resp["result"]["messages"])
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
@@ -8050,6 +10836,27 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["messages"] == history
 
 
+def test_session_save_proxies_to_compute_host_history(monkeypatch):
+    """Isolated turns own history in the host; /save must not export the stale parent mirror."""
+    sid = "save-host-sid"
+    server._sessions[sid] = _session(agent=None, _compute_host_active=True)
+    calls = []
+
+    def send_control(control_sid, **kwargs):
+        calls.append((control_sid, kwargs))
+        return {"type": "control.ack", "result": {"file": "/tmp/host-save.json"}}
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert resp["result"] == {"file": "/tmp/host-save.json"}
+    assert calls == [(sid, {"route_name": "session.save", "wait": True})]
+
+
 def test_notification_event_dedup_key_preserves_distinct_watch_matches():
     """Watch-match identity includes match content, not just session/type."""
     base = {
@@ -8501,17 +11308,20 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
         server._sessions.pop("live-restart", None)
 
 
-def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
+def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
+    claimed = {"session_key": "k"}
+    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
     resp = server.handle_request(
         {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
     )
     assert resp["result"] == {"closed": True}
-    assert seen == [("s9", "tui_close")]
+    assert seen == ["s9", (claimed, "tui_close")]
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
@@ -8674,8 +11484,16 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         assert resp["result"]["info"]["model"] == "claude-sonnet-4.6"
         assert resp["result"]["info"]["provider"] == "anthropic"
 
+        # Explicit false is not the same as omission: it must suppress a Fast
+        # profile default for this session's first request.
+        normal = server._methods["session.create"](
+            "r2", {"cols": 80, "fast": False}
+        )
+        normal_sess = server._sessions[normal["result"]["session_id"]]
+        assert normal_sess["create_service_tier_override"] == ""
+
         # No knobs → no overrides; the session builds from the profile default.
-        plain = server._methods["session.create"]("r2", {"cols": 80})
+        plain = server._methods["session.create"]("r3", {"cols": 80})
         plain_sess = server._sessions[plain["result"]["session_id"]]
         assert plain_sess["model_override"] is None
         assert plain_sess["create_reasoning_override"] is None
@@ -8684,7 +11502,10 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         server._sessions.clear()
 
 
-def test_start_agent_build_passes_session_model_override(monkeypatch):
+@pytest.mark.parametrize("service_tier_override", ["priority", ""])
+def test_start_agent_build_passes_session_model_override(
+    monkeypatch, service_tier_override
+):
     """A model staged on the session (e.g. by session.create from the desktop
     composer) must reach _make_agent so the first build runs on it directly —
     no global config, no build-then-switch.
@@ -8724,7 +11545,7 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         "profile_home": None,
         "model_override": override,
         "create_reasoning_override": reasoning,
-        "create_service_tier_override": "priority",
+        "create_service_tier_override": service_tier_override,
     }
     server._sessions[sid] = session
     try:
@@ -8732,12 +11553,292 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent_ready"].wait(timeout=3), "agent build did not finish"
         assert captured.get("model_override") == override
         assert captured.get("reasoning_config_override") == reasoning
-        assert captured.get("service_tier_override") == "priority"
+        assert captured.get("service_tier_override") == service_tier_override
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
 
 
+# ── billing/subscription state + error serialization ─────────────────
+
+
+def test_reset_session_agent_clears_session_overrides(monkeypatch):
+    """/new is a full conversation boundary: session-scoped /model, /reasoning,
+    and /fast overrides do NOT carry into the fresh agent — it re-derives
+    everything from config.yaml (#48055, #23131)."""
+    captured = {}
+    new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
+    session = _session(
+        agent=types.SimpleNamespace(
+            model="openai/gpt-5.4",
+            reasoning_config={"enabled": True, "effort": "high"},
+            service_tier="",
+        ),
+        model_override={"model": "openai/gpt-5.4"},
+        create_reasoning_override={"enabled": True, "effort": "high"},
+        create_service_tier_override="",
+    )
+
+    def make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return new_agent
+
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: True)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+
+    server._reset_session_agent("sid", session)
+
+    # No session overrides forwarded — fresh agent builds from config.
+    assert "model_override" not in captured
+    assert "reasoning_config_override" not in captured
+    assert "service_tier_override" not in captured
+    # And the session pins are gone so a later rebuild can't resurrect them.
+    assert "model_override" not in session
+    assert "create_reasoning_override" not in session
+    assert "create_service_tier_override" not in session
+    assert session["agent"] is new_agent
+
+
+@pytest.mark.parametrize(
+    "card,expected",
+    [
+        ("canonical", {"kind": "canonical"}),
+        (
+            "distinct",
+            {
+                "kind": "distinct",
+                "payment_method_id": "pm_auto",
+                "brand": None,
+                "last4": None,
+            },
+        ),
+        ("none", {"kind": "none"}),
+    ],
+)
+def test_billing_state_serializes_auto_reload_card_union(monkeypatch, card, expected):
+    from agent.billing_view import AutoReload, AutoReloadCard, BillingState
+
+    monkeypatch.setattr(server, "_usage_payload", lambda state: {"available": False})
+    auto_reload_card = AutoReloadCard(
+        kind=card,
+        payment_method_id="pm_auto" if card == "distinct" else None,
+    )
+    state = BillingState(
+        logged_in=True,
+        auto_reload=AutoReload(enabled=True, card=auto_reload_card),
+    )
+
+    result = server._serialize_billing_state(state)
+
+    assert result["auto_reload"]["card"] == expected
+
+
+def test_billing_state_serializes_server_plan_capability(monkeypatch):
+    from agent.billing_view import BillingState
+
+    monkeypatch.setattr(server, "_usage_payload", lambda state: {"available": False})
+    state = BillingState(
+        logged_in=True,
+        role="MEMBER",
+        can_change_plan_raw=True,
+    )
+
+    result = server._serialize_billing_state(state)
+
+    assert result["is_admin"] is False
+    assert result["can_change_plan"] is True
+
+
+class _BillingHeaders:
+    def __init__(self, values):
+        self._values = values
+
+    def get(self, key):
+        return self._values.get(key)
+
+
+@pytest.mark.parametrize(
+    "status,error,retry_after",
+    [
+        (503, "stripe_unavailable", 75),
+        (429, "upgrade_cap_exceeded", None),
+        (429, "rate_limited", None),
+    ],
+)
+def test_billing_error_serialization_preserves_server_code(
+    status, error, retry_after
+):
+    import hermes_cli.nous_billing as nb
+
+    headers = _BillingHeaders({"Retry-After": str(retry_after)}) if retry_after else None
+    with pytest.raises(nb.BillingTransient) as ei:
+        nb._raise_for_error(status, {"error": error}, headers)
+
+    result = server._serialize_billing_error(ei.value)
+
+    assert result["error"] == error
+    assert ei.value.error == error
+    assert result["retry_after"] == retry_after
+
+
+def test_billing_rate_limit_without_error_defaults_wire_code():
+    import hermes_cli.nous_billing as nb
+
+    exc = nb.BillingRateLimited("slow down", status=429, retry_after=10)
+
+    result = server._serialize_billing_error(exc)
+
+    assert result["error"] == "rate_limited"
+
+
+# ── subscription change RPCs (V3): preview + pending-change + upgrade ──
+
+
+def _sub_rpc(method, params):
+    # These RPCs are in _LONG_HANDLERS (pool-routed → dispatch returns None and the
+    # worker writes via the transport), so drive the inline handler directly.
+    return server.handle_request({"id": "1", "method": method, "params": params})["result"]
+
+
+def test_subscription_preview_serializes_quote(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    monkeypatch.setattr(
+        nb,
+        "post_subscription_preview",
+        lambda subscription_type_id: {
+            "effect": "charge_now",
+            "reason": None,
+            "currentTierId": "plus",
+            "currentTierName": "Plus",
+            "targetTierId": "ultra",
+            "targetTierName": "Ultra",
+            "monthlyCreditsDelta": "6000",
+            "amountDueNowCents": 1234,
+            "effectiveAt": None,
+        },
+    )
+    res = _sub_rpc("subscription.preview", {"subscription_type_id": "ultra"})
+    assert res["ok"] is True
+    assert res["effect"] == "charge_now"
+    assert res["amount_due_now_cents"] == 1234
+    assert res["target_tier_name"] == "Ultra"
+    assert res["monthly_credits_delta"] == "6000"
+
+
+def test_subscription_preview_requires_tier():
+    res = _sub_rpc("subscription.preview", {})
+    assert res["ok"] is False
+    assert res["error"] == "invalid_request"
+
+
+def test_subscription_preview_scope_error_maps_to_step_up(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    def _raise(subscription_type_id):
+        raise nb.BillingScopeRequired("billing:manage required")
+
+    monkeypatch.setattr(nb, "post_subscription_preview", _raise)
+    res = _sub_rpc("subscription.preview", {"subscription_type_id": "ultra"})
+    assert res["ok"] is False
+    assert res["error"] == "insufficient_scope"
+
+
+def test_subscription_change_cancellation(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    seen = {}
+
+    def _put(*, subscription_type_id=None, cancel=False):
+        seen["tier"] = subscription_type_id
+        seen["cancel"] = cancel
+        return {"rail": "stripe", "cancelAtPeriodEnd": True, "message": "Scheduled to cancel."}
+
+    monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
+    res = _sub_rpc("subscription.change", {"cancel": True})
+    assert res["ok"] is True
+    assert seen == {"tier": None, "cancel": True}
+    assert res["message"] == "Scheduled to cancel."
+
+
+def test_subscription_change_tier_downgrade(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    seen = {}
+
+    def _put(*, subscription_type_id=None, cancel=False):
+        seen["tier"] = subscription_type_id
+        seen["cancel"] = cancel
+        return {"rail": "stripe", "changeType": "downgrade", "targetTierName": "Plus", "message": "Scheduled."}
+
+    monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
+    res = _sub_rpc("subscription.change", {"subscription_type_id": "plus"})
+    assert res["ok"] is True
+    assert seen == {"tier": "plus", "cancel": False}
+
+
+def test_subscription_change_requires_tier_or_cancel():
+    res = _sub_rpc("subscription.change", {})
+    assert res["ok"] is False
+    assert res["error"] == "invalid_request"
+
+
+def test_subscription_resume(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    monkeypatch.setattr(
+        nb,
+        "delete_subscription_pending_change",
+        lambda: {"rail": "stripe", "cancelAtPeriodEnd": False, "message": "Resumed."},
+    )
+    res = _sub_rpc("subscription.resume", {})
+    assert res["ok"] is True
+    assert res["message"] == "Resumed."
+
+
+def test_subscription_upgrade_echoes_status_and_idempotency(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    seen = {}
+
+    def _upgrade(*, subscription_type_id, idempotency_key):
+        seen["key"] = idempotency_key
+        return {"status": "upgraded", "targetTierId": "ultra", "targetTierName": "Ultra"}
+
+    monkeypatch.setattr(nb, "post_subscription_upgrade", _upgrade)
+    res = _sub_rpc("subscription.upgrade", {"subscription_type_id": "ultra", "idempotency_key": "k-1"})
+    assert res["ok"] is True
+    assert res["status"] == "upgraded"
+    assert res["target_tier_name"] == "Ultra"
+    assert res["idempotency_key"] == "k-1"
+    assert seen["key"] == "k-1"
+
+
+def test_subscription_upgrade_requires_action_surfaces_recovery(monkeypatch):
+    import hermes_cli.nous_billing as nb
+
+    monkeypatch.setattr(
+        nb,
+        "post_subscription_upgrade",
+        lambda *, subscription_type_id, idempotency_key: {
+            "status": "requires_action",
+            "reason": "authentication_required",
+            "recoveryUrl": "https://portal.example/subscription?org_id=o",
+        },
+    )
+    res = _sub_rpc("subscription.upgrade", {"subscription_type_id": "ultra"})
+    # The RPC succeeds; the CHARGE needs 3DS → status + recovery_url for the portal.
+    assert res["ok"] is True
+    assert res["status"] == "requires_action"
+    assert res["recovery_url"].startswith("https://portal.example")
+    assert res["idempotency_key"]  # minted when the caller omits one
 # ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
 # Mirrors the classic CLI status bar: _get_usage embeds a live count of
 # background/async subagents from tools.async_delegation.active_count() so the
@@ -8865,8 +11966,12 @@ class TestResolveRuntimeWithFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kw: expected,
         )
-        result = server._resolve_runtime_with_fallback({"requested": "openai"})
-        assert result == expected
+        resolution = server._resolve_runtime_with_fallback(
+            {"requested": "openai"}
+        )
+        assert resolution.runtime == expected
+        assert resolution.selected_model is None
+        assert resolution.used_fallback is False
 
     def test_auth_error_tries_fallback_chain(self, monkeypatch):
         """On AuthError from primary, walk fallback_providers chain."""
@@ -8888,10 +11993,83 @@ class TestResolveRuntimeWithFallback:
             "_load_fallback_model",
             lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
         )
-        result = server._resolve_runtime_with_fallback(
+        resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert result == fallback_runtime
+        assert resolution.runtime == fallback_runtime
+        assert resolution.selected_model == "deepseek-v4-pro"
+        assert resolution.used_fallback is True
+
+    def test_auth_error_skips_provider_only_fallback(self, monkeypatch):
+        """Auth fallback requires one complete provider/model pair."""
+        from hermes_cli.auth import AuthError
+
+        requested = []
+        fallback_runtime = {"provider": "openrouter", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                {"provider": "anthropic"},
+                {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+            ],
+        )
+
+        resolution = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"}
+        )
+
+        assert requested == ["openai-codex", "openrouter"]
+        assert resolution.runtime == fallback_runtime
+        assert resolution.selected_model == "z-ai/glm-5.2"
+        assert resolution.used_fallback is True
+
+    def test_fallback_entry_key_env_resolves_api_key(self, monkeypatch):
+        """A fallback entry naming its key via key_env passes the resolved
+        env value as explicit_api_key (#43861, @VrtxOmega)."""
+        from hermes_cli.auth import AuthError
+
+        monkeypatch.setenv("FB_TEST_KEY", "env-resolved-key")
+        captured = {}
+        fallback_runtime = {"provider": "openrouter", "api_key": "x"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            captured.update(kwargs)
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                {
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.2",
+                    "key_env": "FB_TEST_KEY",
+                }
+            ],
+        )
+        resolution = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"}
+        )
+        assert resolution.used_fallback is True
+        assert captured.get("explicit_api_key") == "env-resolved-key"
 
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
@@ -8939,10 +12117,12 @@ class TestResolveRuntimeWithFallback:
                 {"provider": "anthropic", "model": "claude-sonnet-4-6"},
             ],
         )
-        result = server._resolve_runtime_with_fallback(
+        resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert result == fallback_runtime
+        assert resolution.runtime == fallback_runtime
+        assert resolution.selected_model == "claude-sonnet-4-6"
+        assert resolution.used_fallback is True
 
     def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
         """Integration: _make_agent falls back to configured fallback
@@ -8952,10 +12132,14 @@ class TestResolveRuntimeWithFallback:
         from hermes_cli.auth import AuthError
 
         captured = {}
-        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+        fallback_runtime = {
+            "provider": "deepseek",
+            "api_key": "fb-tok",
+            "base_url": "https://fallback.invalid/v1",
+        }
 
         def fake_resolve(**kwargs):
-            if kwargs.get("requested") == "openai-codex":
+            if kwargs.get("requested") in (None, "openai-codex"):
                 raise AuthError("No Codex credentials stored")
             return fallback_runtime
 
@@ -8984,10 +12168,21 @@ class TestResolveRuntimeWithFallback:
         monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
         monkeypatch.setattr(server, "_get_db", lambda: None)
 
-        agent = server._make_agent("sid", "session-key")
+        agent = server._make_agent(
+            "sid",
+            "session-key",
+            model_override={
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "stale-codex-token",
+            },
+        )
 
-        assert agent.model == "gpt-5.5"
+        assert agent.model == "deepseek-v4-pro"
         assert captured["provider"] == "deepseek"
+        assert captured["base_url"] == "https://fallback.invalid/v1"
+        assert captured["api_key"] == "fb-tok"
 
 
 def test_get_usage_does_not_substitute_cumulative_total_for_context_used():
@@ -9046,3 +12241,200 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# ---------------------------------------------------------------------------
+# Streaming TTS — per-turn pipeline + barge-in
+# ---------------------------------------------------------------------------
+
+def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
+    """Install lightweight tools.tts_tool / tools.voice_mode fakes."""
+    started = {}
+
+    def fake_stream(text_queue, stop, done, **_kw):
+        started["queue"] = text_queue
+        stop.wait(5)
+        done.set()
+
+    def default_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        return None if capture else False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.tts_tool",
+        types.SimpleNamespace(
+            check_tts_requirements=lambda: requirements,
+            stream_tts_to_speaker=fake_stream,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
+            listen_for_speech=listen or default_listen,
+            transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),
+        ),
+    )
+    return started
+
+
+def test_tts_stream_begin_requires_voice_tts(monkeypatch):
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+    assert server._tts_stream_begin() is None
+
+
+def test_tts_stream_begin_requires_working_provider(monkeypatch):
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    _fake_tts_modules(monkeypatch, requirements=False)
+    assert server._tts_stream_begin() is None
+
+
+def test_tts_stream_begin_and_stop_lifecycle(monkeypatch):
+    """begin() spawns the consumer; stop() cuts it and clears the slot."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")  # no barge-in monitor (no mic)
+    playback_stops: list = []
+    started = _fake_tts_modules(monkeypatch, playback_stops=playback_stops)
+
+    text_queue = server._tts_stream_begin()
+    assert text_queue is not None
+    assert started["queue"] is text_queue
+
+    with server._tts_stream_lock:
+        state = server._tts_stream_state
+    assert state is not None and not state["stop"].is_set()
+
+    server._tts_stream_stop()
+    assert state["stop"].is_set()
+    assert playback_stops == [True]
+    with server._tts_stream_lock:
+        assert server._tts_stream_state is None
+
+
+def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
+    """A new turn's pipeline stops the previous turn's speech (one speaker)."""
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        first = server._tts_stream_state
+    server._tts_stream_begin()
+    assert first is not None and first["stop"].is_set()
+    server._tts_stream_stop()
+
+
+def test_tts_stream_stop_latches_interruption_for_next_turn(monkeypatch):
+    """Cutting live speech (interrupt / typing barge) marks the latch the next
+    turn's model note consumes; a mode change (user_barge=False) does not."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    server._tts_stream_stop()  # default: user barge
+    assert ts.take_speech_interrupted() is True
+
+    server._tts_stream_begin()
+    server._tts_stream_stop(user_barge=False)  # /voice off
+    assert ts.take_speech_interrupted() is False
+
+
+def test_tts_stream_stop_after_natural_finish_does_not_latch(monkeypatch):
+    """Speech that already finished (done set) isn't an interruption."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    _fake_tts_modules(monkeypatch)
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        server._tts_stream_state["done"].set()
+    server._tts_stream_stop()
+    assert ts.take_speech_interrupted() is False
+
+
+def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, tmp_path):
+    """User speech during playback cuts TTS at the moment of detection
+    (voice.interrupted), then the captured interruption is transcribed and
+    emitted as voice.transcript so the TUI submits it — complete from its
+    first syllable, no re-record round trip. The cut also latches the
+    speech-interrupted note for the next turn."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "barge.wav"
+    wav.write_bytes(b"RIFF")
+
+    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        assert capture is True
+        on_trigger()  # playback cut happens at detection, not after endpointing
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {"success": True, "transcript": "stop, actually—"},
+    )
+
+    server._tts_stream_begin()
+    with server._tts_stream_lock:
+        state = server._tts_stream_state
+    assert state is not None
+    assert state["stop"].wait(2.0)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and wav.exists():
+        time.sleep(0.01)  # unlink (finally) runs after the transcript emit
+    assert ("voice.interrupted", None) in events
+    assert ("voice.transcript", {"text": "stop, actually—"}) in events
+    assert not wav.exists()  # capture temp file cleaned up
+    assert ts.take_speech_interrupted() is True  # VAD cut latches the model note
+    server._tts_stream_stop()
+
+
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    """The TUI/desktop clarify bridge honors the canonical clarify timeout
+    (via _clarify_timeout_seconds) instead of the hardcoded _block default."""
+    captured = {}
+
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(event=event, sid=sid, payload=payload, timeout=timeout)
+        return "answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
+
+    assert result == "answer"
+    assert captured["event"] == "clarify.request"
+    assert captured["timeout"] == 42
+    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(0, None), (-1, None), (42, 42)],
+)
+def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
+    """A ``<= 0`` clarify timeout means unlimited and reaches _block as None
+    (ev.wait(None) waits forever) rather than an immediate ev.wait(0) skip."""
+    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
+
+    assert server._clarify_timeout_seconds() == expected

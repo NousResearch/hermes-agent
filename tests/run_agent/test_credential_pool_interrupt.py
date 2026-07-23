@@ -25,7 +25,7 @@ def _make_entry(idx, **overrides):
 
 def _make_pool(entries):
     pool = MagicMock()
-    pool.entries = entries
+    pool.entries = MagicMock(return_value=entries)
     pool.current.return_value = entries[0]
     # Must be set explicitly — MagicMock.provider returns a truthy
     # child mock, which would trigger the provider-mismatch guard.

@@ -578,6 +578,7 @@ class WeComAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -1860,7 +1861,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
-        install_hint="pip install 'hermes-agent[wecom]'",
+        install_hint="Run `hermes setup` to install WeCom support.",
         setup_fn=interactive_setup,
         allowed_users_env="WECOM_ALLOWED_USERS",
         allow_all_env="WECOM_ALLOW_ALL_USERS",
@@ -1880,7 +1881,7 @@ def register(ctx) -> None:
         is_connected=_callback_is_connected,
         validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
-        install_hint="pip install 'hermes-agent[wecom]'",
+        install_hint="Run `hermes setup` to install WeCom support.",
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS",
         allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS",
         emoji="💼",

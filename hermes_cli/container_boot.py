@@ -125,6 +125,16 @@ def reconcile_profile_gateways(
     """
     actions: list[ReconcileAction] = []
 
+    # A multiplexing root/default gateway owns inbound platform connections
+    # for every profile. Named slots must still be registered (so explicit
+    # lifecycle management remains available), but booting them from their
+    # persisted run intent would create additional multiplex owners.
+    from utils import is_truthy_value
+
+    multiplex_profiles = is_truthy_value(
+        os.environ.get("GATEWAY_MULTIPLEX_PROFILES"),
+    )
+
     # Default profile — always register, even if nothing has ever
     # populated the root profile dir. The slot exists so
     # ``hermes gateway start`` (no ``-p``) has somewhere to land;
@@ -173,7 +183,9 @@ def reconcile_profile_gateways(
                 continue
 
             prior_state = _read_desired_state(entry)
-            should_start = prior_state in _AUTOSTART_STATES
+            should_start = (
+                not multiplex_profiles and prior_state in _AUTOSTART_STATES
+            )
 
             if not dry_run:
                 _cleanup_stale_runtime_files(entry)

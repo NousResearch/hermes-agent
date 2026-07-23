@@ -51,7 +51,10 @@ class TestGetToolset:
 
 
 class TestResolveToolset:
-    def test_leaf_toolset(self):
+    def test_leaf_toolset(self, monkeypatch):
+        # Pin an empty registry: builtin tools (e.g. http_request) register
+        # into 'web' at import time, and this test asserts the static leaf.
+        monkeypatch.setattr("tools.registry.registry", ToolRegistry())
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
@@ -148,7 +151,8 @@ class TestValidateToolset:
 
 
 class TestGetToolsetInfo:
-    def test_leaf(self):
+    def test_leaf(self, monkeypatch):
+        monkeypatch.setattr("tools.registry.registry", ToolRegistry())
         info = get_toolset_info("web")
         assert info["name"] == "web"
         assert info["is_composite"] is False

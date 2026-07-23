@@ -328,6 +328,14 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
 
+    def test_slack_workspace_chatter_defaults(self):
+        """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
+        assert resolve_display_setting({}, "slack", "long_running_notifications") is False
+        assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
+
     def test_telegram_mobile_chatter_can_opt_in(self):
         """Per-platform config can re-enable Telegram busy-ack detail
         and re-disable the kept-on defaults."""

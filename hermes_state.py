@@ -1068,7 +1068,9 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
-    api_content TEXT
+    api_content TEXT,
+    display_kind TEXT,
+    display_metadata TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -5644,6 +5646,8 @@ class SessionDB:
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
+        display_kind: Optional[str] = None,
+        display_metadata: Optional[Dict[str, Any]] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -5665,6 +5669,9 @@ class SessionDB:
         from every outgoing payload anyway, so the scrubbed form IS the
         wire bytes).
         """
+        # Display metadata is presentation-only and never changes the model
+        # context role/content replayed to providers.
+        display_metadata_json = json.dumps(display_metadata) if display_metadata else None
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -5711,8 +5718,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -5733,6 +5740,8 @@ class SessionDB:
                     1 if observed else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
+                    display_metadata_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -5752,6 +5761,40 @@ class SessionDB:
             return msg_id
 
         return self._execute_write(_do)
+
+    def set_latest_matching_message_display_kind(
+        self, session_id: str, *, role: str, content: str, display_kind: str,
+        display_metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Stamp presentation metadata on this turn's freshly persisted row.
+
+        The model still receives ``role`` and ``content`` unchanged. Gateway and
+        CLI synthetic inputs call this immediately after their serial turn has
+        flushed, preserving producer provenance without classifying by content
+        during transcript rendering.
+        """
+        if not session_id or not content or not display_kind:
+            return False
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = ? "
+                "AND content = ? AND active = 1 ORDER BY id DESC LIMIT 1",
+                (session_id, role, self._encode_content(content)),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
+                (
+                    _scrub_surrogates(display_kind),
+                    json.dumps(display_metadata) if display_metadata else None,
+                    row[0],
+                ),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
@@ -5816,8 +5859,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -5838,6 +5881,8 @@ class SessionDB:
                     1 if msg.get("observed") else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
+                    json.dumps(msg["display_metadata"]) if msg.get("display_metadata") else None,
                 ),
             )
             inserted += 1
@@ -6367,7 +6412,7 @@ class SessionDB:
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-                "api_content "
+                "api_content, display_kind, display_metadata "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -6395,7 +6440,7 @@ class SessionDB:
         "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-        "api_content"
+        "api_content, display_kind, display_metadata"
     )
 
     def _rows_to_conversation(
@@ -6427,6 +6472,13 @@ class SessionDB:
             # re-introduce the divergence it exists to remove.
             if row["api_content"]:
                 msg["api_content"] = row["api_content"]
+            if row["display_kind"]:
+                msg["display_kind"] = row["display_kind"]
+            if row["display_metadata"]:
+                try:
+                    msg["display_metadata"] = json.loads(row["display_metadata"])
+                except (TypeError, json.JSONDecodeError):
+                    logger.warning("Ignoring invalid display metadata on message row")
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

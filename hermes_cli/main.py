@@ -4489,7 +4489,10 @@ def cmd_slack(args):
     if sub == "manifest":
         from hermes_cli.slack_cli import slack_manifest_command
 
-        return slack_manifest_command(args)
+        status = slack_manifest_command(args)
+        if status:
+            raise SystemExit(status)
+        return status
 
     print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
     return 1
@@ -10458,7 +10461,7 @@ def _cold_start_windows_gateway_after_update() -> None:
     began, but an autostart entry (Scheduled Task / Startup-folder login item)
     is installed, signalling the user wants a gateway. Unlike the relaunch
     paths — which watch an old PID and respawn once it exits — this is a direct
-    fresh spawn via the same windowless ``pythonw`` + breakaway path that
+    fresh spawn via the same hidden-console + breakaway path that
     ``hermes gateway start`` uses (``gateway_windows._spawn_detached``).
 
     Best-effort and idempotent: re-checks that nothing is running first so a

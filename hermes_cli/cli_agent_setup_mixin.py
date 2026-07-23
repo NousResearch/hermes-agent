@@ -503,13 +503,21 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
-        restored = self._session_db.get_messages_as_conversation(
-            self.session_id, repair_alternation=True
-        )
+        model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
+        restored = model_history
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
-            msg_count = len([m for m in restored if m.get("role") == "user"])
+            self._resume_display_history = [
+                m for m in display_history if m.get("role") != "session_meta"
+            ]
+            msg_count = len(
+                [
+                    m
+                    for m in self._resume_display_history
+                    if m.get("role") == "user" and not m.get("display_kind")
+                ]
+            )
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
@@ -552,7 +560,8 @@ class CLIAgentSetupMixin:
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
-        if not self.conversation_history:
+        display_history = getattr(self, "_resume_display_history", self.conversation_history)
+        if not display_history:
             return
 
         # Check config: resume_display setting
@@ -571,10 +580,20 @@ class CLIAgentSetupMixin:
         entries = []  # list of (role, display_text)
         _last_asst_idx = None       # index of last assistant entry
         _last_asst_full = None      # un-truncated display text for last assistant
-        for msg in self.conversation_history:
+        for msg in display_history:
             role = msg.get("role", "")
+            display_kind = msg.get("display_kind")
             content = msg.get("content")
             tool_calls = msg.get("tool_calls") or []
+
+            if display_kind == "hidden":
+                continue
+            if display_kind == "model_switch":
+                entries.append(("event", "model changed"))
+                continue
+            if display_kind == "async_delegation_complete":
+                entries.append(("event", "background delegation completed"))
+                continue
 
             if role == "system":
                 continue
@@ -682,7 +701,9 @@ class CLIAgentSetupMixin:
             )
 
         for i, (role, text) in enumerate(entries):
-            if role == "user":
+            if role == "event":
+                lines.append(f"  ◈ {text}\n", style="dim italic")
+            elif role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()

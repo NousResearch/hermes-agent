@@ -231,6 +231,293 @@ def test_user_provider_live_model_probe_uses_extra_headers(monkeypatch):
     assert user_prov["models"] == ["live-model"]
 
 
+def test_switch_model_validation_uses_user_provider_extra_headers(monkeypatch):
+    """Validation must preserve user-provider headers alongside bearer auth."""
+    captured = {}
+    user_providers = {
+        "tenant-proxy": {
+            "name": "Tenant proxy",
+            "api": "https://proxy.example.com/v1",
+            "api_key": "sk-proxy",
+            "models": {"tenant-model": {}, "tenant-model-2": {}},
+            "extra_headers": {"X-Tenant": "alpha"},
+        }
+    }
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"data":[{"id":"tenant-model"},{"id":"tenant-model-2"}]}'
+
+    def fake_urlopen(request, *, timeout):
+        captured.setdefault("requests", []).append(request)
+        captured.setdefault("timeouts", []).append(timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr("hermes_cli.models._urlopen_model_catalog_request", fake_urlopen)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.load_config",
+        lambda: {"providers": user_providers},
+    )
+    from hermes_cli import runtime_provider as runtime_provider_mod
+
+    runtime_calls = []
+    real_resolve_runtime_provider = runtime_provider_mod.resolve_runtime_provider
+
+    def tracked_resolve_runtime_provider(**kwargs):
+        runtime_calls.append(kwargs)
+        return real_resolve_runtime_provider(**kwargs)
+
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        tracked_resolve_runtime_provider,
+    )
+
+    result = switch_model(
+        raw_input="tenant-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="openrouter-key",
+        explicit_provider="tenant-proxy",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert runtime_calls == [
+        {
+            "requested": "tenant-proxy",
+            "explicit_api_key": "sk-proxy",
+            "explicit_base_url": "https://proxy.example.com/v1",
+            "target_model": "tenant-model",
+        }
+    ]
+    assert len(captured["requests"]) == 1
+    first_request = captured["requests"][-1]
+    assert first_request.full_url == "https://proxy.example.com/v1/models"
+    assert first_request.get_header("X-tenant") == "alpha"
+    assert first_request.get_header("Authorization") == "Bearer sk-proxy"
+
+    followup = switch_model(
+        raw_input="tenant-model-2",
+        current_provider=result.target_provider,
+        current_model=result.new_model,
+        current_base_url=result.base_url,
+        current_api_key=result.api_key,
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert followup.success is True
+    assert runtime_calls[-1] == {
+        "requested": "tenant-proxy",
+        "target_model": "tenant-model-2",
+    }
+    assert len(captured["requests"]) == 2
+    followup_request = captured["requests"][-1]
+    assert followup_request.full_url == "https://proxy.example.com/v1/models"
+    assert followup_request.get_header("X-tenant") == "alpha"
+    assert followup_request.get_header("Authorization") == "Bearer sk-proxy"
+
+
+def test_validation_headers_follow_runtime_not_same_named_config(monkeypatch):
+    """An unselected config entry must not inject headers into a runtime."""
+    captured = {}
+
+    def fake_validate(*args, **kwargs):
+        captured.update(kwargs)
+        return {"accepted": True, "persist": True, "recognized": True, "message": None}
+
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", fake_validate)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    same_named_config = {
+        "openrouter": {
+            "api": "https://proxy.example.com/v1",
+            "extra_headers": {"X-Tenant": "must-not-leak"},
+        }
+    }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.load_config",
+        lambda: {"providers": same_named_config},
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    result = switch_model(
+        raw_input="unlisted-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="openrouter-key",
+        user_providers=same_named_config,
+    )
+
+    assert result.success is True
+    assert captured["request_headers"] is None
+
+
+def test_direct_alias_drops_headers_when_endpoint_changes(monkeypatch):
+    """Endpoint-specific headers must not follow an alias to another host."""
+    from hermes_cli.model_switch import DirectAlias
+    import hermes_cli.model_switch as model_switch_mod
+
+    captured = {}
+
+    def fake_validate(*args, **kwargs):
+        captured.update(kwargs)
+        return {"accepted": True, "persist": True, "recognized": True, "message": None}
+
+    monkeypatch.setattr(
+        model_switch_mod,
+        "DIRECT_ALIASES",
+        {
+            "cross-endpoint": DirectAlias(
+                "aliased-model",
+                "custom",
+                "https://proxy.example.com/TenantB/v1",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        model_switch_mod,
+        "resolve_alias",
+        lambda *a, **k: ("custom", "aliased-model", "cross-endpoint"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda *a, **k: {
+            "api_key": "proxy-key",
+            "base_url": "https://proxy.example.com/tenantb/v1",
+            "api_mode": "openai_chat",
+            "extra_headers": {"X-Tenant": "alpha"},
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", fake_validate)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="cross-endpoint",
+        current_provider="tenant-proxy",
+        current_model="old-model",
+        current_base_url="https://proxy.example.com/tenantb/v1",
+        current_api_key="proxy-key",
+    )
+
+    assert result.success is True
+    assert captured["base_url"] == "https://proxy.example.com/TenantB/v1"
+    assert captured["api_key"] == "no-key-required"
+    assert captured["request_headers"] is None
+
+
+def test_direct_alias_keeps_auth_for_equivalent_endpoint(monkeypatch):
+    """Equivalent aliases preserve tenant headers and Anthropic auth mode."""
+    from hermes_cli.model_switch import DirectAlias
+    import hermes_cli.model_switch as model_switch_mod
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"data":[{"id":"aliased-model"}]}'
+
+    def fake_urlopen(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        model_switch_mod,
+        "DIRECT_ALIASES",
+        {
+            "equivalent": DirectAlias(
+                "aliased-model",
+                "tenant-proxy",
+                "https://PROXY.example.com:443/v1/",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        model_switch_mod,
+        "resolve_alias",
+        lambda *a, **k: ("tenant-proxy", "aliased-model", "equivalent"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda *a, **k: {
+            "api_key": "proxy-key",
+            "base_url": "https://proxy.example.com/v1",
+            "api_mode": "anthropic_messages",
+            "extra_headers": {"X-Tenant": "alpha"},
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models._urlopen_model_catalog_request", fake_urlopen)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="equivalent",
+        current_provider="tenant-proxy",
+        current_model="old-model",
+        current_base_url="https://proxy.example.com/v1",
+        current_api_key="proxy-key",
+    )
+
+    assert result.success is True
+    assert captured["request"].get_header("X-tenant") == "alpha"
+    assert captured["request"].get_header("X-api-key") == "proxy-key"
+    assert captured["request"].get_header("Anthropic-version") == "2023-06-01"
+    assert captured["request"].get_header("Authorization") is None
+
+
+def test_validation_endpoint_comparison_rejects_malformed_ipv6():
+    from hermes_cli.model_switch import _same_validation_endpoint
+
+    assert not _same_validation_endpoint(
+        "https://[::1/v1",
+        "https://[::1]/v1",
+    )
+
+
+def test_validation_endpoint_comparison_preserves_ipv6_zone_case():
+    from hermes_cli.model_switch import _same_validation_endpoint
+
+    assert not _same_validation_endpoint(
+        "https://[fe80::1%25ETH0]/v1",
+        "https://[fe80::1%25eth0]/v1",
+    )
+
+
+def test_validation_endpoint_comparison_canonicalizes_ipv6_address():
+    from hermes_cli.model_switch import _same_validation_endpoint
+
+    assert _same_validation_endpoint(
+        "https://[fe80::1%25ETH0]/v1",
+        "https://[fe80:0:0:0:0:0:0:1%25ETH0]:443/v1/",
+    )
+    assert _same_validation_endpoint(
+        "https://[2001:db8::1]/v1",
+        "https://[2001:0db8:0:0:0:0:0:1]:443/v1/",
+    )
+
+
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
     """Dict-format ``models:`` without a ``default_model`` must still expose
     every dict key, not collapse to an empty list."""

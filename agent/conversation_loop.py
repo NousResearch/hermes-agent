@@ -989,6 +989,13 @@ def run_conversation(
             # outgoing copy.
             _api_content = api_msg.pop("api_content", None)
 
+            # Display-only timeline metadata. Never a provider field — strip
+            # from every outgoing copy so strict OpenAI-compatible backends
+            # don't reject the request after a model switch or resumed typed
+            # event row enters the live history.
+            api_msg.pop("display_kind", None)
+            api_msg.pop("display_metadata", None)
+
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are

@@ -780,11 +780,20 @@ class CLICommandsMixin:
         # becomes ``self.conversation_history`` for subsequent turns. Heal a
         # durable ``user;user`` violation once here instead of re-firing the
         # pre-request repair on every request for the rest of the session.
-        restored = self._session_db.get_messages_as_conversation(
-            target_id, repair_alternation=True
+        #
+        # Both projections come from one lineage SELECT: model_history is
+        # alternation-repaired for live replay; display_history is the full
+        # lineage verbatim, used by _display_resumed_history() so timeline
+        # events and ancestor rows render correctly (matching the startup
+        # --resume path in _preload_resumed_session).
+        model_history, display_history = self._session_db.get_resume_conversations(
+            target_id
         )
-        restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
+        restored = [m for m in (model_history or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
+        self._resume_display_history = [
+            m for m in (display_history or []) if m.get("role") != "session_meta"
+        ]
 
         # Re-open the target session so it's not marked as ended
         try:
@@ -824,7 +833,7 @@ class CLICommandsMixin:
                 pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        msg_count = len([m for m in self._resume_display_history if m.get("role") == "user" and not m.get("display_kind")])
         if self.conversation_history:
             _cprint(
                 f"  ↻ Resumed session {target_id}{title_part}"

@@ -13895,6 +13895,34 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
+    elif getattr(args, "skills_action", None) == "propose":
+        # M2 org-shared skills (hsp-1-contract.md §11.5): propose a local
+        # skill to the org canonical set. 202 => pending review (NEVER shown
+        # as live); direct merge for admins. Personal orgs have no org
+        # workflow — say so plainly instead of a raw 403.
+        from tools import skills_sync_client as ssc
+
+        name = args.name
+        try:
+            result = ssc.propose_skill(name, message=args.message)
+        except ssc.SyncInertError as e:
+            print(f"org sync unavailable: {e}", file=sys.stderr)
+            return 1
+        except ssc.HSPError as e:
+            print(f"propose failed: {e}", file=sys.stderr)
+            return 1
+        if result.get("proposal_pending"):
+            print(
+                f"proposed '{name}' — pending admin review "
+                f"(proposal #{result.get('proposal_id')}). Not live for the "
+                f"org until approved."
+            )
+        else:
+            print(
+                f"merged '{name}' into the org set "
+                f"(head {str(result.get('head', ''))[:19]}…)."
+            )
+        return 0
     else:
         from hermes_cli.skills_hub import skills_command
 

@@ -1608,20 +1608,34 @@ def init_agent(
     
 
 
-    # Memory provider plugin (external — one at a time, alongside built-in)
-    # Reads memory.provider from config to select which plugin to activate.
+    # Memory provider plugins (external — one or more, alongside built-in).
+    # Reads the ORDERED memory.providers list from config (list order ==
+    # injection/priority order) with a legacy single-string memory.provider
+    # fallback so existing configs keep working. Each provider is registered
+    # in order; the MemoryManager iterates all of them for prefetch, sync,
+    # tool routing, system-prompt contribution, and lifecycle (upstream #5688).
     agent._memory_manager = None
     if not skip_memory:
         try:
-            _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            # Read providers list; fall back to legacy single-string field.
+            _mem_provider_names = (mem_config.get("providers", []) or []) if mem_config else []
+            _mem_provider_names = [p for p in _mem_provider_names if p and p.strip()]
+            if not _mem_provider_names and mem_config:
+                _legacy = mem_config.get("provider", "")
+                if _legacy and _legacy.strip():
+                    _mem_provider_names = [_legacy.strip()]
 
-            if _mem_provider_name and _mem_provider_name.strip():
+            if _mem_provider_names:
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
+                # Registration order == injection/priority order (list order).
+                for _mpn in _mem_provider_names:
+                    _mp = _load_mem(_mpn)
+                    if _mp and _mp.is_available():
+                        agent._memory_manager.add_provider(_mp)
+                    else:
+                        _ra().logger.debug("Memory provider '%s' not found or not available", _mpn)
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,
@@ -1668,9 +1682,9 @@ def init_agent(
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    _ra().logger.info("Memory providers %s activated", agent._memory_manager.provider_names)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    _ra().logger.debug("No memory providers available from %s", _mem_provider_names)
                     agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)

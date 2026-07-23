@@ -7245,6 +7245,52 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     atomic_yaml_write(config_path, data, **kwargs)
 
 
+def get_active_memory_providers(config: Dict[str, Any]) -> List[str]:
+    """Return the ordered list of active external memory providers.
+
+    Reads the canonical ``memory.providers`` list, falling back to the legacy
+    singular ``memory.provider`` string when the list is absent/empty. This is
+    the single read-normalization point for config-layer callers (the runtime
+    activation seam in ``agent_init`` mirrors this same resolution); it lets
+    setup hooks reason about the effective provider set without duplicating the
+    list/legacy fallback logic. Blank/whitespace entries are dropped.
+    """
+    mem = config.get("memory", {}) if isinstance(config, dict) else {}
+    if not isinstance(mem, dict):
+        return []
+    names = mem.get("providers", []) or []
+    if isinstance(names, str):
+        names = [names]
+    result = [n.strip() for n in names if isinstance(n, str) and n.strip()]
+    if not result:
+        legacy = mem.get("provider", "")
+        if isinstance(legacy, str) and legacy.strip():
+            result = [legacy.strip()]
+    return result
+
+
+def set_active_memory_providers(config: Dict[str, Any], names: List[str]) -> Dict[str, Any]:
+    """Write the active memory providers canonically into ``config`` (in place).
+
+    Writes ``memory.providers`` as the ordered list and mirrors
+    ``memory.provider`` to ``names[0]`` when exactly one provider is set (else
+    clears it to ``""``). Mirroring keeps legacy single-string readers working
+    with zero migration, and — crucially — kills the masking bug by
+    construction: a setup hook can never again write only the singular field
+    and have a newly-configured provider silently dropped by a stale list,
+    because every write goes through this canonical setter. Does NOT save;
+    caller is responsible for ``save_config``. Returns ``config`` for chaining.
+    """
+    cleaned = [n.strip() for n in (names or []) if isinstance(n, str) and n.strip()]
+    mem = config.setdefault("memory", {})
+    if not isinstance(mem, dict):
+        mem = {}
+        config["memory"] = mem
+    mem["providers"] = cleaned
+    mem["provider"] = cleaned[0] if len(cleaned) == 1 else ""
+    return config
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml.
 

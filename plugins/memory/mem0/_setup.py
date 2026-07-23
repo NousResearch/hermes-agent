@@ -316,8 +316,8 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
             "routing to the self-hosted server."
         )
 
-    from hermes_cli.config import save_config
-    config["memory"]["provider"] = "mem0"
+    from hermes_cli.config import save_config, set_active_memory_providers
+    set_active_memory_providers(config, ["mem0"])
     save_config(config)
 
     from plugins.memory.mem0 import Mem0MemoryProvider
@@ -410,8 +410,8 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     provider_config["user_id"] = user_id
     provider_config["agent_id"] = agent_id
 
-    from hermes_cli.config import save_config
-    config["memory"]["provider"] = "mem0"
+    from hermes_cli.config import save_config, set_active_memory_providers
+    set_active_memory_providers(config, ["mem0"])
     save_config(config)
 
     from plugins.memory.mem0 import Mem0MemoryProvider
@@ -471,8 +471,8 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
 
     _install_provider_deps(llm_id, embedder_id, vector_id)
 
-    from hermes_cli.config import save_config
-    config["memory"]["provider"] = "mem0"
+    from hermes_cli.config import save_config, set_active_memory_providers
+    set_active_memory_providers(config, ["mem0"])
     save_config(config)
 
     _run_connectivity_checks(oss_config)
@@ -824,8 +824,8 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     if vector_id == "pgvector" and pgvector_config:
         _ensure_pgvector_extension(pgvector_config)
 
-    from hermes_cli.config import save_config
-    config["memory"]["provider"] = "mem0"
+    from hermes_cli.config import save_config, set_active_memory_providers
+    set_active_memory_providers(config, ["mem0"])
     save_config(config)
 
     _run_connectivity_checks(oss_config)

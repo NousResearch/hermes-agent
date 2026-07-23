@@ -198,7 +198,7 @@ def _get_available_providers() -> list:
 
 def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config, save_config, set_active_memory_providers
 
     providers = _get_available_providers()
     match = None
@@ -228,7 +228,7 @@ def cmd_setup_provider(provider_name: str) -> None:
         return
 
     # Fallback: generic schema-based setup (same as cmd_setup)
-    config["memory"]["provider"] = name
+    set_active_memory_providers(config, [name])
     save_config(config)
     print(f"\n  Memory provider: {name}")
     print("  Activation saved to config.yaml\n")
@@ -236,7 +236,7 @@ def cmd_setup_provider(provider_name: str) -> None:
 
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config, save_config, set_active_memory_providers
 
     providers = _get_available_providers()
 
@@ -263,7 +263,7 @@ def cmd_setup(args) -> None:
 
     # Built-in only
     if selected >= len(providers):
-        config["memory"]["provider"] = ""
+        set_active_memory_providers(config, [])
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
@@ -355,7 +355,7 @@ def cmd_setup(args) -> None:
                         env_writes[env_var] = val
 
     # Write activation key to config.yaml
-    config["memory"]["provider"] = name
+    set_active_memory_providers(config, [name])
     save_config(config)
 
     # Write non-secret config to provider's native location

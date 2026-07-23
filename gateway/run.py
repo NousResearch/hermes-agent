@@ -18111,6 +18111,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        ("memory", "providers"),
         ("checkpoints", "enabled"),
         ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"),
@@ -18194,9 +18195,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             out["tools.registry_generation"] = None
 
         # Honcho identity-mapping keys live in honcho.json, not user_config.
-        # Only read that file when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        if isinstance(provider, str) and provider.lower() == "honcho":
+        # Only read that file when Honcho is among the active memory providers.
+        # Honcho may be selected via the legacy singular memory.provider string
+        # OR anywhere in the ordered memory.providers list (upstream #5688), so
+        # check both forms.
+        _honcho_active = False
+        _singular = cfg_get(cfg, "memory", "provider")
+        if isinstance(_singular, str) and _singular.lower() == "honcho":
+            _honcho_active = True
+        else:
+            _providers_list = cfg_get(cfg, "memory", "providers")
+            if isinstance(_providers_list, (list, tuple)):
+                _honcho_active = any(
+                    isinstance(p, str) and p.lower() == "honcho" for p in _providers_list
+                )
+        if _honcho_active:
             out.update(cls._extract_honcho_cache_busting_config())
         else:
             out.update(cls._empty_honcho_cache_busting_config())

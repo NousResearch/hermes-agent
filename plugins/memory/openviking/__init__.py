@@ -1581,7 +1581,8 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
 
 
 def _set_openviking_provider(config: dict, provider_config: dict) -> None:
-    config["memory"]["provider"] = "openviking"
+    from hermes_cli.config import set_active_memory_providers
+    set_active_memory_providers(config, ["openviking"])
     config["memory"]["openviking"] = provider_config
 
 

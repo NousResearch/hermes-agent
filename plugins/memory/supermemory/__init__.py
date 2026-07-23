@@ -602,7 +602,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def post_setup(self, hermes_home: str, config: dict) -> None:
         from pathlib import Path
 
-        from hermes_cli.config import save_config
+        from hermes_cli.config import save_config, set_active_memory_providers
         from hermes_cli.memory_setup import _prompt, _write_env_vars
 
         print("\n  Configuring supermemory:\n")
@@ -620,7 +620,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
         if not isinstance(config.get("memory"), dict):
             config["memory"] = {}
-        config["memory"]["provider"] = self.name
+        set_active_memory_providers(config, [self.name])
         save_config(config)
 
         if env_writes:

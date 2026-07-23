@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useState,
   useCallback,
+  useId,
   useRef,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -43,7 +44,7 @@ import type {
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import { cn, timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -105,7 +106,7 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
     parts.push(snippet.slice(last));
   }
   return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
+    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full whitespace-normal break-words text-xs text-text-secondary [overflow-wrap:anywhere] sm:truncate">
       {parts}
     </p>
   );
@@ -139,10 +140,12 @@ function ToolCallBlock({
         ) : (
           <ChevronRight className="h-3 w-3" />
         )}
-        <span className="font-mono-ui font-medium">
+        <span className="font-mono-ui min-w-0 break-all font-medium">
           {toolCall.function.name}
         </span>
-        <span className="text-warning/50 ml-auto">{toolCall.id}</span>
+        <span className="text-warning/50 ml-auto min-w-0 break-all">
+          {toolCall.id}
+        </span>
       </ListItem>
       {open && (
         <pre className="border-t border-warning/20 px-3 py-2 text-xs text-warning/80 overflow-x-auto whitespace-pre-wrap font-mono">
@@ -309,10 +312,10 @@ function MessageBubble({
 
   return (
     <div
-      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
+      className={`${style.bg} min-w-0 overflow-hidden p-2.5 sm:p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
       data-search-hit={isHit || undefined}
     >
-      <div className="flex items-center gap-2 mb-1">
+      <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
         {isHit && (
           <Badge tone="warning" className="text-xs py-0 px-1.5">
@@ -369,7 +372,8 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
+      data-session-message-list
+      className="flex max-h-[55dvh] min-w-0 flex-col gap-2 overflow-y-auto pr-1 sm:gap-3 sm:pr-2 lg:max-h-[600px]"
     >
       {messages.map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
@@ -378,7 +382,7 @@ function MessageList({
   );
 }
 
-function SessionRow({
+export function SessionRow({
   session,
   snippet,
   searchQuery,
@@ -396,6 +400,7 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
+  const expansionPanelId = useId();
   const { t } = useI18n();
   const navigate = useNavigate();
 
@@ -438,8 +443,11 @@ function SessionRow({
 
   const actionButtons = (
     <>
-      <Badge tone="outline" className="text-xs">
-        {session.source ?? "local"}
+      <Badge
+        tone="outline"
+        className="mr-auto flex min-w-0 max-w-full whitespace-normal text-xs sm:mr-0"
+      >
+        <span className="min-w-0 break-all">{session.source ?? "local"}</span>
       </Badge>
 
       {resumeInChatEnabled && (
@@ -533,27 +541,37 @@ function SessionRow({
     <div
       className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
     >
-      <div
-        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
-        onClick={onToggle}
-      >
-        <span className="flex shrink-0 items-center pt-0.5">
-          <Checkbox
-            checked={isSelected}
-            onClick={handleSelectClick}
-            aria-label={t.sessions.selectSession}
-          />
-        </span>
-        <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
-          <SourceIcon className="h-4 w-4" />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+      <div className="group/session relative">
+        <button
+          type="button"
+          className={cn(
+            "absolute inset-0 z-0 w-full cursor-pointer text-left transition-colors",
+            "hover:bg-secondary/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60",
+          )}
+          onClick={onToggle}
+          aria-expanded={isExpanded}
+          aria-controls={expansionPanelId}
+          aria-label={`${isExpanded ? t.common.collapse : t.common.expand} ${hasTitle ? session.title : t.sessions.untitledSession}`}
+        />
+
+        <div className="pointer-events-none relative z-1 flex items-start gap-1 p-2.5 sm:gap-3 sm:p-3">
+          <span className="pointer-events-auto -my-2 flex min-h-11 min-w-11 shrink-0 items-center justify-center sm:my-0 sm:min-h-0 sm:min-w-0 sm:justify-start sm:pt-0.5">
+            <Checkbox
+              checked={isSelected}
+              onClick={handleSelectClick}
+              aria-label={t.sessions.selectSession}
+            />
+          </span>
+          <div className={`shrink-0 pt-1 sm:pt-0.5 ${sourceInfo.color}`}>
+            <SourceIcon className="h-4 w-4" />
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-start gap-2">
                 {renaming ? (
                   <div
-                    className="flex min-w-0 flex-1 items-center gap-1.5"
+                    className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <Input
@@ -565,13 +583,13 @@ function SessionRow({
                         else if (e.key === "Escape") setRenaming(false);
                       }}
                       placeholder="Session title"
-                      className="h-7 min-w-0 flex-1 py-0 text-sm"
+                      className="h-11 min-w-0 flex-1 py-0 text-sm lg:h-7"
                       disabled={renameSaving}
                     />
                     <Button
                       ghost
                       size="icon"
-                      className="text-muted-foreground hover:text-success"
+                      className="min-h-11 min-w-11 text-muted-foreground hover:text-success lg:min-h-0 lg:min-w-0"
                       aria-label="Save title"
                       title="Save title"
                       disabled={renameSaving}
@@ -586,7 +604,7 @@ function SessionRow({
                     <Button
                       ghost
                       size="icon"
-                      className="text-muted-foreground hover:text-foreground"
+                      className="min-h-11 min-w-11 text-muted-foreground hover:text-foreground lg:min-h-0 lg:min-w-0"
                       aria-label="Cancel rename"
                       title="Cancel rename"
                       disabled={renameSaving}
@@ -597,7 +615,7 @@ function SessionRow({
                   </div>
                 ) : (
                   <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                    className={`font-mondwest normal-case min-w-0 flex-1 whitespace-normal break-words text-sm [overflow-wrap:anywhere] sm:truncate ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
                   >
                     {hasTitle
                       ? session.title
@@ -612,9 +630,16 @@ function SessionRow({
                     {t.common.live}
                   </Badge>
                 )}
+                <ChevronRight
+                  aria-hidden
+                  className={cn(
+                    "h-4 w-4 shrink-0 self-center text-muted-foreground transition-transform motion-reduce:transition-none",
+                    isExpanded && "rotate-90",
+                  )}
+                />
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
+                <span className="max-w-full break-all sm:max-w-[180px] sm:truncate">
                   {(session.model ?? t.common.unknown).split("/").pop()}
                 </span>
                 <span className="text-border">&#183;</span>
@@ -635,19 +660,29 @@ function SessionRow({
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
 
-            <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            <div className="pointer-events-auto hidden shrink-0 items-center gap-2 sm:flex">
               {actionButtons}
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:hidden">
+          <div className="pointer-events-auto flex min-w-0 flex-wrap items-center justify-end gap-1 [&_button]:min-h-11 [&_button]:min-w-11 sm:hidden">
             {actionButtons}
+          </div>
           </div>
         </div>
       </div>
 
       {isExpanded && (
-        <div className="min-w-0 border-t border-border bg-background/50 p-4">
+        <div
+          id={expansionPanelId}
+          role="region"
+          aria-label={
+            hasTitle
+              ? session.title ?? undefined
+              : t.sessions.untitledSession
+          }
+          className="min-w-0 border-t border-border bg-background/50 p-2.5 sm:p-4"
+        >
           {messages === null && !error && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
@@ -670,9 +705,93 @@ function SessionRow({
   );
 }
 
-type SessionsView = "list" | "overview";
+export type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
+
+export function SessionStatsSummary({ stats }: { stats: SessionStoreStats }) {
+  const primaryStats = [
+    { label: "Total", value: stats.total },
+    {
+      label: "Active in store",
+      value: stats.active_store,
+      tone: "text-success",
+    },
+    { label: "Archived", value: stats.archived },
+    { label: "Messages", value: stats.messages },
+  ];
+  const platformStats = Object.entries(stats.by_source);
+
+  return (
+    <section
+      aria-label="Session statistics"
+      className="flex min-w-0 flex-col border border-border bg-background-base/40 sm:flex-row sm:items-stretch"
+    >
+      <dl className="grid min-w-0 grid-cols-2 gap-px bg-border sm:flex sm:flex-none sm:items-center sm:gap-6 sm:bg-transparent sm:px-4 sm:py-3">
+        {primaryStats.map(({ label, tone, value }) => (
+          <div
+            key={label}
+            className="flex min-w-0 flex-col bg-background-base px-3 py-2.5 sm:bg-transparent sm:p-0"
+          >
+            <dd
+              className={cn(
+                "text-lg font-semibold tabular-nums leading-none",
+                tone,
+              )}
+            >
+              {value}
+            </dd>
+            <dt className="mt-1 min-w-0 break-words text-xs leading-tight text-muted-foreground [overflow-wrap:anywhere]">
+              {label}
+            </dt>
+          </div>
+        ))}
+      </dl>
+
+      {platformStats.length > 0 && (
+        <div
+          aria-label="Sessions by platform"
+          className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border px-3 py-2 sm:flex-1 sm:border-t-0 sm:border-l sm:px-4 sm:py-3"
+          role="group"
+        >
+          {platformStats.map(([source, count]) => (
+            <Badge
+              key={source}
+              tone="outline"
+              className="flex min-w-0 max-w-full whitespace-normal text-xs"
+            >
+              <span className="min-w-0 break-all">{source}</span>
+              <span className="shrink-0">: {count}</span>
+            </Badge>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function SessionsViewTabs({
+  onChange,
+  value,
+}: {
+  onChange: (value: SessionsView) => void;
+  value: SessionsView;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <Segmented
+      className="w-full shrink-0 [&_button]:min-h-11 [&_button]:min-w-0 [&_button]:flex-1 sm:w-fit sm:[&_button]:flex-none lg:[&_button]:h-8 lg:[&_button]:min-h-0"
+      size="md"
+      value={value}
+      onChange={onChange}
+      options={[
+        { value: "overview", label: t.sessions.overview },
+        { value: "list", label: t.sessions.history },
+      ]}
+    />
+  );
+}
 
 function SessionsPagination({
   className,
@@ -686,7 +805,13 @@ function SessionsPagination({
 
   return (
     <div
-      className={`flex items-center ${compact ? "gap-1" : "justify-between pt-2"}${className ? ` ${className}` : ""}`}
+      className={cn(
+        "flex items-center",
+        compact
+          ? "gap-1"
+          : "flex-col gap-2 pt-2 sm:flex-row sm:justify-between",
+        className,
+      )}
     >
       {!compact && (
         <span className="text-xs text-muted-foreground">
@@ -699,6 +824,7 @@ function SessionsPagination({
         <Button
           outlined
           size="icon"
+          className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
           disabled={page === 0}
           onClick={() => onPageChange(page - 1)}
           aria-label={t.sessions.previousPage}
@@ -711,6 +837,7 @@ function SessionsPagination({
         <Button
           outlined
           size="icon"
+          className="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
           disabled={(page + 1) * PAGE_SIZE >= total}
           onClick={() => onPageChange(page + 1)}
           aria-label={t.sessions.nextPage}
@@ -806,6 +933,7 @@ export default function SessionsPage() {
       <Button
         outlined
         size="sm"
+        className="min-h-11 w-full justify-center sm:w-auto lg:min-h-0"
         onClick={() => setPruneOpen(true)}
         prefix={<Archive />}
       >
@@ -1297,7 +1425,7 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+    <div className="flex min-w-0 w-full max-w-full flex-col gap-3 sm:gap-4">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
       <input
@@ -1402,43 +1530,7 @@ export default function SessionsPage() {
         </DialogContent>
       </Dialog>
 
-      {stats && (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
-          <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.total}
-            </span>
-            <span className="text-xs text-muted-foreground">Total</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none text-success">
-              {stats.active_store}
-            </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.archived}
-            </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.messages}
-            </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
-          </div>
-          {Object.keys(stats.by_source).length > 0 && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-              {Object.entries(stats.by_source).map(([src, count]) => (
-                <Badge key={src} tone="outline" className="text-xs">
-                  {src}: {count}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {stats && <SessionStatsSummary stats={stats} />}
 
       {alerts.length > 0 && (
         <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
@@ -1527,19 +1619,10 @@ export default function SessionsPage() {
       )}
 
       {(showOverviewTab && !isSearching) || showList ? (
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
+        <div className="flex w-full min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+          <div className="flex min-w-0 flex-1 flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
             {showOverviewTab && !isSearching && (
-              <Segmented
-                className="w-fit shrink-0"
-                size="md"
-                value={view}
-                onChange={switchView}
-                options={[
-                  { value: "overview", label: t.sessions.overview },
-                  { value: "list", label: t.sessions.history },
-                ]}
-              />
+              <SessionsViewTabs value={view} onChange={switchView} />
             )}
 
             {showList && (
@@ -1553,13 +1636,13 @@ export default function SessionsPage() {
                   placeholder={t.sessions.searchPlaceholder}
                   value={search}
                   onChange={(e) => updateSearch(e.target.value)}
-                  className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
+                  className="h-11 py-0 pr-11 pl-8 text-xs leading-none sm:pr-7 lg:h-8"
                 />
                 {search && (
                   <Button
                     ghost
                     size="xs"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    className="absolute right-0 top-1/2 min-h-11 min-w-11 -translate-y-1/2 text-muted-foreground hover:text-foreground sm:right-1.5 lg:min-h-0 lg:min-w-0"
                     onClick={() => updateSearch("")}
                     aria-label={t.common.clear}
                   >
@@ -1574,7 +1657,7 @@ export default function SessionsPage() {
                 outlined
                 destructive
                 size="sm"
-                className="shrink-0"
+                className="min-h-11 w-full justify-center sm:w-auto sm:shrink-0 lg:min-h-0"
                 onClick={() => setDeleteEmptyOpen(true)}
                 aria-label={t.sessions.deleteEmpty}
                 title={t.sessions.deleteEmpty}
@@ -1590,7 +1673,7 @@ export default function SessionsPage() {
               <Button
                 outlined
                 size="sm"
-                className="shrink-0"
+                className="min-h-11 w-full justify-center sm:w-auto sm:shrink-0 lg:min-h-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
                 aria-label="Import exported sessions"
@@ -1607,7 +1690,7 @@ export default function SessionsPage() {
           {showPagination && (
             <SessionsPagination
               compact
-              className="shrink-0 sm:ml-auto"
+              className="w-full shrink-0 justify-center sm:ml-auto sm:w-auto"
               page={page}
               total={total}
               onPageChange={goToPage}
@@ -1618,7 +1701,7 @@ export default function SessionsPage() {
 
       {showList && selectedIds.size > 0 && (
         <div
-          className="flex flex-wrap items-center gap-2 border border-primary/30 bg-primary/[0.06] px-3 py-2"
+          className="flex flex-wrap items-center gap-2 border border-primary/30 bg-primary/[0.06] px-3 py-2 [&_button]:min-h-11 lg:[&_button]:min-h-0"
           role="region"
           aria-label={t.sessions.selectedCount.replace(
             "{count}",
@@ -1659,7 +1742,7 @@ export default function SessionsPage() {
             outlined
             destructive
             size="sm"
-            className="ml-auto"
+            className="w-full justify-center sm:ml-auto sm:w-auto"
             onClick={() => setDeleteSelectedOpen(true)}
             aria-label={t.sessions.deleteSelected.replace(
               "{count}",
@@ -1736,23 +1819,23 @@ export default function SessionsPage() {
 
           {recentSessions.length > 0 && (
             <Card className="min-w-0 max-w-full overflow-hidden">
-              <CardHeader className="min-w-0">
+              <CardHeader className="min-w-0 p-3 sm:p-4">
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
+                  <CardTitle className="min-w-0 break-words text-base [overflow-wrap:anywhere] sm:truncate">
                     {t.status.recentSessions}
                   </CardTitle>
                 </div>
               </CardHeader>
 
-              <CardContent className="grid min-w-0 gap-3">
+              <CardContent className="grid min-w-0 gap-2 p-3 sm:gap-3 sm:p-4">
                 {recentSessions.map((s) => (
                   <div
                     key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-2.5 sm:flex-row sm:items-center sm:justify-between sm:p-3"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
+                      <span className="font-mondwest normal-case min-w-0 break-words text-sm font-medium [overflow-wrap:anywhere] sm:truncate">
                         {s.title ?? t.common.untitled}
                       </span>
 
@@ -1773,10 +1856,12 @@ export default function SessionsPage() {
 
                     <Badge
                       tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
+                      className="flex min-w-0 max-w-full shrink-0 self-start whitespace-normal text-xs sm:self-center"
                     >
                       <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
+                      <span className="min-w-0 break-all">
+                        {s.source ?? "local"}
+                      </span>
                     </Badge>
                   </div>
                 ))}

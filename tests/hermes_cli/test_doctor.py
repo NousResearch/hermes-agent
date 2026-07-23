@@ -511,6 +511,87 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
 
 
 @pytest.mark.parametrize(
+    ("provider", "model", "expected_model", "extra_config"),
+    [
+        ("openai-codex", "openai-codex/gpt-5.6-sol", "gpt-5.6-sol", ""),
+        ("openrouter", "openai/gpt-5.6-sol", "openai/gpt-5.6-sol", ""),
+        (
+            "custom:hpc-ai",
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-flash",
+            "custom_providers:\n"
+            "  - name: hpc-ai\n"
+            "    base_url: https://hpc-ai.example/v1\n"
+            "    api_key: test-key\n",
+        ),
+    ],
+)
+def test_doctor_fix_canonicalizes_legacy_model_config(
+    monkeypatch, tmp_path, provider, model, expected_model, extra_config
+):
+    """One repair pass canonicalizes safely and remains idempotent."""
+    import yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        f"model: {model}\n"
+        f"provider: {provider}\n"
+        f"{extra_config}",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+
+    from hermes_cli import config as config_mod
+
+    writes = 0
+    real_atomic_config_write = config_mod.atomic_config_write
+
+    def count_atomic_write(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        return real_atomic_config_write(*args, **kwargs)
+
+    monkeypatch.setattr(config_mod, "atomic_config_write", count_atomic_write)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        doctor_mod.run_doctor(Namespace(fix=True))
+
+    repaired_text = (home / "config.yaml").read_text(encoding="utf-8")
+    repaired = yaml.safe_load(repaired_text)
+    assert repaired["model"] == {
+        "default": expected_model,
+        "provider": provider,
+    }
+    assert "provider" not in repaired
+    assert writes == 1
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        doctor_mod.run_doctor(Namespace(fix=True))
+
+    assert (home / "config.yaml").read_text(encoding="utf-8") == repaired_text
+    assert writes == 1
+
+
+@pytest.mark.parametrize(
     ("provider", "default_model"),
     [
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),

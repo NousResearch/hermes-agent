@@ -668,6 +668,25 @@ class CredentialPool:
         persist: bool = True,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        # Single-entry pools with a transient 429 rate-limit should NOT be
+        # marked exhausted.  There is no second key to rotate to, so marking
+        # exhausted only stalls the pool — the exhaustion deadline
+        # (last_status_at + cooldown) keeps sliding forward on each retry and
+        # the worker deadlocks indefinitely until manual intervention.  The
+        # caller's own retry/backoff handles transient throttling.  Non-429
+        # statuses (401/402, terminal auth failures) still get marked so that
+        # genuinely dead or expired credentials are surfaced (issue #29136).
+        if (
+            len(self._entries) <= 1
+            and status_code == 429
+            and not self._is_terminal_auth_failure(status_code, normalized_error)
+        ):
+            logger.info(
+                "credential pool: single-entry pool, skipping exhaustion mark "
+                "for transient 429 (entry=%s)",
+                entry.label or entry.id[:8],
+            )
+            return entry
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
         # a revoked credential gets a 1-hour TTL cooldown and then re-enters

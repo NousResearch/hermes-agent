@@ -691,6 +691,144 @@ def test_429_rate_limit_still_uses_exhausted_not_dead(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 429
 
 
+def test_single_entry_pool_skips_exhaustion_on_429(tmp_path, monkeypatch):
+    """A single-entry pool must NOT mark the entry exhausted on a transient 429.
+
+    There is no second key to rotate to, so marking exhausted only stalls the
+    pool — the exhaustion deadline keeps sliding forward on each retry and the
+    worker deadlocks indefinitely (#29136).  The caller's own retry/backoff
+    handles transient throttling.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-only",
+                        "label": "sole",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-only",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.select().id == "cred-only"
+
+    result = pool.mark_exhausted_and_rotate(status_code=429)
+
+    # Entry is NOT marked exhausted — returned unchanged.
+    assert result is not None
+    assert result.id == "cred-only"
+    assert result.last_status is None
+
+    # Persisted state on disk is also clean.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted.get("last_status") is None
+    assert persisted.get("last_error_code") is None
+
+
+def test_single_entry_pool_still_marks_exhausted_on_non_429(tmp_path, monkeypatch):
+    """A single-entry pool MUST still mark exhausted on non-429 failures (401/402).
+
+    Only transient 429 rate limits are skipped.  Authentication failures,
+    billing errors, etc. must still be surfaced so the user is alerted to a
+    genuinely broken credential (#29136 review feedback).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-only",
+                        "label": "sole",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-only",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("openai-codex")
+    pool.select()
+
+    # mark_exhausted_and_rotate returns None when there is no next entry
+    # to rotate to, but the current entry IS still marked.
+    pool.mark_exhausted_and_rotate(status_code=402)
+
+    # 402 IS marked exhausted — the credential has a billing problem.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_code"] == 402
+
+
+def test_multi_entry_pool_still_marks_exhausted_on_429(tmp_path, monkeypatch):
+    """Multi-entry pools must still mark exhausted and rotate on 429.
+
+    The single-entry skip does not apply when rotation is possible.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-a",
+                        "label": "first",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-a",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "second",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-b",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("openai-codex")
+    assert pool.select().id == "cred-a"
+
+    next_entry = pool.mark_exhausted_and_rotate(status_code=429)
+    assert next_entry is not None
+    assert next_entry.id == "cred-b"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_code"] == 429
+
+
 def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monkeypatch):
     """A 401 with no specific code/reason should keep TTL semantics.
 

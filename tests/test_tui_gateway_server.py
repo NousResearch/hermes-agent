@@ -4901,6 +4901,20 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_probe_credentials_emits_exact_empty_key_warning():
+    agent = types.SimpleNamespace(api_key="", provider="openrouter")
+
+    assert server._probe_credentials(agent) == (
+        "No API key configured for provider 'openrouter'. First message will fail."
+    )
+
+
+def test_probe_credentials_allows_keyless_custom_runtime():
+    agent = types.SimpleNamespace(api_key="no-key-required", provider="custom")
+
+    assert server._probe_credentials(agent) == ""
+
+
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
     monkeypatch.setattr(
@@ -4914,8 +4928,13 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
 
     resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
 
-    assert resp["result"]["ok"] is False
-    assert resp["result"]["provider"] == "openrouter"
+    assert resp["result"] == {
+        "ok": False,
+        "provider": "openrouter",
+        "model": None,
+        "source": "env/config",
+        "error": "No usable credentials found for openrouter.",
+    }
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):

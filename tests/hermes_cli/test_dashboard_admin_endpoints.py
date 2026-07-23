@@ -653,6 +653,20 @@ class TestSystemStatsEndpoint:
         # psutil flag tells the UI whether the richer metrics are populated.
         assert "psutil" in s
 
+    def test_stats_architecture_uses_windows_environment_fallback(
+        self, monkeypatch
+    ):
+        import platform
+
+        monkeypatch.setattr(platform, "machine", lambda: "")
+        monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "ARM64")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        assert r.json()["arch"] == "ARM64"
+
 
 class TestCuratorEndpoints:
     @pytest.fixture(autouse=True)

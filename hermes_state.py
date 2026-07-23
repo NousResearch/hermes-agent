@@ -152,6 +152,14 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+_IMPORT_DEFAULT_DB_PATH = DEFAULT_DB_PATH
+
+
+def _resolve_default_db_path() -> Path:
+    """Resolve the active home while preserving explicit legacy overrides."""
+    if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH:
+        return DEFAULT_DB_PATH
+    return get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 23
 
@@ -1421,7 +1429,7 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path if db_path is not None else _resolve_default_db_path()
         self.read_only = read_only
 
         self._lock = threading.Lock()

@@ -77,6 +77,28 @@ def db(tmp_path):
     session_db.close()
 
 
+def test_implicit_path_resolves_active_home_at_construction(tmp_path, monkeypatch):
+    active_home = tmp_path / "active-home"
+    monkeypatch.setenv("HERMES_HOME", str(active_home))
+
+    session_db = SessionDB()
+    try:
+        assert session_db.db_path == active_home / "state.db"
+    finally:
+        session_db.close()
+
+
+def test_implicit_path_preserves_explicit_default_override(tmp_path, monkeypatch):
+    overridden_path = tmp_path / "overridden.db"
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", overridden_path)
+
+    session_db = SessionDB()
+    try:
+        assert session_db.db_path == overridden_path
+    finally:
+        session_db.close()
+
+
 # =========================================================================
 # Session lifecycle
 # =========================================================================
@@ -7155,4 +7177,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

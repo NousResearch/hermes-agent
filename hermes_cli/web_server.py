@@ -11958,6 +11958,31 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+def _load_cron_config_for_profile(profile: Optional[str]) -> Dict[str, Any]:
+    """Load the Chronos config for a resolved cron profile.
+
+    Dashboard cron routes inspect multiple profile homes from one process, so
+    config loading must use the same context-local home override as cron store
+    access. A missing profile intentionally falls back to the process config;
+    the caller uses that path for malformed or unknown jobs before returning
+    the existing authentication or ``gone`` response.
+    """
+    if not profile:
+        return load_config()
+
+    _profile_name, home = _cron_profile_home(profile)
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = set_hermes_home_override(str(home))
+    try:
+        return load_config()
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _list_cron_jobs_sync(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
@@ -12278,7 +12303,22 @@ async def cron_fire_webhook(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    cfg = load_config()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    job_id = (body or {}).get("job_id") if isinstance(body, dict) else None
+
+    # Resolve the owning profile before verification so the token is checked
+    # against that profile's Chronos audience, JWKS, and issuer settings.
+    # Unknown or malformed jobs keep using the process config, preserving the
+    # existing authentication and "gone" behavior without exposing profiles.
+    profile = (
+        await _run_cron_dashboard_io(_find_cron_job_profile, job_id)
+        if job_id
+        else None
+    )
+    cfg = _load_cron_config_for_profile(profile)
     claims = get_fire_verifier()(
         token=token,
         expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
@@ -12288,18 +12328,9 @@ async def cron_fire_webhook(request: Request):
     if claims is None:
         return JSONResponse({"error": "invalid fire token"}, status_code=401)
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    job_id = (body or {}).get("job_id") if isinstance(body, dict) else None
     if not job_id:
         return JSONResponse({"error": "missing job_id"}, status_code=400)
 
-    # _find_cron_job_profile walks every profile and lists its jobs (file
-    # I/O per profile) — run it off the event loop like the other cron
-    # dashboard endpoints.
-    profile = await _run_cron_dashboard_io(_find_cron_job_profile, job_id)
     if not profile:
         # Job is gone (cancelled / completed) — nothing to fire. 200 so NAS
         # does not retry a fire that is intentionally absent.

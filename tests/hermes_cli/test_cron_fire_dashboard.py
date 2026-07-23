@@ -140,3 +140,63 @@ def test_valid_token_accepts_and_fires(monkeypatch):
         client.close()
     # background task ran the fire for the resolved profile
     assert fired == [("default", "j1")]
+
+
+def test_profile_chronos_config_is_used_before_token_verification(monkeypatch):
+    """A managed fire token is verified against the job owner's profile."""
+    events = []
+    fired = []
+
+    monkeypatch.setattr(
+        web_server,
+        "_find_cron_job_profile",
+        lambda jid: events.append(("find", jid)) or "work",
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_load_cron_config_for_profile",
+        lambda profile: events.append(("config", profile)) or {
+            "cron": {
+                "chronos": {
+                    "expected_audience": "agent:work",
+                    "nas_jwks_url": "https://chronos.example/work/jwks",
+                    "portal_url": "https://chronos.example/work",
+                }
+            }
+        },
+    )
+
+    def verify(**kwargs):
+        events.append(("verify", kwargs))
+        return {"purpose": "cron_fire", "aud": "agent:work"}
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: verify,
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_fire_cron_job_for_profile",
+        lambda profile, jid: fired.append((profile, jid)) or True,
+    )
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer work-token"},
+            json={"job_id": "work-job"},
+        )
+        assert resp.status_code == 202
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+    assert [event[0] for event in events] == ["find", "config", "verify"]
+    assert events[-1][1] == {
+        "token": "work-token",
+        "expected_audience": "agent:work",
+        "jwks_or_key": "https://chronos.example/work/jwks",
+        "issuer": "https://chronos.example/work",
+    }
+    assert fired == [("work", "work-job")]

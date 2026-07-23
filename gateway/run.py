@@ -2692,6 +2692,32 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_checkpoint_kwargs(config: dict | None = None) -> dict:
+    """Resolve filesystem-checkpoint AIAgent kwargs from config.yaml.
+
+    Mirrors the CLI lane's semantics (``HermesCLI.__init__`` in cli.py): the
+    root-level ``checkpoints`` block may be a bool shorthand or a mapping;
+    when the block is absent checkpoints stay disabled (AIAgent's own
+    default). Without this, ``checkpoints: {enabled: true}`` in config.yaml
+    was honored by ``hermes chat`` but silently ignored by every
+    gateway-spawned agent.
+
+    Returns a dict suitable for ``AIAgent(**kwargs)`` expansion.
+    """
+    cfg = config if config is not None else _load_gateway_config()
+    cp_cfg = cfg.get("checkpoints", {}) if isinstance(cfg, dict) else {}
+    if isinstance(cp_cfg, bool):
+        cp_cfg = {"enabled": cp_cfg}
+    if not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+    return {
+        "checkpoints_enabled": bool(cp_cfg.get("enabled", False)),
+        "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", 20),
+        "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", 500),
+        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", 10),
+    }
+
+
 def _channel_override_lookup_keys(
     chat_id: str,
     *,
@@ -15156,6 +15182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    **_resolve_checkpoint_kwargs(user_config),
                     session_id=task_id,
                     platform=platform_key,
                     user_id=source.user_id,
@@ -20802,6 +20829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    **_resolve_checkpoint_kwargs(user_config),
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,

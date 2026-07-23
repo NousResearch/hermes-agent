@@ -1052,6 +1052,7 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".config",
     ".azure",
     ".gcloud",
+    ".claude",
     "Library/Keychains",  # macOS
 )
 

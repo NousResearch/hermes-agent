@@ -1340,7 +1340,15 @@ def execute_code(
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
-        child_env = _scrub_child_env(os.environ)
+        # Start from a private snapshot, then make the current request's
+        # ContextVars authoritative over the process-global compatibility
+        # mirror before applying the existing passthrough/scrubbing policy.
+        # This prevents a concurrent request's HERMES_SESSION_* values from
+        # leaking into this execute_code child.
+        source_env = dict(os.environ)
+        from tools.environments.local import _inject_session_context_env
+        _inject_session_context_env(source_env)
+        child_env = _scrub_child_env(source_env)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"

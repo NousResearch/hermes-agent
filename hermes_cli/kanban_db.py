@@ -124,6 +124,84 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+_REVIEW_HANDOFF_KIND_TOKENS = {
+    "review-required",
+    "review_required",
+    "review required",
+    "review-only",
+    "review_only",
+    "needs-review",
+    "needs_review",
+    "needs review",
+}
+
+_REVIEW_HANDOFF_REASON_RE = re.compile(
+    r"\b("
+    r"review[-_ ]?required|"
+    r"review[-_ ]?only|"
+    r"needs[-_ ]?review|"
+    r"ready[-_ ]?for[-_ ]?review|"
+    r"awaiting[-_ ]?review|"
+    r"qa[-_ ]?review|"
+    r"eve[-_ ]?review"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+class ReviewHandoffBlockError(ValueError):
+    """Raised when a normal review handoff is attempted as a blocker."""
+
+    code = "review_handoff_not_blocker"
+
+    def __init__(self, *, task_id: str, reason: Optional[str], kind: Optional[str]):
+        self.task_id = task_id
+        self.reason = reason
+        self.kind = kind
+        super().__init__(review_handoff_block_message(task_id=task_id))
+
+
+def is_review_handoff_block(reason: Optional[str], kind: Optional[str] = None) -> bool:
+    """Return True for normal review/QA handoff language, not real blockers."""
+
+    kind_text = (kind or "").strip().casefold().replace("_", "-")
+    if kind_text in {token.replace("_", "-") for token in _REVIEW_HANDOFF_KIND_TOKENS}:
+        return True
+    reason_text = (reason or "").strip()
+    if not reason_text:
+        return False
+    return bool(_REVIEW_HANDOFF_REASON_RE.search(reason_text))
+
+
+def review_handoff_block_instruction(task_id: str) -> dict[str, Any]:
+    """Structured recovery instruction for rejected review-handoff blocks."""
+
+    return {
+        "code": ReviewHandoffBlockError.code,
+        "task_id": task_id,
+        "state_mutated": False,
+        "instruction": (
+            "Normal review-required/QA handoff is not a blocker. Create or "
+            "recover the exact artifact-bound successor first (use an "
+            "idempotency key derived from immutable artifact evidence), verify "
+            "the successor task id and status, then complete the producer with "
+            "structured artifact/test/successor/dispatch facts. If dispatch "
+            "capacity is unavailable, leave the successor Ready/Todo with a "
+            "capacity receipt; do not block the producer merely because review "
+            "is queued."
+        ),
+        "required_actions": [
+            "create_or_recover_artifact_bound_successor",
+            "verify_successor_id_and_status",
+            "complete_producer_with_structured_handoff",
+        ],
+    }
+
+
+def review_handoff_block_message(*, task_id: str) -> str:
+    payload = review_handoff_block_instruction(task_id)
+    return f"{payload['code']}: {payload['instruction']}"
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -5242,6 +5320,20 @@ def block_task(
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
     """
+    if is_review_handoff_block(reason, kind):
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "block_rejected_review_handoff",
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "contract": review_handoff_block_instruction(task_id),
+                },
+            )
+        raise ReviewHandoffBlockError(task_id=task_id, reason=reason, kind=kind)
+
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"

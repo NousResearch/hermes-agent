@@ -11904,7 +11904,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        if _is_shared_multi_user:
+            _has_trusted_sender_id = bool(source.user_id or source.user_id_alt)
+            # Strip any user-supplied copy of Hermes' canonical sender envelope
+            # before attaching the gateway-authenticated one. In a shared
+            # session, leaving a forged leading envelope in place lets one
+            # participant impersonate another in the exact metadata shape we ask
+            # the model to trust.
+            if _has_trusted_sender_id:
+                message_text = re.sub(
+                    r"^(?:\s*\[Verified sender:[^\]\n]*\]\s*)+",
+                    "",
+                    message_text,
+                )
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before
@@ -11912,18 +11924,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # a hostile name can masquerade as a fake markdown section
             # (mirrors the same field's treatment in
             # build_session_context_prompt via _format_untrusted_prompt_value).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
-            # On Slack, expose the current author's verifiable user ID next to
-            # the display name (#17916): "mention me again" requests need a
-            # trusted `<@U...>` target for the CURRENT speaker — display names
-            # are ambiguous and historical mentions may point at someone else.
-            # The user_id comes from the Slack event envelope (not
-            # user-editable text), so it does not need neutralization.
-            if source.platform == Platform.SLACK and source.user_id:
-                _safe_user_name = (
-                    f"{_safe_user_name} | Slack user <@{source.user_id}>"
+            _safe_user_name = neutralize_untrusted_inline_text(
+                source.user_name or "unknown sender"
+            )
+            if _has_trusted_sender_id:
+                _sender_parts = [_safe_user_name]
+                # Expose platform-authenticated IDs for every shared session so
+                # "mention me" / "who said this?" requests have a trusted current
+                # sender target. Keep Slack's native mention syntax from #17916.
+                if source.platform == Platform.SLACK and source.user_id:
+                    _sender_parts.append(f"Slack user <@{source.user_id}>")
+                elif source.user_id:
+                    _sender_parts.append(
+                        f"{source.platform.value.title()} user_id {source.user_id}"
+                    )
+                if source.user_id_alt and source.user_id_alt != source.user_id:
+                    _sender_parts.append(f"user_id_alt {source.user_id_alt}")
+                message_text = (
+                    f"[Verified sender: {' | '.join(_sender_parts)}] {message_text}"
                 )
-            message_text = f"[{_safe_user_name}] {message_text}"
+            elif source.user_name:
+                message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the

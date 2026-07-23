@@ -250,3 +250,71 @@ def test_group_allowed_chats_env_defers_past_yaml_allow_from(monkeypatch):
 
     assert result is True, "env group chat allowlist should defer to runner and authorize"
     assert runner_called["flag"] is True, "env group scope must reach the runner path"
+
+# ── Pure config.extra group scope, no env vars (#68784 agent-narya 7/23) ────
+
+
+def test_pure_config_group_scope_unrelated_sender_defers_to_runner(monkeypatch):
+    """Group scope supplied ONLY via config.extra must still reach the runner.
+
+    ``_telegram_auth_env_configured`` previously inspected env vars alone, so a
+    pure-YAML ``group_allow_from`` (with no ``TELEGRAM_*`` env var set) left the
+    gate ``False`` and intake short-circuited to ``True`` — letting an unrelated
+    group sender through without consulting the runner (#68784 agent-narya 7/23).
+    """
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter(
+        allow_from=["global-user"],  # sender "unrelated" NOT here
+        group_allow_from=["group-user"],
+    )
+
+    runner_calls = {"count": 0}
+
+    class _StubRunner:
+        def _is_user_authorized(self, source):
+            runner_calls["count"] += 1
+            return False  # runner rejects the unrelated sender
+
+    adapter._message_handler = SimpleNamespace(__self__=_StubRunner())
+
+    msg = _make_message(from_user_id="unrelated", chat_id=-100, chat_type="group")
+    result = adapter._is_user_authorized_from_message(msg)
+
+    assert result is False, "unrelated sender must be rejected via the runner"
+    assert runner_calls["count"] >= 1, "pure-config group scope must reach the runner"
+
+
+def test_pure_config_group_scope_authorized_sender_passes_via_runner(monkeypatch):
+    """Positive case: pure-YAML ``group_allow_from`` authorizes via the runner path."""
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter(
+        allow_from=["global-user"],
+        group_allow_from=["group-user"],
+    )
+
+    runner_calls = {"count": 0}
+
+    class _StubRunner:
+        def _is_user_authorized(self, source):
+            runner_calls["count"] += 1
+            return True
+
+    adapter._message_handler = SimpleNamespace(__self__=_StubRunner())
+
+    msg = _make_message(from_user_id="group-user", chat_id=-100, chat_type="group")
+    result = adapter._is_user_authorized_from_message(msg)
+
+    assert result is True, "group_allow_from member should be authorized via runner"
+    assert runner_calls["count"] >= 1, "pure-config group scope must reach the runner"

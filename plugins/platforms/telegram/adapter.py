@@ -983,7 +983,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     def _telegram_auth_env_configured(self) -> bool:
-        """Return True when Telegram auth env vars make an early decision safe."""
+        """Return True when Telegram auth (env or config.extra) makes an early decision safe."""
         keys = (
             "TELEGRAM_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -992,7 +992,17 @@ class TelegramAdapter(BasePlatformAdapter):
             "GATEWAY_ALLOWED_USERS",
             "GATEWAY_ALLOW_ALL_USERS",
         )
-        return any(os.getenv(key, "").strip() for key in keys)
+        if any(os.getenv(key, "").strip() for key in keys):
+            return True
+        # config.extra can also define group-scope allowlists — without consulting
+        # them here, intake would short-circuit to True and skip runner authorization
+        # for an unrelated group sender (#68784 agent-narya 7/23 finding).
+        extra = getattr(self.config, "extra", None) or {}
+        if extra.get("group_allow_from") is not None:
+            return True
+        if extra.get("group_allowed_chats") is not None:
+            return True
+        return False
 
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Check if the sender of a Telegram message is authorized.

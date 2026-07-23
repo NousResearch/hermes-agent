@@ -33,6 +33,21 @@ elif [ -f "$HOME/.git-credentials" ] && grep -q "github.com" "$HOME/.git-credent
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi
+elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] \
+        && grep -q "^GITHUB_APP_ID=" "$_hermes_env" 2>/dev/null \
+        && grep -q "^GITHUB_APP_PRIVATE_KEY_PATH=" "$_hermes_env" 2>/dev/null; then
+    # Last fallback: mint a short-lived GitHub App installation token.
+    # Explicit auth (gh login, GITHUB_TOKEN, .env token, .git-credentials) always wins.
+    _gh_app_script="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/gh-app-token.py"
+    if [ -f "$_gh_app_script" ]; then
+        GITHUB_TOKEN=$(python3 "$_gh_app_script" mint 2>/dev/null | tr -d '\n\r')
+        if [ -n "$GITHUB_TOKEN" ]; then
+            GH_AUTH_METHOD="curl"
+            GH_TOKEN="$GITHUB_TOKEN"
+            export GH_TOKEN
+        fi
+    fi
+    unset _gh_app_script
 fi
 
 # Resolve username for curl method

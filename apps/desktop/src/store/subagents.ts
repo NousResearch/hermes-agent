@@ -50,6 +50,13 @@ const TOOL_PREVIEW_MAX = 96
 
 export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
 
+const hasSubagentsForSession = (map: Record<string, SubagentProgress[]>, sid: string): boolean =>
+  Object.hasOwn(map, sid)
+const getSubagentsForSession = (
+  map: Record<string, SubagentProgress[]>,
+  sid: string
+): SubagentProgress[] | undefined => (hasSubagentsForSession(map, sid) ? map[sid] : undefined)
+
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
@@ -181,7 +188,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 
-  if (!(sid in map)) {
+  if (!hasSubagentsForSession(map, sid)) {
     return
   }
 
@@ -191,7 +198,7 @@ export function clearSessionSubagents(sid: string) {
 
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid]
+  const list = getSubagentsForSession(map, sid)
 
   if (!list?.length) {
     return
@@ -208,7 +215,7 @@ export function pruneDelegateFallbackSubagents(sid: string) {
 
 export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
   const map = $subagentsBySession.get()
-  const list = map[sid] ?? []
+  const list = getSubagentsForSession(map, sid) ?? []
   const id = idOf(payload)
   const idx = list.findIndex(item => item.id === id)
 

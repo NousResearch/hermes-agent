@@ -131,4 +131,12 @@ describe('subagent store', () => {
     expect($subagentsBySession.get().s1).toBeUndefined()
     expect($subagentsBySession.get().s2).toHaveLength(1)
   })
+
+  it('clears session ids that collide with object prototype keys', () => {
+    upsertSubagent('toString', { goal: 'proto', status: 'running', subagent_id: 'a1', task_index: 0 })
+
+    clearSessionSubagents('toString')
+
+    expect(Object.hasOwn($subagentsBySession.get(), 'toString')).toBe(false)
+  })
 })

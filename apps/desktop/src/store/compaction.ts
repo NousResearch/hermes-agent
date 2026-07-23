@@ -6,12 +6,13 @@ import { $activeSessionId } from './session'
 // transcript looks like it reset; per-session so a background chat can't
 // clobber the foreground view.
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
+const hasSession = (sessions: Record<string, true>, key: string): boolean => Object.hasOwn(sessions, key)
 
 export const $compactingSessions = atom<Record<string, true>>({})
 
 export const $compactionActive = computed(
   [$compactingSessions, $activeSessionId],
-  (sessions, activeId) => keyFor(activeId) in sessions
+  (sessions, activeId) => hasSession(sessions, keyFor(activeId))
 )
 
 export function setSessionCompacting(sessionId: string | null | undefined, active: boolean): void {
@@ -19,7 +20,7 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   const sessions = $compactingSessions.get()
 
   if (active) {
-    if (key in sessions) {
+    if (hasSession(sessions, key)) {
       return
     }
 
@@ -28,7 +29,7 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
     return
   }
 
-  if (!(key in sessions)) {
+  if (!hasSession(sessions, key)) {
     return
   }
 

@@ -40,6 +40,14 @@ describe('setSessionTodos finished-list auto-clear', () => {
     expect($todosBySession.get().s1).toBeUndefined()
   })
 
+  it('clears finished lists for session ids that collide with object prototype keys', () => {
+    setSessionTodos('toString', [todo('a', 'completed')])
+
+    vi.advanceTimersByTime(5_000)
+
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
+  })
+
   it('cancels the pending clear when a new active list arrives', () => {
     setSessionTodos('s1', [todo('a', 'completed')])
     vi.advanceTimersByTime(2_000)

@@ -2555,6 +2555,100 @@ class TestCJKSearchFallback:
         assert len(results) == 1
         assert results[0]["source"] == "telegram"
 
+    def test_cjk_like_fallback_honors_not_operator(self, db):
+        """NOT must exclude, not match: "报告 NOT 草稿" previously returned
+        the drafts too, because every non-operator token was OR-joined."""
+        # Force the LIKE fallback: with the bigram index available
+        # (PR #65544) short-CJK queries route to messages_fts_cjk, which
+        # already honors operators. The LIKE path still serves DBs where
+        # the index is absent or its backfill is pending.
+        db._fts_cjk_available = False
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="季度报告已经定稿")
+        db.append_message("s2", role="user", content="报告还是草稿状态")
+
+        results = db.search_messages("报告 NOT 草稿")
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1"}, "NOT term must exclude drafts"
+
+    def test_cjk_like_fallback_honors_and_operator(self, db):
+        """AND must require both terms; the OR-join returned either."""
+        db._fts_cjk_available = False  # exercise the LIKE fallback
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="广西的桂林很有名")
+        db.append_message("s2", role="user", content="广西南宁出差记录")
+
+        results = db.search_messages("广西 AND 桂林")
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1"}, "AND must require both terms"
+
+    def test_cjk_like_fallback_implicit_adjacency_is_conjunctive(self, db):
+        """Whitespace adjacency means AND in FTS5; the LIKE fallback must
+        match the trigram path's semantics."""
+        db._fts_cjk_available = False  # exercise the LIKE fallback
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="广西的桂林很有名")
+        db.append_message("s2", role="user", content="广西南宁出差记录")
+
+        results = db.search_messages("广西 桂林")
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1"}
+
+    def test_cjk_like_fallback_not_binds_looser_than_implicit_and(self, db):
+        """FTS5 gives implicit AND tighter binding than NOT: "报告 NOT 草稿 初版"
+        means 报告 NOT (草稿 AND 初版) — a message is excluded only when it
+        contains the whole negated run, not any single term of it. The naive
+        emit 报告 AND NOT 草稿 AND 初版 would wrongly drop s3 (has 草稿 but
+        not the full run) and wrongly require 初版 as a positive term."""
+        db._fts_cjk_available = False  # exercise the LIKE fallback
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.create_session(session_id="s3", source="cli")
+        db.append_message("s1", role="user", content="季度报告初版完成")
+        db.append_message("s2", role="user", content="报告草稿初版都在这里")
+        db.append_message("s3", role="user", content="报告还是草稿状态")
+
+        results = db.search_messages("报告 NOT 草稿 初版")
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s3"}, (
+            "only the full negated run (草稿 AND 初版) may exclude a message"
+        )
+
+    def test_cjk_like_fallback_explicit_and_terminates_not_run(self, db):
+        """Explicit AND binds looser than NOT in FTS5: "报告 NOT 草稿 AND 初版"
+        means (报告 NOT 草稿) AND 初版 — 初版 is a required positive term
+        again, not part of the negated run."""
+        db._fts_cjk_available = False  # exercise the LIKE fallback
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.create_session(session_id="s3", source="cli")
+        db.append_message("s1", role="user", content="季度报告初版完成")
+        db.append_message("s2", role="user", content="报告草稿初版都在这里")
+        db.append_message("s3", role="user", content="报告最终版")
+
+        results = db.search_messages("报告 NOT 草稿 AND 初版")
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1"}, (
+            "初版 must be required and 草稿 excluded independently"
+        )
+
+    def test_cjk_like_fallback_or_of_and_groups(self, db):
+        """OR binds loosest: "广西 AND 桂林 OR 漓江" = (广西 AND 桂林) OR 漓江."""
+        db._fts_cjk_available = False  # exercise the LIKE fallback
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.create_session(session_id="s3", source="cli")
+        db.append_message("s1", role="user", content="广西的桂林很有名")
+        db.append_message("s2", role="user", content="漓江风景很美")
+        db.append_message("s3", role="user", content="广西南宁出差记录")
+
+        results = db.search_messages("广西 AND 桂林 OR 漓江")
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
+
 
 # =========================================================================
 # Session search and listing

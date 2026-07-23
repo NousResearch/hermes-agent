@@ -7280,22 +7280,58 @@ class SessionDB:
             if not _trigram_succeeded:
                 # Short / mixed CJK query, trigram unavailable, or trigram
                 # <3 CJK chars. Fall back to LIKE substring search.
-                # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
-                # build one LIKE condition per non-operator token so each term
-                # is matched independently (#20494).
-                non_op_tokens = [
-                    t for t in raw_query.split()
-                    if t.upper() not in {"AND", "OR", "NOT"}
-                ] or [raw_query]
-                token_clauses = []
+                # Honor the same boolean semantics FTS5 applies on the trigram
+                # path: whitespace/AND joins terms conjunctively, OR splits
+                # alternatives (#20494), and NOT excludes the following run.
+                # FTS5 precedence (verified against SQLite): implicit AND
+                # binds tighter than NOT ("a NOT b c" == "a NOT (b AND c)"),
+                # while explicit AND binds looser ("a NOT b AND c" ==
+                # "(a NOT b) AND c"), and OR binds loosest. Group tokens into
+                # OR-separated (positives, negated-runs) buckets accordingly:
+                # NOT opens a conjunctive run that implicit adjacency extends
+                # and explicit AND/OR terminates.
+                groups: list = [([], [])]  # (positives, list of negated runs)
+                current: list = groups[-1][0]
+                for tok in raw_query.split():
+                    upper = tok.upper()
+                    if upper == "OR":
+                        if groups[-1][0] or any(groups[-1][1]):
+                            groups.append(([], []))
+                        current = groups[-1][0]
+                    elif upper == "AND":
+                        current = groups[-1][0]
+                    elif upper == "NOT":
+                        groups[-1][1].append([])
+                        current = groups[-1][1][-1]
+                    else:
+                        current.append(tok)
+                groups = [(p, [r for r in n if r]) for p, n in groups]
+                groups = [g for g in groups if g[0] or g[1]]
+                if not groups:
+                    groups = [([raw_query], [])]
+
                 like_params: list = []
-                for tok in non_op_tokens:
+
+                def _like_term(tok: str) -> str:
                     esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    token_clauses.append(
-                        "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+                    like_params.extend([f"%{esc}%"] * 3)
+                    # COALESCE keeps NULL tool columns from turning a negated
+                    # term into NULL (which WHERE would treat as non-matching).
+                    return (
+                        "(m.content LIKE ? ESCAPE '\\'"
+                        " OR COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\'"
+                        " OR COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
                     )
-                    like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
-                like_where = [f"({' OR '.join(token_clauses)})"]
+
+                group_clauses = []
+                for positives, negated_runs in groups:
+                    parts = [_like_term(t) for t in positives]
+                    parts += [
+                        "NOT (" + " AND ".join(_like_term(t) for t in run) + ")"
+                        for run in negated_runs
+                    ]
+                    group_clauses.append("(" + " AND ".join(parts) + ")")
+                like_where = [f"({' OR '.join(group_clauses)})"]
                 if not include_inactive:
                     # Same visibility rule as the FTS5 paths: live rows and
                     # compaction-archived rows are discoverable; rewind/undo
@@ -7325,7 +7361,10 @@ class SessionDB:
                 """
                 like_params.extend([limit, offset])
                 # instr() for snippet uses first search token
-                like_params = [non_op_tokens[0]] + like_params
+                _snippet_token = next(
+                    (t for positives, _ in groups for t in positives), raw_query
+                )
+                like_params = [_snippet_token] + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]

@@ -1153,3 +1153,182 @@ class TestThreadEngagement:
             "1000.000003",
             "1000.000004",
         }
+
+
+# ===========================================================================
+# _handle_slack_reaction — reaction_added forwarding
+# ===========================================================================
+
+class TestSlackReactionForwarding:
+    """Reactions should flow through the same pipeline as typed messages."""
+
+    @pytest.mark.asyncio
+    async def test_reaction_synthesizes_message_in_thread(self):
+        """A 👍 reaction on a message in a thread should produce a synthesized
+        MessageEvent that lands in that thread with text ``👍``, going through
+        _handle_slack_message so the auth gate, thread-context fetch, and
+        skill routing all apply unchanged."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        # Reacted-to message is itself a reply inside a thread; its thread_ts
+        # points at the thread parent.
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "2000.0", "thread_ts": "1000.0", "user": "U_BOT", "text": "Proposal"}
+            ]
+        })
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": "C1", "ts": "2000.0"},
+                "item_user": "U_BOT",
+                "event_ts": "3000.0",
+            })
+
+        assert len(forwarded) == 1
+        synth = forwarded[0]
+        assert synth["type"] == "message"
+        assert synth["user"] == "U1"
+        assert synth["text"] == "👍"
+        assert synth["channel"] == "C1"
+        # Threaded back to the parent of the reacted-to message, not to the
+        # reacted-to message itself.
+        assert synth["thread_ts"] == "1000.0"
+        # Distinct synthetic ts so dedup doesn't merge with anything else.
+        assert synth["ts"] == "3000.0"
+        # Reaction metadata preserved for downstream introspection.
+        assert synth["_hermes_reaction"]["name"] == "thumbsup"
+        assert synth["_hermes_reaction"]["reacted_to_ts"] == "2000.0"
+
+    @pytest.mark.asyncio
+    async def test_self_reaction_dropped(self):
+        """The bot's own reactions (e.g. the :eyes: lifecycle marker on
+        incoming messages) must not feed back into the pipeline."""
+        adapter = _make_adapter()
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U_BOT",  # matches adapter._bot_user_id
+                "reaction": "eyes",
+                "item": {"type": "message", "channel": "C1", "ts": "1000.0"},
+                "item_user": "U1",
+                "event_ts": "3000.0",
+            })
+
+        assert forwarded == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_reaction_uses_colon_name(self):
+        """Reactions outside the unicode emoji map still forward, with text
+        set to the Slack short name in colons. Skills can match on those."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"ts": "1000.0", "user": "U_BOT", "text": "Parent"}]
+        })
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "moov-rocket",  # custom workspace emoji
+                "item": {"type": "message", "channel": "C1", "ts": "1000.0"},
+                "item_user": "U_BOT",
+                "event_ts": "3000.0",
+            })
+
+        assert len(forwarded) == 1
+        assert forwarded[0]["text"] == ":moov-rocket:"
+
+    @pytest.mark.asyncio
+    async def test_non_message_reaction_ignored(self):
+        """File reactions and other non-message item types are dropped — we
+        only forward message reactions."""
+        adapter = _make_adapter()
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "thumbsup",
+                "item": {"type": "file", "file": "F123"},
+                "event_ts": "3000.0",
+            })
+
+        assert forwarded == []
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_threads_to_self(self):
+        """When the reacted-to message is itself the thread parent (no
+        thread_ts of its own), the synthesized event uses the message ts
+        as thread_ts."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"ts": "1000.0", "user": "U_BOT", "text": "Parent"}]
+        })
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "+1",  # alias for thumbsup
+                "item": {"type": "message", "channel": "C1", "ts": "1000.0"},
+                "item_user": "U_BOT",
+                "event_ts": "3000.0",
+            })
+
+        assert len(forwarded) == 1
+        assert forwarded[0]["text"] == "👍"
+        assert forwarded[0]["thread_ts"] == "1000.0"
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_non_bot_message_dropped(self):
+        """A reaction on a message not sent by this bot must not enter the
+        agent loop — matching the Feishu adapter's target-sender check."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"ts": "1000.0", "user": "U_OTHER", "text": "Not our bot"}]
+        })
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": "C1", "ts": "1000.0"},
+                "item_user": "U_OTHER",  # not our bot
+                "event_ts": "3000.0",
+            })
+
+        assert forwarded == []
+

@@ -8,7 +8,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const require = createRequire(import.meta.url)
 
@@ -26,8 +26,8 @@ const require = createRequire(import.meta.url)
 // workspace root from there, so that is what we must neutralize during the pack.
 // (Walking up from electron's install location lands in apps/desktop, which is
 // NOT the root — the root is one level higher.)
-function repoRootPkg() {
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url)) // apps/desktop/scripts
+export function repoRootPkg(startDir) {
+  const scriptDir = startDir ?? path.dirname(fileURLToPath(import.meta.url)) // apps/desktop/scripts
   let dir = scriptDir
   for (let i = 0; i < 8; i++) {
     const cand = path.join(dir, "package.json")
@@ -41,8 +41,9 @@ function repoRootPkg() {
     if (parent === dir) break
     dir = parent
   }
-  // fallback: two levels up from apps/desktop/scripts
-  return path.resolve(scriptDir, "..", "..", "package.json")
+  // fallback: the monorepo root is three levels up from
+  // apps/desktop/scripts (scripts -> desktop -> apps -> root).
+  return path.resolve(scriptDir, "..", "..", "..", "package.json")
 }
 
 // electron-builder 26 detects the npm workspace root via BOTH the root
@@ -143,7 +144,13 @@ if (dist && fs.existsSync(distBinary(dist))) {
 }
 args.push(...process.argv.slice(2))
 
-// WORKAROUND: strip `workspaces` from the root package.json and replace the root
+// Only run the actual pack when invoked directly (e.g. `node
+// run-electron-builder.mjs`). When imported by a test, skip the
+// spawnSync/process.exit so the module can be loaded safely.
+const isMain =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMain) {
+// WORKAROND: strip `workspaces` from the root package.json and replace the root
 // package-lock.json with a minimal stub so electron-builder's node-module
 // collector only sees this app's context (not the whole monorepo), avoiding the
 // unbounded walk / OOM. Always restore, even on failure or if this process is
@@ -164,4 +171,5 @@ try {
   process.exit(result.status == null ? 1 : result.status)
 } finally {
   safeRestore()
+}
 }

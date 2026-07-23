@@ -1221,25 +1221,63 @@ class TestSlackProxyBehavior:
 # ---------------------------------------------------------------------------
 
 
+
+from contextlib import contextmanager
+from types import ModuleType
+
+
+@contextmanager
+def _fake_slack_sdk_modules(client):
+    """Route ``from slack_sdk.web.async_client import AsyncWebClient`` to a mock."""
+    import sys as _sys
+
+    sdk = ModuleType("slack_sdk")
+    web = ModuleType("slack_sdk.web")
+    async_client = ModuleType("slack_sdk.web.async_client")
+    async_client.AsyncWebClient = MagicMock(return_value=client)
+    sdk.web = web
+    web.async_client = async_client
+    modules = {
+        "slack_sdk": sdk,
+        "slack_sdk.web": web,
+        "slack_sdk.web.async_client": async_client,
+    }
+    old = {name: _sys.modules.get(name) for name in modules}
+    _sys.modules.update(modules)
+    try:
+        yield
+    finally:
+        for name, prev in old.items():
+            if prev is None:
+                _sys.modules.pop(name, None)
+            else:
+                _sys.modules[name] = prev
+
+
 class TestStandaloneSendMedia:
     @pytest.mark.asyncio
     async def test_uploads_local_media_with_message_as_caption(self, tmp_path):
-        """Standalone cron sends should use files_upload_v2, not omit the image."""
+        """Standalone cron sends must upload via files_upload_v2 — the text
+        posts as its own message and the file follows (caption-mode, where
+        text rides the upload as initial_comment, is chosen by the tool
+        layer via the ``caption=`` kwarg — covered in
+        tests/tools/test_slack_send_message_media.py)."""
         image = tmp_path / "daily-report.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\n")
         client = MagicMock()
+        client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "1.0"})
         client.files_upload_v2 = AsyncMock(
             return_value={"ok": True, "files": [{"id": "F123"}]}
         )
         config = PlatformConfig(enabled=True, token="xoxb-fake-token")
 
         with (
-            patch.object(_slack_mod, "AsyncWebClient", return_value=client),
+            _fake_slack_sdk_modules(client),
             patch.object(_slack_mod, "resolve_proxy_url", return_value=None),
             patch.object(
                 _slack_mod.aiohttp,
                 "ClientSession",
-                side_effect=AssertionError("media delivery used text-only chat.postMessage"),
+                side_effect=AssertionError("media delivery used text-only aiohttp path"),
             ),
         ):
             result = await _slack_mod._standalone_send(
@@ -1251,12 +1289,45 @@ class TestStandaloneSendMedia:
             )
 
         assert result["success"] is True
-        client.files_upload_v2.assert_awaited_once_with(
-            channel="C123",
-            file=str(image),
-            filename="daily-report.png",
-            initial_comment="daily report",
-            thread_ts=None,
+        client.chat_postMessage.assert_awaited_once()
+        assert client.chat_postMessage.await_args.kwargs["text"] == "daily report"
+        client.files_upload_v2.assert_awaited_once()
+        up_kwargs = client.files_upload_v2.await_args.kwargs
+        assert up_kwargs["channel"] == "C123"
+        assert up_kwargs["file"] == str(image)
+        assert up_kwargs["filename"] == "daily-report.png"
+        assert up_kwargs["initial_comment"] == ""
+
+    @pytest.mark.asyncio
+    async def test_caption_kwarg_rides_upload_as_initial_comment(self, tmp_path):
+        """When the tool layer passes caption=, it rides the upload and no
+        separate text message is posted (C8 caption-mode contract)."""
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "1.0"})
+        client.files_upload_v2 = AsyncMock(
+            return_value={"ok": True, "files": [{"id": "F123"}]}
+        )
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with (
+            _fake_slack_sdk_modules(client),
+            patch.object(_slack_mod, "resolve_proxy_url", return_value=None),
+        ):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "",
+                thread_id=None,
+                media_files=[(str(image), False)],
+                caption="Q3 chart",
+            )
+
+        assert result["success"] is True
+        client.chat_postMessage.assert_not_awaited()
+        assert (
+            client.files_upload_v2.await_args.kwargs["initial_comment"] == "Q3 chart"
         )
 
 
@@ -1371,12 +1442,13 @@ class TestStandaloneSendUserDmResolution:
         open_resp = self._mock_resp({"ok": True, "channel": {"id": "D777666555"}})
         session = self._mock_session(open_resp)
         client = MagicMock()
+        client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "1.0"})
         client.files_upload_v2 = AsyncMock(return_value={"ok": True, "ts": "9.9"})
         config = PlatformConfig(enabled=True, token="xoxb-fake-token")
 
         with (
             patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session),
-            patch.object(_slack_mod, "AsyncWebClient", return_value=client),
+            _fake_slack_sdk_modules(client),
             patch.object(_slack_mod, "resolve_proxy_url", return_value=None),
         ):
             result = await _slack_mod._standalone_send(

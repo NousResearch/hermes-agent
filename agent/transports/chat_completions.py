@@ -509,6 +509,26 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
+        # Native Gemini rejects unknown OpenAI-style extra_body fields. Apply
+        # the same narrow allowlist used by the ProviderProfile path below,
+        # including values supplied through request_overrides.
+        request_extra_body = api_kwargs.get("extra_body")
+        if isinstance(request_extra_body, dict):
+            try:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+                _native_gemini = is_native_gemini_base_url(str(base_url or ""))
+            except Exception:
+                _native_gemini = False
+            if _native_gemini:
+                request_extra_body = {
+                    k: v for k, v in request_extra_body.items()
+                    if k in ("thinking_config", "thinkingConfig", "safety_settings", "safetySettings")
+                }
+                if request_extra_body:
+                    api_kwargs["extra_body"] = request_extra_body
+                else:
+                    api_kwargs.pop("extra_body", None)
+
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):

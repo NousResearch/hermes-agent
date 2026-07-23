@@ -463,6 +463,24 @@ def test_explicit_max_tokens_is_respected():
     assert req["generationConfig"]["maxOutputTokens"] == 4096
 
 
+def test_safety_settings_are_serialized_at_native_request_top_level():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    settings = [
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE",
+        }
+    ]
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        safety_settings=settings,
+    )
+
+    assert req["safetySettings"] == settings
+    assert "safetySettings" not in req["generationConfig"]
+
+
 # ---------------------------------------------------------------------------
 # X-Goog-Api-Client header tests
 # ---------------------------------------------------------------------------

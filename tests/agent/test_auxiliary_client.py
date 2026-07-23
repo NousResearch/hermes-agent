@@ -6017,3 +6017,63 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+class TestCustomGeminiNativeRouting:
+    """Custom Gemini endpoints must use the native adapter on every custom path."""
+
+    def test_anonymous_custom_native_gemini_preserves_default_headers(self, monkeypatch):
+        import agent.auxiliary_client as ac
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        monkeypatch.setattr(
+            ac,
+            "_apply_user_default_headers",
+            lambda _headers: {"X-Hermes-Test": "preserved"},
+        )
+
+        client, model = resolve_provider_client(
+            "custom",
+            model="gemini-3-flash-preview",
+            explicit_base_url="https://generativelanguage.googleapis.com/v1beta",
+            explicit_api_key="test-key",
+        )
+
+        assert isinstance(client, GeminiNativeClient)
+        assert model == "gemini-3-flash-preview"
+        assert client._default_headers == {"X-Hermes-Test": "preserved"}
+        client.close()
+
+    def test_named_custom_native_gemini_uses_native_client_and_preserves_headers(
+        self, monkeypatch
+    ):
+        import agent.auxiliary_client as ac
+        import hermes_cli.runtime_provider as runtime_provider
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        entry = {
+            "name": "gemini-proxy",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "api_key": "test-key",
+            "model": "gemini-3-flash-preview",
+        }
+        monkeypatch.setattr(
+            runtime_provider,
+            "_get_named_custom_provider",
+            lambda _provider: entry,
+        )
+        monkeypatch.setattr(
+            ac,
+            "_apply_user_default_headers",
+            lambda _headers: {"X-Hermes-Test": "preserved"},
+        )
+
+        client, model = resolve_provider_client(
+            "custom:gemini-proxy",
+            model="gemini-3-flash-preview",
+        )
+
+        assert isinstance(client, GeminiNativeClient)
+        assert model == "gemini-3-flash-preview"
+        assert client._default_headers == {"X-Hermes-Test": "preserved"}
+        client.close()

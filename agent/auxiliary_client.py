@@ -4667,6 +4667,30 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
+def _create_native_gemini_client_if_applicable(
+    *,
+    api_key: str,
+    base_url: str,
+    default_headers: Optional[Dict[str, str]] = None,
+):
+    """Build the native Gemini client for a Google REST endpoint, if applicable."""
+    try:
+        from agent.gemini_native_adapter import (
+            GeminiNativeClient,
+            is_native_gemini_base_url,
+        )
+    except ImportError:
+        return None
+
+    if not is_native_gemini_base_url(base_url):
+        return None
+    return GeminiNativeClient(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=default_headers,
+    )
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -4969,15 +4993,15 @@ def resolve_provider_client(
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
-            # Check for native Gemini endpoint before creating standard OpenAI client
-            try:
-                from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-                if is_native_gemini_base_url(custom_base):
-                    sync = GeminiNativeClient(api_key=custom_key, base_url=custom_base)
-                    return (_to_async_client(sync, final_model, is_vision=is_vision) if async_mode
-                            else (sync, final_model))
-            except ImportError:
-                pass
+            # Check for native Gemini endpoint before creating standard OpenAI client.
+            sync = _create_native_gemini_client_if_applicable(
+                api_key=custom_key,
+                base_url=custom_base,
+                default_headers=extra.get("default_headers"),
+            )
+            if sync is not None:
+                return (_to_async_client(sync, final_model, is_vision=is_vision) if async_mode
+                        else (sync, final_model))
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -5091,6 +5115,14 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
+                sync = _create_native_gemini_client_if_applicable(
+                    api_key=custom_key,
+                    base_url=custom_base,
+                    default_headers=_extra2.get("default_headers"),
+                )
+                if sync is not None:
+                    return (_to_async_client(sync, final_model, is_vision=is_vision) if async_mode
+                            else (sync, final_model))
                 client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level

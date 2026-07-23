@@ -136,17 +136,19 @@ class TestNormalizeCustomProviderEntry:
         ]
         assert len(unknown_warnings) == 1
 
-    def test_timeout_keys_not_flagged_unknown(self, caplog):
-        """request_timeout_seconds and stale_timeout_seconds should not produce warnings."""
+    def test_runtime_keys_not_flagged_unknown(self, caplog):
+        """Runtime provider knobs should not produce warnings."""
         entry = {
             "base_url": "https://api.example.com/v1",
             "api_key": "***",
             "request_timeout_seconds": 300,
             "stale_timeout_seconds": 900,
+            "streaming": False,
         }
         with caplog.at_level(logging.WARNING):
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
+        assert result["streaming"] is False
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
     def test_camel_case_warning_logged(self, caplog):

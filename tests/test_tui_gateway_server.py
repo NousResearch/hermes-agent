@@ -12110,3 +12110,36 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     assert not wav.exists()  # capture temp file cleaned up
     assert ts.take_speech_interrupted() is True  # VAD cut latches the model note
     server._tts_stream_stop()
+
+
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    """The TUI/desktop clarify bridge honors the canonical clarify timeout
+    (via _clarify_timeout_seconds) instead of the hardcoded _block default."""
+    captured = {}
+
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(event=event, sid=sid, payload=payload, timeout=timeout)
+        return "answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
+
+    assert result == "answer"
+    assert captured["event"] == "clarify.request"
+    assert captured["timeout"] == 42
+    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(0, None), (-1, None), (42, 42)],
+)
+def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
+    """A ``<= 0`` clarify timeout means unlimited and reaches _block as None
+    (ev.wait(None) waits forever) rather than an immediate ev.wait(0) skip."""
+    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
+
+    assert server._clarify_timeout_seconds() == expected

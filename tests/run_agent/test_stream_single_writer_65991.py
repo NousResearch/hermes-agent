@@ -208,6 +208,55 @@ class TestCodexSingleWriter:
 
         assert "".join(delivered) == "hello world"
 
+    def test_codex_interrupt_closes_stream_without_draining_provider(self):
+        from agent.codex_runtime import run_codex_stream
+
+        agent = _make_agent()
+        agent.api_mode = "codex_responses"
+        produced = []
+        stream_closed = threading.Event()
+
+        def interrupt_after_first_delta(_text):
+            agent._interrupt_requested = True
+
+        agent.stream_delta_callback = interrupt_after_first_delta
+        agent._stream_callback = None
+
+        def event_gen():
+            try:
+                produced.append("first")
+                yield self._codex_event(
+                    "response.output_text.delta",
+                    delta="first",
+                    item_id="i1",
+                )
+                produced.append("lookahead")
+                yield self._codex_event(
+                    "response.output_text.delta",
+                    delta="-unused",
+                    item_id="i1",
+                )
+                produced.append("terminal")
+                yield self._codex_event(
+                    "response.completed",
+                    response=SimpleNamespace(
+                        id="r1",
+                        status="completed",
+                        output=[],
+                        usage=None,
+                    ),
+                )
+            finally:
+                stream_closed.set()
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = event_gen()
+
+        run_codex_stream(agent, {"model": "gpt-5.3-codex"}, client=mock_client)
+
+        assert produced == ["first", "lookahead"]
+        assert stream_closed.is_set()
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

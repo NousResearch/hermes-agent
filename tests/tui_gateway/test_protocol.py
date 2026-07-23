@@ -1117,7 +1117,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         def close(self):
             pass
 
-    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(
         server,
         "_make_agent",

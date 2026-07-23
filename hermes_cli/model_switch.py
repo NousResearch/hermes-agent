@@ -2219,14 +2219,22 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
-        # No-auth providers (local servers with empty env_vars):
-        # allow providers from the providers/ registry that don't need
-        # API keys to appear in the picker (e.g. hypura local server).
+        # No-auth local providers (fork): only allowlisted slugs with empty
+        # env_vars may appear without credentials. Do not treat every empty
+        # env_vars profile as authenticated — that leaks catalog-only entries.
         if not _cp_has_creds:
             try:
                 from providers import get_provider_profile as _get_pp
                 _pp = _get_pp(_cp.slug)
-                if _pp and not _pp.env_vars:
+                if (
+                    _pp
+                    and not _pp.env_vars
+                    and str(_cp.slug).lower() in {
+                        "hypura",
+                        "freellmapi",
+                        "freebuff",
+                    }
+                ):
                     _cp_has_creds = True
             except Exception:
                 pass

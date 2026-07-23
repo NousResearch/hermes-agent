@@ -6413,7 +6413,7 @@ def _(rid, params: dict) -> dict:
     if profile_home is not None:
         db = _open_session_db(profile_home)
     else:
-        db = _open_session_db()
+        db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
 

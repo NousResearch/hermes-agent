@@ -38,6 +38,7 @@ import {
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  resolveGetMessagePayload,
   extractBridgeEvent,
   inferMediaType,
   mediaPayloadForFile,
@@ -401,9 +402,10 @@ async function startSocket() {
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
-      // We don't maintain a message store, so return a placeholder.
-      // This is enough for Baileys to complete the retry handshake.
-      return { conversation: '' };
+      // Never fabricate empty conversation payloads — during E2EE session
+      // churn WhatsApp retries can turn those placeholders into 1000s of
+      // blank user-visible bubbles (#63647). Serve stored payloads only.
+      return resolveGetMessagePayload(messageStore, key);
     },
   });
 

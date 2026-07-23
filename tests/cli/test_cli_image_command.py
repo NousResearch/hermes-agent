@@ -74,6 +74,9 @@ class TestCollectQueryImages:
         home = tmp_path / "home"
         img = _make_image(home / "storage" / "shared" / "Pictures" / "cat.png")
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
 
         message, images = _collect_query_images("describe this", "~/storage/shared/Pictures/cat.png")
 

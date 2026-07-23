@@ -1066,7 +1066,14 @@ class TeamsAdapter(BasePlatformAdapter):
                 ),
             )
 
-        resolve_gateway_approval(session_key, choice)
+        # The resolve count is authoritative, not the has_blocking_approval
+        # pre-check above: the approval wait can time out (failing closed and
+        # denying the command) between that check and this call, and another
+        # surface — /approve, a second platform, the TUI — can resolve it in
+        # the same window. Rendering "Allowed" off the button the user pressed
+        # would then tell the operator a dangerous command ran with their
+        # approval when it had in fact already been denied.
+        resolved = resolve_gateway_approval(session_key, choice)
 
         label_map = {
             "once": "✅ Allowed (once)",
@@ -1082,7 +1089,26 @@ class TeamsAdapter(BasePlatformAdapter):
             body.append(TextBlock(text=f"```\n{cmd}\n```", wrap=True))
         if desc:
             body.append(TextBlock(text=f"Reason: {desc}", wrap=True, isSubtle=True))
-        body.append(TextBlock(text=label_map[choice], wrap=True, weight="Bolder"))
+        if resolved:
+            body.append(TextBlock(text=label_map[choice], wrap=True, weight="Bolder"))
+        else:
+            body.append(
+                TextBlock(
+                    text="⌛ Approval expired — command was not run",
+                    wrap=True,
+                    weight="Bolder",
+                )
+            )
+            body.append(
+                TextBlock(
+                    text=(
+                        "Nothing was waiting on this prompt: it already timed "
+                        "out (and was denied) or was resolved elsewhere."
+                    ),
+                    wrap=True,
+                    isSubtle=True,
+                )
+            )
 
         return InvokeResponse(
             status=200,

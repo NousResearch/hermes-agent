@@ -1686,6 +1686,49 @@ class TestDefaultInteractionDispatch:
         assert resolve_calls == []
 
     @pytest.mark.asyncio
+    async def test_approval_click_accepts_dm_session_key(self):
+        """Gateway stores private-chat sessions as chat_type=dm, not c2c.
+
+        Real QQ C2C approval buttons embed session keys like
+        agent:main:qqbot:dm:<openid>. Auth must accept that, otherwise the
+        button click is rejected and users fall back to typing /approve.
+        """
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i",
+                "chat_type": 2,
+                "user_openid": "C66791973CD59173F10CC7FA50BB8C38",
+                "data": {
+                    "resolved": {
+                        "button_data": (
+                            "approve:agent:main:qqbot:dm:"
+                            "C66791973CD59173F10CC7FA50BB8C38:allow-once"
+                        )
+                    }
+                },
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [(
+            "agent:main:qqbot:dm:C66791973CD59173F10CC7FA50BB8C38",
+            "once",
+            False,
+        )]
+
+    @pytest.mark.asyncio
     async def test_update_prompt_click_writes_response_file(self, tmp_path, monkeypatch):
         """update_prompt:y click writes 'y' to ~/.hermes/.update_response."""
         adapter = self._make_adapter()

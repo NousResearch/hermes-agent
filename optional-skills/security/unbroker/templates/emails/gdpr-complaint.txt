@@ -1,0 +1,27 @@
+Subject: GDPR complaint - {broker_name} failed to honor an erasure request
+
+To: {agency_name}
+File at: {agency_portal}
+
+Complainant:
+  Name:  {full_name}
+  Email: {contact_email}
+
+Controller complained about: {broker_name}
+Controller opt-out / privacy contact: {broker_contact}
+
+Summary of complaint:
+On {submitted_date} I submitted a request to {broker_name} to erase the personal
+data it holds about me, exercising my right to erasure under the General Data
+Protection Regulation (Article 17). Under Article 12(3) the controller must act
+without undue delay and within {window_days} days. As of today, {days_overdue}
+day(s) have elapsed beyond that deadline, {broker_name} has not erased my personal
+data, and it has not provided a lawful basis for refusing under Article 17(3).
+
+Requested action:
+I ask that {agency_name} investigate {broker_name}'s failure to comply with the
+General Data Protection Regulation within the required {window_days}-day window and
+compel erasure of my personal data.
+
+Signed,
+{full_name}

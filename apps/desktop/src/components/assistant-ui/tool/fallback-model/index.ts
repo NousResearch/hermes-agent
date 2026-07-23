@@ -1389,6 +1389,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
 
   const searchHits =
     part.toolName === 'web_search' && status !== 'error' ? extractSearchResults(part.result) : undefined
+  const searchQuery =
+    part.toolName === 'web_search' ? firstStringField(argsRecord, ['search_term', 'query']) || contextValue(argsRecord) : ''
 
   const resultCount = status === 'error' ? null : toolResultCount(part, argsRecord, resultRecord)
 
@@ -1416,6 +1418,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     inlineDiff,
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
     rendersAnsi: rendersAnsi || undefined,
+    searchQuery: searchQuery || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,
     stderr: hasSplitStreams ? stderrRaw || undefined : undefined,
     terminalCommand,

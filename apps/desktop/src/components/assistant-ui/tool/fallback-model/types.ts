@@ -40,6 +40,8 @@ export interface ToolView {
    *  (terminal/execute_code) so the renderer knows to run them through
    *  the ANSI parser instead of printing them as literals. */
   rendersAnsi?: boolean
+  /** Original query, shown above structured web-search results. */
+  searchQuery?: string
   searchHits?: SearchResultRow[]
   /** When the backend reports stderr as a separate stream (terminal /
    *  execute_code), the renderer shows it as its own labeled, neutrally

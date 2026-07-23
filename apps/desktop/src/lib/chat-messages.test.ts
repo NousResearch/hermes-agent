@@ -538,6 +538,36 @@ describe('upsertToolPart', () => {
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
   })
 
+  it('pairs a terminal completion with its context-only start when event IDs differ', () => {
+    const started = upsertToolPart(
+      [],
+      { context: 'echo "Hello from the terminal"', name: 'terminal', tool_id: 'terminal-start' },
+      'running'
+    )
+
+    const completed = upsertToolPart(
+      started,
+      {
+        args: { command: 'echo "Hello from the terminal"' },
+        name: 'terminal',
+        result: { exit_code: 0, stdout: 'Hello from the terminal' },
+        tool_id: 'terminal-complete'
+      },
+      'complete'
+    )
+
+    const terminalParts = completed.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call' && part.toolName === 'terminal'
+    )
+
+    expect(terminalParts).toHaveLength(1)
+    expect(terminalParts[0]?.toolCallId).toBe('terminal-complete')
+    expect(terminalParts[0] && 'result' in terminalParts[0] ? terminalParts[0].result : undefined).toMatchObject({
+      exit_code: 0,
+      stdout: 'Hello from the terminal'
+    })
+  })
+
   it('preserves query args when completion payload omits context', () => {
     const started = upsertToolPart(
       [],

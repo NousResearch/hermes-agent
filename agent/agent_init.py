@@ -454,6 +454,7 @@ def init_agent(
     event_callback: Optional[Callable[[str, dict], None]] = None,
     reaction_callback: Optional[Callable[[str], None]] = None,
     max_tokens: int = None,
+    temperature: Optional[float] = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
@@ -512,6 +513,8 @@ def init_agent(
         clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
             Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+        temperature (float): Sampling temperature for model inference (optional, uses provider/model default if not set).
+            Ignored when the provider has a fixed temperature or omit_temperature configured.
         reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
             If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
         prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
@@ -770,6 +773,7 @@ def init_agent(
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
+    agent.temperature = temperature  # None = use provider/model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
@@ -1510,6 +1514,7 @@ def init_agent(
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
+        "temperature": temperature,
     }
     
     # In-memory todo list for task planning (one per agent/session)

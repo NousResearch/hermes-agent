@@ -37,6 +37,7 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -280,6 +281,29 @@ def _get_enabled_plugins() -> Optional[set]:
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
+#: Public allowlist for ``PreClaimDisposition.block_kind``.
+BLOCK_KINDS: frozenset[str] = frozenset({
+    "policy_violation",
+    "dependency_unsatisfied",
+    "quota_exceeded",
+    "auth_required",
+    "unsupported",
+})
+
+
+class PreClaimHookError(Exception):
+    """Raised when a plugin returns an invalid pre-claim disposition."""
+
+    plugin_id: str
+    rule: str
+
+    def __init__(self, plugin_id: str, rule: str) -> None:
+        self.plugin_id = plugin_id
+        self.rule = rule
+        super().__init__(
+            f"Plugin {plugin_id!r} violated pre-claim disposition rule: {rule}"
+        )
+
 
 @dataclass
 class PreClaimDisposition:
@@ -290,8 +314,57 @@ class PreClaimDisposition:
     evidence: dict = field(default_factory=dict)
     plugin_id: str = ""
 
-    def __post_init__(self) -> "PreClaimDisposition":
-        return self
+    def __post_init__(self) -> None:
+        def fail(rule: str) -> None:
+            raise PreClaimHookError(self.plugin_id, rule)
+
+        if self.decision not in ("allow", "defer", "block", "complete"):
+            fail("decision must be one of: allow, defer, block, complete")
+        if not isinstance(self.evidence, dict):
+            fail("evidence must be a dict")
+        try:
+            json.dumps(self.evidence)
+        except (TypeError, ValueError) as exc:
+            raise PreClaimHookError(
+                self.plugin_id, "evidence must be JSON-serializable"
+            ) from exc
+
+        for name, value in (("reason", self.reason), ("summary", self.summary)):
+            if value is not None and not isinstance(value, str):
+                fail(f"{name} must be a str or None")
+
+        if self.decision == "allow":
+            if self.reason is not None:
+                fail("allow requires reason to be None")
+            if self.block_kind is not None:
+                fail("allow requires block_kind to be None")
+            if self.summary is not None:
+                fail("allow requires summary to be None")
+            if self.evidence:
+                fail("allow requires evidence to be empty")
+            return
+
+        if self.decision == "defer":
+            if self.block_kind is not None:
+                fail("defer requires block_kind to be None")
+            return
+
+        if self.decision == "block":
+            if not isinstance(self.reason, str) or not self.reason.strip():
+                fail("block requires reason to be a nonblank str")
+            if (
+                not isinstance(self.block_kind, str)
+                or self.block_kind not in BLOCK_KINDS
+            ):
+                fail(f"block_kind must be one of: {', '.join(sorted(BLOCK_KINDS))}")
+            return
+
+        if self.block_kind is not None:
+            fail("complete requires block_kind to be None")
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            fail("complete requires summary to be a nonblank str")
+        if not self.evidence:
+            fail("complete requires evidence to be a non-empty dict")
 
 
 @dataclass

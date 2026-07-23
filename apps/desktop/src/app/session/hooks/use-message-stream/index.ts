@@ -507,16 +507,21 @@ export function useMessageStream({
               )
             } else if (
               interimBoundaryPending &&
-              responsePreviewed &&
               finalText &&
               existingText &&
               finalText.startsWith(existingText)
             ) {
-              // The verification candidate was published provisionally as an
-              // interim message and then reused as the terminal response
-              // (continuation-budget fallback). Settle the interim in place
-              // instead of creating a duplicate — the DB has one row, so the
-              // live UI must agree. (#65919 review: duplicate-message blocker)
+              // An interim message was just sealed (message.interim) and the
+              // terminal response (message.complete) either reuses it exactly
+              // or extends it. The DB will persist one row, so the live UI
+              // must settle onto the existing interim instead of appending a
+              // duplicate bubble. (#70108: Desktop intermittently renders
+              // duplicate assistant replies)
+              //
+              // This covers both the response_previewed path (continuation-
+              // budget fallback, #65919) and the common case where the
+              // gateway doesn't set response_previewed but the final text
+              // is the same as (or a superset of) the interim text.
               //
               // Prefix match (not exact equality): the final response may be
               // the streamed text plus a trailing delta.  mergeFinalAssistantText

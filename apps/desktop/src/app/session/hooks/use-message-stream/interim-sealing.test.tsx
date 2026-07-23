@@ -186,18 +186,19 @@ describe('useMessageStream interim text sealing', () => {
     expect(getState().interimBoundaryPending).toBe(true)
   })
 
-  it('keeps an identical final completion distinct from an interim reply without response_previewed', async () => {
+  it('settles an identical final completion onto the interim even without response_previewed', async () => {
     await mountStream()
     await start()
 
     await interim('same reply')
     await complete('same reply')
 
-    // Without response_previewed, the interim and terminal replies are
-    // distinct messages — the gateway didn't signal that the final reuses
-    // the provisional candidate.
+    // The interim and final are byte-identical — the DB will have one row,
+    // so the live UI must collapse them into one bubble instead of
+    // rendering a duplicate. (#70108: Desktop intermittently renders
+    // duplicate assistant replies)
     const texts = assistantMessages()
-    expect(texts.filter(t => t === 'same reply')).toHaveLength(2)
+    expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
   })
 
   it('settles an identical final completion onto the interim when response_previewed', async () => {
@@ -226,6 +227,22 @@ describe('useMessageStream interim text sealing', () => {
 
     // Prefix match: the final starts with the interim text, so settle
     // onto the interim instead of creating a duplicate bubble.
+    const texts = assistantMessages()
+    expect(texts.filter(t => t.includes('partial answer'))).toHaveLength(1)
+    expect(texts[0]).toBe('partial answer with more detail')
+  })
+
+  it('settles a prefix-matched final onto the interim even without response_previewed', async () => {
+    await mountStream()
+    await start()
+
+    // The interim seals a partial answer, then the final response
+    // extends it — even without response_previewed, the DB will have
+    // one row, so the live UI must settle onto the interim.
+    await interim('partial answer')
+    await complete('partial answer with more detail')
+
+    // One bubble, containing the full final text — not two. (#70108)
     const texts = assistantMessages()
     expect(texts.filter(t => t.includes('partial answer'))).toHaveLength(1)
     expect(texts[0]).toBe('partial answer with more detail')

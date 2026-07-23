@@ -25,7 +25,10 @@ from gateway.stream_consumer import (
 
 
 def _make_draft_capable_adapter(
-    *, supports_draft: bool = True, draft_succeeds: bool = True,
+    *,
+    supports_draft: bool = True,
+    draft_succeeds: bool = True,
+    supports_edit: bool = True,
 ):
     """Build a minimal BasePlatformAdapter subclass with draft support.
 
@@ -39,7 +42,10 @@ def _make_draft_capable_adapter(
     DraftCapableAdapter = type(
         "DraftCapableAdapter",
         (BasePlatformAdapter,),
-        {"MAX_MESSAGE_LENGTH": 4096},
+        {
+            "MAX_MESSAGE_LENGTH": 4096,
+            "SUPPORTS_MESSAGE_EDITING": supports_edit,
+        },
     )
     DraftCapableAdapter.__abstractmethods__ = frozenset()
     adapter = DraftCapableAdapter.__new__(DraftCapableAdapter)
@@ -116,6 +122,24 @@ class TestDraftTransportSelection:
         cfg = StreamConsumerConfig(transport="auto", chat_type="dm")
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
         assert consumer._resolve_draft_streaming() is False
+
+    def test_gateway_accepts_native_draft_without_claiming_edit_support(self):
+        from gateway.run import _adapter_streaming_capabilities
+
+        adapter = _make_draft_capable_adapter(supports_edit=False)
+
+        assert _adapter_streaming_capabilities(
+            adapter,
+            transport="auto",
+            chat_type="dm",
+            metadata=None,
+        ) == (False, True)
+        assert _adapter_streaming_capabilities(
+            adapter,
+            transport="edit",
+            chat_type="dm",
+            metadata=None,
+        ) == (False, False)
 
 
 class TestDraftStreamingHappyPath:
@@ -207,6 +231,31 @@ class TestDraftFallbackOnFailure:
         assert consumer._use_draft_streaming is False
         # Final message delivered via the regular send path.
         adapter.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_draft_only_failure_buffers_until_one_complete_final_send(self):
+        adapter = _make_draft_capable_adapter(
+            draft_succeeds=False,
+            supports_edit=False,
+        )
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Hello ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("world!")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer._draft_failures == 1
+        adapter.edit_message.assert_not_awaited()
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.kwargs["content"] == "Hello world!"
 
 
 class TestDraftIdLifecycle:

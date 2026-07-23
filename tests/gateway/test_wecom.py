@@ -41,6 +41,10 @@ class TestWeComAdapterInit:
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter.supports_draft_streaming(chat_type="dm") is True
+        assert adapter.supports_draft_streaming(chat_type="group") is True
+        assert adapter.supports_draft_streaming(chat_type="channel") is False
 
     def test_reads_config_from_extra(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
@@ -121,6 +125,21 @@ class TestWeComConnect:
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_websocket_cleanup_drops_subscription_scoped_reply_state(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._last_chat_req_ids["group-1"] = "req-1"
+        adapter._streaming_drafts["group-1"] = ("req-1", "hermes-7")
+
+        await adapter._cleanup_ws()
+
+        assert adapter._reply_req_ids == {}
+        assert adapter._last_chat_req_ids == {}
+        assert adapter._streaming_drafts == {}
 
 
 class TestWeComQrScan:
@@ -218,6 +237,103 @@ class TestWeComReplyMode:
         args = adapter._send_reply_request.await_args.args
         assert args[0] == "req-1"
         assert args[1] == {"msgtype": "image", "image": {"media_id": "media-1"}}
+
+
+class TestWeComDraftStreaming:
+    @pytest.mark.asyncio
+    async def test_draft_frames_are_acknowledged_and_finalized_in_place(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-1"] = "inbound-req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"headers": {"req_id": "inbound-req-1"}, "errcode": 0},
+                {"headers": {"req_id": "inbound-req-1"}, "errcode": 0},
+            ]
+        )
+
+        draft = await adapter.send_draft("group-1", 7, "partial")
+        final = await adapter.send(
+            "group-1",
+            "complete answer",
+            metadata={"notify": True, "expect_edits": True},
+        )
+
+        assert draft.success is True
+        assert draft.message_id is None
+        assert final.success is True
+        assert final.message_id == "hermes-7"
+        assert "group-1" not in adapter._streaming_drafts
+
+        calls = adapter._send_reply_request.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0] == "inbound-req-1"
+        assert calls[0].args[1] == {
+            "msgtype": "stream",
+            "stream": {
+                "id": "hermes-7",
+                "finish": False,
+                "content": "partial",
+            },
+        }
+        assert calls[1].args[1]["stream"] == {
+            "id": "hermes-7",
+            "finish": True,
+            "content": "complete answer",
+        }
+
+    @pytest.mark.asyncio
+    async def test_draft_requires_reply_context(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock()
+
+        result = await adapter.send_draft("group-1", 3, "partial")
+
+        assert result.success is False
+        assert "reply context" in (result.error or "").lower()
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stale_finalize_cleans_draft_and_falls_back_to_group_reply(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-1"] = "inbound-req-42"
+        adapter._send_request = AsyncMock()
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"headers": {"req_id": "inbound-req-42"}, "errcode": 0},
+                {
+                    "headers": {"req_id": "inbound-req-42"},
+                    "errcode": 846609,
+                    "errmsg": "websocket not subscribed",
+                },
+                {"headers": {"req_id": "inbound-req-42"}, "errcode": 0},
+            ]
+        )
+
+        draft = await adapter.send_draft("group-1", 9, "partial")
+        final = await adapter.send(
+            "group-1",
+            "complete answer",
+            metadata={"notify": True},
+        )
+
+        assert draft.success is True
+        assert final.success is True
+        assert "group-1" not in adapter._streaming_drafts
+        assert adapter._last_chat_req_ids["group-1"] == "inbound-req-42"
+        adapter._send_request.assert_not_awaited()
+
+        fallback_call = adapter._send_reply_request.await_args_list[-1]
+        assert fallback_call.args[0] == "inbound-req-42"
+        assert fallback_call.args[1] == {
+            "msgtype": "markdown",
+            "markdown": {"content": "complete answer"},
+        }
 
 
 class TestExtractText:

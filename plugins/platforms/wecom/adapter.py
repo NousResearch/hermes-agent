@@ -193,6 +193,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        # One native reply-stream draft may be active per serialized chat.
+        # Values are ``(reply_req_id, stream_id)``.
+        self._streaming_drafts: Dict[str, tuple[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -271,6 +274,12 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _cleanup_ws(self) -> None:
         """Close the live websocket/session, if any."""
+        # Reply req_ids and native drafts are scoped to the websocket
+        # subscription that received them.  Never carry them across reconnects.
+        self._reply_req_ids.clear()
+        self._last_chat_req_ids.clear()
+        self._streaming_drafts.clear()
+
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -465,6 +474,27 @@ class WeComAdapter(BasePlatformAdapter):
             return response
         finally:
             self._pending_responses.pop(normalized_req_id, None)
+
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        *,
+        finish: bool,
+    ) -> Dict[str, Any]:
+        """Send an acknowledged native stream frame on the reply channel."""
+        return await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "stream",
+                "stream": {
+                    "id": stream_id,
+                    "finish": finish,
+                    "content": content[:self.MAX_MESSAGE_LENGTH],
+                },
+            },
+        )
 
     @staticmethod
     def _new_req_id(prefix: str) -> str:
@@ -1383,6 +1413,118 @@ class WeComAdapter(BasePlatformAdapter):
             },
         )
 
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """WeCom reply streams provide native drafts in DMs and groups."""
+        del metadata
+        return str(chat_type or "").lower() in {"dm", "private", "group"}
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send or update a native WeCom reply-stream draft.
+
+        Frames are acknowledged before the next update, which keeps the
+        inbound ``req_id`` correlation unambiguous.  Finalization is performed
+        by :meth:`send`, matching the generic draft transport contract.
+        """
+        del metadata
+        if not chat_id:
+            return SendResult(success=False, error="chat_id is required")
+
+        stream_id = f"hermes-{draft_id}"
+        active = self._streaming_drafts.get(chat_id)
+        reply_req_id = (
+            active[0]
+            if active and active[1] == stream_id
+            else self._last_chat_req_ids.get(chat_id)
+        )
+        if not reply_req_id:
+            return SendResult(
+                success=False,
+                error="No reply context available for WeCom draft streaming",
+            )
+
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id,
+                content,
+                finish=False,
+            )
+        except asyncio.TimeoutError:
+            self._streaming_drafts.pop(chat_id, None)
+            return SendResult(success=False, error="Timeout streaming draft to WeCom")
+        except Exception as exc:
+            self._streaming_drafts.pop(chat_id, None)
+            logger.warning("[%s] Draft stream failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        error = self._response_error(response)
+        if error:
+            self._streaming_drafts.pop(chat_id, None)
+            return SendResult(success=False, error=error, raw_response=response)
+
+        self._streaming_drafts[chat_id] = (reply_req_id, stream_id)
+        return SendResult(success=True, message_id=None, raw_response=response)
+
+    async def _finalize_streaming_draft(
+        self,
+        chat_id: str,
+        content: str,
+    ) -> SendResult:
+        """Finalize a draft, falling back through the same reply context."""
+        reply_req_id, stream_id = self._streaming_drafts[chat_id]
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id,
+                content,
+                finish=True,
+            )
+            error = self._response_error(response)
+            if not error:
+                self._streaming_drafts.pop(chat_id, None)
+                return SendResult(
+                    success=True,
+                    message_id=stream_id,
+                    raw_response=response,
+                )
+            logger.warning("[%s] Draft finalize failed: %s", self.name, error)
+        except Exception as exc:
+            logger.warning("[%s] Draft finalize failed: %s", self.name, exc)
+
+        # The stream context is no longer trustworthy, but groups still cannot
+        # use proactive APP_CMD_SEND.  Clear only draft state and retry the
+        # complete answer as reply markdown with the same inbound req_id.
+        self._streaming_drafts.pop(chat_id, None)
+        try:
+            fallback = await self._send_reply_markdown(reply_req_id, content)
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout sending WeCom draft fallback")
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+        fallback_error = self._response_error(fallback)
+        if fallback_error:
+            return SendResult(
+                success=False,
+                error=fallback_error,
+                raw_response=fallback,
+            )
+        return SendResult(
+            success=True,
+            message_id=self._payload_req_id(fallback) or uuid.uuid4().hex[:12],
+            raw_response=fallback,
+        )
+
     async def send(
         self,
         chat_id: str,
@@ -1390,11 +1532,13 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
+        """Send markdown, or finalize an active native stream draft."""
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
+
+        if (metadata or {}).get("notify") and chat_id in self._streaming_drafts:
+            return await self._finalize_streaming_draft(chat_id, content)
 
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)

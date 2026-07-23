@@ -156,7 +156,9 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "whatsapp_cloud":  _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
+    # WeCom has no ordinary edit API, so progress stays quiet; native reply
+    # drafts may follow the global streaming switch via transport="auto".
+    "wecom":           {**_TIER_LOW, "streaming": None},
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
 

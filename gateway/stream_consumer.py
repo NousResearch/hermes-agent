@@ -175,7 +175,9 @@ class GatewayStreamConsumer:
         # must never delete an earlier finalized preamble/commentary message.
         self._segment_preview_message_ids: "set[str]" = set()
         self._already_sent = False
-        self._edit_supported = True  # Disabled when progressive edits are no longer usable
+        self._edit_supported = bool(
+            getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        )  # Disabled when progressive edits are unavailable or fail
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
         # True when the most recent _send_or_edit split-and-delivered across
@@ -1812,6 +1814,11 @@ class GatewayStreamConsumer:
                 return True
             # Failure already disabled drafts for this run; fall through to
             # the regular edit/send path below.
+        if self._message_id is None and not self._edit_supported and not finalize:
+            # A native-draft-only adapter cannot safely expose a partial first
+            # message: there is no edit API to update it.  Keep accumulating
+            # and let the finalize tick deliver the complete response once.
+            return False
         self._last_edit_overflowed = False
         try:
             if self._message_id is not None:

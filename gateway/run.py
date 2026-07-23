@@ -231,6 +231,33 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _adapter_streaming_capabilities(
+    adapter: Any,
+    *,
+    transport: str,
+    chat_type: str,
+    metadata: Optional[Dict[str, Any]],
+) -> tuple[bool, bool]:
+    """Return ``(supports_edit, supports_native_draft)`` for this stream.
+
+    Draft-only adapters must not pretend to support ordinary message edits:
+    the distinction lets the stream consumer use the platform's native draft
+    transport while retaining safe buffering when that transport fails.
+    """
+    supports_edit = bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
+    supports_draft = False
+    if str(transport or "edit").lower() in {"auto", "draft"}:
+        probe = getattr(adapter, "supports_draft_streaming", None)
+        if callable(probe):
+            try:
+                supports_draft = bool(
+                    probe(chat_type=chat_type or None, metadata=metadata)
+                )
+            except Exception:
+                logger.debug("Native draft capability probe failed", exc_info=True)
+    return supports_edit, supports_draft
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -19021,7 +19048,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _chat_id=source.chat_id,
                         ) -> None:
                             _adapter.pause_typing_for_chat(_chat_id)
-                    _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                    _adapter_supports_edit, _adapter_supports_draft = (
+                        _adapter_streaming_capabilities(
+                            _adapter,
+                            transport=_scfg.transport or "edit",
+                            chat_type=getattr(source, "chat_type", "") or "",
+                            metadata=_thread_metadata,
+                        )
+                    )
+                    if not (_adapter_supports_edit or _adapter_supports_draft):
+                        raise RuntimeError("skip streaming for unsupported platform")
                     _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
@@ -20493,10 +20529,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # without edit support, the consumer sends a partial
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
-                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        if not _adapter_supports_edit:
-                            raise RuntimeError("skip streaming for non-editable platform")
-                        _effective_cursor = _scfg.cursor
+                        _adapter_supports_edit, _adapter_supports_draft = (
+                            _adapter_streaming_capabilities(
+                                _adapter,
+                                transport=_scfg.transport or "edit",
+                                chat_type=getattr(source, "chat_type", "") or "",
+                                metadata=_status_thread_metadata,
+                            )
+                        )
+                        if not (_adapter_supports_edit or _adapter_supports_draft):
+                            raise RuntimeError("skip streaming for unsupported platform")
+                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.

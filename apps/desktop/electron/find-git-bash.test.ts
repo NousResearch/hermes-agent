@@ -14,6 +14,7 @@ test('HERMES_GIT_BASH_PATH override takes precedence', () => {
     fileExists: yes,
     findOnPath: () => null
   })
+
   assert.equal(result, 'D:\\CustomGit\\bin\\bash.exe')
 })
 
@@ -37,6 +38,7 @@ test('HERMES_GIT_BASH_PATH empty string is ignored', () => {
     fileExists: no,
     findOnPath: () => 'C:\\msys64\\usr\\bin\\bash.exe'
   })
+
   assert.equal(result, 'C:\\msys64\\usr\\bin\\bash.exe')
 })
 
@@ -47,5 +49,6 @@ test('non-Windows uses findOnPath', () => {
     fileExists: no,
     findOnPath: () => '/usr/bin/bash'
   })
+
   assert.equal(result, '/usr/bin/bash')
 })

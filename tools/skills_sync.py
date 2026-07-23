@@ -692,8 +692,14 @@ def sync_skills(quiet: bool = False) -> dict:
     for name in cleaned:
         del manifest[name]
 
-    # Also copy DESCRIPTION.md files for categories (if not already present)
+    # Also copy DESCRIPTION.md files for categories (if not already present).
+    # Some skill directories carry their own DESCRIPTION.md. Copying those
+    # independently would recreate a deliberately deleted/suppressed skill as
+    # a DESCRIPTION-only directory, which the next update misclassifies as a
+    # user-modified bundled skill.
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
+        if (desc_md.parent / "SKILL.md").exists():
+            continue
         rel = desc_md.relative_to(bundled_dir)
         dest_desc = SKILLS_DIR / rel
         if not dest_desc.exists():

@@ -195,6 +195,35 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_plugin_skill_usage_reports_installed_provenance(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from hermes_cli import lifecycle
+        from tools.skills_tool import _skill_view_with_bump
+
+        events = []
+        monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda name, **kwargs: events.append((name, kwargs)),
+        )
+        self._register_skill(tmp_path)
+
+        result = json.loads(
+            _skill_view_with_bump(
+                {"name": "superpowers:writing-plans"},
+                task_id="task-1",
+                session_id="session-1",
+            )
+        )
+
+        assert result["success"] is True
+        [loaded] = [event for _, event in events if event["action"] == "loaded"]
+        assert loaded["provenance"] == "installed"
+
     def test_invalid_namespace_returns_error(self, tmp_path):
         from tools.skills_tool import skill_view
 

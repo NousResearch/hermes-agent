@@ -1744,7 +1744,11 @@ def _skill_view_with_bump(args, **kw):
                 # A skill_view tool call is the agent actively loading the skill
                 # to act on it — that counts as use, not just a browse/view.
                 # Curator's stale timer keys off last_used_at (see agent/curator.py).
-                bump_use(str(resolved))
+                bump_use(
+                    str(resolved),
+                    task_id=kw.get("task_id"),
+                    session_id=kw.get("session_id"),
+                )
     except Exception:
         pass
     return result

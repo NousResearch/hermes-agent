@@ -34,6 +34,66 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 logger = logging.getLogger(__name__)
 
 
+# ── SQLITE_DBCONFIG_DEFENSIVE workaround (Python 3.12 / SQLite 3.54+) ──
+# Python 3.12's sqlite3 module links against SQLite builds with
+# SQLITE_DBCONFIG_DEFENSIVE enabled by default. This blocks FTS5 shadow-table
+# writes (messages_fts_data etc.) and sqlite_master mutations, breaking
+# `hermes sessions optimize-storage`. PRAGMA defensive=OFF is a no-op (the
+# PRAGMA is not supported), so we call sqlite3_db_config() directly via ctypes.
+import ctypes as _ctypes
+import ctypes.util as _ctypes_util
+
+_DBCONFIG_DEFENSIVE = 1010
+
+
+def _get_sqlite3_lib():
+    """Load the system sqlite3 shared library for sqlite3_db_config calls."""
+    try:
+        lib = _ctypes.CDLL(_ctypes_util.find_library("sqlite3"))
+        lib.sqlite3_db_config.argtypes = [
+            _ctypes.c_void_p, _ctypes.c_int, _ctypes.c_int, _ctypes.c_void_p,
+        ]
+        lib.sqlite3_db_config.restype = _ctypes.c_int
+        return lib
+    except Exception:
+        return None
+
+
+def _get_db_handle(conn: sqlite3.Connection) -> int:
+    """Extract the raw sqlite3* pointer from a Python sqlite3.Connection.
+
+    In CPython's _sqlite3, the sqlite3* handle is the first field after
+    PyObject_HEAD (ob_refcnt + ob_type = 16 bytes on 64-bit).
+    """
+    return _ctypes.c_void_p.from_address(id(conn) + 16).value
+
+
+def _disable_defensive(conn: sqlite3.Connection) -> bool:
+    """Disable SQLITE_DBCONFIG_DEFENSIVE on *conn* via sqlite3_db_config."""
+    lib = _get_sqlite3_lib()
+    if lib is None:
+        return False
+    handle = _get_db_handle(conn)
+    if not handle:
+        return False
+    # sqlite3_db_config(db, SQLITE_DBCONFIG_DEFENSIVE, 0, 0) -> 0 = disabled
+    result = lib.sqlite3_db_config(handle, _DBCONFIG_DEFENSIVE, 0, None)
+    return result == 0
+
+
+def _enable_defensive(conn: sqlite3.Connection) -> bool:
+    """Re-enable SQLITE_DBCONFIG_DEFENSIVE on *conn*."""
+    lib = _get_sqlite3_lib()
+    if lib is None:
+        return False
+    handle = _get_db_handle(conn)
+    if not handle:
+        return False
+    # sqlite3_db_config(db, SQLITE_DBCONFIG_DEFENSIVE, 1, 0) -> 0 = enabled
+    result = lib.sqlite3_db_config(handle, _DBCONFIG_DEFENSIVE, 1, None)
+    return result == 0
+
+
 def _scrub_surrogates(value: Any) -> Any:
     """Replace lone surrogates when *value* is text; pass anything else through.
 
@@ -2468,28 +2528,22 @@ class SessionDB:
                 "AND sql LIKE 'CREATE VIRTUAL TABLE%' LIMIT 1"
             ).fetchone())
             if had:
-                # SQLite 3.37+ SQLITE_DBCONFIG_DEFENSIVE (enabled by default in
-                # Python 3.12's sqlite3 build with SQLite 3.54.0) ignores
-                # writable_schema for DELETE FROM sqlite_master, even in
-                # BEGIN IMMEDIATE. Use isolation_level=None + separate conn
-                # (sqlite-utils 3.35+ fix pattern, sqlite-utils#577 / github #162).
-                def _drop_master_legacy_fts(db_path_str: str):
-                    c = sqlite3.connect(db_path_str, isolation_level=None)
-                    try:
-                        c.execute("PRAGMA writable_schema=ON")
-                        c.execute(
-                            "DELETE FROM sqlite_master WHERE type = 'table' "
-                            "AND name IN ('messages_fts', 'messages_fts_trigram') "
-                            "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
-                        )
-                        c.execute("PRAGMA writable_schema=OFF")
-                    finally:
-                        c.close()
-                # Defensive may still block; fall back gracefully.
+                # SQLITE_DBCONFIG_DEFENSIVE (Python 3.12 / SQLite 3.54) blocks
+                # DELETE FROM sqlite_master even with writable_schema=ON.
+                # Disable it on this connection via sqlite3_db_config (ctypes).
+                _disable_defensive(conn)
                 try:
-                    _drop_master_legacy_fts(str(self.db_path))
+                    conn.execute("PRAGMA writable_schema=ON")
+                    conn.execute(
+                        "DELETE FROM sqlite_master WHERE type = 'table' "
+                        "AND name IN ('messages_fts', 'messages_fts_trigram') "
+                        "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+                    )
+                    conn.execute("PRAGMA writable_schema=RESET")
                 except sqlite3.OperationalError:
                     pass
+                finally:
+                    _enable_defensive(conn)
                 shadows = [
                     r[0] for r in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type = 'table' "
@@ -2540,21 +2594,18 @@ class SessionDB:
         # SQLITE_DBCONFIG_DEFENSIVE (on by default in Python 3.12 / SQLite 3.54)
         # blocks FTS5 shadow-table writes (messages_fts_data etc.) during the
         # backfill INSERTs below, raising "table messages_fts_data may not be
-        # altered". Disable it on this connection for the duration of the
+        # altered". PRAGMA defensive=OFF is a no-op (PRAGMA not supported), so
+        # we call sqlite3_db_config(SQLITE_DBCONFIG_DEFENSIVE, 0) directly via
+        # ctypes to disable it on this connection for the duration of the
         # optimize run — this is a foreground, user-invoked maintenance op,
         # not the live write path. (sqlite-utils 3.35+ uses the same approach.)
-        with self._lock:
-            self._conn.execute("PRAGMA defensive=OFF")
+        _disable_defensive(self._conn)  # type: ignore[arg-type]
         try:
             return self._optimize_fts_storage_inner(
                 progress_cb=progress_cb, vacuum=vacuum
             )
         finally:
-            with self._lock:
-                try:
-                    self._conn.execute("PRAGMA defensive=ON")
-                except sqlite3.OperationalError:
-                    pass
+            _enable_defensive(self._conn)  # type: ignore[arg-type]
 
     def _optimize_fts_storage_inner(
         self,

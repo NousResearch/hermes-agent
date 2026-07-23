@@ -70,6 +70,7 @@ _records_lock = threading.Lock()
 _records: Dict[str, Dict[str, Any]] = {}
 
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
+_ACTIVE_STATUSES = {"pending", "running"}
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
 
@@ -96,7 +97,7 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 def active_count() -> int:
     """Number of async delegations currently running."""
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") == "running")
+        return sum(1 for r in _records.values() if r.get("status") in _ACTIVE_STATUSES)
 
 
 def _new_delegation_id() -> str:
@@ -208,7 +209,7 @@ def _update_child_result_locked(
         except Exception:
             idx = -1
         for child in children:
-            if int(child.get("task_index", -1) or -1) == idx:
+            if int(child.get("task_index", -1)) == idx:
                 target = child
                 break
 
@@ -216,8 +217,10 @@ def _update_child_result_locked(
         return
 
     target["status"] = _normalise_child_status(result.get("status"))
-    ended_at = time.time()
-    target["ended_at"] = ended_at
+    ended_at = target.get("ended_at")
+    if ended_at is None:
+        ended_at = time.time()
+        target["ended_at"] = ended_at
     # Keep the pre-existing field as a compatibility alias for consumers that
     # still derive terminal timing from completed_at.
     target["completed_at"] = ended_at
@@ -278,13 +281,14 @@ def mark_batch_child_started(
             except Exception:
                 idx = -1
             for child in children:
-                if int(child.get("task_index", -1) or -1) == idx:
+                if int(child.get("task_index", -1)) == idx:
                     target = child
                     break
         if target is None:
             return
 
         target["started_at"] = time.time() if started_at is None else started_at
+        record["status"] = "running"
 
 
 def update_batch_child_result(
@@ -333,7 +337,7 @@ def _prune_completed_locked() -> None:
     completed = [
         (rid, r)
         for rid, r in _records.items()
-        if r.get("status") != "running"
+        if r.get("status") not in _ACTIVE_STATUSES
     ]
     if len(completed) <= _MAX_RETAINED_COMPLETED:
         return
@@ -404,7 +408,7 @@ def dispatch_async_delegation(
     # from different gateway sessions) both pass the check and exceed the cap.
     with _records_lock:
         running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
+            1 for r in _records.values() if r.get("status") in _ACTIVE_STATUSES
         )
         if running >= max_async_children:
             return {
@@ -588,7 +592,7 @@ def dispatch_async_delegation_batch(
         "header_profile": header_profile or "",
         "model": model,
         "session_key": session_key,
-        "status": "running",
+        "status": "pending",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
@@ -611,7 +615,7 @@ def dispatch_async_delegation_batch(
                 record[key] = str(value)
     with _records_lock:
         running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
+            1 for r in _records.values() if r.get("status") in _ACTIVE_STATUSES
         )
         if running >= max_async_children:
             return {
@@ -763,7 +767,7 @@ def interrupt_all(reason: str = "shutdown") -> int:
     count = 0
     with _records_lock:
         targets = [
-            r for r in _records.values() if r.get("status") == "running"
+            r for r in _records.values() if r.get("status") in _ACTIVE_STATUSES
         ]
     for r in targets:
         fn = r.get("interrupt_fn")

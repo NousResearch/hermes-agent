@@ -873,3 +873,48 @@ def test_child_lifecycle_updates_start_and_terminal_timestamps(monkeypatch):
     assert child["duration_seconds"] == 20.0
 
 
+def test_batch_finalization_preserves_first_child_terminal_timestamp(monkeypatch):
+    ad._records["deleg_terminal"] = {
+        "status": "running",
+        "children": [
+            {"task_index": 0, "subagent_id": "sa-0", "status": "pending"}
+        ],
+    }
+    clock = iter([130.0, 150.0, 150.0])
+    monkeypatch.setattr(ad.time, "time", lambda: next(clock))
+
+    result = {"task_index": 0, "status": "completed", "duration_seconds": 20.0}
+    ad.update_batch_child_result(
+        "deleg_terminal", task_index=0, subagent_id="sa-0", result=result
+    )
+    first_ended_at = ad._records["deleg_terminal"]["children"][0]["ended_at"]
+    ad._finalize_batch("deleg_terminal", {"results": [result]}, "completed")
+
+    child = ad._records["deleg_terminal"]["children"][0]
+    assert first_ended_at == 130.0
+    assert child["ended_at"] == 130.0
+    assert child["completed_at"] == 130.0
+
+
+def test_batch_aggregate_transitions_from_pending_when_child_starts():
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"results": [{"task_index": 0, "status": "completed"}]}
+
+    dispatched = ad.dispatch_async_delegation_batch(
+        goals=["one"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=runner, max_async_children=1,
+        delegation_id="deleg_state",
+        children=[{"task_index": 0, "status": "pending"}],
+    )
+    assert dispatched["status"] == "dispatched"
+    assert ad._records["deleg_state"]["status"] == "pending"
+
+    ad.mark_batch_child_started("deleg_state", task_index=0, started_at=110.0)
+    assert ad._records["deleg_state"]["status"] == "running"
+    gate.set()
+    assert _drain_one() is not None
+
+

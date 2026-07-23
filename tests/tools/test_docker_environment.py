@@ -403,6 +403,39 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     assert "TOKEN=secret123" in args_str
 
 
+def test_external_secret_source_var_is_not_implicitly_forwarded(monkeypatch):
+    """Implicit passthrough must not persist a vault-injected value in Docker."""
+    env = _make_execute_only_env()
+
+    monkeypatch.setenv("CUSTOM_DEPLOY_CREDENTIAL", "inert-secret-value")
+    monkeypatch.setattr(
+        "tools.env_passthrough.get_all_passthrough",
+        lambda: frozenset({"CUSTOM_DEPLOY_CREDENTIAL"}),
+    )
+    monkeypatch.setattr(
+        docker_env,
+        "_external_secret_env_vars",
+        lambda _env=None: frozenset({"CUSTOM_DEPLOY_CREDENTIAL"}),
+        raising=False,
+    )
+
+    assert "CUSTOM_DEPLOY_CREDENTIAL" not in " ".join(env._build_init_env_args())
+
+
+def test_external_secret_source_var_can_be_explicitly_forwarded(monkeypatch):
+    """docker_forward_env remains the operator-controlled compatibility escape."""
+    env = _make_execute_only_env(forward_env=["CUSTOM_DEPLOY_CREDENTIAL"])
+
+    monkeypatch.setenv("CUSTOM_DEPLOY_CREDENTIAL", "inert-secret-value")
+    monkeypatch.setattr(
+        docker_env,
+        "_external_secret_env_vars",
+        lambda _env=None: frozenset({"CUSTOM_DEPLOY_CREDENTIAL"}),
+        raising=False,
+    )
+
+    assert "CUSTOM_DEPLOY_CREDENTIAL=inert-secret-value" in env._build_init_env_args()
+
 
 def test_normalize_env_dict_filters_invalid_keys():
     """_normalize_env_dict should reject invalid variable names."""

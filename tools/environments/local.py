@@ -248,6 +248,12 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     blocked.update({
+        # External secret-manager bootstrap credentials authorize bulk reads
+        # from the configured vault. Model-driven subprocesses do not need
+        # them, and allowing them into a shell makes export snapshots persist
+        # the highest-value credential in the source chain.
+        "BWS_ACCESS_TOKEN",
+        "OP_SERVICE_ACCOUNT_TOKEN",
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_BASE",
@@ -330,6 +336,30 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _external_secret_env_vars(env: dict | None = None) -> frozenset[str]:
+    """Return vault-populated names for the subprocess's effective profile.
+
+    The context-local override wins because ``_inject_context_hermes_home``
+    applies the same precedence to the child environment. An explicit
+    ``HERMES_HOME`` in ``env`` is next, followed by the normal process/default
+    resolution. Fail open to the established static blocklist if provenance is
+    unavailable so terminal startup remains resilient.
+    """
+    try:
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        from hermes_cli.env_loader import get_external_secret_env_vars
+
+        home = get_hermes_home_override()
+        if not home and env:
+            home = env.get("HERMES_HOME")
+        if not home:
+            home = get_hermes_home()
+        return get_external_secret_env_vars(home)
+    except Exception:
+        return frozenset()
+
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
@@ -448,7 +478,9 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(
+    base_env: dict | None, extra_env: dict | None = None
+) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
@@ -456,13 +488,18 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         _is_passthrough = lambda _: False  # noqa: E731
 
     sanitized: dict[str, str] = {}
+    source_secrets = _external_secret_env_vars(
+        dict((base_env or {}) | (extra_env or {}))
+    )
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
         if _is_hermes_internal_secret(key):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        if (
+            key not in _HERMES_PROVIDER_ENV_BLOCKLIST and key not in source_secrets
+        ) or _is_passthrough(key):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
@@ -473,7 +510,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[real_key] = value
         elif _is_hermes_internal_secret(key):
             continue
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        elif (
+            key not in _HERMES_PROVIDER_ENV_BLOCKLIST and key not in source_secrets
+        ) or _is_passthrough(key):
             sanitized[key] = value
 
     _inject_context_hermes_home(sanitized)
@@ -1133,6 +1172,7 @@ def _make_run_env(env: dict) -> dict:
         _is_passthrough = lambda _: False  # noqa: E731
 
     merged = dict(os.environ | env)
+    source_secrets = _external_secret_env_vars(merged)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
@@ -1142,7 +1182,9 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif _is_hermes_internal_secret(k):
             continue
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
+        elif (
+            k not in _HERMES_PROVIDER_ENV_BLOCKLIST and k not in source_secrets
+        ) or _is_passthrough(k):
             run_env[k] = v
     path_key = _path_env_key(run_env)
     if path_key is not None:

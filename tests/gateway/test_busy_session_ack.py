@@ -172,6 +172,47 @@ class TestBusySessionAck:
         agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_silent_voice_queues_without_interrupting_agent(self):
+        """Valid no-speech voice must not abort active work or reach next turn."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=source,
+            message_id="voice1",
+            media_urls=["/tmp/silent-voice.ogg"],
+            media_types=["audio/ogg"],
+        )
+        sk = build_session_key(source)
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[source.platform] = adapter
+
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={
+                "success": True,
+                "transcript": "",
+                "provider": "local_command",
+            },
+        ):
+            handled = await runner._handle_active_session_busy_message(event, sk)
+
+        assert handled is True
+        assert sk not in adapter._pending_messages
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
         runner, sentinel = _make_runner()

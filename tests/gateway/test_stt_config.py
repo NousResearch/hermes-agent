@@ -185,3 +185,42 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     # Success path: the transcript passes through as a plain quoted line, with
     # no "voice message" meta-commentary that the LLM would echo back.
     assert "queued voice transcript" in result
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_message_text_drops_successful_empty_voice_transcript():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner.adapters = {}
+    runner._has_setup_skill = lambda: False
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/silent-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "  \n",
+            "provider": "local_command",
+        },
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert result is None

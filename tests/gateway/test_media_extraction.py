@@ -160,6 +160,40 @@ caption
         assert tags == ["MEDIA:/tmp/voice.ogg"]
         assert voice is True
 
+    @pytest.mark.parametrize("field", ["tool_name", "name"])
+    def test_gateway_auto_append_uses_explicit_tool_result_name(self, field):
+        """Persisted tool rows may name their producer without assistant tool_calls."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "tool",
+                field: "text_to_speech",
+                "content": '[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg',
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/voice.ogg"]
+        assert voice is True
+
+    @pytest.mark.parametrize("field", ["tool_name", "name"])
+    def test_gateway_auto_append_rejects_unallowed_explicit_tool_name(self, field):
+        """Explicit producer metadata must not bypass automatic-delivery allowlist."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "tool",
+                field: "terminal",
+                "content": "MEDIA:/tmp/private.txt",
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == []
+        assert voice is False
+
     def test_gateway_auto_append_image_generate_json_path(self):
         """image_generate returns a local path in JSON (no MEDIA: tag); it is
         auto-appended so delivery doesn't depend on the model restating it."""

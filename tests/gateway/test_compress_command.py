@@ -1,5 +1,6 @@
 """Tests for gateway /compress user-facing messaging."""
 
+from contextvars import ContextVar
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -88,6 +89,44 @@ async def test_compress_command_reports_noop_without_success_banner():
     assert "Approx request size: ~100 tokens (unchanged)" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_preserves_caller_context_in_worker():
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+
+    profile_scope: ContextVar[str | None] = ContextVar(
+        "test_compress_profile_scope", default=None
+    )
+    worker_values = []
+
+    def _compress(*_args, **_kwargs):
+        worker_values.append(profile_scope.get())
+        return list(history), ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    token = profile_scope.set("profile-secret-scope")
+    try:
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch("run_agent.AIAgent", return_value=agent_instance),
+            patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+        ):
+            await runner._handle_compress_command(_make_event())
+    finally:
+        profile_scope.reset(token)
+
+    assert worker_values == ["profile-secret-scope"]
 
 
 @pytest.mark.asyncio

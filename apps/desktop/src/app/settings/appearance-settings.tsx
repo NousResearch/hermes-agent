@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -12,7 +13,18 @@ import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { $backdrop, setBackdrop } from '@/store/backdrop'
+import {
+  $backgroundPreference,
+  $backgroundRuntime,
+  BACKGROUND_INTERVALS,
+  type DesktopBackgroundInterval,
+  type DesktopBackgroundMode,
+  resolveBackgroundSource,
+  setBackgroundInterval,
+  setBackgroundMode,
+  setBackgroundSource,
+  setBackgroundStrength
+} from '@/store/background'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -249,13 +261,16 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
-  const backdrop = useStore($backdrop)
+  const background = useStore($backgroundPreference)
+  const backgroundRuntime = useStore($backgroundRuntime)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
 
   const [query, setQuery] = useState('')
+  const [backgroundPicking, setBackgroundPicking] = useState<null | 'folder' | 'image'>(null)
+  const [backgroundError, setBackgroundError] = useState<string | null>(null)
 
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
@@ -296,6 +311,50 @@ export function AppearanceSettings() {
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
 
   const matchedScalePreset = matchUiScalePreset(zoomPercent)
+
+  const backgroundModeOptions = [
+    { id: 'hermes', label: a.backgroundHermes },
+    { id: 'image', label: a.backgroundImage },
+    { id: 'folder', label: a.backgroundFolder },
+    { id: 'none', label: t.common.off }
+  ] as const satisfies readonly { id: DesktopBackgroundMode; label: string }[]
+
+  const pickBackground = async (kind: 'folder' | 'image') => {
+    setBackgroundError(null)
+
+    try {
+      const selected = await window.hermesDesktop.selectPaths({
+        directories: kind === 'folder',
+        filters:
+          kind === 'image'
+            ? [{ name: a.backgroundImages, extensions: ['avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'webp'] }]
+            : undefined,
+        multiple: false,
+        title: kind === 'folder' ? a.backgroundChooseFolder : a.backgroundChooseImage
+      })
+
+      if (!selected[0]) {
+        return
+      }
+
+      setBackgroundPicking(kind)
+      const result = await resolveBackgroundSource(kind, selected[0])
+
+      if (result.error || result.images.length === 0) {
+        setBackgroundError(a.backgroundErrors[result.error ?? 'empty'])
+
+        return
+      }
+
+      setBackgroundSource(kind, result.sourcePath)
+    } catch {
+      setBackgroundError(a.backgroundErrors.unreadable)
+    } finally {
+      setBackgroundPicking(null)
+    }
+  }
+
+  const backgroundSourceName = background.sourcePath?.split(/[\\/]/).filter(Boolean).at(-1) ?? ''
 
   return (
     <SettingsContent>
@@ -454,21 +513,122 @@ export function AppearanceSettings() {
           />
 
           <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setBackdrop(id === 'on')
-                }}
-                options={[
-                  { id: 'off', label: t.common.off },
-                  { id: 'on', label: t.common.on }
-                ]}
-                value={backdrop ? 'on' : 'off'}
-              />
+            below={
+              <div className="mt-3 space-y-3">
+                {(background.mode === 'image' || background.mode === 'folder') && (
+                  <>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="size-14 shrink-0 overflow-hidden rounded-md bg-(--ui-bg-quinary)">
+                        {backgroundRuntime.current && (
+                          <img alt="" className="size-full object-cover" src={backgroundRuntime.current.url} />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+                          {backgroundSourceName}
+                        </div>
+                        <div className="truncate font-mono text-[0.68rem] text-(--ui-text-quaternary)">
+                          {background.sourcePath}
+                        </div>
+                      </div>
+                      <Button
+                        disabled={backgroundPicking !== null}
+                        onClick={() => void pickBackground(background.mode as 'folder' | 'image')}
+                        size="xs"
+                        variant="outline"
+                      >
+                        {backgroundPicking ? a.backgroundChoosing : a.backgroundChange}
+                      </Button>
+                      <Button onClick={() => setBackgroundMode('none')} size="xs" variant="text">
+                        {a.backgroundRemove}
+                      </Button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                        {a.backgroundStrength}
+                      </span>
+                      <div className="flex items-center gap-3">
+                        <input
+                          aria-label={a.backgroundStrength}
+                          className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                          max={100}
+                          min={0}
+                          onChange={event => setBackgroundStrength(Number(event.target.value))}
+                          step={5}
+                          style={{ accentColor: 'var(--dt-primary)' }}
+                          type="range"
+                          value={background.strength}
+                        />
+                        <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                          {background.strength}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {background.mode === 'folder' && (
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {a.backgroundInterval}
+                        </span>
+                        <Select
+                          onValueChange={value => setBackgroundInterval(Number(value) as DesktopBackgroundInterval)}
+                          value={String(background.intervalMinutes)}
+                        >
+                          <SelectTrigger size="sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BACKGROUND_INTERVALS.map(minutes => (
+                              <SelectItem key={minutes} value={String(minutes)}>
+                                {a.backgroundIntervalLabel(minutes)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {(backgroundError || backgroundRuntime.error) && (
+                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-red)">
+                    {backgroundError ?? a.backgroundErrors[backgroundRuntime.error ?? 'unreadable']}
+                  </p>
+                )}
+                {backgroundRuntime.truncated && (
+                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {a.backgroundTruncated}
+                  </p>
+                )}
+                {showProfileNote && (
+                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {a.backgroundProfileNote(activeProfileName)}
+                  </p>
+                )}
+              </div>
             }
-            description={a.backdropDesc}
-            title={a.backdropTitle}
+            description={a.backgroundDesc}
+            title={
+              <div className="flex items-center justify-between gap-3">
+                <span>{a.backgroundTitle}</span>
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setBackgroundError(null)
+
+                    if (id === 'hermes' || id === 'none') {
+                      setBackgroundMode(id)
+                    } else if (id !== background.mode) {
+                      void pickBackground(id)
+                    }
+                  }}
+                  options={backgroundModeOptions}
+                  value={background.mode}
+                />
+              </div>
+            }
+            wide
           />
 
           <ListRow

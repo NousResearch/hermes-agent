@@ -1,3 +1,5 @@
+import copy
+import errno
 import json
 import os
 import subprocess
@@ -5799,6 +5801,436 @@ def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
         assert session["one_turn_model_restore"]["model"] == "old/model"
         assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
         assert os.environ["HERMES_MODEL"] == "old/model"
+    finally:
+        server._sessions.clear()
+
+
+@pytest.mark.parametrize(
+    ("failure_point", "failure"),
+    [
+        ("_restart_slash_worker", RuntimeError("restart failed")),
+        ("_persist_live_session_runtime", RuntimeError("runtime persist failed")),
+        (
+            "_persist_live_session_system_prompt",
+            RuntimeError("prompt persist failed"),
+        ),
+        ("_emit", OSError(errno.ENOSPC, "event pipe is full")),
+    ],
+)
+def test_config_set_model_once_side_effect_failure_restores_atomically(
+    monkeypatch,
+    failure_point,
+    failure,
+):
+    old_client = object()
+    new_client = object()
+    old_pool = object()
+    new_pool = object()
+
+    class SessionDB:
+        def __init__(self):
+            self.model_config = {
+                "model": "old/model",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            }
+            self.model = "old/model"
+            self.billing_route = {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "billing_mode": "chat_completions",
+            }
+            self.system_prompt = "Model: old/model\nProvider: openrouter"
+
+        def get_session(self, _session_id):
+            return {"model_config": copy.deepcopy(self.model_config)}
+
+        def update_session_meta(self, _session_id, model_config_json, model=None):
+            self.model_config = json.loads(model_config_json)
+            if model is not None:
+                self.model = model
+
+        def update_session_billing_route(
+            self,
+            _session_id,
+            *,
+            provider,
+            base_url,
+            billing_mode=None,
+        ):
+            self.billing_route = {
+                "provider": provider,
+                "base_url": base_url,
+                "billing_mode": billing_mode,
+            }
+            self.system_prompt = None
+
+        def update_system_prompt(self, _session_id, system_prompt):
+            self.system_prompt = system_prompt
+
+    class Agent:
+        def __init__(self, db):
+            self.model = "old/model"
+            self.provider = "openrouter"
+            self.base_url = "https://openrouter.ai/api/v1"
+            self.api_key = "sk-old"
+            self.api_mode = "chat_completions"
+            self.client = old_client
+            self._client_kwargs = {
+                "api_key": "sk-old",
+                "nested": {"owner": "old"},
+            }
+            self.request_overrides = {
+                "extra_body": {"thinking": {"type": "old"}}
+            }
+            self._primary_runtime = {
+                "model": self.model,
+                "provider": self.provider,
+                "request_overrides": copy.deepcopy(self.request_overrides),
+            }
+            self._transport_cache = {"old": object()}
+            self._credential_pool = old_pool
+            self._fallback_activated = False
+            self._config_context_length = 131072
+            self._use_prompt_caching = False
+            self._use_native_cache_layout = False
+            self.reasoning_config = {"enabled": True, "nested": {"owner": "old"}}
+            self._cached_system_prompt = "Model: old/model\nProvider: openrouter"
+            self._pending_fallback_notice = "old notice"
+            self._fallback_chain = [
+                {
+                    "provider": "custom:backup",
+                    "model": "backup/model",
+                    "nested": {"owner": "old"},
+                }
+            ]
+            self._fallback_model = copy.deepcopy(self._fallback_chain[0])
+            self._fallback_index = 2
+            self._consecutive_stale_streams = 7
+            self.context_compressor = None
+            self.closed_clients = []
+            self._session_db = db
+            self.session_id = "session-key"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+            self.client = new_client
+            self._client_kwargs = {
+                "api_key": kwargs["api_key"],
+                "nested": {"owner": "new"},
+            }
+            self.request_overrides = {
+                "extra_body": {"thinking": {"type": "new"}}
+            }
+            self._primary_runtime = {
+                "model": self.model,
+                "provider": self.provider,
+                "request_overrides": copy.deepcopy(self.request_overrides),
+            }
+            self._transport_cache = {"new": object()}
+            self._credential_pool = new_pool
+            self._use_prompt_caching = True
+            self._use_native_cache_layout = True
+            self.reasoning_config = {
+                "enabled": True,
+                "nested": {"owner": "new"},
+            }
+            self._cached_system_prompt = "Model: new/model\nProvider: anthropic"
+            self._pending_fallback_notice = "new notice"
+            self._fallback_chain = []
+            self._fallback_model = None
+            self._fallback_index = 0
+            self._consecutive_stale_streams = 0
+            self._session_db.update_session_billing_route(
+                self.session_id,
+                provider=self.provider,
+                base_url=self.base_url,
+                billing_mode=self.api_mode,
+            )
+
+        def _close_openai_client(self, client, **_kwargs):
+            self.closed_clients.append(client)
+
+        def _build_system_prompt(self, _context=None):
+            return f"Model: {self.model}\nProvider: {self.provider}"
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="anthropic",
+        api_key="sk-new",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+    db = SessionDB()
+    agent = Agent(db)
+    session = _session(agent=agent)
+    session["history"] = [{"role": "user", "content": "before switch"}]
+    initial_history = copy.deepcopy(session["history"])
+    initial_history_version = session.get("history_version", 0)
+    initial_override = copy.deepcopy(session.get("model_override"))
+    server._sessions["sid"] = session
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+
+    def append_marker(target_session, **_kwargs):
+        target_session["history"].append(
+            {"role": "user", "content": "temporary model marker"}
+        )
+        target_session["history_version"] = (
+            int(target_session.get("history_version", 0)) + 1
+        )
+
+    monkeypatch.setattr(server, "_append_model_switch_marker", append_marker)
+
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(server, failure_point, fail)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "new/model --provider anthropic --once",
+                },
+            }
+        )
+
+        assert "error" in resp
+        assert agent.model == "old/model"
+        assert agent.provider == "openrouter"
+        assert agent.base_url == "https://openrouter.ai/api/v1"
+        assert agent.api_key == "sk-old"
+        assert agent.api_mode == "chat_completions"
+        assert agent.client is old_client
+        assert agent._client_kwargs == {
+            "api_key": "sk-old",
+            "nested": {"owner": "old"},
+        }
+        assert agent.request_overrides == {
+            "extra_body": {"thinking": {"type": "old"}}
+        }
+        assert agent._credential_pool is old_pool
+        assert agent.reasoning_config == {
+            "enabled": True,
+            "nested": {"owner": "old"},
+        }
+        assert agent._cached_system_prompt == "Model: old/model\nProvider: openrouter"
+        assert agent._pending_fallback_notice == "old notice"
+        assert db.model == "old/model"
+        assert db.model_config["model"] == "old/model"
+        assert db.model_config["provider"] == "openrouter"
+        assert db.model_config["base_url"] == "https://openrouter.ai/api/v1"
+        assert db.model_config["api_mode"] == "chat_completions"
+        assert db.billing_route == {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "billing_mode": "chat_completions",
+        }
+        assert agent._fallback_chain == [
+            {
+                "provider": "custom:backup",
+                "model": "backup/model",
+                "nested": {"owner": "old"},
+            }
+        ]
+        assert agent._fallback_model == agent._fallback_chain[0]
+        assert agent._fallback_model is not agent._fallback_chain[0]
+        assert agent._fallback_index == 2
+        assert agent._consecutive_stale_streams == 7
+        assert new_client in agent.closed_clients
+        assert "one_turn_model_restore" not in session
+        assert session.get("model_override") == initial_override
+        assert session["history"] == initial_history
+        assert session.get("history_version", 0) == initial_history_version
+
+        agent.request_overrides["extra_body"]["thinking"]["type"] = "mutated"
+        assert agent._primary_runtime["request_overrides"] == {
+            "extra_body": {"thinking": {"type": "old"}}
+        }
+    finally:
+        server._sessions.clear()
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    [
+        "_restart_slash_worker",
+        "_persist_live_session_runtime",
+        "_persist_live_session_billing_route",
+        "_persist_live_session_system_prompt",
+    ],
+)
+def test_model_once_successful_turn_restore_repairs_are_independent(
+    monkeypatch,
+    failure_point,
+):
+    class SessionDB:
+        def __init__(self):
+            self.model_config = {
+                "model": "temp/model",
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_mode": "anthropic_messages",
+            }
+            self.model = "temp/model"
+            self.billing_route = {
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "billing_mode": "anthropic_messages",
+            }
+            self.system_prompt = "Model: temp/model\nProvider: anthropic"
+
+        def get_session(self, _session_id):
+            return {"model_config": copy.deepcopy(self.model_config)}
+
+        def update_session_meta(self, _session_id, model_config_json, model=None):
+            self.model_config = json.loads(model_config_json)
+            if model is not None:
+                self.model = model
+
+        def update_session_billing_route(
+            self,
+            _session_id,
+            *,
+            provider,
+            base_url,
+            billing_mode=None,
+        ):
+            self.billing_route = {
+                "provider": provider,
+                "base_url": base_url,
+                "billing_mode": billing_mode,
+            }
+            self.system_prompt = None
+
+        def update_system_prompt(self, _session_id, system_prompt):
+            self.system_prompt = system_prompt
+
+    class Agent:
+        def __init__(self, db):
+            self.model = "old/model"
+            self.provider = "openrouter"
+            self.base_url = "https://openrouter.ai/api/v1"
+            self.api_key = "sk-old"
+            self.api_mode = "chat_completions"
+            self.client = object()
+            self._client_kwargs = {"nested": {"owner": "old"}}
+            self.request_overrides = {"nested": {"owner": "old"}}
+            self._primary_runtime = {
+                "model": self.model,
+                "provider": self.provider,
+                "request_overrides": copy.deepcopy(self.request_overrides),
+            }
+            self._transport_cache = {}
+            self._credential_pool = None
+            self._fallback_activated = False
+            self._config_context_length = None
+            self._use_prompt_caching = False
+            self._use_native_cache_layout = False
+            self.reasoning_config = None
+            self._cached_system_prompt = "Model: old/model\nProvider: openrouter"
+            self._pending_fallback_notice = None
+            self._fallback_chain = [{"provider": "custom:backup"}]
+            self._fallback_model = {"provider": "custom:backup"}
+            self._fallback_index = 2
+            self._consecutive_stale_streams = 7
+            self.context_compressor = None
+            self._session_db = db
+            self.session_id = "session-key"
+
+        def _build_system_prompt(self, _context=None):
+            return f"Model: {self.model}\nProvider: {self.provider}"
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+        ):
+            return {
+                "final_response": "done",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+
+    db = SessionDB()
+    agent = Agent(db)
+    restore = server._snapshot_agent_model_runtime(agent)
+    agent.model = "temp/model"
+    agent.provider = "anthropic"
+    agent.base_url = "https://api.anthropic.com"
+    agent.api_key = "sk-temp"
+    agent.api_mode = "anthropic_messages"
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent._fallback_index = 0
+    agent._consecutive_stale_streams = 0
+    session = _session(agent=agent, one_turn_model_restore=restore)
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda *_a, **_k: None)
+
+    def fail_repair(*_args, **_kwargs):
+        raise RuntimeError(f"{failure_point} failed")
+
+    monkeypatch.setattr(server, failure_point, fail_repair)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "turn",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+
+        assert "result" in response
+        assert agent.model == "old/model"
+        assert agent.provider == "openrouter"
+        assert agent._fallback_chain == [{"provider": "custom:backup"}]
+        assert agent._fallback_index == 2
+        assert agent._consecutive_stale_streams == 7
+        if failure_point == "_persist_live_session_runtime":
+            assert db.model == "temp/model"
+            assert db.model_config["provider"] == "anthropic"
+        else:
+            assert db.model == "old/model"
+            assert db.model_config["provider"] == "openrouter"
+        if failure_point == "_persist_live_session_billing_route":
+            assert db.billing_route == {
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "billing_mode": "anthropic_messages",
+            }
+        else:
+            assert db.billing_route == {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "billing_mode": "chat_completions",
+            }
+        if failure_point == "_persist_live_session_system_prompt":
+            assert db.system_prompt is None
+        else:
+            assert db.system_prompt == "Model: old/model\nProvider: openrouter"
     finally:
         server._sessions.clear()
 

@@ -19,6 +19,7 @@ preserved.
 
 from __future__ import annotations
 
+import copy as _copy
 import logging
 import os
 import re
@@ -317,7 +318,11 @@ def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, Any]) -> None:
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
-    return value.strip().rstrip("/")
+    # Keep this canonicalization aligned with
+    # runtime_provider._normalize_base_url_for_match(): provider endpoints are
+    # matched case-insensitively and ignore a trailing slash.  This helper is
+    # used only for URL matching, never opaque provider identifiers.
+    return value.strip().rstrip("/").lower()
 
 
 def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
@@ -2581,6 +2586,9 @@ def init_agent(
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "request_overrides": _copy.deepcopy(
+            getattr(agent, "request_overrides", {}) or {}
+        ),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         # Context engine state that _try_activate_fallback() overwrites.

@@ -6195,17 +6195,34 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
+    # A Hermes web server is a long-lived process whose argv contains the
+    # subcommand ``dashboard`` or ``serve`` as a *whitespace-delimited token*
+    # (not embedded in a path like ``dashboard.py``) AND that is clearly a
+    # Hermes process. We match on tokens, NOT a contiguous substring, because
+    # real launch cmdlines interpose flags between the module name and the
+    # subcommand — e.g. launchd spawns
+    # ``python -m hermes_cli.main --profile orchestrator dashboard ...``. A
+    # naive substring ``"hermes_cli.main dashboard"`` never matches that, so
+    # the scanner returned 0 stale processes and ``hermes update`` left the
+    # old backend (still serving the previous version's /api/status) running
+    # forever — the "dashboard never shows the new version" bug (#30271-class
+    # frontend/backend mismatch). Token matching also ignores unrelated
+    # cmdlines that merely *contain* the word "dashboard" (a chat session, a
+    # log grep), which the greedy-regex discussion at the call sites warned
+    # about.
+    web_server_subcommands = frozenset({"dashboard", "serve"})
+
+    def _is_hermes_web_server_cmd(command: str) -> bool:
+        toks = command.split()
+        if not any(tok in web_server_subcommands for tok in toks):
+            return False
+        lowered = command.lower()
+        return (
+            "hermes_cli.main" in lowered
+            or "hermes_cli/main.py" in lowered
+            or (toks and toks[0].rstrip("/").endswith("hermes"))
+        )
+
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -6242,7 +6259,7 @@ def _find_stale_dashboard_pids(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
+                        _is_hermes_web_server_cmd(current_cmd)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -6275,7 +6292,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_hermes_web_server_cmd(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

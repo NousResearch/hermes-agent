@@ -7095,10 +7095,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
-    # .clean_shutdown marker).  All three mean "the agent was mid-turn and
-    # we killed it" — eligible for startup auto-resume.
+    # .clean_shutdown marker).  Startup only synthesizes recovery turns for
+    # restarts/crashes: shutdown-timeout sessions still resume on the next real
+    # user message, but are not auto-run immediately after the service comes
+    # back because that can replay lifecycle commands and flap the gateway.
     _AUTO_RESUME_REASONS = frozenset(
-        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+        {"restart_timeout", "restart_interrupted"}
     )
 
     async def _run_startup_resume_event(

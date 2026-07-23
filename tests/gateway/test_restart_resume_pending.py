@@ -1101,6 +1101,39 @@ async def test_startup_auto_resume_includes_crash_recovery():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_skips_shutdown_timeout():
+    """Shutdown-timeout sessions wait for an explicit user message.
+
+    A shutdown-timeout can be caused by a gateway lifecycle command. If startup
+    immediately replays that interrupted turn, it can re-run the same lifecycle
+    command and flap the gateway. The marker is preserved so the next real user
+    message still gets the resume_pending system note.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="shutdown-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:shutdown-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="shutdown_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.resume_pending is True
+
+
+@pytest.mark.asyncio
 async def test_startup_auto_resume_skips_stale_entries():
     """Entries older than the freshness window must not be auto-resumed."""
     runner, adapter = make_restart_runner()

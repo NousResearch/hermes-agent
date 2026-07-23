@@ -70,6 +70,12 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+def test_stable_prompt_includes_latest_user_language_guard():
+    stable = _stable_prompt(_make_agent())
+    assert "latest message unless they explicitly ask for translation" in stable
+    assert "If the latest user message is English" in stable
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

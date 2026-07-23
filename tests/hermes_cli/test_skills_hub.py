@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    discover_audit_targets,
+    do_check,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -60,6 +67,124 @@ def three_source_env(monkeypatch, hub_env):
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
 
     return hub_env
+
+
+def _write_audit_skill(root, name):
+    skill = root / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        "description: Test skill.\n"
+        "---\n\n"
+        "# Test\n",
+        encoding="utf-8",
+    )
+    return skill
+
+
+def test_discover_audit_targets_classifies_all_local_sources(tmp_path):
+    skills_dir = tmp_path / "skills"
+    builtin = _write_audit_skill(skills_dir / "builtin", "builtin-skill")
+    local = _write_audit_skill(skills_dir / "local", "local-skill")
+    hub = _write_audit_skill(skills_dir / "hub", "hub-skill")
+    hub_entries = [{"name": "hub-skill", "install_path": "hub/hub-skill", "identifier": "owner/hub-skill"}]
+
+    targets, error = discover_audit_targets(
+        skills_dir=skills_dir,
+        hub_entries=hub_entries,
+        builtin_names={"builtin-skill"},
+        name=None,
+    )
+
+    assert error is None
+    assert [(target.name, target.source, target.path) for target in targets] == [
+        ("builtin-skill", "builtin", builtin),
+        ("hub-skill", "hub", hub),
+        ("local-skill", "local", local),
+    ]
+
+
+def test_discover_audit_targets_rejects_ambiguous_names(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_audit_skill(skills_dir / "one", "same-name")
+    _write_audit_skill(skills_dir / "two", "same-name")
+
+    targets, error = discover_audit_targets(
+        skills_dir=skills_dir,
+        hub_entries=[],
+        builtin_names=set(),
+        name="same-name",
+    )
+
+    assert targets == []
+    assert "ambiguous" in error.lower()
+
+
+def test_discover_audit_targets_skips_unreadable_skill_files(tmp_path):
+    skills_dir = tmp_path / "skills"
+    bad = skills_dir / "bad-skill"
+    bad.mkdir(parents=True)
+    (bad / "SKILL.md").write_bytes(b"\xff\xfe")
+
+    targets, error = discover_audit_targets(
+        skills_dir=skills_dir,
+        hub_entries=[],
+        builtin_names=set(),
+        name=None,
+    )
+
+    assert targets == []
+    assert error is None
+
+
+def test_discover_audit_targets_keeps_missing_hub_lock_entry(tmp_path):
+    skills_dir = tmp_path / "skills"
+    targets, error = discover_audit_targets(
+        skills_dir=skills_dir,
+        hub_entries=[{"name": "missing-hub", "install_path": "hub/missing-hub"}],
+        builtin_names=set(),
+        name=None,
+    )
+
+    assert error is None
+    assert [(target.name, target.source, target.missing) for target in targets] == [
+        ("missing-hub", "hub", True),
+    ]
+
+
+def test_discovery_preserves_folder_identity_for_name_mismatch(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_audit_skill(skills_dir, "folder-name").joinpath("SKILL.md").write_text(
+        "---\nname: declared-name\ndescription: Test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    targets, error = discover_audit_targets(
+        skills_dir=skills_dir,
+        hub_entries=[],
+        builtin_names=set(),
+        name=None,
+    )
+
+    assert error is None
+    assert [(target.name, target.declared_name) for target in targets] == [
+        ("folder-name", "declared-name"),
+    ]
+
+
+def test_skills_audit_slash_forwards_all_flag(monkeypatch):
+    called = {}
+
+    def fake_audit(**kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr("hermes_cli.skills_hub.do_audit", fake_audit)
+    handle_skills_slash("/skills audit --all --deep")
+
+    assert called["name"] is None
+    assert called["deep"] is True
+    assert called["all_skills"] is True
 
 
 def _capture(source_filter: str = "all") -> str:

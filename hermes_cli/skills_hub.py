@@ -13,8 +13,11 @@ handler are thin wrappers that parse args and delegate.
 import json
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 from rich.console import Console
 from rich.panel import Panel
@@ -22,7 +25,7 @@ from rich.table import Table
 
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
@@ -1063,49 +1066,150 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
-def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
-             deep: bool = False) -> None:
-    """Re-run security scan on installed hub skills.
+@dataclass(frozen=True)
+class AuditTarget:
+    name: str
+    source: str
+    path: Path
+    declared_name: str | None = None
+    hub_entry: dict | None = None
+    missing: bool = False
 
-    When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
-    files (review aid only — not a security gate; skills_guard.py verdicts
-    are unchanged).
-    """
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
-    from tools.skills_guard import scan_skill, format_scan_report
+
+def _skill_name_from_path(skill_md: Path) -> str | None:
+    try:
+        content = skill_md.read_text(encoding="utf-8").lstrip("\ufeff")
+        match = re.search(r"\n---\s*\n", content[3:]) if content.startswith("---") else None
+        if match:
+            frontmatter = yaml.safe_load(content[3:match.start() + 3]) or {}
+            if isinstance(frontmatter, dict) and isinstance(frontmatter.get("name"), str):
+                return frontmatter["name"]
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    return skill_md.parent.name
+
+
+def discover_audit_targets(*, skills_dir: Path, hub_entries: list[dict],
+                           builtin_names: set[str], name: str | None) -> tuple[list[AuditTarget], str | None]:
+    """Discover on-disk skill targets without trusting lock-file paths blindly."""
+    root = skills_dir.resolve()
+    hub_by_path: dict[Path, dict] = {}
+    for entry in hub_entries:
+        install_path = entry.get("install_path")
+        if not isinstance(install_path, str) or not install_path:
+            continue
+        candidate = (root / install_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        hub_by_path[candidate] = entry
+
+    targets: list[AuditTarget] = []
+    try:
+        skill_files = sorted(root.rglob("SKILL.md")) if root.exists() else []
+    except OSError:
+        skill_files = []
+    for skill_md in skill_files:
+        if is_excluded_skill_path(skill_md):
+            continue
+        skill_dir = skill_md.parent.resolve()
+        try:
+            skill_dir.relative_to(root)
+        except ValueError:
+            continue
+        declared_name = _skill_name_from_path(skill_md)
+        if declared_name is None:
+            continue
+        hub_entry = hub_by_path.get(skill_dir)
+        identity_name = hub_entry["name"] if hub_entry else skill_dir.name
+        source = "hub" if hub_entry else (
+            "builtin" if declared_name in builtin_names or identity_name in builtin_names else "local"
+        )
+        targets.append(AuditTarget(
+            identity_name,
+            source,
+            skill_dir,
+            declared_name=declared_name,
+            hub_entry=hub_entry,
+        ))
+
+    seen_hub_paths = {target.path for target in targets if target.hub_entry}
+    for hub_path, hub_entry in hub_by_path.items():
+        if hub_path not in seen_hub_paths:
+            targets.append(AuditTarget(
+                hub_entry["name"],
+                "hub",
+                hub_path,
+                hub_entry=hub_entry,
+                missing=not hub_path.exists(),
+            ))
+
+    targets.sort(key=lambda target: (target.name, target.source, str(target.path)))
+    if name:
+        targets = [
+            target for target in targets
+            if target.name == name or target.declared_name == name
+        ]
+        if not targets:
+            return [], f"No installed skill named '{name}' was found."
+        if len(targets) > 1:
+            choices = ", ".join(f"{target.source}:{target.path}" for target in targets)
+            return [], f"Skill name '{name}' is ambiguous: {choices}"
+    return targets, None
+
+
+def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
+             deep: bool = False, all_skills: bool = False) -> None:
+    """Run static quality checks for installed skills and retain hub security scans."""
+    from tools.skill_quality_audit import (
+        audit_skill_quality,
+        format_quality_report,
+        save_verification_receipt,
+    )
+    from tools.skills_hub import HubLockFile
+    from tools.skills_sync import _read_manifest
+    from tools.skills_guard import format_scan_report, scan_skill
 
     c = console or _console
     lock = HubLockFile()
     installed = lock.list_installed()
-
-    if not installed:
-        c.print("[dim]No hub-installed skills to audit.[/]\n")
+    skills_dir = get_hermes_home() / "skills"
+    targets, error = discover_audit_targets(
+        skills_dir=skills_dir,
+        hub_entries=installed,
+        builtin_names=set(_read_manifest()),
+        name=name,
+    )
+    if error:
+        c.print(f"[bold red]Error:[/] {error}\n")
+        return
+    if not name and not all_skills:
+        targets = [target for target in targets if target.source == "hub"]
+        if not targets:
+            c.print("[dim]No hub-installed skills to audit. Use `hermes skills audit <name>` or `--all` for local skills.[/]\n")
+            return
+    if not targets:
+        c.print("[dim]No installed skills to audit.[/]\n")
         return
 
-    targets = installed
-    if name:
-        targets = [e for e in installed if e["name"] == name]
-        if not targets:
-            c.print(f"[bold red]Error:[/] '{name}' is not a hub-installed skill.\n")
-            return
-
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
-
     if deep:
         from tools.skills_ast_audit import ast_scan_path, format_ast_report
 
-    for entry in targets:
-        skill_path = SKILLS_DIR / entry["install_path"]
-        if not skill_path.exists():
-            c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
+    for target in targets:
+        if target.missing:
+            install_path = target.hub_entry.get("install_path", str(target.path)) if target.hub_entry else str(target.path)
+            c.print(f"[yellow]Warning:[/] {target.name} — path missing: {install_path}")
             continue
-
-        result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
-        c.print(format_scan_report(result))
-
+        quality = audit_skill_quality(target.path, skill_name=target.name, source=target.source)
+        save_verification_receipt(skills_dir / ".verification.json", quality)
+        c.print(format_quality_report(quality))
+        if target.hub_entry:
+            source = target.hub_entry.get("identifier", target.hub_entry.get("source", "hub"))
+            c.print(format_scan_report(scan_skill(target.path, source=source)))
         if deep:
-            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
-
+            c.print(format_ast_report(ast_scan_path(target.path), skill_name=target.name))
         c.print()
 
 
@@ -1726,7 +1830,8 @@ def skills_command(args) -> None:
         do_update(name=getattr(args, "name", None))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
-                 deep=getattr(args, "deep", False))
+                 deep=getattr(args, "deep", False),
+                 all_skills=getattr(args, "all", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1913,7 +2018,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "audit":
         name = args[0] if args and not args[0].startswith("--") else None
         deep = "--deep" in args
-        do_audit(name=name, console=c, deep=deep)
+        do_audit(name=name, console=c, deep=deep, all_skills="--all" in args)
 
     elif action == "uninstall":
         if not args:

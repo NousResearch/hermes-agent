@@ -141,10 +141,15 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     )
 
     skills_audit = skills_subparsers.add_parser(
-        "audit", help="Re-scan installed hub skills"
+        "audit", help="Audit skill quality; hub security scans remain included"
     )
     skills_audit.add_argument(
-        "name", nargs="?", help="Specific skill to audit (default: all)"
+        "name", nargs="?", help="Specific builtin, local, or hub skill to audit"
+    )
+    skills_audit.add_argument(
+        "--all",
+        action="store_true",
+        help="Audit all builtin, local, and hub-installed skills",
     )
     skills_audit.add_argument(
         "--deep",

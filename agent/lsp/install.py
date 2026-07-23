@@ -35,6 +35,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger("agent.lsp.install")
 
 # Package-name → install-strategy hint registry.  Each entry is a
@@ -268,6 +270,7 @@ def _install_npm(
             text=True,
             timeout=300,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
             logger.warning(
@@ -317,6 +320,7 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
             timeout=600,
             env=env,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
             logger.warning(

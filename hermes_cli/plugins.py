@@ -44,7 +44,7 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -212,8 +212,9 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
-    # Exceptional synchronous dispatcher policy hook. Unlike lifecycle
-    # observers, callback failures must propagate so dispatch fails closed.
+    # Behavior-changing, synchronous, dispatcher-process-only policy hook.
+    # Unlike lifecycle observers, callback failures must propagate so dispatch
+    # fails closed.
     "kanban_task_pre_claim",
 }
 
@@ -278,6 +279,19 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+
+
+@dataclass
+class PreClaimDisposition:
+    decision: Literal["allow", "defer", "block", "complete"]
+    reason: Optional[str] = None
+    block_kind: Optional[str] = None
+    summary: Optional[str] = None
+    evidence: dict = field(default_factory=dict)
+    plugin_id: str = ""
+
+    def __post_init__(self) -> "PreClaimDisposition":
+        return self
 
 
 @dataclass

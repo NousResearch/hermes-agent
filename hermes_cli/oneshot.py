@@ -173,6 +173,8 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
+    pass_session_id: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -187,6 +189,9 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        resume: Exact durable session identity to continue. Its canonical
+            transcript is loaded before the prompt is run.
+        pass_session_id: Include the durable session identity in agent context.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -248,6 +253,8 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    resume=resume,
+                    pass_session_id=pass_session_id,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -310,12 +317,31 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _load_resume_context(session_db, requested: Optional[str]) -> tuple[Optional[str], list[dict]]:
+    """Resolve a one-shot resume target and hydrate its canonical history."""
+    requested = (requested or "").strip()
+    if not requested:
+        return None, []
+    if session_db is None:
+        raise RuntimeError("Session database is unavailable; cannot resume safely")
+    resolved = session_db.resolve_session_id(requested)
+    if not resolved:
+        raise ValueError(f"Session not found: {requested}")
+    resolved = session_db.resolve_resume_session_id(resolved) or resolved
+    history = session_db.get_messages_as_conversation(resolved, repair_alternation=True) or []
+    history = [message for message in history if message.get("role") != "session_meta"]
+    session_db.reopen_session(resolved)
+    return resolved, history
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    resume: Optional[str] = None,
+    pass_session_id: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -398,10 +424,13 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the SQLite store
     # opened above is always closed — including when ``AIAgent(...)`` itself
-    # raises on a provider/config error. The one-shot exit path hard-exits via
-    # os._exit and skips finalizers, so an un-closed connection here would leak.
+    # or resume hydration raises. The one-shot exit path hard-exits via os._exit
+    # and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
+        resume_session_id, conversation_history = _load_resume_context(
+            session_db, resume
+        )
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
         # gateway sessions.
@@ -419,6 +448,8 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            session_id=resume_session_id,
+            pass_session_id=pass_session_id,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction
@@ -439,7 +470,7 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         return (result.get("final_response") or "", result)
     finally:
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,

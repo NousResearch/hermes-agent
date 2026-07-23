@@ -3676,10 +3676,10 @@ class SessionDB:
         the user's latest messages look "lost" even though they are persisted in
         the real continuation chain.
 
-        Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
-        themselves continuing the compression chain (``end_reason='compression'``)
-        or still live over stale closed siblings such as ``ws_orphan_reap``.
+        New continuations carry ``model_config._compression_from``. Prefer that
+        explicit marker. For legacy rows, follow a child that itself continues
+        the compression chain, or an only eligible child. Ambiguous unmarked
+        siblings fail closed at the parent rather than guessing across sessions.
         Returns the latest continuation tip, or the input id when no
         continuation exists.
         """
@@ -3691,7 +3691,12 @@ class SessionDB:
             with self._lock:
                 cursor = self._conn.execute(
                     """
-                    SELECT child.id
+                    SELECT child.id, child.end_reason, child.ended_at,
+                           child.started_at,
+                           json_extract(
+                             COALESCE(child.model_config, '{}'),
+                             '$._compression_from'
+                           ) AS compression_from
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
@@ -3711,12 +3716,21 @@ class SessionDB:
                       ) DESC,
                       child.started_at DESC,
                       child.id DESC
-                    LIMIT 1
                     """,
                     (current,),
                 )
-                row = cursor.fetchone()
-            if row is None:
+                rows = cursor.fetchall()
+            if not rows:
+                return current
+            marked = [row for row in rows if row["compression_from"] == current]
+            chained = [row for row in rows if row["end_reason"] == "compression"]
+            if marked:
+                row = marked[0]
+            elif chained:
+                row = chained[0]
+            elif len(rows) == 1:
+                row = rows[0]
+            else:
                 return current
             child_id = row["id"]
             if not child_id or child_id in seen:
@@ -4856,19 +4870,18 @@ class SessionDB:
         ``message_count = 0`` rows unless messages had already been flushed to
         it before compression. See #15000.
 
-        This helper walks ``parent_session_id`` forward from ``session_id`` and
-        returns the descendant in the chain that has the **most recent** messages.
-        Unlike the original logic, it does NOT short-circuit when the starting
-        session already has messages — a descendant that was created by
-        compression may hold the continuation content and should be preferred
-        by the WebUI and gateway for ``--resume`` and session loading.
+        This helper follows only the canonical compression-continuation chain
+        from ``session_id`` and returns its deepest message-bearing node. Unlike
+        the original logic, it does NOT short-circuit when the starting session
+        already has messages — a continuation may hold newer content and should
+        be preferred by the WebUI and gateway for ``--resume`` and session
+        loading. Ordinary children, branches, delegates, and tool sessions are
+        never eligible resume targets.
 
         If no descendant (including the starting session) has any messages,
         the original ``session_id`` is returned unchanged.
 
-        The chain is always walked via the child whose ``started_at`` is
-        latest; that matches the single-chain shape that compression creates.
-        A depth cap (32) guards against accidental loops in malformed data.
+        A depth cap (100) guards against accidental loops in malformed data.
         """
         if not session_id:
             return session_id
@@ -4884,57 +4897,54 @@ class SessionDB:
         # (created after the parent was ended), so delegation / branch children
         # never hijack the resume. This is the fix for the desktop "I came back
         # and the reply isn't there" report on large sessions.
+        requested_id = session_id
         try:
-            tip = self.get_compression_tip(session_id)
+            tip = self.get_compression_tip(requested_id)
         except Exception:
-            tip = session_id
-        if tip and tip != session_id:
-            session_id = tip
+            tip = requested_id
+        if not tip or tip == requested_id:
+            return requested_id
 
         with self._lock:
-            current = session_id
+            # Walk backward from the validated compression tip so an empty tail
+            # resolves to the nearest continuation that actually holds messages.
+            # Starting from the requested node and following arbitrary children
+            # is unsafe: ordinary child sessions share parent_session_id and can
+            # otherwise hijack resume into another conversation.
+            current = tip
             seen = {current}
-            best = None  # tracks the last (deepest) node with messages
-
-            for _ in range(32):
-                # Check if the current node has messages.
+            for _ in range(100):
                 try:
                     row = self._conn.execute(
                         "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
                         (current,),
                     ).fetchone()
                 except Exception:
-                    return session_id
+                    return requested_id
                 if row is not None:
-                    best = current
-
-                # Walk to the most-recently-started child — but skip explicit
-                # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
-                # and tool children. They also carry a ``parent_session_id`` yet
-                # are NOT compression continuations; following them would hijack
-                # the resume target to an unrelated session (e.g. a subagent
-                # run). This mirrors the child-exclusion in ``get_compression_tip``.
+                    return current
+                if current == requested_id:
+                    break
                 try:
-                    child_row = self._conn.execute(
-                        "SELECT id FROM sessions "
-                        "WHERE parent_session_id = ? "
-                        "  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND COALESCE(source, '') != 'tool' "
-                        "ORDER BY started_at DESC, id DESC LIMIT 1",
+                    parent_row = self._conn.execute(
+                        "SELECT parent_session_id FROM sessions WHERE id = ?",
                         (current,),
                     ).fetchone()
                 except Exception:
-                    return session_id
-                if child_row is None:
+                    return requested_id
+                if parent_row is None:
                     break
-                child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
-                if not child_id or child_id in seen:
+                parent_id = (
+                    parent_row["parent_session_id"]
+                    if hasattr(parent_row, "keys")
+                    else parent_row[0]
+                )
+                if not parent_id or parent_id in seen:
                     break
-                seen.add(child_id)
-                current = child_id
+                seen.add(parent_id)
+                current = parent_id
 
-            return best if best is not None else session_id
+            return requested_id
 
     def get_messages_as_conversation(
         self,

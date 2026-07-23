@@ -1295,7 +1295,10 @@ def compress_context(
                             session_id=agent.session_id,
                             source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                             model=agent.model,
-                            model_config=agent._session_init_model_config,
+                            model_config={
+                                **agent._session_init_model_config,
+                                "_compression_from": old_session_id,
+                            },
                             parent_session_id=old_session_id,
                         )
                     except Exception as _cs_err:

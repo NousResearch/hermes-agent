@@ -143,17 +143,23 @@ def _run_and_exit_oneshot(
     provider: object = None,
     toolsets: object = None,
     usage_file: object = None,
+    resume: object = None,
+    pass_session_id: bool = False,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
 
-        rc = run_oneshot(
-            prompt,
-            model=model,
-            provider=provider,
-            toolsets=toolsets,
-            usage_file=usage_file,
-        )
+        options = {
+            "model": model,
+            "provider": provider,
+            "toolsets": toolsets,
+            "usage_file": usage_file,
+        }
+        if resume:
+            options["resume"] = resume
+        if pass_session_id:
+            options["pass_session_id"] = True
+        rc = run_oneshot(prompt, **options)
     except KeyboardInterrupt:
         rc = 130
     except SystemExit as exc:
@@ -13368,6 +13374,8 @@ def _try_termux_fast_cli_launch() -> bool:
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            resume=getattr(args, "resume", None),
+            pass_session_id=bool(getattr(args, "pass_session_id", False)),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -15526,6 +15534,8 @@ def main():
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            resume=getattr(args, "resume", None),
+            pass_session_id=bool(getattr(args, "pass_session_id", False)),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

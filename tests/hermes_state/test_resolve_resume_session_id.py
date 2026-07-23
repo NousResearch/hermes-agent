@@ -23,13 +23,22 @@ def db(tmp_path):
 
 
 def _make_chain(db: SessionDB, ids_with_parent):
-    """Create sessions in order, forcing started_at so ordering is deterministic."""
+    """Create a compression chain, forcing deterministic session ordering."""
     base = int(time.time()) - 10_000
+    compression_parents = set()
     for i, (sid, parent) in enumerate(ids_with_parent):
         db.create_session(sid, source="cli", parent_session_id=parent)
+        if parent:
+            compression_parents.add(parent)
         db._conn.execute(
             "UPDATE sessions SET started_at = ? WHERE id = ?",
             (base + i * 100, sid),
+        )
+    for parent in compression_parents:
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = started_at, end_reason = 'compression' "
+            "WHERE id = ?",
+            (parent,),
         )
     db._conn.commit()
 
@@ -135,17 +144,69 @@ def test_compression_tip_not_confused_with_delegation_child(db):
     assert db.resolve_resume_session_id("conv") == "conv"
 
 
-def test_prefers_most_recent_child_when_fork_exists(db):
-    # If a session was somehow forked (two children), pick the latest one.
-    # In practice, compression only produces single-chain shape, but the helper
-    # should degrade gracefully.
+def test_resume_does_not_follow_an_ordinary_child(db):
+    db.create_session("parent", source="cli")
+    db.append_message("parent", role="user", content="parent turn")
+    db.create_session("ordinary_child", source="cli", parent_session_id="parent")
+    db.append_message(
+        "ordinary_child", role="assistant", content="different conversation"
+    )
+
+    assert db.resolve_resume_session_id("parent") == "parent"
+
+
+def test_ambiguous_unmarked_compression_children_fail_closed(db):
+    # Legacy rows have no explicit compression marker. Two eligible live
+    # children are ambiguous, so resuming the parent must not guess.
     _make_chain(db, [
         ("parent", None),
         ("older_fork", "parent"),
         ("newer_fork", "parent"),
     ])
     db.append_message("newer_fork", role="user", content="x")
-    assert db.resolve_resume_session_id("parent") == "newer_fork"
+    assert db.resolve_resume_session_id("parent") == "parent"
+
+
+def test_explicit_compression_child_wins_over_ordinary_and_special_siblings(db):
+    base = int(time.time()) - 10_000
+    db.create_session("parent", source="cli")
+    db.append_message("parent", role="user", content="before compression")
+    db.end_session("parent", "compression")
+    db.create_session(
+        "continuation",
+        source="cli",
+        parent_session_id="parent",
+        model_config={"_compression_from": "parent"},
+    )
+    db.append_message("continuation", role="assistant", content="canonical")
+    db.create_session("ordinary", source="cli", parent_session_id="parent")
+    db.append_message("ordinary", role="assistant", content="unrelated")
+    db.create_session(
+        "delegate",
+        source="subagent",
+        parent_session_id="parent",
+        model_config={"_delegate_from": "parent"},
+    )
+    db.create_session(
+        "branch",
+        source="cli",
+        parent_session_id="parent",
+        model_config={"_branched_from": "parent"},
+    )
+    db.create_session("tool_child", source="tool", parent_session_id="parent")
+    conn = db._conn
+    assert conn is not None
+    for offset, sid in enumerate(
+        ["parent", "continuation", "delegate", "branch", "tool_child", "ordinary"]
+    ):
+        conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (base + offset * 100, sid),
+        )
+    conn.commit()
+
+    assert db.get_compression_tip("parent") == "continuation"
+    assert db.resolve_resume_session_id("parent") == "continuation"
 
 
 def test_redirects_from_message_bearing_parent_to_child(db):

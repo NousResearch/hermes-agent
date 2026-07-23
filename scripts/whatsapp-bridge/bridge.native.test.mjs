@@ -18,10 +18,32 @@ import {
   createBoundedMessageStore,
   appendMediaFailureNote,
   extractBridgeEvent,
+  inboundReadReceiptKeys,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- inbound read receipts ------------------------------------------------
+{
+  const groupKey = {
+    id: 'incoming-group-1',
+    remoteJid: '120363001234567890@g.us',
+    participant: '15550001111@s.whatsapp.net',
+    fromMe: false,
+  };
+
+  assert.deepEqual(inboundReadReceiptKeys({ key: groupKey, enabled: false }), []);
+  assert.deepEqual(
+    inboundReadReceiptKeys({ key: { ...groupKey, fromMe: true }, enabled: true }),
+    [],
+  );
+  const receiptKeys = inboundReadReceiptKeys({ key: groupKey, enabled: true });
+  assert.equal(receiptKeys.length, 1);
+  assert.equal(receiptKeys[0], groupKey);
+  assert.equal(receiptKeys[0].participant, groupKey.participant);
+  console.log('  ✓ inbound read receipts preserve the original group message key');
+}
 
 // -- quoted outbound text -------------------------------------------------
 {

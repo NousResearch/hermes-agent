@@ -3600,6 +3600,23 @@ def check_all_command_guards(command: str, env_type: str,
         choice=choice,
     )
 
+    if choice == "timeout":
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: Approval timed out without user response. The user "
+                "has NOT consented to this action. Do NOT retry this command, "
+                "do NOT rephrase it, and do NOT attempt the same outcome via "
+                "a different command. Silence is not consent. Stop the current "
+                "workflow and wait for the user before taking any further "
+                "destructive or irreversible action."
+            ),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+            "outcome": "timeout",
+            "user_consent": False,
+        }
+
     if choice == "deny":
         return {
             "approved": False,

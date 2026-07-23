@@ -106,6 +106,43 @@ class TestSmartApproval:
         assert is_approved(session_key, pattern_key) is False
 
 
+class TestCliApprovalTimeoutAttribution:
+    def test_timeout_blocks_without_claiming_user_denied(self, monkeypatch):
+        session_key = "test-cli-approval-timeout"
+        command = "python3 <<'PY'\nprint('safe')\nPY"
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"mode": "manual"},
+        )
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        approval_module.clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        result = approval_module.check_all_command_guards(
+            command,
+            "local",
+            approval_callback=lambda *_args, **_kwargs: "timeout",
+        )
+
+        assert result["approved"] is False
+        assert result["outcome"] == "timeout"
+        assert result["user_consent"] is False
+        assert "timed out without user response" in result["message"]
+        assert "User denied" not in result["message"]
+        assert "Silence is not consent" in result["message"]
+
+
 class TestDetectDangerousRm:
     def test_rm_rf_detected(self):
         is_dangerous, key, desc = detect_dangerous_command("rm -rf /home/user")

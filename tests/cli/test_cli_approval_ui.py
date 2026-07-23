@@ -67,6 +67,22 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_approval_callback_returns_timeout_when_user_does_not_respond(self):
+        cli = _make_cli_stub()
+        cli._paint_now = MagicMock()
+
+        with patch.object(cli_module, "CLI_CONFIG", {"approvals": {"timeout": 0}}), \
+             patch.object(queue.Queue, "get", side_effect=queue.Empty), \
+             patch.object(cli_module, "_cprint"):
+            result = cli._approval_callback(
+                "python3 <<'PY'\nprint('safe')\nPY",
+                "script execution via heredoc",
+            )
+
+        assert result == "timeout"
+        assert cli._approval_state is None
+        assert cli._approval_deadline == 0
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}

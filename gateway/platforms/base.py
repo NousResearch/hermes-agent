@@ -21,6 +21,7 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from agent.file_safety import is_project_env_basename
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -1327,6 +1328,16 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         return None
 
     if not resolved.is_file():
+        return None
+
+    # Project-local secret env files (.env, .envrc, ...) are read-blocked
+    # anywhere on disk by agent/file_safety.get_read_block_error. Mirror that on
+    # the delivery/exfil side so it can't trail the read guard (the denylist's
+    # own stated invariant, above): the per-Hermes-root ".env" entry in
+    # _media_delivery_denied_paths only covers <hermes-root>/.env, never a
+    # user's own project .env. Checked before the cache allowlist so a secret
+    # env file is never deliverable regardless of location or delivery mode.
+    if is_project_env_basename(resolved.name):
         return None
 
     # Cache / operator allowlist is always honored — these are unconditionally

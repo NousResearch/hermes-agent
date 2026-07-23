@@ -9,14 +9,14 @@ export interface TriggerState {
 // `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
 // single tokens. `/` triggers keep going so the popover stays live while the
 // user types args (`/personality alic` → arg completer suggests `alice`).
-// Restricting the slash command name to `[a-zA-Z][\w-]*` avoids matching file
-// paths like `src/foo/bar`.
+// Restricting the slash command name to `[a-zA-Z0-9][\w-]*` avoids matching
+// file paths like `src/foo/bar` while allowing digit-prefixed skill commands.
 //
 // Slash commands only execute at the beginning of a message, so the `/`
 // trigger is anchored strictly at position 0 — not after whitespace — to
 // avoid opening the popover mid-message (e.g. `hello /`).
 const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
-const SLASH_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
+const SLASH_TRIGGER_RE = /^(\/)((?:[a-zA-Z0-9][\w-]*(?:\s+\S*)*)?)$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {

@@ -59,6 +59,38 @@ MUTATING_TOOL_NAMES = frozenset(
     }
 )
 
+# Groups tools by the world state they observe or change. A successful
+# mutating call invalidates no-progress tracking only for reads in its own
+# domain: a browser click legitimately changes what the next snapshot
+# returns, but a todo or memory write says nothing about a stuck page.
+# Mutating tools without a domain (todo, memory, send_message, ...) reset
+# nothing; reads without a mutating counterpart (web_search, session_search)
+# are never reset — nothing the agent does changes what they observe.
+_OBSERVATION_DOMAINS = {
+    "browser_click": "browser",
+    "browser_type": "browser",
+    "browser_press": "browser",
+    "browser_scroll": "browser",
+    "browser_navigate": "browser",
+    "browser_snapshot": "browser",
+    "browser_console": "browser",
+    "browser_get_images": "browser",
+    "terminal": "workspace",
+    "execute_code": "workspace",
+    "write_file": "workspace",
+    "patch": "workspace",
+    "read_file": "workspace",
+    "search_files": "workspace",
+    "mcp_filesystem_read_file": "workspace",
+    "mcp_filesystem_read_text_file": "workspace",
+    "mcp_filesystem_read_multiple_files": "workspace",
+    "mcp_filesystem_list_directory": "workspace",
+    "mcp_filesystem_list_directory_with_sizes": "workspace",
+    "mcp_filesystem_directory_tree": "workspace",
+    "mcp_filesystem_get_file_info": "workspace",
+    "mcp_filesystem_search_files": "workspace",
+}
+
 
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
@@ -346,6 +378,27 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+
+        # A successful state-changing call invalidates "same result = no
+        # progress" for reads in its own observation domain: the world those
+        # reads observe just changed, so an identical re-read is legitimate
+        # once more (slow SPAs often lag one interaction behind). Without
+        # this, a browser session interleaving click/type/press with
+        # browser_snapshot accumulates snapshot repeats across the whole turn
+        # and hard-blocks the model's only way to observe the page. Reads in
+        # unrelated domains keep counting — a todo or memory write says
+        # nothing about a stuck page — as do tight read-read-read loops with
+        # no mutation in between. Failed mutations changed nothing and never
+        # reach this point (the failure branch above returns first).
+        if tool_name in self.config.mutating_tools:
+            domain = _OBSERVATION_DOMAINS.get(tool_name)
+            if domain is not None:
+                for stale in [
+                    sig
+                    for sig in self._no_progress
+                    if _OBSERVATION_DOMAINS.get(sig.tool_name) == domain
+                ]:
+                    self._no_progress.pop(stale, None)
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

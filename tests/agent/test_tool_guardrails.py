@@ -228,6 +228,99 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_successful_mutating_call_resets_no_progress_in_its_domain():
+    """Interleaved page interactions must not accumulate snapshot repeats.
+
+    Regression for the browser false-positive: a session alternating
+    browser_click and browser_snapshot on a slow SPA reached the no-progress
+    block even though every snapshot legitimately followed a state-changing
+    action. A successful mutating call resets no-progress tracking for reads
+    in its observation domain.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    snapshot_result = "same accessibility tree"
+
+    for _ in range(5):
+        assert controller.before_call("browser_snapshot", {}).action == "allow"
+        controller.after_call("browser_snapshot", {}, snapshot_result, failed=False)
+        controller.after_call("browser_click", {"ref": "@e5"}, '{"success": true}', failed=False)
+
+    assert controller.before_call("browser_snapshot", {}).action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_failed_mutating_call_does_not_reset_no_progress_counts():
+    """A mutating call that failed changed nothing — repeats keep counting."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    snapshot_result = "same accessibility tree"
+
+    for _ in range(2):
+        assert controller.before_call("browser_snapshot", {}).action == "allow"
+        controller.after_call("browser_snapshot", {}, snapshot_result, failed=False)
+        controller.after_call(
+            "browser_click", {"ref": "@e5"}, '{"success": false, "error": "no such ref"}',
+            failed=True,
+        )
+
+    blocked = controller.before_call("browser_snapshot", {})
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_unrelated_successful_mutation_does_not_reset_no_progress_counts():
+    """A successful mutating call outside the read's observation domain (a
+    todo or memory write while a page is stuck) says nothing about the page —
+    the ledger for browser reads must keep counting."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    snapshot_result = "same accessibility tree"
+
+    for i in range(2):
+        assert controller.before_call("browser_snapshot", {}).action == "allow"
+        controller.after_call("browser_snapshot", {}, snapshot_result, failed=False)
+        controller.after_call("todo", {"add": f"item-{i}"}, '{"success": true}', failed=False)
+        controller.after_call("memory", {"action": "add"}, '{"success": true}', failed=False)
+
+    blocked = controller.before_call("browser_snapshot", {})
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_mutation_reset_is_scoped_to_its_own_domain():
+    """A successful terminal command resets workspace reads (it can change
+    files) but leaves browser read progress untouched."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=5)
+    )
+    controller.after_call("read_file", {"path": "/tmp/x"}, "same file contents", failed=False)
+    controller.after_call("browser_snapshot", {}, "same accessibility tree", failed=False)
+
+    controller.after_call("terminal", {"command": "make build"}, '{"exit_code": 0}', failed=False)
+
+    reread = controller.after_call("read_file", {"path": "/tmp/x"}, "same file contents", failed=False)
+    assert reread.action == "allow"
+    resnap = controller.after_call("browser_snapshot", {}, "same accessibility tree", failed=False)
+    assert resnap.action == "warn"
+    assert resnap.code == "idempotent_no_progress_warning"
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

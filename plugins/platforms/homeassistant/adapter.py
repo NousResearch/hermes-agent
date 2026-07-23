@@ -95,6 +95,12 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._rest_session: Optional["aiohttp.ClientSession"] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
+        # Strong references for in-flight closes started by
+        # _cancel_safe_close() that got shielded away from a caller's
+        # cancellation (#67470 review, egilewski): asyncio requires holding
+        # a reference to a shielded task or it can be garbage-collected
+        # mid-close, silently dropping the very cleanup being protected.
+        self._teardown_tasks: Set["asyncio.Task"] = set()
         self._msg_id: int = 0
         # Monotonic timestamp bumped by _listen_loop/_read_events on every
         # iteration or received event; the watchdog compares against this to
@@ -182,8 +188,18 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         try:
             ws = await session.ws_connect(ws_url, heartbeat=30, timeout=30)
-        except Exception:
-            await self._bounded_close(session, "WS session")
+        except (asyncio.CancelledError, Exception):
+            # CancelledError derives from BaseException, not Exception, so a
+            # plain `except Exception` here misses it entirely -- and since
+            # self._session isn't assigned until below, cancellation at this
+            # await left the freshly created session unreachable by
+            # disconnect()'s cleanup too, leaking it outright (#67470
+            # review, egilewski: probe showed session.close awaited 0
+            # times). Catching both in one arm and closing cancel-safely
+            # covers the plain-failure and cancellation paths the same way,
+            # including a second cancellation racing in while this close is
+            # still running.
+            await self._cancel_safe_close(session, "WS session")
             raise
 
         self._session = session
@@ -272,6 +288,50 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[%s] %s close failed (non-fatal): %s", self.name, label, e)
 
+    def _track_teardown(self, coro: Any) -> "asyncio.Task":
+        """Wrap *coro* in a task retained in ``self._teardown_tasks``.
+
+        A shielded await only protects the awaited task from being
+        cancelled; it does not keep the task alive on its own, and asyncio
+        can garbage-collect an unreferenced task mid-flight. Retaining it
+        here (removed via the done callback once it finishes) is what makes
+        shielding actually work (#67470 review, egilewski).
+        """
+        task = asyncio.create_task(coro)
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        return task
+
+    async def _cancel_safe_close(self, closeable: Any, label: str) -> None:
+        """Close *closeable* so the close survives a cancellation landing
+        on the caller while it's in flight.
+
+        ``_bounded_close()`` alone isn't enough: if the coroutine calling it
+        is cancelled a second time while the close is still running (e.g.
+        the watchdog's wedged-listener respawn and disconnect() can both
+        cancel the same listen task -- adapter.py's ``_cancel_task_bounded``
+        call sites), that second cancellation interrupts
+        ``asyncio.wait_for(closeable.close(), ...)`` before ``close()``
+        finishes, leaking the resource exactly like the original
+        unhandled-CancelledError bug it was meant to fix (#67470 review,
+        egilewski -- verified empirically: a bare `except
+        asyncio.CancelledError: await self._bounded_close(...); raise`
+        completes 0 closes under a second cancellation arriving mid-close).
+
+        Running the close as a task tracked in ``self._teardown_tasks`` and
+        shielding the await fixes this: a second cancellation is delivered
+        to this coroutine (so it still propagates to the caller promptly,
+        cancellation is never swallowed) but the close keeps running
+        detached in the background instead of being interrupted, and stays
+        referenced so it isn't garbage-collected before it finishes. It
+        keeps running to completion on its own even if nothing ever awaits
+        it again -- disconnect() does not drain leftover tasks here (that
+        was tried and removed: it deadlocks when two teardown tasks each
+        end up waiting on the other, see _full_teardown()'s comment).
+        """
+        task = self._track_teardown(self._bounded_close(closeable, label))
+        await asyncio.shield(task)
+
     async def _cancel_task_bounded(self, task: Optional["asyncio.Task"], label: str) -> None:
         """Cancel *task* and await it, bounded by ``_DRAIN_TIMEOUT``.
 
@@ -309,17 +369,54 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     async def _cleanup_ws(self) -> None:
         """Close WebSocket and session, each bounded by ``_DRAIN_TIMEOUT`` so
-        one wedged close can't skip the other resource's teardown (#67470)."""
+        one wedged close can't skip the other resource's teardown (#67470).
+
+        Both fields are detached to locals *before either close starts*,
+        and both closes run inside a single tracked, shielded teardown task
+        (#67470 review, egilewski, round 2): closing them as two separate
+        shielded steps still left a gap -- a cancellation landing after the
+        WebSocket close finishes but before the session field is detached
+        skipped the session close entirely, leaving self._session
+        non-None but with no further code left running to ever close it
+        (only closed if some *later* call happens to run _cleanup_ws()
+        again). Running both closes as one shielded unit means a
+        cancellation landing anywhere in this coroutine still lets the
+        whole thing -- both resources -- finish closing in the background.
+        """
         ws, self._ws = self._ws, None
-        if ws is not None and not ws.closed:
-            await self._bounded_close(ws, "WebSocket")
         session, self._session = self._session, None
-        if session is not None and not session.closed:
-            await self._bounded_close(session, "WS session")
+
+        async def _close_both() -> None:
+            if ws is not None and not ws.closed:
+                await self._bounded_close(ws, "WebSocket")
+            if session is not None and not session.closed:
+                await self._bounded_close(session, "WS session")
+
+        if ws is not None or session is not None:
+            task = self._track_teardown(_close_both())
+            await asyncio.shield(task)
 
     async def disconnect(self) -> None:
         """Disconnect from Home Assistant."""
         self._running = False
+        # The whole teardown sequence runs as one tracked, shielded unit
+        # (#67470 review, egilewski, round 3): disconnect() has several
+        # sequential stages (cancel watchdog, cancel listener, close
+        # WS/session, close REST session), each separated by its own
+        # await. A cancellation landing at any earlier stage previously
+        # aborted the whole coroutine, leaving every later stage's
+        # resources untouched -- e.g. cancelling during the WS/session
+        # close left the REST session assigned and never closed at all.
+        # Wrapping it all in one shielded task means disconnect() still
+        # propagates a cancellation to its caller promptly, but every
+        # stage still runs to completion in the background regardless of
+        # where that cancellation landed.
+        task = self._track_teardown(self._full_teardown())
+        await asyncio.shield(task)
+
+    async def _full_teardown(self) -> None:
+        """The complete disconnect() sequence; see disconnect()'s
+        docstring for why this runs as a single shielded unit."""
         # Watchdog first so it can't respawn the listener mid-teardown; both
         # awaits are bounded so a wedged task can't hang shutdown (#67470).
         await self._cancel_task_bounded(self._watchdog_task, "watchdog task")
@@ -328,9 +425,26 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._listen_task = None
 
         await self._cleanup_ws()
-        if self._rest_session and not self._rest_session.closed:
-            await self._bounded_close(self._rest_session, "REST session")
-        self._rest_session = None
+        # Detach before awaiting the close (#67470 review, egilewski, round
+        # 2): clearing the field only *after* the close returned meant a
+        # cancellation racing in on this disconnect() call left
+        # self._rest_session still assigned to a session whose close was
+        # already running in the background; a later disconnect() retry
+        # would see closed=False and close() it a second time.
+        rest_session, self._rest_session = self._rest_session, None
+        if rest_session is not None and not rest_session.closed:
+            await self._bounded_close(rest_session, "REST session")
+
+        # No extra drain of self._teardown_tasks here on purpose: it isn't
+        # needed for correctness (every tracked task keeps running to
+        # completion on its own regardless of whether anyone awaits it --
+        # that's the whole point of _track_teardown()), and waiting on the
+        # whole set here is actively wrong -- if this _full_teardown() run
+        # was itself started by disconnect() being called again while a
+        # prior _full_teardown() is still finishing up in the background,
+        # the two tasks would each end up in the other's wait set,
+        # deadlocking until _DRAIN_TIMEOUT (empirically confirmed while
+        # writing the regression for a cancel-then-retry disconnect()).
         logger.info("[%s] Disconnected", self.name)
 
     # ------------------------------------------------------------------

@@ -390,3 +390,305 @@ async def test_cancel_task_bounded_abandons_uncancellable_task(monkeypatch):
     stop.set()
     zombie.cancel()
     await asyncio.wait({zombie}, timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up (#67470, egilewski): CancelledError bypasses the
+# `except Exception` cleanup in _ws_connect(), leaking the freshly created
+# session before self._session is ever assigned.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_connect_cancellation_closes_local_session():
+    """A cancellation landing inside session.ws_connect() -- e.g. the
+    gateway's outer per-platform connect deadline
+    (asyncio.wait_for(adapter.connect(...), timeout=...) in
+    gateway/run.py's _connect_adapter_with_timeout), or disconnect()/the
+    watchdog cancelling an in-flight reconnect attempt -- must still close
+    the freshly created ClientSession instead of leaking it.
+    asyncio.CancelledError derives from BaseException, not Exception, so a
+    plain `except Exception` never sees it and the close is skipped
+    entirely (egilewski's probe: session.close observed awaited 0 times)."""
+    adapter = _make_adapter()
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    mock_session.close = AsyncMock()
+    mock_session.ws_connect = AsyncMock(side_effect=_hang_forever)
+
+    with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+        mock_aiohttp.ClientTimeout = lambda total: total
+        mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+
+        with pytest.raises(asyncio.TimeoutError):
+            # Mirrors gateway/run.py's outer connect deadline: it wraps the
+            # whole connect() (which calls _ws_connect() first) in
+            # asyncio.wait_for(..., timeout=...), cancelling it once the
+            # deadline passes while ws_connect() is still hung.
+            await asyncio.wait_for(adapter._ws_connect(), timeout=0.05)
+
+    mock_session.close.assert_awaited_once()
+    assert adapter._session is None
+    assert adapter._ws is None
+
+
+@pytest.mark.asyncio
+async def test_ws_connect_close_survives_second_cancellation_during_teardown():
+    """A naive `except CancelledError: await self._bounded_close(...);
+    raise` is not enough: this codebase has a real second cancellation
+    source that can race in while that close is still running (the
+    watchdog's wedged-listener respawn and disconnect() can both cancel the
+    same listen task -- adapter.py's _cancel_task_bounded call sites at
+    disconnect() and _watchdog_loop()). If that second cancellation
+    interrupts the close before it finishes, the session leaks exactly like
+    the original bug, just one frame deeper. The close must still complete
+    (detached, tracked in self._teardown_tasks) even under this race."""
+    adapter = _make_adapter()
+
+    close_started = asyncio.Event()
+    close_completed = asyncio.Event()
+    mock_session = MagicMock()
+    mock_session.closed = False
+
+    async def _slow_close():
+        close_started.set()
+        await asyncio.sleep(0.05)
+        close_completed.set()
+
+    mock_session.close = _slow_close
+    mock_session.ws_connect = AsyncMock(side_effect=_hang_forever)
+
+    with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+        mock_aiohttp.ClientTimeout = lambda total: total
+        mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+
+        task = asyncio.ensure_future(adapter._ws_connect())
+        await asyncio.sleep(0)
+        task.cancel()  # cancel #1: lands inside session.ws_connect()
+        # Bounded: on the pre-fix code this never fires (the close is
+        # skipped entirely), so an unbounded wait here would hang the
+        # suite instead of failing fast.
+        await asyncio.wait_for(close_started.wait(), timeout=2)
+        task.cancel()  # cancel #2: races in while that close is in flight
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    await asyncio.wait_for(close_completed.wait(), timeout=2)
+    assert adapter._session is None
+    assert adapter._ws is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_ws_close_survives_second_cancellation_during_teardown():
+    """_cleanup_ws() clears self._ws/self._session to None before awaiting
+    their close -- reached from _ws_connect()'s handshake CancelledError
+    handler and the _listen_loop reconnect ladder. If a second cancellation
+    lands on the caller while that close is still running, the close must
+    still complete instead of being interrupted mid-flight, even though the
+    fields are already unreachable by that point (#67470 review,
+    egilewski: this is the same leak class as _ws_connect()'s
+    pre-assignment session, reached one level deeper)."""
+    adapter = _make_adapter()
+
+    ws = MagicMock()
+    ws.closed = False
+    ws.close = AsyncMock()
+
+    session = MagicMock()
+    session.closed = False
+    close_started = asyncio.Event()
+    close_completed = asyncio.Event()
+
+    async def _slow_close():
+        close_started.set()
+        await asyncio.sleep(0.05)
+        close_completed.set()
+
+    session.close = _slow_close
+    adapter._ws = ws
+    adapter._session = session
+
+    async def _handshake_cancelled_mid_cleanup():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await adapter._cleanup_ws()
+            raise
+
+    task = asyncio.ensure_future(_handshake_cancelled_mid_cleanup())
+    await asyncio.sleep(0)
+    task.cancel()  # cancel #1: enters the CancelledError handler
+    # Bounded: on the pre-fix code this never fires (the close is skipped
+    # entirely), so an unbounded wait here would hang the suite instead of
+    # failing fast.
+    await asyncio.wait_for(close_started.wait(), timeout=2)
+    task.cancel()  # cancel #2: races in while _cleanup_ws() awaits the close
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(close_completed.wait(), timeout=2)
+    assert adapter._ws is None
+    assert adapter._session is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_ws_closes_session_when_cancelled_during_ws_close():
+    """A cancellation racing in while _cleanup_ws()'s WebSocket close is
+    still running must not skip the session close entirely (#67470 review
+    round 2, egilewski). Running the WS close and session close as two
+    separately shielded steps meant that second cancellation propagated out
+    of the WS close's shielded await, so _cleanup_ws() returned before ever
+    reaching the code that even attempts the session close -- leaving
+    self._session non-None with nothing left running to close it. Both
+    closes must run as one shielded unit so the whole thing keeps going."""
+    adapter = _make_adapter()
+
+    ws = MagicMock()
+    ws.closed = False
+    ws_close_started = asyncio.Event()
+    ws_close_completed = asyncio.Event()
+
+    async def _slow_ws_close():
+        ws_close_started.set()
+        await asyncio.sleep(0.05)
+        ws_close_completed.set()
+
+    ws.close = _slow_ws_close
+
+    session = MagicMock()
+    session.closed = False
+    session.close = AsyncMock()
+
+    adapter._ws = ws
+    adapter._session = session
+
+    async def _handshake_cancelled_mid_cleanup():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await adapter._cleanup_ws()
+            raise
+
+    task = asyncio.ensure_future(_handshake_cancelled_mid_cleanup())
+    await asyncio.sleep(0)
+    task.cancel()  # cancel #1: enters the CancelledError handler
+    await asyncio.wait_for(ws_close_started.wait(), timeout=2)
+    task.cancel()  # cancel #2: races in while the WS close is still running
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(ws_close_completed.wait(), timeout=2)
+    session.close.assert_awaited_once()
+    assert adapter._ws is None
+    assert adapter._session is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_rest_session_not_double_closed_on_cancellation():
+    """disconnect() must detach self._rest_session before awaiting its
+    close (#67470 review round 2, egilewski): clearing the field only
+    *after* the close returned meant a cancellation racing in on
+    disconnect() left the field still assigned to a session whose close was
+    already running in the background -- a later disconnect() retry would
+    see closed=False and call close() on it a second time."""
+    adapter = _make_adapter()
+    adapter._running = True
+
+    rest_session = MagicMock()
+    rest_session.closed = False
+    close_started = asyncio.Event()
+    close_completed = asyncio.Event()
+    close_calls = 0
+
+    async def _slow_close():
+        nonlocal close_calls
+        close_calls += 1
+        close_started.set()
+        await asyncio.sleep(0.05)
+        rest_session.closed = True
+        close_completed.set()
+
+    rest_session.close = _slow_close
+    adapter._rest_session = rest_session
+
+    async def _noop():
+        return
+
+    adapter._listen_task = asyncio.ensure_future(_noop())
+    adapter._watchdog_task = asyncio.ensure_future(_noop())
+    await asyncio.sleep(0)
+
+    task = asyncio.ensure_future(adapter.disconnect())
+    await asyncio.wait_for(close_started.wait(), timeout=2)
+    task.cancel()  # races in while the REST session close is still running
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # A retried disconnect() (or any other caller) must see the field
+    # already cleared, not call close() on the same session a second time.
+    assert adapter._rest_session is None
+
+    # Simulate a caller retrying disconnect() right away, before the
+    # backgrounded close has even finished.
+    adapter._running = True
+    adapter._listen_task = asyncio.ensure_future(_noop())
+    adapter._watchdog_task = asyncio.ensure_future(_noop())
+    await asyncio.sleep(0)
+    await asyncio.wait_for(adapter.disconnect(), timeout=2)
+
+    await asyncio.wait_for(close_completed.wait(), timeout=2)
+    assert close_calls == 1, "REST session close() must not run twice"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_closes_rest_session_when_cancelled_during_ws_close():
+    """disconnect() has several sequential stages (cancel watchdog, cancel
+    listener, close WS/session, close REST session). A cancellation landing
+    at an EARLIER stage must not leave a LATER stage's resources untouched
+    (#67470 review round 3, egilewski): previously, cancelling disconnect()
+    while _cleanup_ws() was still closing the WebSocket aborted the whole
+    coroutine before the REST session close was ever attempted, leaving
+    self._rest_session assigned and open. The full teardown must run as one
+    protected unit so every stage still completes in the background."""
+    adapter = _make_adapter()
+    adapter._running = True
+
+    ws = MagicMock()
+    ws.closed = False
+    ws_close_started = asyncio.Event()
+
+    async def _slow_ws_close():
+        ws_close_started.set()
+        await asyncio.sleep(0.05)
+
+    ws.close = _slow_ws_close
+    adapter._ws = ws
+    adapter._session = None
+
+    rest_session = MagicMock()
+    rest_session.closed = False
+    rest_close_completed = asyncio.Event()
+
+    async def _rest_close():
+        await asyncio.sleep(0.02)
+        rest_close_completed.set()
+
+    rest_session.close = _rest_close
+    adapter._rest_session = rest_session
+
+    async def _noop():
+        return
+
+    adapter._listen_task = asyncio.ensure_future(_noop())
+    adapter._watchdog_task = asyncio.ensure_future(_noop())
+    await asyncio.sleep(0)
+
+    task = asyncio.ensure_future(adapter.disconnect())
+    await asyncio.wait_for(ws_close_started.wait(), timeout=2)
+    task.cancel()  # races in while the WS close (an earlier stage) is running
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(rest_close_completed.wait(), timeout=2)
+    assert adapter._rest_session is None

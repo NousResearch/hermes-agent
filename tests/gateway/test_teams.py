@@ -297,7 +297,8 @@ class TestTeamsAdapterInit:
         assert adapter._client_secret == "env-secret"
         assert adapter._tenant_id == "env-tenant"
 
-    def test_default_port(self):
+    def test_default_port(self, monkeypatch):
+        monkeypatch.delenv("TEAMS_PORT", raising=False)
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
         assert adapter._port == 3978
 
@@ -880,6 +881,79 @@ class TestTeamsAttachmentClassification:
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_bytes_adds_bearer_for_bot_framework_urls(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token-123")
+        captured = {}
+
+        class FakeResponse:
+            content = b"image-bytes"
+
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured["client_kwargs"] = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers):
+                captured["url"] = url
+                captured["headers"] = headers
+                return FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+        data = await adapter._fetch_attachment_bytes(
+            "https://smba.trafficmanager.net/amer/v3/attachments/abc/views/original"
+        )
+
+        assert data == b"image-bytes"
+        assert captured["headers"]["Authorization"] == "Bearer bot-token-123"
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_bytes_does_not_send_bearer_to_other_hosts(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token-123")
+        captured = {}
+
+        class FakeResponse:
+            content = b"file-bytes"
+
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured["client_kwargs"] = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers):
+                captured["url"] = url
+                captured["headers"] = headers
+                return FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+        data = await adapter._fetch_attachment_bytes(
+            "https://example.com/download/image.png"
+        )
+
+        assert data == b"file-bytes"
+        assert "Authorization" not in captured["headers"]
+        adapter._app._get_bot_token.assert_not_awaited()
 
     @pytest.mark.anyio
     async def test_download_failure_degrades_to_text(self):

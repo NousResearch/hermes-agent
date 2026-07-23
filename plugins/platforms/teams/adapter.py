@@ -807,11 +807,16 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection.
 
-        Teams file attachments carry pre-authenticated SharePoint download
-        URLs (no extra auth header needed). Validates the URL against the
-        SSRF guard and follows redirects through the shared redirect guard,
-        matching the cache_*_from_url helpers in gateway.platforms.base.
+        Teams sends inline image attachments as Bot Framework attachment URLs
+        under ``smba.trafficmanager.net``.  Those URLs are not public: they
+        require the bot's Bot Framework bearer token.  SharePoint file
+        attachments may instead be pre-authenticated download URLs and do not
+        need the header.  We only attach the bearer token to known Bot
+        Framework service hosts so a tampered attachment URL cannot exfiltrate
+        credentials.
         """
+        from urllib.parse import urlparse
+
         from tools.url_safety import is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard
 
@@ -820,15 +825,19 @@ class TeamsAdapter(BasePlatformAdapter):
 
         import httpx
 
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
+        host = urlparse(url).hostname or ""
+        if host in _ALLOWED_TEAMS_SERVICE_HOSTS and self._app is not None:
+            token = await self._app._get_bot_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.content
 
@@ -931,14 +940,39 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
 
             if content_url and content_type.startswith("image/"):
+                cached_path = None
+                cached_type = content_type
+                cached_kind = "image"
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    data = await self._fetch_attachment_bytes(content_url)
+                    cached = cache_media_bytes(
+                        data,
+                        filename=att_name or "teams-image",
+                        mime_type=content_type,
+                    )
                     if cached:
-                        media_urls.append(cached)
-                        media_types.append(content_type)
-                        media_kinds.append("image")
+                        cached_path = cached.path
+                        cached_type = cached.media_type
+                        cached_kind = cached.kind
                 except Exception as e:
-                    logger.warning("[teams] Failed to cache image attachment: %s", e)
+                    logger.warning("[teams] Failed to fetch authenticated image attachment: %s", e)
+
+                # Backward-compatible fallback for public/pre-authenticated
+                # image URLs and tests that monkeypatch cache_image_from_url.
+                if not cached_path:
+                    try:
+                        fallback = await cache_image_from_url(content_url)
+                        if fallback:
+                            cached_path = fallback
+                            cached_type = content_type
+                            cached_kind = "image"
+                    except Exception as e:
+                        logger.warning("[teams] Failed to cache image attachment: %s", e)
+
+                if cached_path:
+                    media_urls.append(cached_path)
+                    media_types.append(cached_type)
+                    media_kinds.append(cached_kind)
                 continue
 
             if content_url:

@@ -284,6 +284,9 @@ class TestAppMentionHandler:
         assert "app_context_changed" in registered_events
         assert "reaction_added" in registered_events
         assert "reaction_removed" in registered_events
+        assert "user_change" in registered_events
+        assert "user_profile_changed" in registered_events
+        assert "user_status_changed" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
         # Slack slash commands are registered via a single regex matcher

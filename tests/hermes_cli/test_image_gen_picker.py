@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli.text_width import display_width
+
 from agent import image_gen_registry
 from agent.image_gen_provider import ImageGenProvider
 
@@ -130,6 +132,27 @@ class TestPluginPickerInjection:
         rows = tools_config._plugin_image_gen_providers()
         match = next(r for r in rows if r.get("image_gen_plugin_name") == "plain_img")
         assert "post_setup" not in match
+
+
+class TestImageGenPickerFormatting:
+    def test_format_model_row_uses_display_width_for_cjk_text(self):
+        from hermes_cli import tools_config
+
+        widths = {"model": 14, "speed": 6, "strengths": 18}
+        row = tools_config._format_imagegen_model_row(
+            "模型A",
+            {"speed": "快", "strengths": "中文描述", "price": "$"},
+            widths,
+        )
+        expected_model_end = len("模型A" + " " * (14 - display_width("模型A")))
+        expected_speed_end = expected_model_end + 2 + len("快" + " " * (6 - display_width("快")))
+        expected_strengths_end = expected_speed_end + 2 + len("中文描述" + " " * (18 - display_width("中文描述")))
+
+        assert display_width(row[:expected_model_end]) == 14
+        assert display_width(row[expected_model_end:expected_model_end + 2]) == 2
+        assert display_width(row[expected_model_end + 2:expected_speed_end]) == 6
+        assert display_width(row[expected_speed_end + 2:expected_strengths_end]) == 18
+        assert row[expected_strengths_end + 2:] == "$"
 
 
 class TestPluginCatalog:

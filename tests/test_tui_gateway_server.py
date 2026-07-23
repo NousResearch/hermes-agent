@@ -1748,6 +1748,7 @@ def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch,
 
     lease = types.SimpleNamespace(session_id="child1", release=lambda: None)
 
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: db)
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(

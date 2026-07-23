@@ -6409,11 +6409,15 @@ def _(rid, params: dict) -> dict:
     profile_home = _profile_home(profile)
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
-    # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
+    # profile (do NOT auto-close it here). Otherwise open the launch home's
+    # state.db via ``_hermes_home`` — not the process-global ``_get_db()``
+    # singleton, which can still point at a pre-override home after the
+    # gateway's ``_hermes_home`` is rebound (desktop launch-home tests /
+    # app-global remote).
     if profile_home is not None:
         db = _open_session_db(profile_home)
     else:
-        db = _get_db()
+        db = _open_session_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
 

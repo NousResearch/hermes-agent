@@ -10,8 +10,9 @@ Several common subprocess patterns break silently-or-loudly on Windows:
 
 * ``start_new_session=True`` — on POSIX, this maps to ``os.setsid()`` and
   actually detaches the child.  On Windows it's silently ignored; the
-  Windows equivalent is ``CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS``
-  creationflags, which Python only applies when you pass them explicitly.
+  Windows equivalent is the ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW``
+  creationflags bundle, which Python only applies when you pass it
+  explicitly.
 
 * Console-window flashes — every ``subprocess.Popen`` of a ``.exe`` on
   Windows spawns a cmd window briefly unless ``CREATE_NO_WINDOW`` is
@@ -98,7 +99,23 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
 # because CREATE_NO_WINDOW and DETACHED_PROCESS aren't guaranteed to be
 # present on stdlib subprocess on older Pythons or non-Windows builds.
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
-_DETACHED_PROCESS = 0x00000008
+# DETACHED_PROCESS is intentionally NOT part of any flag bundle here — do not
+# re-add it.  Two reasons (the recurring console-flash bug #54220 / #56747):
+#
+# 1. MSDN (Process Creation Flags): CREATE_NO_WINDOW "is ignored if used with
+#    either CREATE_NEW_CONSOLE or DETACHED_PROCESS".  Combining them means
+#    DETACHED_PROCESS governs and the no-window bit is dead.
+# 2. A DETACHED_PROCESS child has NO console at all, so every console-subsystem
+#    descendant it ever spawns (git, gh, cmd, node, wmic, powershell, …) must
+#    allocate its OWN console — a visible flash per spawn, including spawns
+#    inside third-party libraries that no per-call-site CREATE_NO_WINDOW sweep
+#    can reach.  A CREATE_NO_WINDOW child instead OWNS a hidden console that
+#    all descendants inherit, making "no flashing windows" a property of the
+#    one daemon launch.  Root cause isolated + A/B verified on Windows 11 by
+#    the desktop backend fix (commit aa2ae36c3f): with per-site hide flags
+#    neutered, naive git/gh/cmd spawns don't flash under a hidden-console
+#    parent and do flash under a console-less one.
+_DETACHED_PROCESS = 0x00000008  # kept for reference; must stay out of bundles
 _CREATE_NO_WINDOW = 0x08000000
 # Escape any Win32 job object the parent process belongs to. Without this,
 # a detached child still inherits its parent's job object membership, and
@@ -114,7 +131,8 @@ _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 def windows_detach_flags() -> int:
     """Return Win32 creationflags that detach a child from the parent
-    console and process group.  0 on non-Windows.
+    console and process group without leaving it console-less.  0 on
+    non-Windows.
 
     Pair with ``start_new_session=False`` (default) when calling
     subprocess.Popen — on POSIX use ``start_new_session=True`` instead,
@@ -123,19 +141,23 @@ def windows_detach_flags() -> int:
     Rationale:
     - ``CREATE_NEW_PROCESS_GROUP`` — child has its own process group so
       Ctrl+C in the parent console doesn't propagate.
-    - ``DETACHED_PROCESS`` — child has no console at all.  Necessary for
-      background daemons (gateway watchers, update respawners) because
-      without it, closing the console kills the child.
-    - ``CREATE_NO_WINDOW`` — suppress the brief cmd flash that would
-      otherwise appear when launching a console app.  Redundant with
-      DETACHED_PROCESS but explicit for clarity.
+    - ``CREATE_NO_WINDOW`` — the child gets its own fresh console that is
+      never shown.  This both detaches it from the parent's console
+      lifetime (closing the launching terminal doesn't CTRL_CLOSE it) AND
+      gives every console-subsystem descendant (git, gh, cmd, node, …) a
+      console to inherit, so they don't allocate visible flashing ones.
+      This deliberately replaces the old ``DETACHED_PROCESS`` approach:
+      MSDN specifies CREATE_NO_WINDOW is *ignored* when combined with
+      DETACHED_PROCESS, and a truly console-less daemon re-creates the
+      per-descendant console-flash bug (#54220/#56747) at every spawn —
+      see the note on ``_DETACHED_PROCESS`` above.
     - ``CREATE_BREAKAWAY_FROM_JOB`` — escape any job object the parent is
       in.  Electron (Desktop app) and Tauri (bootstrap installer) wrap
       their children in job objects; without breakaway, those children
-      die when the parent process exits even if they were spawned with
-      DETACHED_PROCESS.  This was the missing flag that made the
-      post-update gateway respawn watcher silently die alongside the
-      Tauri updater after the Electron Desktop's update flow finished.
+      die when the parent process exits even though they have their own
+      console.  This was the missing flag that made the post-update
+      gateway respawn watcher silently die alongside the Tauri updater
+      after the Electron Desktop's update flow finished.
 
     If a process is in a job that disallows breakaway (rare —
     JOB_OBJECT_LIMIT_BREAKAWAY_OK isn't set), CreateProcess returns
@@ -149,7 +171,6 @@ def windows_detach_flags() -> int:
         return 0
     return (
         _CREATE_NEW_PROCESS_GROUP
-        | _DETACHED_PROCESS
         | _CREATE_NO_WINDOW
         | _CREATE_BREAKAWAY_FROM_JOB
     )
@@ -182,7 +203,7 @@ def windows_detach_flags_without_breakaway() -> int:
     """
     if not IS_WINDOWS:
         return 0
-    return _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+    return _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
 
 
 def windows_hide_flags() -> int:
@@ -193,10 +214,12 @@ def windows_hide_flags() -> int:
     operation (``taskkill``, ``where``, version probes) where we want no
     flash but also want to collect stdout/exit code synchronously.
 
-    The key difference from :func:`windows_detach_flags`: NO
-    ``DETACHED_PROCESS`` — the child still inherits stdio handles so
-    ``capture_output=True`` works.  ``DETACHED_PROCESS`` would sever
-    stdio and break stdout capture.
+    The difference from :func:`windows_detach_flags`: no
+    ``CREATE_NEW_PROCESS_GROUP`` / ``CREATE_BREAKAWAY_FROM_JOB`` — the
+    child stays in the parent's process group and job so Ctrl+C and job
+    teardown propagate normally, as a short-lived helper wants.  Stdio
+    handles are inherited either way, so ``capture_output=True`` works
+    with both bundles.
     """
     if not IS_WINDOWS:
         return 0

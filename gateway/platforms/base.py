@@ -1565,6 +1565,18 @@ def _strip_media_tag_directives(text: str) -> str:
     return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
 
 
+# Shared bare-local-path recognizer. History redisplay uses this exact grammar
+# to keep restored text readable without accidentally turning it back into an
+# attachment instruction.
+LOCAL_FILE_PATH_RE = re.compile(
+    r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])'
+    r'(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:'
+    + _MEDIA_EXT_ALTERNATION
+    + r')\b',
+    re.IGNORECASE,
+)
+
+
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
     d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
@@ -2364,6 +2376,13 @@ class BasePlatformAdapter(ABC):
             store[str(chat_id)] = text
         else:
             store.pop(str(chat_id), None)
+
+    # Whether ``send_image`` consumes an HTTP(S) URL through a native
+    # fetch/upload path without ever presenting that URL as message text.
+    # Signed remote URLs may retain credential-bearing query parameters only
+    # for adapters that explicitly declare this transport-only capability.
+    # The conservative default covers this class's plaintext URL fallback.
+    supports_native_remote_images: bool = False
 
     # Whether this adapter can deliver an ASYNC notification back to the agent
     # AFTER a turn ends — i.e. wake a fresh turn to surface a background
@@ -3401,6 +3420,22 @@ class BasePlatformAdapter(ABC):
         from urllib.parse import unquote as _unquote
 
         for image_url, alt_text in images:
+            delivery_image_url = image_url
+            if (
+                image_url.startswith(("http://", "https://"))
+                and getattr(
+                    self,
+                    "supports_native_remote_images",
+                    False,
+                )
+                is not True
+            ):
+                # Base ``send_image`` is a plaintext URL fallback. Only
+                # transports that explicitly promise native remote-image
+                # handling may retain signed query credentials.
+                from agent.redact import sanitize_terminal_secret_url
+
+                delivery_image_url = sanitize_terminal_secret_url(image_url)
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
@@ -3410,24 +3445,24 @@ class BasePlatformAdapter(ABC):
                     safe_url_for_log(image_url),
                     alt_text[:30] if alt_text else "",
                 )
-                if image_url.startswith("file://"):
+                if delivery_image_url.startswith("file://"):
                     img_result = await self.send_image_file(
                         chat_id=chat_id,
-                        image_path=_unquote(image_url[7:]),
+                        image_path=_unquote(delivery_image_url[7:]),
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
-                elif self._is_animation_url(image_url):
+                elif self._is_animation_url(delivery_image_url):
                     img_result = await self.send_animation(
                         chat_id=chat_id,
-                        animation_url=image_url,
+                        animation_url=delivery_image_url,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
                 else:
                     img_result = await self.send_image(
                         chat_id=chat_id,
-                        image_url=image_url,
+                        image_url=delivery_image_url,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
@@ -3919,18 +3954,6 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
-        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
-
-        # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
-        #             and relative paths (./foo.png)
-        # (?:~/|/)    anchors to absolute or home-relative Unix paths
-        # (?:[A-Za-z]:[/\\]) anchors to Windows drive-letter paths (#34632)
-        path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
-            re.IGNORECASE,
-        )
-
         # Build spans covered by fenced code blocks and inline code
         code_spans: list = []
         for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
@@ -3942,7 +3965,7 @@ class BasePlatformAdapter(ABC):
             return any(s <= pos < e for s, e in code_spans)
 
         found: list = []  # (raw_match_text, expanded_path)
-        for match in path_re.finditer(content):
+        for match in LOCAL_FILE_PATH_RE.finditer(content):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)

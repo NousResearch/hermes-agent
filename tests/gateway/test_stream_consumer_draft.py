@@ -180,6 +180,46 @@ class TestDraftStreamingHappyPath:
         # Edit-based path delivered via send (first message).
         adapter.send.assert_awaited()
 
+    @pytest.mark.asyncio
+    async def test_paced_embedded_json_never_replays_raw_in_drafts(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = _make_draft_capable_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            StreamConsumerConfig(
+                transport="auto",
+                chat_type="dm",
+                edit_interval=0.01,
+                buffer_threshold=1,
+                cursor="",
+            ),
+        )
+        task = asyncio.create_task(consumer.run())
+        secret = "opaquePacedDraftCredential123"
+
+        consumer.on_delta('prefix"')
+        consumer.on_segment_break()
+        await asyncio.sleep(0.12)
+        consumer.on_delta(f'token": "{secret}"')
+        await asyncio.sleep(0.12)
+        consumer.finish()
+        await task
+
+        payloads = [call["content"] for call in adapter.draft_calls]
+        payloads.extend(
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        )
+        payloads.extend(
+            call.kwargs["content"]
+            for call in adapter.edit_message.call_args_list
+        )
+        assert payloads
+        assert all(secret not in payload for payload in payloads)
+        assert any("***" in payload for payload in payloads)
+
 
 class TestDraftFallbackOnFailure:
     """When a draft frame fails, the consumer disables drafts for the rest
@@ -388,8 +428,9 @@ class TestAdapterPrefersFreshFinal:
         assert adapter.send.await_count == 2
         first_content = adapter.send.call_args_list[0].kwargs.get("content")
         second_content = adapter.send.call_args_list[1].kwargs.get("content")
-        # First update delivered the preview via adapter.send.
-        assert first_content == "Full answer here"
+        # The final lexical token remains ambiguous with an embedded
+        # credential opener until terminal resolution.
+        assert first_content == "Full answer "
         # Finalization re-sent the same completed content as a fresh message.
         assert second_content == "Full answer here"
 
@@ -400,6 +441,46 @@ class TestAdapterPrefersFreshFinal:
         adapter.delete_message.assert_awaited_once_with("12345", "preview1")
 
         assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_paced_embedded_json_never_replays_raw_in_fresh_final(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = _make_fresh_final_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            StreamConsumerConfig(
+                transport="auto",
+                chat_type="dm",
+                edit_interval=0.01,
+                buffer_threshold=1,
+                cursor="",
+                fresh_final_after_seconds=0.0,
+            ),
+        )
+        task = asyncio.create_task(consumer.run())
+        secret = "opaquePacedFreshFinalCredential123"
+
+        consumer.on_delta('prefix"')
+        consumer.on_segment_break()
+        await asyncio.sleep(0.12)
+        consumer.on_delta(f'token": "{secret}"')
+        await asyncio.sleep(0.12)
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ]
+        payloads.extend(
+            call.kwargs["content"]
+            for call in adapter.edit_message.call_args_list
+        )
+        assert payloads
+        assert all(secret not in payload for payload in payloads)
+        assert any("***" in payload for payload in payloads)
 
 
 def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):

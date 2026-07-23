@@ -25,6 +25,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.redact import (
+    redact_sensitive_text,
+    sanitize_terminal_secret_text,
+    split_incomplete_sensitive_suffix,
+)
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
@@ -39,6 +44,12 @@ from gateway.response_filters import (
 )
 
 logger = logging.getLogger("gateway.stream_consumer")
+
+_TOOL_TRACE_PREFIX = "⚠️ 🛠️ "
+_TOOL_TRACE_RE = re.compile(
+    rf"^[ \t]*{re.escape(_TOOL_TRACE_PREFIX)}`[^`\r\n]+`[ \t]+failed[ \t]*$",
+    re.MULTILINE,
+)
 
 # Sentinel to signal the stream is complete
 _DONE = object()
@@ -223,6 +234,26 @@ class GatewayStreamConsumer:
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+        # A marked tool trace can arrive across multiple stream deltas. Keep a
+        # possible trailing trace line out of platform writes until a newline,
+        # stream boundary, or enough text classifies it as trace or prose.
+        self._pending_tool_trace = ""
+        # Likewise, a known credential prefix can be shorter than the
+        # redactor's minimum when a delta ends. Hold only that candidate tail
+        # so overflow cannot make it permanent before the next delta arrives.
+        self._pending_sensitive_suffix = ""
+        self._pending_sensitive_channel: str | None = None
+        # Commentary can arrive in several callbacks while an answer suffix
+        # is still ambiguous. Keep the complete cross-channel hypothesis and
+        # the commentary-only bytes separately: the former classifies a
+        # credential, while the latter is what benign divergence may publish.
+        self._pending_cross_commentary_suffix = ""
+        self._pending_cross_commentary_parts: list[str] = []
+        # Logical segment offsets inside retained raw state. Once a candidate
+        # safely diverges, these let us replay benign one-character segments
+        # without treating the attacker-controlled boundary as a security
+        # terminator.
+        self._pending_sensitive_segment_offsets: list[int] = []
 
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
@@ -606,6 +637,48 @@ class GatewayStreamConsumer:
             self._accumulated += self._strip_orphan_close_tags(self._think_buffer)
             self._think_buffer = ""
 
+    @staticmethod
+    def _split_trailing_possible_tool_trace(text: str) -> "tuple[str, str]":
+        """Separate an unterminated line that can still become a tool trace.
+
+        Complete traces are removed by ``_clean_for_display`` first. This
+        helper only recognizes prefixes of the exact internal marker grammar;
+        as soon as a line diverges, it remains ordinary visible text.
+        """
+        line_start = text.rfind("\n") + 1
+        line = text[line_start:]
+        candidate = line.lstrip(" \t")
+        if not candidate:
+            return text, ""
+
+        if _TOOL_TRACE_PREFIX.startswith(candidate):
+            return text[:line_start], line
+        if not candidate.startswith(_TOOL_TRACE_PREFIX):
+            return text, ""
+
+        body = candidate[len(_TOOL_TRACE_PREFIX):]
+        if not body:
+            return text[:line_start], line
+        if not body.startswith("`"):
+            return text, ""
+
+        closing_tick = body.find("`", 1)
+        if closing_tick < 0:
+            return text[:line_start], line
+        if closing_tick == 1:
+            return text, ""
+
+        suffix = body[closing_tick + 1:]
+        if not suffix:
+            return text[:line_start], line
+        if suffix[0] not in " \t":
+            return text, ""
+
+        status = suffix.lstrip(" \t")
+        if "failed".startswith(status):
+            return text[:line_start], line
+        return text, ""
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting.
@@ -646,6 +719,17 @@ class GatewayStreamConsumer:
                 if not self._run_still_current():
                     return
 
+                if (
+                    self._pending_sensitive_suffix
+                    and self._pending_sensitive_channel == "stream"
+                ):
+                    self._accumulated += self._pending_sensitive_suffix
+                    self._pending_sensitive_suffix = ""
+                    self._pending_sensitive_channel = None
+                if self._pending_tool_trace:
+                    self._accumulated += self._pending_tool_trace
+                    self._pending_tool_trace = ""
+
                 # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
@@ -668,10 +752,28 @@ class GatewayStreamConsumer:
                             # Flush barrier: finalize the current segment like a
                             # tool boundary, then signal the waiting thread once
                             # delivery for this iteration has completed (below).
+                            # Commentary can leave a possible credential suffix
+                            # pending. Promote it before the barrier so the
+                            # terminal segment is delivered before the waiter is
+                            # released.
+                            if (
+                                self._pending_sensitive_suffix
+                                and self._pending_sensitive_channel == "commentary"
+                            ):
+                                self._accumulated += self._pending_sensitive_suffix
+                                self._pending_sensitive_suffix = ""
+                                self._pending_sensitive_channel = None
                             got_flush = True
                             got_segment_break = True
                             flush_event = item[1]
                             break
+                        if (
+                            self._pending_sensitive_suffix
+                            and self._pending_sensitive_channel == "commentary"
+                        ):
+                            self._accumulated += self._pending_sensitive_suffix
+                            self._pending_sensitive_suffix = ""
+                            self._pending_sensitive_channel = None
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
@@ -716,6 +818,96 @@ class GatewayStreamConsumer:
                         # check. _len_fn is reserved for overflow detection.
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
+
+                if should_edit and self._accumulated:
+                    # A trailing marked line may still be an incomplete
+                    # internal trace. Hold it before overflow logic can seal a
+                    # fragment into a send/edit. Logical boundaries terminate
+                    # the line, so incomplete marker-shaped prose is preserved.
+                    if not (got_done or got_segment_break or commentary_text is not None):
+                        self._accumulated, self._pending_tool_trace = (
+                            self._split_trailing_possible_tool_trace(self._accumulated)
+                        )
+                    # Secret candidates remain raw until their delimiter so a
+                    # masked preview, overflow split, segment break, or
+                    # commentary message cannot destroy the recognizer context.
+                    # Unlike tool-trace lines, logical boundaries do not
+                    # terminate credential state; only end-of-stream does.
+                    raw_visible, pending_sensitive = (
+                        split_incomplete_sensitive_suffix(
+                            self._accumulated,
+                            final=(got_done or got_flush),
+                            logical_boundary=(
+                                got_segment_break
+                                or commentary_text is not None
+                            ),
+                        )
+                    )
+                    if got_segment_break and pending_sensitive:
+                        # Do not publish only the "known safe" front of a
+                        # logical segment while its tail is still ambiguous.
+                        # Retain the complete segment so a later benign
+                        # divergence can replay the original boundary as one
+                        # message.  If the bytes instead complete a secret,
+                        # terminal sanitation below deliberately discards the
+                        # offsets and emits one masked unit.
+                        pending_sensitive = raw_visible + pending_sensitive
+                        raw_visible = ""
+                        self._pending_sensitive_segment_offsets.append(
+                            len(pending_sensitive)
+                        )
+                    elif (
+                        self._pending_sensitive_segment_offsets
+                        and pending_sensitive
+                    ):
+                        # A previous segment boundary is still inside the
+                        # unresolved candidate. Publishing raw_visible here
+                        # can expose the opening quote/key before the secret
+                        # tail arrives. Retain it with the candidate until the
+                        # whole unit either diverges or is redacted.
+                        pending_sensitive = raw_visible + pending_sensitive
+                        raw_visible = ""
+                    self._accumulated = raw_visible
+                    self._pending_sensitive_suffix = pending_sensitive
+                    self._pending_sensitive_channel = (
+                        "stream" if pending_sensitive else None
+                    )
+
+                    # Sanitize only the suffix proven safe to display. Doing
+                    # this after candidate extraction preserves the raw state
+                    # needed for later deltas while still protecting both
+                    # overflow splitters and every direct send/edit sink.
+                    self._accumulated = self._clean_for_display(self._accumulated)
+
+                    # If previously retained segment bytes proved benign,
+                    # replay their original logical boundaries. A transformed
+                    # (redacted) candidate cannot be mapped back safely and is
+                    # delivered as one masked unit instead.
+                    if self._pending_sensitive_segment_offsets:
+                        if self._accumulated != raw_visible:
+                            self._pending_sensitive_segment_offsets.clear()
+                        else:
+                            resolved_text = self._accumulated
+                            resolved_to = 0
+                            for offset in self._pending_sensitive_segment_offsets:
+                                if offset > len(resolved_text):
+                                    break
+                                segment = resolved_text[resolved_to:offset]
+                                if segment:
+                                    await self._send_or_edit(
+                                        segment,
+                                        finalize=True,
+                                        is_turn_final=False,
+                                    )
+                                    self._reset_segment_state()
+                                resolved_to = offset
+                            if resolved_to:
+                                self._accumulated = resolved_text[resolved_to:]
+                                self._pending_sensitive_segment_offsets = [
+                                    offset - resolved_to
+                                    for offset in self._pending_sensitive_segment_offsets
+                                    if offset > resolved_to
+                                ]
 
                 current_update_visible = False
                 # Hold back mid-stream edits while the buffer so far could
@@ -844,6 +1036,13 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    if self._pending_cross_commentary_suffix:
+                        await self._send_commentary("", final=True)
+                    if (
+                        self._pending_sensitive_suffix
+                        and self._pending_sensitive_channel == "commentary"
+                    ):
+                        await self._send_commentary("", final=True)
                     if self._accumulated or self._message_id is not None or self._already_sent:
                         await self._notify_before_finalize()
                     # Final edit without cursor. If progressive editing failed
@@ -959,12 +1158,31 @@ class GatewayStreamConsumer:
             # below suppress the gateway's formatted re-send.
             # is_turn_final=False keeps _try_fresh_final from setting
             # _final_response_sent itself; this handler owns the flags.
+            self._flush_think_buffer()
+            if self._pending_tool_trace:
+                self._accumulated += self._pending_tool_trace
+                self._pending_tool_trace = ""
+            if self._pending_cross_commentary_suffix:
+                await self._send_commentary("", final=True)
+            if (
+                self._pending_sensitive_suffix
+                and self._pending_sensitive_channel == "commentary"
+                and not self._accumulated
+            ):
+                await self._send_commentary("", final=True)
+            elif self._pending_sensitive_suffix:
+                self._accumulated += self._pending_sensitive_suffix
+                self._pending_sensitive_suffix = ""
+                self._pending_sensitive_channel = None
+            terminal_text = sanitize_terminal_secret_text(
+                self._clean_for_display(self._accumulated)
+            )
             _best_effort_ok = False
-            if self._accumulated and self._message_id:
+            if terminal_text:
                 try:
                     _best_effort_ok = bool(
                         await self._send_or_edit(
-                            self._accumulated, finalize=True, is_turn_final=False,
+                            terminal_text, finalize=True, is_turn_final=False,
                         )
                     )
                 except Exception:
@@ -1012,7 +1230,7 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Sanitize secrets and internal markers before streaming display.
 
         The streaming path delivers raw text chunks that may include
         ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
@@ -1020,8 +1238,25 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        Secret redaction is forced at this user-facing boundary even when the
+        operator has disabled general log/tool-output redaction. The complete
+        accumulated buffer is cleaned before overflow splitting in ``run``;
+        calls here at the send/edit sinks are defense in depth for direct and
+        fallback paths.
         """
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        cleaned = redact_sensitive_text(text, force=True)
+        without_banners = _TOOL_TRACE_RE.sub("", cleaned)
+        removed_marker = without_banners != cleaned
+        cleaned = _BasePlatformAdapter.strip_media_directives_for_display(
+            without_banners
+        )
+        if removed_marker:
+            # Match the established tool-trace cleanup even when no media
+            # directive caused the shared helper to normalize whitespace.
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+            return cleaned.rstrip()
+        return cleaned
 
     async def _send_new_chunk(
         self,
@@ -1506,15 +1741,60 @@ class GatewayStreamConsumer:
         except Exception:
             pass  # best-effort — don't let this block the fallback path
 
-    async def _send_commentary(self, text: str) -> bool:
+    async def _send_commentary(self, text: str, *, final: bool = False) -> bool:
         """Send a completed interim assistant commentary message."""
-        text = self._clean_for_display(text)
-        if not text.strip():
+        if self._pending_cross_commentary_suffix or (
+            self._pending_sensitive_suffix
+            and self._pending_sensitive_channel == "stream"
+        ):
+            # Classify commentary against the same raw byte stream before any
+            # channel-specific formatting. If it extends or completes the
+            # answer's candidate, retain or mask the combined unit. A benign
+            # divergence remains out-of-band and leaves the answer state
+            # untouched for a later final delta.
+            if text:
+                self._pending_cross_commentary_parts.append(text)
+            combined = (
+                self._pending_cross_commentary_suffix
+                or self._pending_sensitive_suffix
+            ) + text
+            _visible, cross_pending = split_incomplete_sensitive_suffix(
+                combined,
+                final=final,
+            )
+            if cross_pending:
+                # Keep the answer candidate live as well: commentary is
+                # attacker-controlled and cannot prove that a later answer
+                # delta will not continue the pre-commentary bytes.
+                self._pending_cross_commentary_suffix = combined
+                return False
+            terminal_combined = sanitize_terminal_secret_text(combined)
+            if terminal_combined != combined:
+                visible = terminal_combined
+            else:
+                visible = "".join(self._pending_cross_commentary_parts)
+            self._pending_cross_commentary_suffix = ""
+            self._pending_cross_commentary_parts.clear()
+        else:
+            combined = self._pending_sensitive_suffix + text
+            visible, self._pending_sensitive_suffix = (
+                split_incomplete_sensitive_suffix(
+                    combined,
+                    final=final,
+                    embedded_prefixes=False,
+                )
+            )
+            self._pending_sensitive_channel = (
+                "commentary" if self._pending_sensitive_suffix else None
+            )
+            self._pending_sensitive_segment_offsets.clear()
+        visible = sanitize_terminal_secret_text(self._clean_for_display(visible))
+        if not visible.strip():
             return False
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
-                content=text,
+                content=visible,
                 metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.

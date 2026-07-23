@@ -29,7 +29,7 @@ def test_stream_send_metadata_carries_original_reply_anchor():
 
 
 class TestCleanForDisplay:
-    """Verify MEDIA: directives and internal markers are stripped from display text."""
+    """Verify secrets and internal markers are stripped from display text."""
 
     def test_no_media_passthrough(self):
         """Text without MEDIA: passes through unchanged."""
@@ -99,6 +99,28 @@ class TestCleanForDisplay:
         # "MEDIA:" in upper case without a path won't match \S+ (space follows)
         # But "media:" is lowercase so won't match either
         assert result == text
+
+    def test_secret_redaction_is_forced_when_global_preference_is_off(self, monkeypatch):
+        """Chat egress remains safe when general-purpose redaction is disabled."""
+        secret = "sk-abc123def456ghi789jkl012mno345pqr678stu"
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+        result = GatewayStreamConsumer._clean_for_display(f"token: {secret}")
+
+        assert secret not in result
+        assert "***" in result
+
+    def test_tool_trace_banner_stripped(self):
+        """Internal tool-failure diagnostics do not become chat content."""
+        text = "Done.\n⚠️ 🛠️ `search repos (agent)` failed"
+
+        assert GatewayStreamConsumer._clean_for_display(text) == "Done."
+
+    def test_unmarked_backticked_failure_prose_remains_visible(self):
+        """Ordinary assistant failure prose is not an internal tool trace."""
+        text = "Result:\n`database migration` failed"
+
+        assert GatewayStreamConsumer._clean_for_display(text) == text
 
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
@@ -375,6 +397,1340 @@ class TestStreamRunMediaStripping:
             assert "MEDIA:" not in sent_text, f"MEDIA: leaked into display: {sent_text!r}"
 
         assert consumer.already_sent
+
+
+class TestStreamRunSecretRedaction:
+    """Redact the complete display buffer before either overflow splitter."""
+
+    _SECRET = "sk-abc123def456ghi789jkl012mno345pqr678stu"
+    _PREFIX = "x" * 497 + " "
+    _VISIBLE_PREFIX = "x" * 490 + "\n"
+
+    @staticmethod
+    def _adapter():
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 600
+        adapter.send = AsyncMock(
+            side_effect=lambda **_kwargs: SimpleNamespace(
+                success=True,
+                message_id=f"msg_{adapter.send.call_count}",
+            )
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="preview")
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_no_message_overflow_redacts_before_truncate(self, monkeypatch):
+        """The first-send splitter never receives a reconstructible token."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        truncated_inputs = []
+
+        def _truncate(text, limit, len_fn=len):
+            truncated_inputs.append(text)
+            return [text[:limit], text[limit:]]
+
+        adapter.truncate_message.side_effect = _truncate
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor="", buffer_only=True),
+        )
+        consumer.on_delta(self._PREFIX + self._SECRET)
+        consumer.finish()
+
+        await consumer.run()
+
+        assert len(truncated_inputs) == 1
+        assert self._SECRET not in truncated_inputs[0]
+        payload = "".join(call.kwargs["content"] for call in adapter.send.call_args_list)
+        assert self._SECRET not in payload
+        assert "sk-abc...8stu" in payload
+
+    @pytest.mark.asyncio
+    async def test_existing_message_overflow_redacts_before_slice(self, monkeypatch):
+        """The edit-overflow splitter never seals reconstructible fragments."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor="", buffer_only=True),
+        )
+        consumer._message_id = "preview"
+        consumer._last_sent_text = "preview"
+        consumer.on_delta(self._PREFIX + self._SECRET)
+        consumer.finish()
+
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"] for call in adapter.edit_message.call_args_list
+        ]
+        payloads.extend(call.kwargs["content"] for call in adapter.send.call_args_list)
+        payload = "".join(payloads)
+        assert self._SECRET not in payload
+        assert "sk-abc...8stu" in payload
+
+    @pytest.mark.asyncio
+    async def test_split_secret_candidate_is_held_before_overflow(self, monkeypatch):
+        """An unrecognized prefix cannot be sealed before its secret suffix."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        adapter.truncate_message.side_effect = (
+            lambda text, limit, len_fn=len: [text[:limit], text[limit:]]
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        secret = "sk-abcdefghij-klmnopqrstuv"
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(self._VISIBLE_PREFIX + secret[:12])
+        for _ in range(100):
+            if adapter.send.call_count:
+                break
+            await asyncio.sleep(0.001)
+        assert adapter.send.call_count
+
+        consumer.on_delta(secret[12:])
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ]
+        payloads.extend(
+            call.kwargs["content"] for call in adapter.edit_message.call_args_list
+        )
+        assert all(secret[:12] not in payload for payload in payloads)
+        assert secret not in "".join(payloads)
+        assert any("sk-abc...stuv" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_diverged_secret_prefix_is_released_during_stream(self, monkeypatch):
+        """Legitimate prefix-shaped prose is delayed only until divergence."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(self._VISIBLE_PREFIX + "sk-abc")
+        for _ in range(100):
+            if adapter.send.call_count:
+                break
+            await asyncio.sleep(0.001)
+        assert adapter.send.call_count
+
+        consumer.on_delta(" is documentation")
+        for _ in range(100):
+            if any(
+                call.kwargs["content"].endswith("sk-abc is documentation")
+                for call in (
+                    adapter.send.call_args_list + adapter.edit_message.call_args_list
+                )
+            ):
+                break
+            await asyncio.sleep(0.001)
+        assert any(
+            call.kwargs["content"].endswith("sk-abc is documentation")
+            for call in (
+                adapter.send.call_args_list + adapter.edit_message.call_args_list
+            )
+        )
+
+        consumer.finish()
+        await task
+
+    @pytest.mark.asyncio
+    async def test_incomplete_database_password_never_reaches_adapter(self, monkeypatch):
+        """A DB password stays private until its @ terminator arrives."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        password = "opaqueCredentialValue123"
+
+        consumer.on_delta(f"Database: postgresql://operator:{password}")
+        await asyncio.sleep(0.02)
+
+        interim_payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(password not in payload for payload in interim_payloads)
+
+        consumer.on_delta("@db.example/app")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(password not in payload for payload in payloads)
+        assert any("postgresql://operator:***@db.example/app" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_unterminated_private_key_body_never_reaches_adapter(self, monkeypatch):
+        """A private-key body is suppressed even before the END marker."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        key_body = "SYNTHETICINERTPRIVATEKEYBODY1234567890"
+        consumer.on_delta(
+            "Key follows:\n-----BEGIN PRIVATE KEY-----\n" + key_body + "\n"
+        )
+        consumer.finish()
+
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(key_body not in payload for payload in payloads)
+        assert any("[REDACTED PRIVATE KEY]" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_json_secret_opener_is_not_sealed_before_value(self, monkeypatch):
+        """Overflow cannot separate a JSON secret key from its later value."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        adapter.truncate_message.side_effect = (
+            lambda text, limit, len_fn=len: [text[:limit], text[limit:]]
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        secret = "opaqueJsonCredentialValue123"
+
+        consumer.on_delta(self._VISIBLE_PREFIX + '{"token": "')
+        await asyncio.sleep(0.02)
+        consumer.on_delta(secret + '"}')
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(secret not in payload for payload in payloads)
+        assert '"token": "***"' in "".join(payloads), [
+            (len(payload), payload[-80:]) for payload in payloads
+        ]
+
+    @pytest.mark.asyncio
+    async def test_known_prefix_state_survives_masked_preview(self, monkeypatch):
+        """Later token bytes cannot escape after the first masked preview."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        first = "github_pat_ABCDEFGHIJ"
+        tail = "KLMNOPQRSTUVWXYZ0123456789"
+
+        consumer.on_delta("Credential: " + first)
+        await asyncio.sleep(0.02)
+        consumer.on_delta(tail)
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(first not in payload for payload in payloads)
+        assert all(tail not in payload for payload in payloads)
+        assert all(first + tail not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("boundary", ["segment", "commentary"])
+    async def test_known_prefix_state_survives_logical_boundary(
+        self, monkeypatch, boundary,
+    ):
+        """Segment/commentary events do not terminate a credential candidate."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        first = "github_pat_ABCDE"
+        tail = "FGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+        consumer.on_delta("Credential: " + first)
+        if boundary == "segment":
+            consumer.on_segment_break()
+        else:
+            consumer.on_commentary("Still working.")
+        await asyncio.sleep(0.02)
+        consumer.on_delta(tail + " finished")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(first not in payload for payload in payloads)
+        assert all(tail not in payload for payload in payloads)
+        # The first commentary word is indistinguishable from a continuation
+        # of the attacker-controlled token prefix and may be masked with it.
+        assert any("working." in payload for payload in payloads) is (
+            boundary == "commentary"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("boundary", ["segment", "commentary"])
+    @pytest.mark.parametrize(
+        ("first", "second", "leak_marker"),
+        [
+            (
+                "Credential: github_pa",
+                "t_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 done",
+                "t_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            ),
+            (
+                'Data: {"tok',
+                'en": "opaqueJsonCredentialValue123"}',
+                "opaqueJsonCredentialValue123",
+            ),
+            (
+                "URL: postgr",
+                "es://user:opaqueDbCredentialValue123@db.example",
+                "opaqueDbCredentialValue123",
+            ),
+            (
+                "Key:\n-----BEG",
+                (
+                    "IN PRIVATE KEY-----\n"
+                    "SYNTHETICINERTPRIVATEKEYBODY1234567890\n"
+                    "-----END PRIVATE KEY-----"
+                ),
+                "SYNTHETICINERTPRIVATEKEYBODY1234567890",
+            ),
+            (
+                "OPENAI_API_",
+                "KEY=opaqueEnvCredentialValue123 done",
+                "opaqueEnvCredentialValue123",
+            ),
+            (
+                "Authoriza",
+                "tion: Bearer opaqueAuthCredentialValue123 done",
+                "opaqueAuthCredentialValue123",
+            ),
+            (
+                "x-api-",
+                "key: opaqueHeaderCredentialValue123 done",
+                "opaqueHeaderCredentialValue123",
+            ),
+            (
+                "mode=x&tok",
+                "en=opaqueFormCredentialValue123",
+                "opaqueFormCredentialValue123",
+            ),
+        ],
+        ids=[
+            "known-prefix",
+            "json",
+            "db",
+            "pem",
+            "env",
+            "authorization",
+            "api-key-header",
+            "form-body",
+        ],
+    )
+    async def test_partial_secret_opener_survives_logical_boundary(
+        self, monkeypatch, boundary, first, second, leak_marker,
+    ):
+        """Partial grammar openers remain raw across segment/commentary events."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(first)
+        if boundary == "segment":
+            consumer.on_segment_break()
+        else:
+            consumer.on_commentary("Still working.")
+        await asyncio.sleep(0.02)
+        early_payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(first not in payload for payload in early_payloads)
+
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(leak_marker not in payload for payload in payloads)
+        assert any("Still working." in payload for payload in payloads) is (
+            boundary == "commentary"
+        )
+
+    @pytest.mark.asyncio
+    async def test_one_character_pat_segments_never_reconstruct(self, monkeypatch):
+        """Every prefix character may arrive in its own logical segment."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        secret = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+        for char in secret:
+            consumer.on_delta(char)
+            consumer.on_segment_break()
+        consumer.on_delta(" done")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        joined = "".join(payloads)
+        assert secret not in joined
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in joined
+
+    @pytest.mark.asyncio
+    async def test_empty_form_key_split_is_retained(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta("mode=x&")
+        consumer.on_segment_break()
+        await asyncio.sleep(0.02)
+        consumer.on_delta("token=opaqueFormCredentialValue123")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all("opaqueFormCredentialValue123" not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_progressive_authorization_scheme_retains_raw_state(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta("Authorization: Bearer")
+        await asyncio.sleep(0.02)
+        consumer.on_delta(" opaqueAuthCredentialValue123 done")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all("opaqueAuthCredentialValue123" not in payload for payload in payloads)
+        assert any("Authorization: Bearer ***" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second", "leak"),
+        [
+            (
+                "prefix12345678:" + "A" * 29,
+                "A done",
+                "A" * 29,
+            ),
+            (
+                "prefixeyJ" + "A" * 9,
+                "A done",
+                "eyJ" + "A" * 9,
+            ),
+            (
+                "prefix+123456",
+                "7 done",
+                "+123456",
+            ),
+        ],
+        ids=["telegram", "jwt", "phone"],
+    )
+    async def test_embedded_prethreshold_candidate_is_never_previewed(
+        self, monkeypatch, first, second, leak,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(first)
+        await asyncio.sleep(0.02)
+        early = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(leak not in payload for payload in early)
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+    @pytest.mark.asyncio
+    async def test_commentary_secret_state_spans_messages(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+
+        consumer.on_commentary("g")
+        consumer.on_commentary(
+            "ithub_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        )
+        consumer.finish()
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ]
+        assert all(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in payload for payload in payloads
+        )
+
+    @pytest.mark.asyncio
+    async def test_commentary_prefix_divergence_preserves_ordinary_text(self):
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+
+        consumer.on_commentary("g")
+        consumer.on_commentary("ood")
+        consumer.finish()
+        await consumer.run()
+
+        assert [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ] == ["good"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second", "leak"),
+        [
+            ("12345678:", "A" * 30 + " done", "A" * 30),
+            ("ey", "J" + "A" * 10 + " done", "eyJ" + "A" * 10),
+            ("+", "1234567 done", "+1234567"),
+            (
+                "OPENAI_API_KEY   ",
+                "=opaqueWhitespaceCredential123 done",
+                "opaqueWhitespaceCredential123",
+            ),
+        ],
+        ids=["telegram-empty-body", "jwt-before-j", "phone-plus", "env-whitespace"],
+    )
+    async def test_earliest_candidate_prefix_survives_boundary(
+        self, monkeypatch, first, second, leak,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(first)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.02)
+        assert all(
+            first not in call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        )
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+        assert all(
+            leak not in call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second", "leak"),
+        [
+            (
+                "OPENAI_API_KEY=opaqueEnvCredentialPart",
+                "Tail123 done",
+                "Tail123",
+            ),
+            (
+                "mode=x&token=opaqueFormCredentialPart",
+                "Tail123&safe=y",
+                "Tail123",
+            ),
+        ],
+        ids=["env", "form"],
+    )
+    async def test_active_value_state_survives_mid_value_boundary(
+        self, monkeypatch, first, second, leak,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(first)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.02)
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(leak not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_completed_private_key_is_never_previewed_raw(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        body = "SYNTHETICINERTPRIVATEKEYBODY1234567890"
+        pem = (
+            "-----BEGIN PRIVATE KEY-----\n"
+            f"{body}\n"
+            "-----END PRIVATE KEY-----"
+        )
+
+        consumer.on_delta(pem)
+        await asyncio.sleep(0.02)
+        consumer.on_delta("\nDone.")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(body not in payload for payload in payloads)
+        assert any("[REDACTED PRIVATE KEY]" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second", "leak"),
+        [
+            ('prefix"', 'token": "opaqueEmbeddedJsonCredential"', "opaqueEmbedded"),
+            (
+                "prefixpost",
+                "gresql://user:opaqueEmbeddedDbCredential@host",
+                "opaqueEmbedded",
+            ),
+            (
+                "prefixe",
+                "yJABCDEFGHIJK.payloadSegment",
+                "ABCDEFGHIJK",
+            ),
+            (
+                "token=opaqueFirstForm",
+                "Credential&safe=value",
+                "opaqueFirstForm",
+            ),
+            (
+                'OPENAI_API_KEY=""',
+                "opaqueEmptyQuotedCredential done",
+                "opaqueEmptyQuotedCredential",
+            ),
+        ],
+        ids=[
+            "embedded-json",
+            "embedded-db",
+            "embedded-jwt",
+            "first-sensitive-form-pair",
+            "empty-quoted-env-concatenation",
+        ],
+    )
+    async def test_canonical_embedded_and_first_pair_state_survives_boundary(
+        self, monkeypatch, first, second, leak,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(first)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.02)
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(leak not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_paced_embedded_json_never_replays_raw_at_preview(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        secret = "opaquePacedEmbeddedJsonCredential123"
+
+        consumer.on_delta('prefix"')
+        consumer.on_segment_break()
+        await asyncio.sleep(0.05)
+        consumer.on_delta(f'token": "{secret}"')
+        await asyncio.sleep(0.1)
+
+        preview_payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(secret not in payload for payload in preview_payloads)
+
+        consumer.finish()
+        await task
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(secret not in payload for payload in payloads)
+        assert any('"token": "***"' in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("answer", "commentary", "leak"),
+        [
+            ("g", "ithub_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            ('"token": "', "opaqueCrossChannelJsonCredential", "opaqueCrossChannel"),
+            ("postgres://user:", "opaqueCrossChannelDbCredential@host", "opaqueCrossChannel"),
+            (
+                "-----BEGIN PRIVATE KEY-----\n",
+                "SYNTHETICINERTPRIVATEKEYBODY123\n-----END PRIVATE KEY-----",
+                "SYNTHETICINERTPRIVATEKEYBODY",
+            ),
+            ("OPENAI_API_KEY=", "opaqueCrossChannelEnvCredential", "opaqueCrossChannel"),
+            ("token=", "opaqueCrossChannelFormCredential&safe=x", "opaqueCrossChannel"),
+        ],
+        ids=["known-prefix", "json", "db", "pem", "env", "form"],
+    )
+    async def test_answer_state_protects_following_commentary(
+        self, monkeypatch, answer, commentary, leak,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+
+        consumer.on_delta(answer)
+        consumer.on_commentary(commentary)
+        consumer.finish()
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(leak not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_after_cross_channel_completion_never_leaks(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta("g")
+        consumer.on_commentary(
+            "ithub_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all("ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", ["finish", "cancel"])
+    async def test_multi_callback_commentary_keeps_one_cross_channel_state(
+        self, monkeypatch, terminal,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        first = "pat_"
+        second = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!"
+
+        consumer.on_delta("github_")
+        consumer.on_commentary(first)
+        await asyncio.sleep(0.05)
+        consumer.on_commentary(second)
+        await asyncio.sleep(0.05)
+        if terminal == "finish":
+            consumer.finish()
+        else:
+            task.cancel()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(first not in payload for payload in payloads)
+        assert all(second not in payload for payload in payloads)
+        assert any("github...6789" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_finish_preserves_benign_cross_channel_commentary(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta("g")
+        consumer.on_commentary("ithub_pa")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        commentary_payloads = [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ]
+        assert "ithub_pa" in commentary_payloads
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("commentary", "final_tail", "leak"),
+        [
+            (
+                "g",
+                "ithub_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            ),
+            (
+                'Data: {"token": "opaqueCommentary',
+                "FinalCredential123",
+                "FinalCredential123",
+            ),
+            (
+                "OPENAI_API_KEY=opaqueCommentary",
+                "FinalCredential123",
+                "FinalCredential123",
+            ),
+        ],
+        ids=["known-prefix", "json", "env"],
+    )
+    async def test_commentary_state_continues_into_final_stream(
+        self, monkeypatch, commentary, final_tail, leak,
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+
+        consumer.on_commentary(commentary)
+        consumer.on_delta(final_tail)
+        consumer.finish()
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert all(leak not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_terminally_flushes_retained_state(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        secret = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+        consumer.on_delta(secret)
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+            + adapter.edit_message.call_args_list
+        ]
+        assert payloads
+        assert all(secret not in payload for payload in payloads)
+        assert any("github...6789" in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_preserves_benign_commentary_suffix(self):
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_commentary("g")
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await task
+
+        assert [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ] == ["g"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "tail", "leak_marker"),
+        [
+            ("12345678:" + "A" * 29, "A done", "A" * 29),
+            ("eyJ" + "A" * 9, "A done", "eyJ" + "A" * 9),
+            ("+123456", "7 done", "+123456"),
+        ],
+        ids=["telegram", "jwt", "phone"],
+    )
+    async def test_prethreshold_secret_candidate_is_never_previewed(
+        self, monkeypatch, first, tail, leak_marker,
+    ):
+        """A recognizable opener is retained before the static minimum."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(first)
+        await asyncio.sleep(0.02)
+        early_payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(leak_marker not in payload for payload in early_payloads)
+
+        consumer.on_delta(tail)
+        consumer.finish()
+        await task
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(leak_marker not in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "12345678:short prose",
+            "eyJshort prose",
+            "+123 nope",
+        ],
+        ids=["telegram", "jwt", "phone"],
+    )
+    async def test_prethreshold_candidate_releases_on_divergence(self, text):
+        """Ordinary prose is preserved after the terminal ambiguity boundary."""
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        split = text.find("short") if "short" in text else text.find(" nope")
+        consumer.on_delta(text[:split])
+        await asyncio.sleep(0.02)
+        consumer.on_delta(text[split:])
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert text in payloads[-1]
+
+    @pytest.mark.asyncio
+    async def test_unterminated_commentary_is_terminally_sanitized(self, monkeypatch):
+        """Completed commentary cannot bypass structured-secret termination."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        body = "opaqueCommentaryCredentialValue123"
+
+        consumer.on_commentary('Data: {"token": "' + body)
+        consumer.finish()
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list
+        ]
+        assert all(body not in payload for payload in payloads)
+        assert any('"token": "***"' in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("initial", "tail", "terminator", "leak_marker", "safe_marker"),
+        [
+            (
+                "OPENAI_API_KEY=opaqueCredentialValue123",
+                "UNREDACTEDSUFFIX9876543210",
+                " done",
+                "UNREDACTEDSUFFIX",
+                "OPENAI_API_KEY=***",
+            ),
+            (
+                "Authorization: Bearer opaqueCredentialValue123",
+                "UNREDACTEDSUFFIX9876543210",
+                " done",
+                "UNREDACTEDSUFFIX",
+                "Authorization: Bearer ***",
+            ),
+            (
+                "x-api-key: opaqueCredentialValue123",
+                "UNREDACTEDSUFFIX9876543210",
+                " done",
+                "UNREDACTEDSUFFIX",
+                "x-api-key: ***",
+            ),
+            (
+                "12345678:" + "A" * 30,
+                "UNREDACTEDSUFFIX9876543210",
+                " done",
+                "UNREDACTEDSUFFIX",
+                "12345678:***",
+            ),
+            (
+                "eyJ" + "A" * 12,
+                "UNREDACTEDSUFFIX9876543210",
+                " done",
+                "UNREDACTEDSUFFIX",
+                "eyJAAA...3210",
+            ),
+            (
+                "+1234567",
+                "89012345",
+                " done",
+                "8901",
+                "+123****2345",
+            ),
+            (
+                "mode=x&token=opaqueCredentialValue123",
+                "UNREDACTEDSUFFIX9876543210",
+                "",
+                "UNREDACTEDSUFFIX",
+                "mode=x&token=***",
+            ),
+        ],
+        ids=[
+            "env",
+            "authorization",
+            "api-key-header",
+            "telegram",
+            "jwt",
+            "phone",
+            "form-body",
+        ],
+    )
+    async def test_nonprefix_secret_state_survives_later_suffix(
+        self,
+        monkeypatch,
+        initial,
+        tail,
+        terminator,
+        leak_marker,
+        safe_marker,
+    ):
+        """A grammar matched on one tick retains raw state through its delimiter."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(initial)
+        await asyncio.sleep(0.02)
+        consumer.on_delta(tail + terminator)
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(leak_marker not in payload for payload in payloads)
+        assert all(initial + tail not in payload for payload in payloads)
+        assert any(safe_marker in payload for payload in payloads), payloads
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "eyJshort prose",
+            "12345678:short prose",
+            "+123 nope",
+        ],
+        ids=["jwt", "telegram", "phone"],
+    )
+    async def test_nonprefix_candidate_below_minimum_is_released(self, text):
+        """Incomplete token-shaped prose remains visible when it diverges."""
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        consumer.on_delta(text)
+        consumer.finish()
+
+        await consumer.run()
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert text in "".join(payloads)
+
+    @pytest.mark.asyncio
+    async def test_jwt_state_survives_partial_dot_segment(self, monkeypatch):
+        """A short in-progress JWT payload segment cannot break raw state."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+        header = "eyJ" + "A" * 12
+
+        consumer.on_delta(header)
+        await asyncio.sleep(0.02)
+        consumer.on_delta(".ab")
+        await asyncio.sleep(0.02)
+        consumer.on_delta("cd.EFGH done")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+        ]
+        assert all(header not in payload for payload in payloads)
+        assert all(".abcd.EFGH" not in payload for payload in payloads)
+        assert any("eyJAAA...EFGH done" in payload for payload in payloads)
+
+
+class TestStreamRunToolTraceFiltering:
+    """Do not seal internal tool-trace fragments during progressive overflow."""
+
+    _VISIBLE_PREFIX = "x" * 490 + "\n"
+
+    @staticmethod
+    def _adapter():
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 600
+        adapter.send = AsyncMock(
+            side_effect=lambda **_kwargs: SimpleNamespace(
+                success=True,
+                message_id=f"msg_{adapter.send.call_count}",
+            )
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="preview")
+        )
+        adapter.truncate_message.side_effect = (
+            lambda text, limit, len_fn=len: [text[:limit], text[limit:]]
+        )
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_split_tool_trace_is_held_before_overflow(self):
+        """No incomplete banner fragment becomes a permanent platform write."""
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        task = asyncio.create_task(consumer.run())
+
+        consumer.on_delta(self._VISIBLE_PREFIX + "⚠️ 🛠️ `search repos")
+        for _ in range(100):
+            if adapter.send.call_count:
+                break
+            await asyncio.sleep(0.001)
+        assert adapter.send.call_count
+
+        consumer.on_delta(" (agent)` failed")
+        consumer.finish()
+        await task
+
+        payloads = [
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        ]
+        payloads.extend(
+            call.kwargs["content"] for call in adapter.edit_message.call_args_list
+        )
+        assert all("⚠️" not in payload for payload in payloads)
+        assert all("🛠️" not in payload for payload in payloads)
+        assert all("search repos" not in payload for payload in payloads)
+        assert any(self._VISIBLE_PREFIX.rstrip() in payload for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_incomplete_marked_prose_is_preserved_at_stream_end(self):
+        """An unterminated marker-shaped line remains legitimate visible text."""
+        adapter = self._adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0, buffer_threshold=1, cursor=""),
+        )
+        text = self._VISIBLE_PREFIX + "⚠️ 🛠️ `deployment failed unexpectedly"
+        consumer.on_delta(text)
+        consumer.finish()
+
+        await consumer.run()
+
+        payload = "".join(
+            call.kwargs["content"] for call in adapter.send.call_args_list
+        )
+        assert text == payload
 
 
 class TestBeforeFinalizeHook:

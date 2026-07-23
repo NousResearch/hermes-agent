@@ -626,6 +626,96 @@ class CommentaryAgent:
         }
 
 
+class SecretCommentaryAgent:
+    SECRET = "opaqueCommentaryCredentialValue123"
+
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback(
+                'Data: {"token": "' + self.SECRET,
+                already_streamed=False,
+            )
+        return {
+            "final_response": "done",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SplitSecretCommentaryAgent:
+    SECRET_TAIL = "ithub_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("g", already_streamed=False)
+            self.interim_assistant_callback(
+                self.SECRET_TAIL,
+                already_streamed=False,
+            )
+        return {
+            "final_response": "done",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SplitOrdinaryCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("g", already_streamed=False)
+            self.interim_assistant_callback("ood", already_streamed=False)
+        return {
+            "final_response": "done",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CommentaryToFinalSecretAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("g", already_streamed=False)
+        return {
+            "final_response": "ithub_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CommentaryToFinalOrdinaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("g", already_streamed=False)
+        return {
+            "final_response": "ood",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -739,6 +829,23 @@ class QueuedFailedEmptyAgent:
         }
 
 
+class QueuedSecretAgent:
+    calls = 0
+    SECRET = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        response = (
+            f"First credential: {self.SECRET}"
+            if type(self).calls == 1
+            else "second response"
+        )
+        return {"final_response": response, "messages": [], "api_calls": 1}
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -788,6 +895,9 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    profile=None,
+    delivered_via_upstream_relay=False,
+    routed_adapter=None,
 ):
     if config_data:
         import yaml
@@ -804,6 +914,12 @@ async def _run_with_agent(
 
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
+    runner._profile_adapters = {}
+    if routed_adapter is not None:
+        if delivered_via_upstream_relay:
+            runner.adapters[Platform.RELAY] = routed_adapter
+        else:
+            runner._profile_adapters[profile] = {platform: routed_adapter}
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
@@ -814,6 +930,8 @@ async def _run_with_agent(
         chat_id=chat_id,
         chat_type=chat_type,
         thread_id=thread_id,
+        profile=profile,
+        delivered_via_upstream_relay=delivered_via_upstream_relay,
     )
     session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
     if thread_id:
@@ -1006,6 +1124,109 @@ async def test_run_agent_bluebubbles_uses_commentary_send_path_for_quick_replies
 
 
 @pytest.mark.asyncio
+async def test_noneditable_interim_commentary_forces_terminal_redaction(
+    monkeypatch, tmp_path,
+):
+    """The direct non-streaming preview path is still a terminal egress."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SecretCommentaryAgent,
+        session_id="sess-bluebubbles-secret-commentary",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.BLUEBUBBLES,
+        chat_id="iMessage;-;user@example.com",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    payloads = [call["content"] for call in adapter.sent]
+    assert all(SecretCommentaryAgent.SECRET not in payload for payload in payloads)
+    assert any('"token": "***"' in payload for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_noneditable_callback_secret_state_spans_messages(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SplitSecretCommentaryAgent,
+        session_id="sess-bluebubbles-split-commentary",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.BLUEBUBBLES,
+        chat_id="iMessage;-;user@example.com",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    payloads = [call["content"] for call in adapter.sent]
+    assert all("ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in payload for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_noneditable_callback_prefix_divergence_preserves_ordinary_text(
+    monkeypatch, tmp_path,
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SplitOrdinaryCommentaryAgent,
+        session_id="sess-bluebubbles-ordinary-commentary",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.BLUEBUBBLES,
+        chat_id="iMessage;-;user@example.com",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == ["good"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_cls", "leak", "expected"),
+    [
+        (CommentaryToFinalSecretAgent, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", None),
+        (CommentaryToFinalOrdinaryAgent, None, "good"),
+    ],
+    ids=["secret", "ordinary"],
+)
+async def test_noneditable_commentary_state_continues_into_final(
+    monkeypatch, tmp_path, agent_cls, leak, expected,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        agent_cls,
+        session_id=f"sess-commentary-final-{agent_cls.__name__}",
+        config_data={"display": {"interim_assistant_messages": True}},
+        platform=Platform.BLUEBUBBLES,
+        chat_id="iMessage;-;user@example.com",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    payloads = [call["content"] for call in adapter.sent]
+    combined = "".join(payloads) + result["final_response"]
+    if leak is not None:
+        assert leak not in combined
+    else:
+        assert expected in combined
+
+
+@pytest.mark.asyncio
 async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -1081,6 +1302,25 @@ class TransformedStreamAgent:
         }
 
 
+class SecretTransformedStreamAgent:
+    SECRET = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("safe original answer")
+        return {
+            "final_response": f"safe original answer\n\nCredential: {self.SECRET}",
+            "response_previewed": True,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 @pytest.mark.asyncio
 async def test_transformed_response_edits_streamed_message_in_place(monkeypatch, tmp_path):
     """When a transform_llm_output hook modifies the response after streaming,
@@ -1112,6 +1352,32 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_transformed_response_edit_forces_secret_redaction(monkeypatch, tmp_path):
+    """The post-stream plugin edit cannot bypass final-output sanitization."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SecretTransformedStreamAgent,
+        session_id="sess-secret-transformed-stream",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is True
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(SecretTransformedStreamAgent.SECRET not in payload for payload in payloads)
+    assert any("***" in payload for payload in payloads)
 
 
 @pytest.mark.asyncio
@@ -1176,6 +1442,30 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
     assert QueuedFailedEmptyAgent.calls == 2
     assert result["final_response"] == "follow-up processed"
     assert any("The request failed: provider exploded" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_fallback_send_forces_secret_redaction(monkeypatch, tmp_path):
+    """The pre-follow-up final send uses the assistant egress sanitizer."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    QueuedSecretAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedSecretAgent,
+        session_id="sess-queued-secret",
+        pending_text="queued follow-up",
+        config_data={"display": {"interim_assistant_messages": False}},
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "second response"
+    payloads = [call["content"] for call in adapter.sent]
+    assert all(QueuedSecretAgent.SECRET not in payload for payload in payloads)
+    assert any("github...6789" in payload for payload in payloads)
 
 
 @pytest.mark.asyncio
@@ -1510,6 +1800,551 @@ class TerminalCommandAgent:
         # Let the async progress task drain the queue and send before returning.
         time.sleep(0.35)
         return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SecretTerminalCommandAgent:
+    SECRET = "opaqueProgressCredentialValue123"
+    CMD = f"OPENAI_API_KEY={SECRET}"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "terminal", self.CMD, {"command": self.CMD}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CompactTruncatedSecretCommandAgent:
+    # Compact mode's 37-character pre-ellipsis slice ends here. This fragment
+    # is below the static PAT threshold and therefore proves sanitation
+    # happened before, rather than after, truncation.
+    LEAK = "github_pat_AB"
+    CMD = "echo " + "x" * 18 + " github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "terminal", self.CMD, {"command": self.CMD}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CompactTruncatedJsonCommandAgent:
+    SECRET = "opaqueCompactJsonCredentialValue123"
+    CMD = "echo " + "x" * 20 + f' {{\"token\": \"{SECRET}\"}}'
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "terminal", self.CMD, {"command": self.CMD}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SplitProgressSecretAgent:
+    SECRET = "opaqueProgressDbCredentialValue123"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "web_search",
+            f"postgresql://user:{self.SECRET}",
+            {},
+        )
+        self.tool_progress_callback(
+            "tool.started",
+            "browser_navigate",
+            "safe-second-event",
+            {},
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CrossEventProgressSecretAgent:
+    FIRST = "github_pat_AB"
+    SECOND = "CDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "web_search", self.FIRST, {},
+        )
+        time.sleep(0.45)
+        self.tool_progress_callback(
+            "tool.started", "browser_navigate", self.SECOND, {},
+        )
+        time.sleep(0.45)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CrossEventProgressOrdinaryAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "web_search", "g", {})
+        time.sleep(0.45)
+        self.tool_progress_callback("tool.started", "browser_navigate", "ood", {})
+        time.sleep(0.45)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CrossEventProgressLaterSecretAgent:
+    SECRET = "opaqueProgressCredential123"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "web_search", "g", {})
+        time.sleep(0.45)
+        self.tool_progress_callback(
+            "tool.started",
+            "browser_navigate",
+            f"ood OPENAI_API_KEY={self.SECRET} ",
+            {},
+        )
+        time.sleep(0.45)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CrossEventIndependentPatAgent:
+    SECRET = "ghp_" + "A1" * 18
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "web_search", "a", {})
+        time.sleep(0.45)
+        self.tool_progress_callback(
+            "tool.started",
+            "browser_navigate",
+            self.SECRET,
+            {},
+        )
+        time.sleep(0.45)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CrossEventStructuredProgressAgent:
+    ENV_SECRET = "opaqueProgressEnvCredential123"
+    JSON_SECRET = "opaqueProgressJsonCredential123"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "web_search", "OPENAI_API_KEY=", {})
+        time.sleep(0.45)
+        cb("tool.started", "browser_navigate", f"KEY={self.ENV_SECRET}", {})
+        time.sleep(0.45)
+        cb("tool.started", "web_search", '{"token": "', {})
+        time.sleep(0.45)
+        cb(
+            "tool.started",
+            "browser_navigate",
+            f'{self.JSON_SECRET}"}}',
+            {},
+        )
+        time.sleep(0.45)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class PendingStructuredProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "web_search", '{"token": "', {},
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class CompletedJsonProgressAgent:
+    SECRET = "opaqueCompletedProgressJsonCredential123"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "web_search",
+            f'{{"token": "{self.SECRET}"',
+            {},
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class PendingOrdinaryProgressAgent:
+    """Leave a benign prefix pending until the terminal progress flush."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "web_search", "g", {})
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress_mode", ["all", "verbose"])
+async def test_terminal_progress_forces_command_secret_redaction(
+    monkeypatch, tmp_path, progress_mode,
+):
+    """Both compact and verbose command progress sanitize raw arguments."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SecretTerminalCommandAgent,
+        session_id=f"sess-secret-terminal-{progress_mode}",
+        config_data={
+            "display": {
+                "tool_progress": progress_mode,
+                "tool_preview_length": 0,
+            }
+        },
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=CodeBlockProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [
+        call["content"] for call in adapter.sent + adapter.edits
+    ]
+    assert all(SecretTerminalCommandAgent.SECRET not in payload for payload in payloads)
+    assert any(
+        "OPENAI_API_KEY=" in payload
+        and ("***" in payload or "..." in payload)
+        for payload in payloads
+    )
+
+
+@pytest.mark.asyncio
+async def test_compact_progress_sanitizes_before_truncation(monkeypatch, tmp_path):
+    """Truncation cannot shorten a credential below its recognition threshold."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CompactTruncatedSecretCommandAgent,
+        session_id="sess-compact-truncated-secret",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "tool_preview_length": 40,
+            }
+        },
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=CodeBlockProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(
+        CompactTruncatedSecretCommandAgent.LEAK not in payload
+        for payload in payloads
+    )
+    assert any(payload.count("```") == 2 for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_compact_progress_is_not_terminally_sanitized_twice(
+    monkeypatch, tmp_path,
+):
+    """Post-truncation sanitation must not consume the generated closing fence."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CompactTruncatedJsonCommandAgent,
+        session_id="sess-compact-json-fence",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "tool_preview_length": 40,
+            }
+        },
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=CodeBlockProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(
+        CompactTruncatedJsonCommandAgent.SECRET not in payload
+        for payload in payloads
+    )
+    assert any(payload.count("```") == 2 for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_progress_events_are_sanitized_before_joining(monkeypatch, tmp_path):
+    """An unterminated event cannot erase later independent progress."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SplitProgressSecretAgent,
+        session_id="sess-independent-progress-sanitize",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(SplitProgressSecretAgent.SECRET not in payload for payload in payloads)
+    assert any("safe-second-event" in payload for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_progress_secret_state_spans_consecutive_events(monkeypatch, tmp_path):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CrossEventProgressSecretAgent,
+        session_id="sess-cross-event-progress-secret",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(
+        CrossEventProgressSecretAgent.FIRST not in payload
+        for payload in payloads
+    )
+    assert all(
+        CrossEventProgressSecretAgent.SECOND not in payload
+        for payload in payloads
+    )
+    assert any("..." in payload or "***" in payload for payload in payloads), payloads
+
+
+@pytest.mark.asyncio
+async def test_progress_benign_divergence_preserves_text(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CrossEventProgressOrdinaryAgent,
+        session_id="sess-cross-event-progress-ordinary",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    rendered = "\n".join(payloads)
+    assert "Searching the web for g" in rendered
+    assert "Browsing ood" in rendered
+    assert "Browsing good" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_progress_later_event_redaction_keeps_event_ownership(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CrossEventProgressLaterSecretAgent,
+        session_id="sess-cross-event-progress-later-secret",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    rendered = "\n".join(payloads)
+    assert CrossEventProgressLaterSecretAgent.SECRET not in rendered
+    assert "Searching the web for g" in rendered
+    assert "Browsing ood OPENAI_API_KEY=" in rendered
+    assert "opaque...l123" in rendered
+    assert "Searching the web for good OPENAI_API_KEY=" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_progress_independent_pat_after_retained_prefix_is_sanitized(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CrossEventIndependentPatAgent,
+        session_id="sess-cross-event-independent-pat",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    rendered = "\n".join(payloads)
+    assert CrossEventIndependentPatAgent.SECRET not in rendered
+    assert "Searching the web for a" in rendered
+    assert "Browsing ghp_" in rendered
+    assert "..." in rendered
+
+
+@pytest.mark.asyncio
+async def test_progress_structured_state_spans_consecutive_events(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CrossEventStructuredProgressAgent,
+        session_id="sess-cross-event-progress-structured",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    for leak in (
+        CrossEventStructuredProgressAgent.ENV_SECRET,
+        CrossEventStructuredProgressAgent.JSON_SECRET,
+    ):
+        assert all(leak not in payload for payload in payloads)
+    assert any("***" in payload or "..." in payload for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_progress_terminal_flush_masks_pending_structured_state(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PendingStructuredProgressAgent,
+        session_id="sess-pending-structured-progress",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert any('"token": "***"' in payload for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_progress_completed_json_quote_cannot_leak_on_terminal_flush(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CompletedJsonProgressAgent,
+        session_id="sess-completed-json-progress",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    payloads = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(CompletedJsonProgressAgent.SECRET not in item for item in payloads)
+    assert any('"token": "' in item and "..." in item for item in payloads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_kind", ["secondary_profile", "relay"])
+async def test_terminal_progress_flush_uses_source_transport(
+    monkeypatch, tmp_path, route_kind,
+):
+    """A held final fragment must use the source-owned outbound adapter."""
+    is_relay = route_kind == "relay"
+    routed_adapter = ProgressCaptureAdapter(
+        platform=Platform.RELAY if is_relay else Platform.SLACK
+    )
+    default_adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PendingOrdinaryProgressAgent,
+        session_id=f"sess-terminal-progress-{route_kind}",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="channel",
+        thread_id="171.000001",
+        profile="coder",
+        delivered_via_upstream_relay=is_relay,
+        routed_adapter=routed_adapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert default_adapter.sent == []
+    assert any("g" in call["content"] for call in routed_adapter.sent)
 
 
 @pytest.mark.asyncio

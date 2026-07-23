@@ -4,7 +4,15 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent import redact as redact_module
+from agent.redact import (
+    redact_cdp_url,
+    redact_sensitive_text,
+    RedactingFormatter,
+    sanitize_terminal_secret_url,
+    split_incomplete_sensitive_suffix,
+    StreamingSecretSanitizer,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +90,210 @@ class TestKnownPrefixes:
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result
+
+
+class TestStreamingPrefixCandidates:
+    def test_every_known_prefix_pattern_has_streaming_spec(self):
+        assert len(redact_module._STREAMING_PREFIX_SPECS) == len(
+            redact_module._PREFIX_PATTERNS
+        )
+
+    def test_incomplete_known_prefix_is_held(self):
+        text = "visible\nsk-abcdefghi"
+
+        visible, held = split_incomplete_sensitive_suffix(text)
+
+        assert visible == "visible\n"
+        assert held == "sk-abcdefghi"
+
+    def test_diverged_prefix_is_released(self):
+        text = "visible\nsk-abc is documentation"
+
+        assert split_incomplete_sensitive_suffix(text) == (text, "")
+
+    def test_progress_completed_json_quote_does_not_retain_raw_value(self):
+        secret = "opaqueCompletedJsonCredential123"
+        sanitizer = StreamingSecretSanitizer(token_candidates_only=True)
+
+        visible = sanitizer.feed(f'{{"token": "{secret}"')
+
+        assert secret not in visible
+        assert "..." in visible
+        assert sanitizer.pending == ""
+        assert sanitizer.flush() == ""
+
+    def test_progress_partial_json_still_retains_until_completion(self):
+        secret = "opaqueSplitJsonCredential123"
+        sanitizer = StreamingSecretSanitizer(token_candidates_only=True)
+
+        assert sanitizer.feed('{"token": "') == "{"
+        assert sanitizer.pending == '"token": "'
+        visible = sanitizer.feed(f'{secret}"}}')
+
+        assert secret not in visible
+        assert "..." in visible
+        assert sanitizer.pending == ""
+
+    @pytest.mark.parametrize(
+        ("text", "held"),
+        [
+            (
+                'visible\n{"token": "opaque',
+                '{"token": "opaque',
+            ),
+            (
+                "visible\npostgresql://operator:opaque",
+                "postgresql://operator:opaque",
+            ),
+            (
+                "visible\n-----BEGIN PRIVATE KEY-----\nopaque",
+                "-----BEGIN PRIVATE KEY-----\nopaque",
+            ),
+        ],
+    )
+    def test_unterminated_structured_secret_is_held(self, text, held):
+        visible, actual_held = split_incomplete_sensitive_suffix(text)
+
+        if held.startswith("{"):
+            assert visible == "visible\n{"
+            assert actual_held == held[1:]
+        else:
+            assert visible == "visible\n"
+            assert actual_held == held
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ('{"token": "opaque', '{"token": "***"'),
+            ("postgresql://operator:opaque", "postgresql://operator:***"),
+            (
+                "-----BEGIN PRIVATE KEY-----\nopaque",
+                "[REDACTED PRIVATE KEY]",
+            ),
+        ],
+    )
+    def test_terminal_unterminated_structured_secret_is_masked(self, text, expected):
+        assert split_incomplete_sensitive_suffix(text, final=True) == (expected, "")
+
+    def test_complete_structured_secret_is_released_for_static_redaction(self):
+        text = '{"token": "opaque"}'
+
+        assert split_incomplete_sensitive_suffix(text) == (text, "")
+
+    def test_complete_private_key_is_released_only_as_a_complete_unit(self):
+        text = (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "SYNTHETICINERTPRIVATEKEYBODY1234567890\n"
+            "-----END PRIVATE KEY-----"
+        )
+
+        assert split_incomplete_sensitive_suffix(text) == (text, "")
+        assert redact_sensitive_text(text, force=True) == "[REDACTED PRIVATE KEY]"
+
+    def test_new_private_key_prefix_after_complete_block_remains_held(self):
+        complete = (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "SYNTHETICINERTPRIVATEKEYBODY1234567890\n"
+            "-----END PRIVATE KEY-----"
+        )
+        next_prefix = "\n-----BEG"
+
+        visible, held = split_incomplete_sensitive_suffix(
+            complete + next_prefix
+        )
+
+        assert visible == complete + "\n"
+        assert held == "-----BEG"
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            'prefix"',
+            "prefixpost",
+            "prefixe",
+        ],
+        ids=["embedded-json", "embedded-db", "embedded-jwt"],
+    )
+    def test_embedded_canonical_opener_prefix_is_held(self, candidate):
+        assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
+
+    def test_first_sensitive_form_pair_is_held_with_its_key(self):
+        candidate = "token=opaqueFirstFormCredential"
+
+        assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
+
+    def test_empty_quoted_env_concatenation_is_held_with_assignment(self):
+        candidate = 'OPENAI_API_KEY=""'
+
+        assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
+
+    def test_database_opener_with_long_username_is_retained(self):
+        opener = "postgresql://" + "u" * 600
+        text = "visible\n" + opener
+
+        assert split_incomplete_sensitive_suffix(text) == ("visible\n", opener)
+
+    def test_every_enabled_assignment_and_header_has_partial_streaming_state(self):
+        candidates = [
+            *(f"SERVICE_{word[:-1]}" for word in redact_module._SECRET_ENV_WORDS),
+            *(name[:-1] for name in redact_module._AUTH_HEADER_NAMES),
+            *(name[:-1] for name in redact_module._SECRET_HEADER_NAME_VALUES),
+        ]
+
+        for candidate in candidates:
+            assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
+
+    def test_every_enabled_form_key_has_partial_streaming_state(self):
+        for key in redact_module._SENSITIVE_QUERY_PARAMS:
+            candidate = f"mode=x&{key[:-1]}"
+
+            assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "g",
+            '"',
+            "p",
+            "-",
+            "O",
+            "A",
+            "x",
+            "mode=x&",
+            "12345678:",
+            "ey",
+            "+",
+            "OPENAI_API_KEY   ",
+        ],
+        ids=[
+            "known-prefix",
+            "json",
+            "db",
+            "pem",
+            "env",
+            "authorization",
+            "api-key-header",
+            "empty-form-key",
+            "telegram-empty-body",
+            "jwt-before-j",
+            "phone-plus-only",
+            "env-pre-equals-whitespace",
+        ],
+    )
+    def test_streaming_state_is_prefix_closed(self, candidate):
+        assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "A" * 50 + "TOKEN" + "B" * 50 + " " * 200 + "=",
+            '"token"' + " " * 200 + ":",
+            "Authorization:" + " " * 200,
+        ],
+        ids=["env-max-name-whitespace", "json-whitespace", "auth-whitespace"],
+    )
+    def test_streaming_openers_match_canonical_whitespace_and_lengths(self, candidate):
+        assert split_incomplete_sensitive_suffix(candidate) == ("", candidate)
 
 
 class TestEnvAssignments:
@@ -1097,3 +1309,27 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
+
+
+class TestSanitizeTerminalSecretUrl:
+    @pytest.mark.parametrize(
+        "key",
+        ["to%6ben", "%74oken", "X-Amz-Signature"],
+    )
+    def test_masks_canonical_sensitive_query_name(self, key):
+        secret = "opaqueTerminalUrlCredential123"
+        url = f"https://example.com/image.png?{key}={secret}&width=1024"
+
+        result = sanitize_terminal_secret_url(url)
+
+        assert secret not in result
+        assert f"{key}=***" in result
+        assert "width=1024" in result
+
+    def test_preserves_ordinary_query_parameters_byte_for_byte(self):
+        url = (
+            "https://example.com/image.png"
+            "?token_count=7&state=public&X-Amz-Expires=300"
+        )
+
+        assert sanitize_terminal_secret_url(url) == url

@@ -324,3 +324,199 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+def test_reasoning_prefix_does_not_defeat_provider_error_normalization():
+    """Trusted reasoning framing cannot hide a provider envelope."""
+    composed = (
+        "💭 **Reasoning:**\n```\nsafe reasoning\n```\n\n"
+        "API call failed after 3 retries: HTTP 400: blocked under the provider "
+        "cybersecurity risk policy. request_id=req_reasoning"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, composed)
+
+    assert "provider rejected" in sanitized.lower()
+    assert "HTTP 400" not in sanitized
+    assert "cybersecurity risk" not in sanitized.lower()
+    assert "req_reasoning" not in sanitized
+
+
+def test_foreground_failure_wrapper_does_not_defeat_provider_normalization():
+    composed = (
+        "Sorry, I encountered an error (RuntimeError).\n"
+        "API call failed after 3 retries: HTTP 400: blocked under the provider "
+        "cybersecurity risk policy. request_id=req_foreground\n"
+        "Try again or use /reset to start a fresh session."
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, composed)
+
+    assert "provider rejected" in sanitized.lower()
+    assert "cybersecurity risk" not in sanitized.lower()
+    assert "req_foreground" not in sanitized
+
+
+def test_background_failure_wrapper_does_not_defeat_provider_normalization():
+    composed = (
+        "❌ Background task bg-123 failed: API call failed after 3 retries: "
+        "HTTP 400: blocked under the provider cybersecurity risk policy. "
+        "request_id=req_background"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, composed)
+
+    assert "provider rejected" in sanitized.lower()
+    assert "cybersecurity risk" not in sanitized.lower()
+    assert "req_background" not in sanitized
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        '✅ Background task complete\nPrompt: "explain 404"\n\n',
+        "💭 **Reasoning:**\n```\nsafe reasoning\n```\n\n",
+    ],
+    ids=["background-success", "reasoning"],
+)
+def test_success_wrapper_keeps_short_http_explanation(prefix):
+    """A wrapped assistant answer is not itself provider-envelope evidence."""
+    composed = prefix + "HTTP 404 means not found."
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, composed) == composed
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        '✅ Background task complete\nPrompt: "check provider"\n\n',
+        "💭 **Reasoning:**\n```\nsafe reasoning\n```\n\n",
+    ],
+    ids=["background-success", "reasoning"],
+)
+def test_wrapped_colonless_http_envelope_with_machine_metadata_normalizes(prefix):
+    """Machine metadata distinguishes a wrapped envelope from HTTP prose."""
+    raw = "HTTP 503 Service Unavailable request_id=req_wrapped"
+    sanitized = _sanitize_gateway_final_response(
+        Platform.TELEGRAM,
+        prefix + raw,
+    )
+
+    assert "provider failed" in sanitized.lower()
+    assert "HTTP 503" not in sanitized
+    assert "req_wrapped" not in sanitized
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (
+            "HTTP 404 means not found. "
+            "Request ID: identifies the request in logs."
+        ),
+        (
+            "HTTP 404 means not found.\n\n"
+            "A request ID = trace-key helps support."
+        ),
+    ],
+    ids=["same-paragraph", "later-paragraph"],
+)
+def test_wrapped_http_explanation_with_metadata_terms_remains_content(answer):
+    """Documentation about request IDs is not a provider error envelope."""
+    prefix = '✅ Background task complete\nPrompt: "explain HTTP logs"\n\n'
+    composed = prefix + answer
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, composed) == composed
+
+
+def test_http_colon_envelope_still_normalizes_provider_failure():
+    """Bare machine-shaped HTTP envelopes retain failure suppression."""
+    raw = "HTTP 502: upstream provider failed. request_id=req_http_envelope"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed" in sanitized.lower()
+    assert "HTTP 502" not in sanitized
+    assert "req_http_envelope" not in sanitized
+
+
+def test_unwrapped_colonless_http_envelope_still_normalizes_provider_failure():
+    """A direct provider envelope retains the legacy colonless HTTP shape."""
+    raw = "HTTP 503 Service Unavailable request_id=req_colonless_envelope"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed" in sanitized.lower()
+    assert "HTTP 503" not in sanitized
+    assert "req_colonless_envelope" not in sanitized
+
+
+def test_failure_like_normal_prose_is_not_rewritten():
+    answer = "The phrase 'background task failed' can describe a local test."
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.DISCORD])
+@pytest.mark.parametrize(
+    ("message", "leak"),
+    [
+        (
+            "Credential: github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        ),
+        (
+            'Data: {"token": "opaqueStatusJsonCredential123"}',
+            "opaqueStatusJsonCredential123",
+        ),
+        (
+            "OPENAI_API_KEY=opaqueStatusEnvCredential123",
+            "opaqueStatusEnvCredential123",
+        ),
+        (
+            "postgres://user:opaqueStatusDbCredential123@host",
+            "opaqueStatusDbCredential123",
+        ),
+    ],
+    ids=["known-prefix", "json", "env", "db"],
+)
+def test_status_callbacks_force_terminal_secret_redaction_on_every_platform(
+    monkeypatch, platform, message, leak,
+):
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    sanitized = _prepare_gateway_status_message(
+        platform,
+        "lifecycle",
+        message,
+    )
+
+    assert sanitized is not None
+    assert leak not in sanitized
+
+
+def test_non_telegram_final_response_forces_secret_redaction(monkeypatch):
+    """Every assistant final-output platform enforces the same secret boundary."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    secret = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    sanitized = _sanitize_gateway_final_response(
+        Platform.MATRIX, f"Credential: {secret}"
+    )
+
+    assert secret not in sanitized
+    assert "***" in sanitized
+
+
+def test_non_telegram_final_response_masks_unterminated_private_key(monkeypatch):
+    """Final egress is conservative when a PEM end marker never arrives."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    body = "SYNTHETICINERTPRIVATEKEYBODY1234567890"
+
+    sanitized = _sanitize_gateway_final_response(
+        Platform.MATRIX,
+        "Key:\n-----BEGIN PRIVATE KEY-----\n" + body,
+    )
+
+    assert body not in sanitized
+    assert sanitized == "Key:\n[REDACTED PRIVATE KEY]"

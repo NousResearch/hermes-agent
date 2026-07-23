@@ -12,7 +12,7 @@ import pytest
 
 from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -223,6 +223,84 @@ async def test_telegram_topic_prompt_still_runs_agent_when_topic_mode_enabled(mo
 
     assert result == "agent response"
     runner._handle_message_with_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_displayed_reasoning_is_sanitized_after_final_composition(monkeypatch):
+    """Reasoning prepended after the model final cannot bypass forced egress."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"show_reasoning": True}},
+    )
+    runner = _make_runner()
+    runner._show_reasoning = True
+    secret = "opaqueReasoningCredentialValue123"
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "safe final",
+            "last_reasoning": 'Data: {"token": "' + secret,
+            "messages": [],
+            "api_calls": 1,
+        }
+    )
+    event = _make_event("hello", thread_id="17585")
+    source = event.source
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=runner.config.group_sessions_per_user,
+        thread_sessions_per_user=runner.config.thread_sessions_per_user,
+    )
+
+    response = await runner._handle_message_with_agent(
+        event,
+        source,
+        session_key,
+        1,
+    )
+
+    assert secret not in response
+    assert '"token": "***"' in response
+    assert "safe final" in response
+
+
+@pytest.mark.asyncio
+async def test_foreground_exception_forces_terminal_secret_redaction(monkeypatch):
+    """Foreground exception details cannot bypass the final egress boundary."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    runner = _make_runner()
+    secret = "opaqueForegroundExceptionCredential123"
+    runner._run_agent = AsyncMock(
+        side_effect=RuntimeError(f"OPENAI_API_KEY={secret}")
+    )
+    event = _make_event("hello", thread_id="17585")
+    source = event.source
+    session_key = build_session_key(
+        source,
+        group_sessions_per_user=runner.config.group_sessions_per_user,
+        thread_sessions_per_user=runner.config.thread_sessions_per_user,
+    )
+
+    response = await runner._handle_message_with_agent(
+        event,
+        source,
+        session_key,
+        1,
+    )
+
+    assert secret not in response
+    assert response == (
+        "Sorry, I encountered an unexpected error.\n"
+        "Try again or use /reset to start a fresh session."
+    )
 
 
 @pytest.mark.asyncio
@@ -717,6 +795,194 @@ async def test_topic_restore_inside_topic_binds_old_session_and_returns_last_ass
     assert binding["user_id"] == "208214988"
     assert binding["session_key"] == build_session_key(_make_source(thread_id="17585"))
     runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_forces_terminal_secret_redaction(tmp_path, monkeypatch):
+    """Restored assistant history must cross the same forced egress boundary."""
+    import gateway.run as gateway_run
+
+    secret = "opaqueRestoredTopicCredential123"
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Research notes")
+    session_db.append_message(
+        "old-session",
+        "assistant",
+        f'Last data: {{"token": "{secret}',
+    )
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic restore must not enter the agent loop")
+    )
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    assert secret not in result
+    assert '"token": "***"' in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_neutralizes_stored_attachment_directives(
+    tmp_path, monkeypatch,
+):
+    import gateway.run as gateway_run
+
+    secret = "opaqueRestoredImageCredential123"
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Research notes")
+    session_db.append_message(
+        "old-session",
+        "assistant",
+        (
+            "Stored literal MEDIA:/tmp/stale.png\n"
+            f"![stale](https://user:{secret}@example.invalid/image.png)"
+        ),
+    )
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic restore must not enter the agent loop")
+    )
+
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    media, _ = BasePlatformAdapter.extract_media(result)
+    images, _ = BasePlatformAdapter.extract_images(result)
+    assert media == []
+    assert images == []
+    assert secret not in result
+    assert "Stored literal" in result
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_preserves_normal_links_and_prose(tmp_path, monkeypatch):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Research notes")
+    session_db.append_message(
+        "old-session",
+        "assistant",
+        "See [documentation](https://example.invalid/docs) for details.",
+    )
+    runner = _make_runner(session_db=session_db)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    assert "[documentation](https://example.invalid/docs)" in result
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_neutralizes_existing_bare_local_attachment_path(
+    tmp_path, monkeypatch,
+):
+    import gateway.run as gateway_run
+
+    artifact = tmp_path / "restored-report.pdf"
+    artifact.write_bytes(b"synthetic report")
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title("old-session", "Research notes")
+    session_db.append_message(
+        "old-session",
+        "assistant",
+        (
+            f"Previous artifact: {artifact}\n"
+            "See [documentation](https://example.invalid/docs) for context."
+        ),
+    )
+    runner = _make_runner(session_db=session_db)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    local_files, _ = BasePlatformAdapter.extract_local_files(result)
+    assert local_files == []
+    assert artifact.name in result
+    assert "[documentation](https://example.invalid/docs)" in result
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_neutralizes_existing_bare_path_in_session_title(
+    tmp_path, monkeypatch,
+):
+    import gateway.run as gateway_run
+
+    artifact = "/tmp/hermes-restored-title-56039.pdf"
+    monkeypatch.setattr(
+        "gateway.platforms.base.os.path.isfile",
+        lambda path: str(path) == artifact,
+    )
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.set_session_title(
+        "old-session",
+        f"Review artifact {artifact}",
+    )
+    runner = _make_runner(session_db=session_db)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(
+        _make_event("/topic old-session", thread_id="17585")
+    )
+
+    local_files, _ = BasePlatformAdapter.extract_local_files(result)
+    assert local_files == []
+    assert "Review artifact" in result
+    assert "hermes-restored-title-56039.pdf" in result
 
 
 @pytest.mark.asyncio

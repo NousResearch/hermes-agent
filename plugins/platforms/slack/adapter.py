@@ -8606,9 +8606,29 @@ async def _standalone_send(
     ``chat.postMessage``.
     """
     del force_document  # signature parity with other standalone senders
-    token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
-    if not token:
+    raw_token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
+
+    # ``SLACK_BOT_TOKEN`` can be a comma-separated list in multi-workspace
+    # gateways, and OAuth installs persist per-workspace tokens in
+    # slack_tokens.json. The standalone path has no team→client map, so try
+    # each token individually instead of sending the literal comma-joined
+    # string, which Slack rejects as ``invalid_auth`` (#47547).
+    tokens = [t.strip() for t in str(raw_token or "").split(",") if t.strip()]
+    try:
+        from hermes_constants import get_hermes_home
+
+        _tokens_file = get_hermes_home() / "slack_tokens.json"
+        if _tokens_file.exists():
+            _saved = json.loads(_tokens_file.read_text(encoding="utf-8"))
+            for _entry in _saved.values():
+                _tok = _entry.get("token", "") if isinstance(_entry, dict) else ""
+                if _tok and _tok not in tokens:
+                    tokens.append(_tok)
+    except Exception:
+        pass
+    if not tokens:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
+    token = tokens[0]
 
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare
     # user IDs (U.../W...) — resolve to a DM conversation ID (D...) first via
@@ -8616,7 +8636,12 @@ async def _standalone_send(
     # instead of failing with channel_not_found (#17444).
     chat_id = str(chat_id or "")
     if chat_id[:1] in ("U", "W"):
-        resolved = await _resolve_slack_user_dm(token, chat_id)
+        resolved = None
+        for _tok in tokens:
+            resolved = await _resolve_slack_user_dm(_tok, chat_id)
+            if resolved is not None:
+                token = _tok
+                break
         if resolved is None:
             return {
                 "error": (
@@ -8771,20 +8796,32 @@ async def _standalone_send(
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = "https://slack.com/api/chat.postMessage"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
+        # Errors that mean "wrong workspace token for this channel" — worth
+        # retrying with the next token. Anything else is terminal.
+        retryable_token_errors = {
+            "invalid_auth",
+            "not_authed",
+            "token_revoked",
+            "account_inactive",
+            "not_in_channel",
+            "channel_not_found",
         }
+        last_error = "unknown"
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
         ) as session:
             payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
             if thread_id:
                 payload["thread_ts"] = thread_id
-            async with session.post(
-                url, headers=headers, json=payload, **_req_kw
-            ) as resp:
-                data = await resp.json()
+            for tok in tokens:
+                headers = {
+                    "Authorization": f"Bearer {tok}",
+                    "Content-Type": "application/json",
+                }
+                async with session.post(
+                    url, headers=headers, json=payload, **_req_kw
+                ) as resp:
+                    data = await resp.json()
                 if data.get("ok"):
                     return {
                         "success": True,
@@ -8792,7 +8829,10 @@ async def _standalone_send(
                         "chat_id": chat_id,
                         "message_id": data.get("ts"),
                     }
-                return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
+                last_error = data.get("error", "unknown")
+                if last_error not in retryable_token_errors:
+                    break
+        return {"error": f"Slack API error: {last_error}"}
     except Exception as e:
         return {"error": f"Slack send failed: {e}"}
 

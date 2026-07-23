@@ -488,6 +488,43 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Tool Results Persistence (Evict large tool output to disk)
+# =============================================================================
+# When a tool (terminal, web_extract, search_files, etc.) returns more output
+# than the threshold below, the full result is written to disk as a .txt file
+# and the in-context message is replaced with a head + tail preview. The agent
+# can then read the full output on demand using read_file.
+#
+# This saves tokens in the context window while preserving all data for when
+# the agent actually needs it.
+#
+tool_results:
+  # Enable tool result persistence (default: true)
+  enabled: true
+
+  # Character threshold — results longer than this are evicted to disk.
+  # Default: 32768 (32K chars). Set to 0 to persist all results, or a high
+  # value like 100000 to match the historical Layer 2 behaviour.
+  threshold_chars: 32768
+
+  # Directory for persisted tool result files. Supports ~ expansion for home.
+  # Default: "~/.hermes/tool-results"
+  storage_dir: "~/.hermes/tool-results"
+
+  # Number of head and tail lines to show in the in-context preview.
+  # Default: 5 (shows first 5 + last 5 lines)
+  head_tail_lines: 5
+
+  # Auto-cleanup: remove files older than this many hours.
+  # Set to 0 to disable age-based cleanup. Default: 24
+  max_age_hours: 24
+
+  # Auto-cleanup: when total disk usage exceeds this many MB, evict the oldest
+  # files first until under budget. Set to 0 to disable size-based cleanup.
+  # Default: 100
+  max_total_mb: 100
+
+# =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),

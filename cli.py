@@ -1180,6 +1180,14 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         _cleanup_all_terminals()
     except Exception:
         pass
+    # Kill background processes started via terminal(background=True) so they
+    # don't survive CLI exit and hold ports (#40343).  ``/stop`` already calls
+    # ``process_registry.kill_all()`` but the atexit handler did not.
+    try:
+        from tools.process_registry import process_registry
+        process_registry.kill_all()
+    except Exception:
+        pass
     try:
         from tools.async_delegation import interrupt_all as _interrupt_async_delegations
         _interrupt_async_delegations(reason="CLI shutdown")

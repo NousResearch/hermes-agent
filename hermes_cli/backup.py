@@ -892,6 +892,7 @@ def create_quick_snapshot(
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     snap_id = f"{ts}-{label}" if label else ts
+
     snap_dir = root / snap_id
     snap_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1149,7 +1150,18 @@ def create_quick_snapshot(
             logger.warning("Could not snapshot %s: %s", rel, exc)
             _record_failure(rel, str(exc))
 
-    if not manifest and not failed:
+    if not manifest and not failed and not size_skipped:
+        # Nothing protected existed at all -- truly nothing to snapshot.
+        # `size_skipped` is deliberately excluded from this condition: a
+        # protected file that EXISTED but was skipped for size is still
+        # forensic content worth persisting (and it must survive long enough
+        # for the prune guard below to see it and keep the prior snapshot).
+        # Falling through this check when size_skipped is non-empty but
+        # manifest/failed are both empty (every present protected file was
+        # over the cap) used to delete snap_dir and return None here, before
+        # the manifest could ever record size_skipped -- silently discarding
+        # the "these files existed but were skipped for size" record
+        # (#68907 review, egilewski).
         shutil.rmtree(snap_dir, ignore_errors=True)
         return None
 

@@ -1737,8 +1737,11 @@ def _nous_api_key(provider: dict) -> str:
 
 
 def _nous_base_url() -> str:
-    """Resolve the Nous inference base URL from env or default."""
-    return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
+    """Resolve the Nous inference base URL, profile-aware."""
+    from agent.secret_scope import get_secret as _scope_get
+
+    override = _scope_get("NOUS_INFERENCE_BASE_URL")
+    return override if override else _NOUS_DEFAULT_BASE_URL
 
 
 def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:

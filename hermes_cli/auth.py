@@ -51,6 +51,7 @@ from hermes_cli.config import (
 )
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
+from agent.secret_scope import get_secret as _scope_get_secret
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -2155,10 +2156,15 @@ def _nous_inference_env_override() -> Optional[str]:
     trusted (the OS user set it themselves), so it is intentionally NOT
     gated by the network host allowlist — unlike Portal-returned URLs.
 
+    Uses the profile-aware resolver (``get_secret``) instead of raw
+    ``os.getenv`` so that in multi-profile multiplex mode each profile
+    reads its own endpoint override rather than inheriting another
+    profile's process-wide value (GitHub #65941).
+
     Returns a trailing-slash-stripped non-empty string, or ``None`` when
     the env var is unset/blank.
     """
-    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
+    return _optional_base_url(_scope_get_secret("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:

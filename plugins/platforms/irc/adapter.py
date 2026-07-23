@@ -12,7 +12,7 @@ Configuration in config.yaml::
         irc:
           enabled: true
           extra:
-            server: irc.libera.chat
+            server: irc.example.invalid   # use your own ircd — see docs
             port: 6697
             nickname: hermes-bot
             channel: "#hermes"
@@ -560,10 +560,19 @@ def interactive_setup() -> None:
             return
 
     print_info("Connect Hermes to an IRC network. Uses Python stdlib — no extra packages needed.")
-    print_info("   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
+    print_info("   Works with your own ircd (Ergo, InspIRCd, ZNC, etc.) or any network whose")
+    print_info("   policy explicitly allows LLM-driven agents.")
+    print_warning(
+        "Public IRC networks such as Libera.Chat ban LLM-driven agents under their "
+        "bot policy (https://libera.chat/news/bot-policy-update). Point Hermes at "
+        "an ircd you control — see https://ergo.chat/ or self-host an ircd via Docker."
+    )
     print()
 
-    server = prompt("IRC server hostname (e.g. irc.libera.chat)", default=existing_server or "")
+    server = prompt(
+        "IRC server hostname (your own ircd, e.g. irc.example.invalid)",
+        default=existing_server or "",
+    )
     if not server:
         print_warning("Server is required — skipping IRC setup")
         return

@@ -98,7 +98,7 @@ class TestIRCFreshInstallDiscovery:
 
         plat = _register_irc_platform()
         try:
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+            monkeypatch.setenv("IRC_SERVER", "irc.example.invalid")
             monkeypatch.setenv("IRC_CHANNEL", "#hermes")
             monkeypatch.setenv("IRC_NICKNAME", "hermes-bot")
 
@@ -115,7 +115,7 @@ class TestIRCFreshInstallDiscovery:
         try:
             monkeypatch.delenv("IRC_CHANNEL", raising=False)
             monkeypatch.delenv("IRC_NICKNAME", raising=False)
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+            monkeypatch.setenv("IRC_SERVER", "irc.example.invalid")
 
             status = gateway_mod._platform_status(plat)
             assert status == "not configured"
@@ -225,7 +225,7 @@ class TestIRCGatewaySetupFreshInstall:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _register_irc_platform()
         try:
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
+            monkeypatch.setenv("IRC_SERVER", "irc.example.invalid")
             monkeypatch.setenv("IRC_CHANNEL", "#hermes")
             monkeypatch.setenv("IRC_NICKNAME", "hermes-bot")
 
@@ -254,3 +254,81 @@ class TestIRCGatewaySetupFreshInstall:
             assert "Messaging platforms configured!" in out
         finally:
             _unregister_irc_platform()
+
+
+# ── IRC policy regression: do not recommend public IRC networks (#61181) ────
+
+
+class TestIRCPolicyWarningInSetup:
+    """The interactive setup must warn that public IRC networks ban agents.
+
+    Libera.Chat's bot policy explicitly forbids LLM-driven / autonomous
+    agents (https://libera.chat/news/bot-policy-update). Hermes' setup
+    wizard must surface that warning and recommend a self-hosted ircd
+    instead of defaulting to ``irc.libera.chat``.  Regression for #61181.
+    """
+
+    def test_interactive_setup_warns_about_public_network_policy(self, monkeypatch, capsys, tmp_path):
+        """interactive_setup() prints a policy warning that mentions Libera.Chat."""
+        # Ensure the wizard doesn't bail on the configured-server early-exit path.
+        monkeypatch.delenv("IRC_SERVER", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # interactive_setup() lazy-imports helpers from ``hermes_cli.setup``;
+        # patch them there so the wizard runs to completion without stdin.
+        import hermes_cli.setup as cli_setup
+        from plugins.platforms.irc import adapter as irc_adapter
+
+        monkeypatch.setattr(cli_setup, "prompt", lambda *args, **kwargs: kwargs.get("default") or "")
+        monkeypatch.setattr(cli_setup, "prompt_yes_no", lambda *args, **kwargs: kwargs.get("default", True))
+        # ``save_env_value`` writes to HERMES_HOME; stub to a no-op to keep
+        # the test hermetic.
+        monkeypatch.setattr(cli_setup, "save_env_value", lambda *args, **kwargs: None)
+        monkeypatch.setattr(cli_setup, "get_env_value", lambda *args, **kwargs: "")
+
+        irc_adapter.interactive_setup()
+
+        out = capsys.readouterr().out
+
+        # The setup wizard must surface a ban/policy warning…
+        assert "Libera.Chat" in out, f"policy warning missing in setup output: {out!r}"
+        assert "ban" in out.lower() or "forbid" in out.lower() or "policy" in out.lower(), (
+            f"expected a ban/policy warning, got: {out!r}"
+        )
+        # …and recommend a self-hosted ircd.
+        assert "ircd" in out.lower() or "self-host" in out.lower() or "ergo" in out.lower(), (
+            f"setup should recommend a self-hosted ircd, got: {out!r}"
+        )
+
+    def test_interactive_setup_default_prompt_does_not_recommend_libera(self, monkeypatch, capsys, tmp_path):
+        """The default server prompt does NOT suggest irc.libera.chat any more."""
+        monkeypatch.delenv("IRC_SERVER", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        import hermes_cli.setup as cli_setup
+        from plugins.platforms.irc import adapter as irc_adapter
+
+        captured = {}
+
+        def fake_prompt(question, default="", **_kw):
+            captured.setdefault("questions", []).append(question)
+            return default or ""
+
+        monkeypatch.setattr(cli_setup, "prompt", fake_prompt)
+        monkeypatch.setattr(cli_setup, "prompt_yes_no", lambda *args, **kwargs: kwargs.get("default", True))
+        monkeypatch.setattr(cli_setup, "save_env_value", lambda *args, **kwargs: None)
+        monkeypatch.setattr(cli_setup, "get_env_value", lambda *args, **kwargs: "")
+
+        irc_adapter.interactive_setup()
+
+        server_prompts = [q for q in captured["questions"] if "IRC server hostname" in q]
+        assert server_prompts, f"expected an IRC server prompt, got: {captured['questions']!r}"
+        # None of the server prompts should hard-default to Libera.Chat.
+        for q in server_prompts:
+            assert "irc.libera.chat" not in q, (
+                f"maintainer must not re-introduce Libera.Chat as the default: {q!r}"
+            )
+        # At least one prompt should signal a self-hosted ircd.
+        assert any("irc.example.invalid" in q for q in server_prompts), (
+            f"server prompt should recommend a private ircd, got: {server_prompts!r}"
+        )

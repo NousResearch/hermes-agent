@@ -82,6 +82,49 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     assert getattr(state, "mode", None) == "accept_edits"
 
 
+@pytest.mark.asyncio
+async def test_new_session_starts_in_configured_default_mode(agent, monkeypatch):
+    """``acp.default_mode`` sets the initial mode for headless ACP clients
+    that never send ``session/set_mode``."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"acp": {"default_mode": "accept_edits"}},
+    )
+    resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert resp.modes.current_mode_id == "accept_edits"
+    assert getattr(state, "mode", None) == "accept_edits"
+
+
+@pytest.mark.asyncio
+async def test_new_session_ignores_invalid_configured_default_mode(agent, monkeypatch):
+    """An unknown ``acp.default_mode`` value is ignored — behavior unchanged."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"acp": {"default_mode": "yolo-mode"}},
+    )
+    resp = await agent.new_session(cwd="/tmp")
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert resp.modes.current_mode_id == "default"
+    assert getattr(state, "mode", None) is None
+
+
+@pytest.mark.asyncio
+async def test_resume_session_fallback_create_uses_configured_default_mode(agent, monkeypatch):
+    """The create-on-miss path of ``session/resume`` honors ``acp.default_mode`` too."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"acp": {"default_mode": "dont_ask"}},
+    )
+    resp = await agent.resume_session(cwd="/tmp", session_id="no-such-session")
+
+    # ResumeSessionResponse carries no session_id; the advertised mode state
+    # reflects the freshly created session's mode.
+    assert resp.modes.current_mode_id == "dont_ask"
+
+
 # ---------------------------------------------------------------------------
 # initialize
 # ---------------------------------------------------------------------------

@@ -640,6 +640,19 @@ session_reset:
   idle_minutes: 1440   # Inactivity timeout in minutes (used by "idle"/"both")
   at_hour: 4           # Daily reset hour, 0-23 local time (used by "daily"/"both")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ACP (Agent Client Protocol) adapter — editors like Zed, headless ACP clients
+# ─────────────────────────────────────────────────────────────────────────────
+# acp:
+#   # Initial mode for NEW ACP sessions: "default", "accept_edits", or "dont_ask".
+#   # Interactive editors expose a mode picker and send session/set_mode, but
+#   # headless ACP clients (daemons, CI automation) usually never do — with the
+#   # "default" mode their file edits are denied by the "ask" approval policy
+#   # because nobody is there to approve. Set "accept_edits" to auto-allow edits
+#   # inside the session cwd and /tmp (sensitive paths still gated).
+#   # Unset or invalid values keep the current behavior ("default").
+#   default_mode: "default"
+
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
 # unlimited concurrent sessions. When the limit is reached, new sessions get a

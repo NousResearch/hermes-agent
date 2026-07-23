@@ -573,6 +573,53 @@ class HermesACPAgent(acp.Agent):
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
 
+    def _configured_default_mode(self) -> str | None:
+        """Return the configured initial session mode (``acp.default_mode``), if any.
+
+        Interactive editors (Zed, ...) surface the ACP mode picker and send
+        ``session/set_mode``, but headless ACP clients (daemons, CI runners,
+        editor-less automation) typically never do — so every session starts in
+        the ``default`` mode, whose ``ask`` edit-approval policy denies file
+        edits when there is no interactive approver on the other end. Operators
+        of such deployments can pick the initial mode in
+        ``~/.hermes/config.yaml``::
+
+            acp:
+              default_mode: accept_edits   # default | accept_edits | dont_ask
+
+        Unset, empty, or invalid values fall back to the current behavior
+        (sessions start in ``default``).
+        """
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            acp_cfg = load_config_readonly().get("acp")
+        except Exception:
+            logger.debug("Could not read acp.default_mode from config", exc_info=True)
+            return None
+        if not isinstance(acp_cfg, dict):
+            return None
+        mode = str(acp_cfg.get("default_mode") or "").strip()
+        if not mode:
+            return None
+        if mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+            logger.warning(
+                "Ignoring acp.default_mode=%r — valid modes: %s",
+                mode,
+                ", ".join(sorted(self._MODE_TO_EDIT_APPROVAL_POLICY)),
+            )
+            return None
+        return mode
+
+    def _apply_configured_default_mode(self, state: SessionState) -> None:
+        """Start a freshly created session in the configured default mode."""
+        mode = self._configured_default_mode()
+        if mode and mode != self._MODE_DEFAULT:
+            setattr(state, "mode", mode)
+            logger.info(
+                "Session %s: initial mode %s (acp.default_mode)", state.session_id, mode
+            )
+
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
         """Encode a model selection so ACP clients can keep provider context."""
@@ -1169,6 +1216,7 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
+        self._apply_configured_default_mode(state)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
@@ -1240,6 +1288,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
+            self._apply_configured_default_mode(state)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must

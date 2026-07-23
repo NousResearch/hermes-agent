@@ -1669,6 +1669,7 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
+    runtime=None,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
@@ -1693,6 +1694,16 @@ def run_kanban_goal_loop(
     (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
     (reason: str -> None).
 
+    ``runtime`` is an optional dict of best-effort introspection/control
+    callables supplied by the caller (e.g. ``context_occupancy_fn``,
+    ``compaction_active_fn``, ``reset_session_fn``, ``session_id_fn``). It is
+    passed verbatim to the ``pre_goal_turn`` plugin hook, which fires before
+    each continuation turn and may return ``{"prompt": str, "handed_off":
+    bool}`` to rewrite the continuation prompt and/or note that it moved the
+    loop to a fresh session (a context-budget handoff). The finalize nudge is
+    a one-shot and is never intercepted; every hook failure degrades to a
+    normal in-session turn.
+
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
     outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
     ``"blocked_by_worker"``, or ``"stopped"``.
@@ -1713,6 +1724,7 @@ def run_kanban_goal_loop(
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
+    handoffs_done = 0
 
     while True:
         # Did the worker terminate the task itself this turn?
@@ -1773,7 +1785,41 @@ def run_kanban_goal_loop(
                 _log(f"kanban goal loop: block_fn failed ({exc})")
             return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
 
-        # Run another turn in the same session.
+        # Plugin turn-boundary hook: before spending another CONTINUATION
+        # turn, let a plugin rewrite the continuation prompt and/or move the
+        # loop to a fresh session (e.g. a context-budget handoff that
+        # checkpoints worker state when the live window nears capacity, so
+        # the loop resumes with a clean window instead of riding this one
+        # down into repeated compaction). The finalize nudge (verdict ==
+        # "done") is a one-shot and is never intercepted. Fail-open: any
+        # hook error leaves ``prompt`` unchanged and runs the turn in the
+        # same session — the turn budget above stays the hard last line.
+        if verdict != "done":
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("pre_goal_turn"):
+                    for ret in invoke_hook(
+                        "pre_goal_turn",
+                        prompt=prompt,
+                        task_id=task_id,
+                        goal_text=goal_text,
+                        progress=last_response,
+                        next_step=reason,
+                        turns_used=turns_used,
+                        max_turns=max_turns,
+                        handoffs_done=handoffs_done,
+                        runtime=runtime or {},
+                    ):
+                        if isinstance(ret, dict) and ret.get("prompt"):
+                            prompt = str(ret["prompt"])
+                            if ret.get("handed_off"):
+                                handoffs_done += 1
+                            break
+            except Exception as exc:
+                _log(f"kanban goal loop: pre_goal_turn hook failed ({exc}); continuing in-session")
+
+        # Run another turn (in the same session, or the fresh one a hook
+        # switched to).
         try:
             last_response = run_turn(prompt) or ""
         except Exception as exc:

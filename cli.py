@@ -16083,6 +16083,26 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             except Exception:
                 pass
 
+    # Generic runtime surface for the goal loop's pre_goal_turn plugin hook:
+    # live context-window occupancy and fresh-session control on the running
+    # agent. All best-effort — consumers treat a None/raising callable as
+    # "unknown" and skip whatever depends on it.
+    def _context_occupancy() -> "float | None":
+        cc = getattr(cli.agent, "context_compressor", None)
+        if cc is None:
+            return None
+        prompt_tokens = getattr(cc, "last_prompt_tokens", 0) or 0
+        window = getattr(cc, "context_length", 0) or 0
+        # <=0 prompt tokens means unknown (stale, or -1 right after a
+        # compaction reset) — report occupancy as unknown, not 0%.
+        if prompt_tokens <= 0 or window <= 0:
+            return None
+        return float(prompt_tokens) / float(window)
+
+    def _compaction_active() -> bool:
+        cc = getattr(cli.agent, "context_compressor", None)
+        return bool(getattr(cc, "awaiting_real_usage_after_compression", False))
+
     _run_loop(
         task_id=task_id,
         goal_text=goal_text,
@@ -16092,6 +16112,12 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         max_turns=max_turns,
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
+        runtime={
+            "context_occupancy_fn": _context_occupancy,
+            "compaction_active_fn": _compaction_active,
+            "reset_session_fn": lambda: cli.new_session(silent=True),
+            "session_id_fn": lambda: getattr(cli, "session_id", None),
+        },
     )
 
 

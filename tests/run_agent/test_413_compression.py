@@ -826,6 +826,44 @@ class TestPreflightCompression:
             for ev, msg in status_messages
         )
 
+    def test_preflight_status_honors_disabled_config(self, agent):
+        agent.compression_enabled = True
+        agent.compression_status_messages = False
+        agent.platform = "discord"
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
+        big_history = [
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"Message {i} with enough padding to trigger preflight compression",
+            }
+            for i in range(40)
+        ]
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="After silent preflight"
+        )
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+
+        with (
+            patch.object(
+                agent,
+                "_compress_context",
+                return_value=(
+                    [{"role": "user", "content": "compressed"}],
+                    "new system prompt",
+                ),
+            ) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        mock_compress.assert_called()
+        assert result["completed"] is True
+        assert not any("Preflight compression" in msg for _, msg in status_messages)
+
     def test_preflight_defers_when_recent_real_usage_fit(self, agent):
         """A noisy rough estimate should not re-compact a recently fitting request."""
         agent.compression_enabled = True

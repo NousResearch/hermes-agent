@@ -1801,6 +1801,9 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    compression_status_messages = is_truthy_value(
+        _compression_cfg.get("status_messages"), default=True
+    )
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # Cap on compression retry rounds before a turn gives up with "max
@@ -2313,6 +2316,7 @@ def init_agent(
         except Exception:
             pass
     agent.compression_enabled = compression_enabled
+    agent.compression_status_messages = compression_status_messages
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.max_compression_attempts = compression_max_attempts

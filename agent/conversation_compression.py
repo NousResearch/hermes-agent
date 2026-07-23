@@ -60,8 +60,27 @@ COMPACTION_STATUS = (
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
 
+def emit_compression_status(agent: Any, message: str) -> None:
+    """Use the configurable emitter, with the legacy duck-typed fallback."""
+    emit = getattr(agent, "_emit_compression_status", None)
+    (emit if callable(emit) else agent._emit_status)(message)
+
+
+def buffer_compression_status(agent: Any, message: str) -> None:
+    """Use the configurable buffer, with the legacy duck-typed fallback."""
+    buffer = getattr(agent, "_buffer_compression_status", None)
+    (buffer if callable(buffer) else agent._buffer_status)(message)
+
+
 def _emit_compaction_done(agent: Any) -> None:
-    """Emit the structured terminal edge for a started compaction."""
+    """Emit the terminal edge when visible, or when a visual client needs it."""
+    platform = getattr(agent, "platform", "")
+    platform = getattr(platform, "value", platform)
+    if (
+        not getattr(agent, "compression_status_messages", True)
+        and platform not in {"desktop", "tui"}
+    ):
+        return
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
@@ -524,7 +543,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "Run `hermes setup` or set OPENROUTER_API_KEY."
                 )
             agent._compression_warning = msg
-            agent._emit_status(msg)
+            emit_compression_status(agent, msg)
             logger.warning(
                 "No auxiliary LLM provider for compression — "
                 "summaries will be unavailable."
@@ -691,7 +710,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     f"compression model's {aux_context:,}.)"
                 )
             agent._compression_warning = msg
-            agent._emit_status(msg)
+            emit_compression_status(agent, msg)
             logger.warning(
                 "Auxiliary compression model %s has %d token context, "
                 "below the main model's compression threshold of %d "
@@ -1089,7 +1108,7 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(COMPACTION_STATUS)
+    emit_compression_status(agent, COMPACTION_STATUS)
     _compaction_done_emitted = False
 
     def _complete_compaction_lifecycle() -> None:
@@ -1801,7 +1820,7 @@ def compress_context(
                 f"accuracy may degrade. Consider /new to start fresh."
             )
             agent._compression_warning = _cc_msg
-            agent._emit_status(_cc_msg)
+            emit_compression_status(agent, _cc_msg)
 
         # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
         # the completed old session before its details are lost. In in-place mode
@@ -1947,7 +1966,7 @@ def _compress_context_via_codex_app_server(
         f"{approx_tokens:,}" if approx_tokens else "unknown",
     )
     try:
-        agent._emit_status(COMPACTION_STATUS)
+        emit_compression_status(agent, COMPACTION_STATUS)
     except Exception:
         pass
 
@@ -2295,7 +2314,9 @@ __all__ = [
     "COMPACTION_STATUS",
     "COMPACTION_DONE_STATUS",
     "COMPACTION_STATUS_MARKER",
+    "buffer_compression_status",
     "check_compression_model_feasibility",
+    "emit_compression_status",
     "replay_compression_warning",
     "compress_context",
     "try_shrink_image_parts_in_messages",

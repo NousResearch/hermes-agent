@@ -407,6 +407,10 @@ compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
+
+  # Show compression lifecycle/retry messages (default: true). Set false to
+  # hide them; desktop/TUI may still show a non-transcript Summarizing indicator.
+  status_messages: true
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later

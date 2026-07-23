@@ -215,9 +215,12 @@ def _record_codex_app_server_compaction(
     )
     if not force:
         try:
-            from agent.conversation_compression import COMPACTION_STATUS
+            from agent.conversation_compression import (
+                COMPACTION_STATUS,
+                emit_compression_status,
+            )
 
-            agent._emit_status(COMPACTION_STATUS)
+            emit_compression_status(agent, COMPACTION_STATUS)
         except Exception:
             pass
 

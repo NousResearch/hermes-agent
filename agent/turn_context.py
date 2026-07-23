@@ -35,6 +35,7 @@ from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     conversation_history_after_compression,
+    emit_compression_status,
 )
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
@@ -662,7 +663,8 @@ def build_turn_context(
                     f"{_idle_floor:,}",
                     agent.session_id or "none",
                 )
-                agent._emit_status(
+                emit_compression_status(
+                    agent,
                     IDLE_COMPACTION_STATUS_TEMPLATE.format(
                         idle_seconds=int(_idle_gap), tokens=_idle_tokens
                     )
@@ -771,7 +773,8 @@ def build_turn_context(
                 agent.model,
                 f"{_compressor.context_length:,}",
             )
-            agent._emit_status(
+            emit_compression_status(
+                agent,
                 PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(
                     tokens=_preflight_tokens,
                     threshold=_compressor.threshold_tokens,

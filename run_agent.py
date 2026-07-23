@@ -912,6 +912,32 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
+    def _emit_compression_status(self, message: str) -> None:
+        """Emit compression chatter unless disabled in config.
+
+        Desktop/TUI clients still receive the stable compaction marker so their
+        non-transcript ``Summarizing…`` indicator can track the real lifecycle.
+        """
+        if getattr(self, "compression_status_messages", True):
+            self._emit_status(message)
+            return
+
+        platform = getattr(self, "platform", "")
+        platform = getattr(platform, "value", platform)
+        callback = getattr(self, "status_callback", None)
+        if platform not in {"desktop", "tui"} or not callback:
+            return
+        try:
+            from agent.conversation_compression import COMPACTION_STATUS_MARKER
+
+            if COMPACTION_STATUS_MARKER in message:
+                callback("lifecycle", message)
+        except Exception:
+            logger.debug(
+                "status_callback error in _emit_compression_status",
+                exc_info=True,
+            )
+
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.
 
@@ -1004,6 +1030,11 @@ class AIAgent:
         except Exception:
             # Never break the retry loop on a buffer hiccup.
             pass
+
+    def _buffer_compression_status(self, message: str) -> None:
+        """Buffer compression retry chatter unless disabled in config."""
+        if getattr(self, "compression_status_messages", True):
+            self._buffer_status(message)
 
     def _buffer_vprint(self, message: str) -> None:
         """Buffer a vprint(force=True) retry/fallback line."""

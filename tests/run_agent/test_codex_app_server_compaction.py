@@ -78,6 +78,9 @@ class DummyAgent:
         self.statuses.append(message)
         self.status_callback("lifecycle", message)
 
+    def _emit_compression_status(self, message):
+        self._emit_status(message)
+
     def _emit_warning(self, message):
         self.warnings.append(message)
         self.status_callback("warn", message)

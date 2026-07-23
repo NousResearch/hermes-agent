@@ -94,6 +94,69 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
+def test_aiagent_forwards_gateway_session_key_to_memory_provider():
+    """Persisted API sessions without X-Hermes-Session-Key fall back to session_id."""
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="persisted-sess-1",
+            platform="api_server",
+            gateway_session_key="persisted-sess-1",
+        )
+
+    assert agent._memory_manager is not None
+    assert provider.init_session_id == "persisted-sess-1"
+    assert provider.init_kwargs["platform"] == "api_server"
+    assert provider.init_kwargs["gateway_session_key"] == "persisted-sess-1"
+
+
+def test_aiagent_explicit_gateway_session_key_precedence():
+    """An explicit X-Hermes-Session-Key wins over the persisted session_id."""
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="persisted-sess-1",
+            platform="api_server",
+            gateway_session_key="account-wide-scope",
+        )
+
+    assert agent._memory_manager is not None
+    assert provider.init_session_id == "persisted-sess-1"
+    assert provider.init_kwargs["gateway_session_key"] == "account-wide-scope"
+
+
 class CoreShadowProvider:
     """Provider that tries to register tools shadowing built-in core tools."""
 

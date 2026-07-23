@@ -3983,7 +3983,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
-        self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+
+        # Resolve a `--model <alias>` against config.yaml ``model_aliases:``
+        # (e.g. a local server behind a custom base_url) BEFORE the default
+        # provider is attached. Without this, the alias string is sent verbatim
+        # to the configured default provider (OpenRouter) and 400s. The GUI
+        # picker already reads these aliases; the CLI path must too. See #62491.
+        # ponytail: reuse model_switch.DIRECT_ALIASES rather than re-parse config.
+        _model_alias_target = None
+        if model:
+            try:
+                from hermes_cli import model_switch as _ms
+                _ms._ensure_direct_aliases()
+                _model_alias_target = _ms.DIRECT_ALIASES.get(model.strip().lower())
+            except Exception:
+                _model_alias_target = None
+
+        self.model = (
+            _model_alias_target.model
+            if _model_alias_target is not None
+            else (model or _config_model or _DEFAULT_CONFIG_MODEL)
+        )
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -4015,11 +4035,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
 
         self._explicit_api_key = api_key
-        self._explicit_base_url = base_url
+        # ponytail: explicit --base-url must win over the alias's base_url
+        # (#62534). Only fall back to the alias URL when no explicit one given.
+        self._explicit_base_url = (
+            base_url
+            if base_url
+            else (_model_alias_target.base_url.rstrip("/")
+                  if _model_alias_target is not None and _model_alias_target.base_url
+                  else None)
+        )
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
+            or (_model_alias_target.provider if _model_alias_target is not None else None)
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
@@ -4030,7 +4059,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (
-            base_url
+            self._explicit_base_url
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None

@@ -2329,6 +2329,14 @@ class BasePlatformAdapter(ABC):
     - Handling media
     """
 
+    # Multi-agent routing default. ``__init__`` sets this per-instance and
+    # ``set_routing_context`` overrides it, but it is declared here as a class
+    # attribute so ``_attach_agent_id`` resolves to the legacy "main" agent even
+    # on adapters or test doubles whose ``__init__`` was bypassed or partially
+    # run — matching how that method already tolerates a missing
+    # ``_gateway_routes``/``_gateway_ref``. Single-agent installs never touch it.
+    _default_agent_id: str = "main"
+
     # Whether this platform renders triple-backtick fenced code blocks (i.e.
     # ``format_message`` translates/preserves markdown fences into a real code
     # block).  Capability flag for markdown-aware presentation choices.
@@ -2503,6 +2511,12 @@ class BasePlatformAdapter(ABC):
         # mitigating indirect prompt injection from third parties in a shared
         # thread/channel.
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
+        # Multi-agent routing context.  Populated by GatewayRunner via
+        # ``set_routing_context``; left empty in single-agent installs so
+        # every message resolves to the legacy "main" agent.
+        self._gateway_routes: List[Dict[str, Any]] = []
+        self._default_agent_id: str = "main"
+        self._gateway_ref: Optional[Any] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -3029,12 +3043,89 @@ class BasePlatformAdapter(ABC):
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
-        
+
         Used by adapters that need to check if a thread/conversation
         has an active session before processing messages (e.g., Slack
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def set_routing_context(
+        self,
+        routes: Optional[List[Dict[str, Any]]],
+        default_agent: str = "main",
+        gateway: Optional[Any] = None,
+    ) -> None:
+        """Inject the multi-agent routing table.
+
+        Called once by GatewayRunner during adapter wire-up.  Single-agent
+        installs leave *routes* empty, so every inbound message resolves
+        to ``default_agent`` (which itself defaults to ``"main"``).
+
+        Passing the gateway reference enables the ``select_agent`` plugin
+        hook to access shared state when overriding the route result.
+        """
+        self._gateway_routes = list(routes or [])
+        self._default_agent_id = (default_agent or "main").strip() or "main"
+        self._gateway_ref = gateway
+
+    def _attach_agent_id(self, event: "MessageEvent") -> None:
+        """Resolve and stamp ``event.source.agent_id`` for downstream dispatch.
+
+        Precedence (highest first): the ``select_agent`` plugin hook —
+        which is handed the route match and may override it — then the
+        declarative ``routes`` table, then ``default_agent_id``, then
+        "main" (``hook_pick or route_match or default``).  Idempotent: if
+        ``agent_id`` was already set upstream it is left untouched.
+
+        Imported lazily so single-agent installs that never call
+        ``set_routing_context`` avoid loading the resolver / plugin
+        machinery on every message.
+        """
+        try:
+            source = event.source
+        except AttributeError:
+            return
+        if source is None:
+            return
+        if getattr(source, "agent_id", None):
+            return  # Already resolved upstream.
+
+        route_match: Optional[str] = None
+        try:
+            from gateway.agent_routing import resolve_agent_id  # lazy
+            route_match = resolve_agent_id(
+                source, self._gateway_routes, default=None,
+            )
+        except Exception as exc:  # never break dispatch on a routing bug
+            logger.debug("[%s] route resolution failed: %s", self.name, exc)
+
+        hook_pick: Optional[str] = None
+        try:
+            from hermes_cli.plugins import invoke_hook  # lazy
+            results = invoke_hook(
+                "select_agent",
+                event=event,
+                gateway=self._gateway_ref,
+                route_match=route_match,
+                # Note: intentionally NOT passing agent_id — this hook's
+                # purpose is to DECIDE the agent_id. The resolved value
+                # will be stamped on event.source.agent_id after this call.
+            )
+            for r in results or []:
+                if isinstance(r, str) and r.strip():
+                    hook_pick = r.strip()
+                    break
+        except Exception as exc:
+            logger.debug("[%s] select_agent hook failed: %s", self.name, exc)
+
+        agent_id = hook_pick or route_match or self._default_agent_id or "main"
+        try:
+            import dataclasses
+            event.source = dataclasses.replace(source, agent_id=agent_id)
+        except Exception as exc:
+            logger.debug("[%s] could not stamp agent_id=%r: %s",
+                         self.name, agent_id, exc)
     
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -4833,6 +4924,12 @@ class BasePlatformAdapter(ABC):
         # downstream delivery all agree on the same lane.
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
+
+        # Resolve which agent should handle this message and stamp the
+        # decision onto ``event.source.agent_id`` so build_session_key,
+        # cron creation, hooks and delivery all see a consistent identity.
+        # Runs after topic recovery so routing rules see the corrected lane.
+        self._attach_agent_id(event)
 
         session_key = build_session_key(
             event.source,

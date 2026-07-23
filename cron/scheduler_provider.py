@@ -56,6 +56,7 @@ class CronScheduler(ABC):
         adapters: Any = None,
         loop: Any = None,
         interval: int = 60,
+        registry: Any = None,
     ) -> None:
         """Begin firing due jobs.
 
@@ -63,6 +64,11 @@ class CronScheduler(ABC):
         (it is run inside a daemon thread by the caller, exactly as today).
         An external provider may register a schedule/webhook and return
         immediately; in that case it must still honor stop_event for teardown.
+
+        ``registry`` is the multi-agent ``AgentProfile`` registry; when
+        present, due jobs are collected across ALL agent profiles and each
+        runs under its own profile context. Providers that don't support
+        multi-agent cron may ignore it.
         """
 
     def stop(self) -> None:
@@ -173,7 +179,7 @@ class InProcessCronScheduler(CronScheduler):
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None, registry=None):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
@@ -201,6 +207,7 @@ class InProcessCronScheduler(CronScheduler):
                         loop=loop,
                         sync=False,
                         can_dispatch=can_dispatch,
+                        registry=registry,
                     )
                 ok = True
             except BaseException as e:

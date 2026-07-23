@@ -7588,6 +7588,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._threads.mark(thread_id)
 
+        # Stamp agent_id before batching so the batch key reflects the
+        # routed agent (idempotent — handle_message will skip re-stamping).
+        self._attach_agent_id(event)
+
         # Only live plain text messages use split-message batching. Recovery
         # candidates are already complete historical messages; coalescing them
         # would lose constituent IDs and make later restarts replay them.

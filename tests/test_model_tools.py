@@ -65,6 +65,7 @@ class TestHandleFunctionCall:
                 turn_id="",
                 api_request_id="",
                 middleware_trace=[],
+                agent_id=None,
             ),
             call(
                 "post_tool_call",
@@ -81,6 +82,7 @@ class TestHandleFunctionCall:
                 error_type=None,
                 error_message=None,
                 middleware_trace=[],
+                agent_id=None,
             ),
             call(
                 "transform_tool_result",
@@ -96,6 +98,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                agent_id=None,
             ),
         ]
 
@@ -457,6 +460,38 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+class TestHookAgentIdPropagation:
+    """post_tool_call / transform_tool_result must forward the active agent
+    profile's id as ``agent_id``. The existing hook-plumbing test covers the
+    no-profile path (agent_id=None); this covers the populated path."""
+
+    def test_hooks_receive_active_profile_agent_id(self, tmp_path):
+        from pathlib import Path
+        from agent.profile import AgentProfile, use_profile
+
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            with use_profile(AgentProfile(id="coder", home_dir=Path(tmp_path))):
+                result = handle_function_call(
+                    "web_search",
+                    {"q": "test"},
+                    task_id="task-1",
+                    tool_call_id="call-1",
+                    session_id="session-1",
+                )
+
+        assert result == '{"ok":true}'
+        kwargs_by_hook = {
+            c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
+        }
+        # The two hooks the multi-agent routing PR wired agent_id into.
+        assert kwargs_by_hook["post_tool_call"]["agent_id"] == "coder"
+        assert kwargs_by_hook["transform_tool_result"]["agent_id"] == "coder"
+
 
 class TestDisabledToolsetsPlatformBundle:
     """Regression test for #33924: disabling a platform bundle (hermes-*)

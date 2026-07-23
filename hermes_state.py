@@ -872,6 +872,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
+    agent_id TEXT NOT NULL DEFAULT 'main',
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,
@@ -3103,6 +3104,15 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
+        # agent_id index — created after _reconcile_columns has ensured the
+        # column exists on legacy databases.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
@@ -3179,6 +3189,7 @@ class SessionDB:
         cwd: str = None,
         profile_name: str = None,
         git_repo_root: str = None,
+        agent_id: str = "main",
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -3216,16 +3227,17 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   id, source, agent_id, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, parent_session_id, cwd,
                    profile_name, git_repo_root, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
                        system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
                        session_key = COALESCE(sessions.session_key, excluded.session_key),
+                       agent_id = COALESCE(sessions.agent_id, excluded.agent_id),
                        chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                        thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
@@ -3236,6 +3248,7 @@ class SessionDB:
                 (
                     session_id,
                     source,
+                    agent_id or "main",
                     user_id,
                     session_key,
                     chat_id,

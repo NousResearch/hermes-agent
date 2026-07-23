@@ -177,6 +177,7 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    agent_id: Optional[str] = None  # Resolved agent identity (None == default "main")
     # Profile this inbound message is routed to in a multiplexing gateway
     # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
     # None => the gateway's active/default profile. Drives both session-key
@@ -264,6 +265,8 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.agent_id:
+            d["agent_id"] = self.agent_id
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -289,6 +292,7 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            agent_id=data.get("agent_id"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )
@@ -703,6 +707,11 @@ class SessionEntry:
     # (e.g. Slack thread-context watermarks). Survives gateway restarts via
     # the routing index; must stay small and JSON-serializable.
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Agent identity for this session.  Defaults to ``"main"`` so single-agent
+    # installs keep behaving identically; multi-agent installs set it to the
+    # agent_id resolved by the routes table at message-dispatch time.
+    agent_id: str = "main"
     
     # Token tracking
     input_tokens: int = 0
@@ -773,6 +782,7 @@ class SessionEntry:
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type,
             "metadata": self.metadata,
+            "agent_id": self.agent_id,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
@@ -853,6 +863,7 @@ class SessionEntry:
             platform=platform,
             chat_type=data.get("chat_type", "dm"),
             metadata=dict(data.get("metadata") or {}),
+            agent_id=data.get("agent_id", "main"),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             cache_read_tokens=data.get("cache_read_tokens", 0),
@@ -948,8 +959,23 @@ def build_session_key(
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
+
+    Agent identity:
+      - When ``source.agent_id`` is set (via routing in the adapter), the
+        key is prefixed with ``agent:<id>:``.  Unset (the single-agent default)
+        produces ``agent:main:``, preserving every key string generated before
+        the multi-agent feature shipped.
     """
-    ns = _session_key_namespace(profile)
+    # Namespace prefix: the multi-agent routing identity (``source.agent_id``,
+    # set by inbound routing) takes precedence when resolved to a non-default
+    # agent; otherwise fall back to the profile-based namespace param. Both
+    # collapse to ``agent:main`` in the single-agent default, keeping legacy
+    # keys byte-identical.
+    agent_id = getattr(source, "agent_id", None)
+    if agent_id and agent_id != "main":
+        ns = f"agent:{agent_id}"
+    else:
+        ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -2075,6 +2101,7 @@ class SessionStore:
                 display_name=source.chat_name,
                 platform=source.platform,
                 chat_type=source.chat_type,
+                agent_id=source.agent_id or "main",
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
@@ -2102,6 +2129,7 @@ class SessionStore:
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
                     "profile_name": source.profile,
+                    "agent_id": source.agent_id or "main",
                 }
 
         if _needs_save:
@@ -2407,6 +2435,7 @@ class SessionStore:
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                agent_id=old_entry.agent_id or "main",
                 is_fresh_reset=True,
             )
 
@@ -2421,6 +2450,7 @@ class SessionStore:
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
                 "profile_name": old_entry.origin.profile if old_entry.origin else None,
+                "agent_id": old_entry.agent_id or "main",
             }
 
         if self._db and db_end_session_id:
@@ -2523,6 +2553,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                agent_id=old_entry.agent_id or "main",
             )
 
             self._entries[session_key] = new_entry

@@ -467,11 +467,20 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # to initialise session-scoped state (e.g. warm a memory cache).
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _invoke_hook(
             "on_session_start",
             session_id=agent.session_id,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            agent_id=_agent_id,
         )
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)

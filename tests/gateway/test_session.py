@@ -2145,3 +2145,201 @@ class TestGatewayRoutingTable:
         )
         assert entry.session_key not in rows
         restarted._db.close()
+
+
+class TestBuildSessionKeyAgentId:
+    """build_session_key must prefix with agent:<id> when source.agent_id is set."""
+
+    def test_default_agent_id_is_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        key = build_session_key(source)
+        assert key.startswith("agent:main:")
+
+    def test_explicit_agent_id(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        source.agent_id = "coder"
+        key = build_session_key(source)
+        assert key == "agent:coder:telegram:dm:123"
+
+    def test_agent_id_none_defaults_to_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        source.agent_id = None
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm:123"
+
+    def test_agent_id_empty_string_defaults_to_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        source.agent_id = ""
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm:123"
+
+    def test_dm_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+        )
+        source.agent_id = "coder"
+        key = build_session_key(source)
+        assert key == "agent:coder:telegram:dm:99:topic-1"
+
+    def test_group_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        source.agent_id = "research"
+        key = build_session_key(source)
+        assert key == "agent:research:discord:group:guild-123:alice"
+
+    def test_group_thread_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+        )
+        source.agent_id = "coder"
+        key = build_session_key(source)
+        assert key == "agent:coder:telegram:group:-1002285219667:17585"
+
+    def test_whatsapp_dm_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+        )
+        source.agent_id = "wecom-agent"
+        key = build_session_key(source)
+        assert key == "agent:wecom-agent:whatsapp:dm:15551234567"
+
+    def test_shared_group_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+        )
+        source.agent_id = "main"
+        key = build_session_key(source, group_sessions_per_user=False)
+        assert key == "agent:main:discord:group:guild-123"
+
+    def test_distinct_agents_same_chat_get_distinct_keys(self):
+        """Same chat, different agent_id → different session keys."""
+        base = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+        base.agent_id = "coder"
+        key_coder = build_session_key(base)
+
+        base.agent_id = "research"
+        key_research = build_session_key(base)
+
+        assert key_coder == "agent:coder:telegram:dm:123"
+        assert key_research == "agent:research:telegram:dm:123"
+        assert key_coder != key_research
+
+    def test_session_source_roundtrip_with_agent_id(self):
+        """agent_id should survive to_dict/from_dict roundtrip."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            agent_id="coder",
+        )
+        d = source.to_dict()
+        assert d["agent_id"] == "coder"
+        restored = SessionSource.from_dict(d)
+        assert restored.agent_id == "coder"
+
+    def test_session_source_roundtrip_without_agent_id(self):
+        """agent_id omitted from dict → restored as None."""
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        d = source.to_dict()
+        assert "agent_id" not in d
+        restored = SessionSource.from_dict(d)
+        assert restored.agent_id is None
+
+
+class TestSessionEntryAgentIdSerialization:
+    """SessionEntry.agent_id must persist through save→load and default to
+    ``"main"`` for legacy entries written before the multi-agent field shipped.
+    """
+
+    def _entry(self, **overrides):
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        base = dict(
+            session_key="agent:coder:telegram:dm:123",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        base.update(overrides)
+        return SessionEntry(**base)
+
+    def test_non_main_agent_id_survives_roundtrip(self):
+        """A non-"main" agent_id must survive to_dict→from_dict unchanged."""
+        from gateway.session import SessionEntry
+        entry = self._entry(agent_id="coder")
+        d = entry.to_dict()
+        assert d["agent_id"] == "coder"
+        restored = SessionEntry.from_dict(d)
+        assert restored.agent_id == "coder"
+
+    def test_default_agent_id_is_main(self):
+        """A freshly constructed entry defaults agent_id to "main"."""
+        entry = self._entry()
+        assert entry.agent_id == "main"
+        assert entry.to_dict()["agent_id"] == "main"
+
+    def test_legacy_dict_without_agent_id_defaults_to_main(self):
+        """A persisted entry dict predating the agent_id field (no key)
+        must deserialize back to "main" for back-compat."""
+        from gateway.session import SessionEntry
+        data = {
+            "session_key": "agent:main:telegram:dm:123",
+            "session_id": "s1",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+            # No agent_id key — legacy format.
+        }
+        assert "agent_id" not in data
+        restored = SessionEntry.from_dict(data)
+        assert restored.agent_id == "main"
+
+
+class TestBuildSessionKeyAgentIdProfilePrecedence:
+    """When both a non-main ``source.agent_id`` and a ``profile`` namespace arg
+    are supplied, the routing agent_id wins and the profile namespace is
+    ignored (the new branch in build_session_key)."""
+
+    def test_agent_id_takes_precedence_over_profile(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        )
+        source.agent_id = "coder"
+        # A profile namespace is ALSO supplied — it must be ignored because
+        # agent_id is a non-main routing identity.
+        key = build_session_key(source, profile="teamB")
+        assert key == "agent:coder:telegram:dm:123"
+        # Non-tautological guard: the profile namespace must NOT appear.
+        assert "teamB" not in key
+
+    def test_main_agent_id_falls_back_to_profile_namespace(self):
+        """With the default "main" agent_id, the profile namespace param is
+        honored — confirming precedence only fires for a non-main agent."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        )
+        source.agent_id = "main"
+        key = build_session_key(source, profile="teamB")
+        assert key == "agent:teamB:telegram:dm:123"
+
+    def test_unset_agent_id_falls_back_to_profile_namespace(self):
+        """agent_id unset (None) also defers to the profile namespace."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        )
+        assert source.agent_id is None
+        key = build_session_key(source, profile="teamB")
+        assert key == "agent:teamB:telegram:dm:123"

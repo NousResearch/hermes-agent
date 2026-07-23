@@ -7156,3 +7156,128 @@ class TestLoneSurrogatePersistence:
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
 
+
+# =========================================================================
+# Multi-agent routing: sessions.agent_id persistence (single-gateway-multi-agent)
+# =========================================================================
+
+class TestSessionAgentIdPersistence:
+    def test_create_session_persists_routed_agent_id(self, db):
+        """A routed non-main agent_id must round-trip back out of the row."""
+        db.create_session(session_id="s1", source="telegram", agent_id="research")
+        assert db.get_session("s1")["agent_id"] == "research"
+
+    def test_create_session_defaults_agent_id_to_main(self, db):
+        """Omitting agent_id stores 'main' (the ``agent_id or 'main'`` bind)."""
+        db.create_session(session_id="s1", source="cli")
+        assert db.get_session("s1")["agent_id"] == "main"
+
+    def test_create_session_none_agent_id_defaults_to_main(self, db):
+        """Passing agent_id=None must not violate the NOT NULL column — the
+        ``agent_id or 'main'`` bind coerces it to 'main'."""
+        db.create_session(session_id="s1", source="cli", agent_id=None)
+        assert db.get_session("s1")["agent_id"] == "main"
+
+    def test_create_session_blank_agent_id_defaults_to_main(self, db):
+        """An empty string is falsy, so ``agent_id or 'main'`` yields 'main'."""
+        db.create_session(session_id="s1", source="cli", agent_id="")
+        assert db.get_session("s1")["agent_id"] == "main"
+
+    def test_upsert_preserves_existing_agent_id(self, db):
+        """Re-creating an existing session must NOT null or overwrite its
+        agent_id: ON CONFLICT uses COALESCE(sessions.agent_id, excluded.agent_id)
+        and the column is NOT NULL, so the first-set routed id always wins.
+        """
+        db.create_session(session_id="s1", source="telegram", agent_id="research")
+        # A later bare/default re-create (e.g. gateway metadata enrichment)
+        # must not clobber the routed agent_id.
+        db.create_session(session_id="s1", source="telegram", model="m")
+        assert db.get_session("s1")["agent_id"] == "research"
+
+        # Even an explicit different id does not overwrite (one row, one agent).
+        db.create_session(session_id="s1", source="telegram", agent_id="ops")
+        assert db.get_session("s1")["agent_id"] == "research"
+
+    def test_upsert_backfills_agent_id_onto_main_row(self, db):
+        """The mirror of the preserve case: because the column defaults to
+        'main', a session first created without an agent_id stays 'main' even
+        when a later create_session supplies a routed id (COALESCE keeps the
+        existing non-NULL 'main'). Documents the actual first-writer-wins
+        behaviour so callers know routing must be decided at creation.
+        """
+        db.create_session(session_id="s1", source="cli")  # -> 'main'
+        db.create_session(session_id="s1", source="cli", agent_id="research")
+        assert db.get_session("s1")["agent_id"] == "main"
+
+    def test_legacy_db_without_agent_id_column_reconciles(self, tmp_path):
+        """A pre-v20 database whose sessions table lacks agent_id must have the
+        column added on open (declarative _reconcile_columns) and must accept
+        an agent-routed insert without raising. The idx_sessions_agent index
+        is created only after the column exists.
+        """
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(db_path)
+        # Pre-v20 sessions table: identical to the current schema minus the
+        # agent_id column (and minus the columns added at/after v20).
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER);
+            INSERT INTO schema_version VALUES (19);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                session_key TEXT,
+                chat_id TEXT,
+                chat_type TEXT,
+                thread_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                cwd TEXT,
+                title TEXT
+            );
+            CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);
+            """
+        )
+        # A legacy row that predates the column entirely.
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES ('old', 'cli', 1.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        session_db = SessionDB(db_path=db_path)
+        try:
+            # The reconciler added agent_id ...
+            cols = {
+                row[1]
+                for row in session_db._conn.execute(
+                    "PRAGMA table_info(sessions)"
+                ).fetchall()
+            }
+            assert "agent_id" in cols
+
+            # ... with a working NOT NULL DEFAULT 'main' backfilling old rows.
+            assert session_db.get_session("old")["agent_id"] == "main"
+
+            # ... the agent index was created after the column existed.
+            idx = session_db._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='idx_sessions_agent'"
+            ).fetchone()
+            assert idx is not None
+
+            # ... and a routed insert now succeeds and round-trips.
+            session_db.create_session(
+                session_id="new", source="telegram", agent_id="research"
+            )
+            assert session_db.get_session("new")["agent_id"] == "research"
+        finally:
+            session_db.close()

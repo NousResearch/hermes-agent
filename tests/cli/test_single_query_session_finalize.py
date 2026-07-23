@@ -97,6 +97,7 @@ def test_finalize_single_query_signal_window_does_not_reemit_during_atexit(monke
             "session_id": "agent-session",
             "platform": "cli",
             "reason": "shutdown",
+            "agent_id": None,
         },
     )
 
@@ -143,6 +144,7 @@ def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):
                 "session_id": "agent-session",
                 "platform": "cli",
                 "reason": "shutdown",
+                "agent_id": None,
             },
         )
     ]

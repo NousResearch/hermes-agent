@@ -1,12 +1,12 @@
 """Tests for the cua-driver --no-overlay policy.
 
 cua-driver's cursor overlay rendering loop can consume CPU indefinitely when
-idle (#28152, #47032).  Hermes passes ``--no-overlay`` to suppress it when the
-``computer_use.no_overlay`` config is enabled (or auto-detected on headless
-Linux / WSL2).
+idle (#28152, #47032). Hermes passes ``--no-overlay`` to suppress it when the
+``computer_use.no_overlay`` config is enabled (or auto-detected on macOS and
+headless Linux / WSL2).
 
-These assert the behavior contract (auto-detect on headless/WSL2, explicit
-override, version probe), not specific config snapshots.
+These assert the behavior contract (auto-detect, explicit override, version
+probe), not specific config snapshots.
 """
 
 import os
@@ -41,11 +41,11 @@ class TestNoOverlayFlag:
              patch("builtins.open", mock_open(read_data=fake_version)):
             assert cua_backend._cua_no_overlay() is True
 
-    def test_default_macos_enables(self):
-        """Auto-detect: macOS => overlay enabled (visually useful)."""
+    def test_default_macos_disables(self):
+        """Auto-detect: macOS => overlay disabled (idle CPU / #47032)."""
         with patch("hermes_cli.config.load_config", return_value={}), \
              patch.object(sys, "platform", "darwin"):
-            assert cua_backend._cua_no_overlay() is False
+            assert cua_backend._cua_no_overlay() is True
 
     def test_default_windows_enables(self):
         """Auto-detect: Windows => overlay enabled."""
@@ -68,9 +68,15 @@ class TestNoOverlayFlag:
             assert cua_backend._cua_no_overlay() is False
 
     def test_config_load_failure_falls_through_to_auto_detect(self):
-        """Unreadable config => auto-detect."""
+        """Unreadable config => auto-detect (macOS defaults to disabled)."""
         with patch("hermes_cli.config.load_config",
                    side_effect=RuntimeError("boom")), \
+             patch.object(sys, "platform", "darwin"):
+            assert cua_backend._cua_no_overlay() is True
+
+    def test_macos_explicit_false_keeps_overlay(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"computer_use": {"no_overlay": False}}), \
              patch.object(sys, "platform", "darwin"):
             assert cua_backend._cua_no_overlay() is False
 

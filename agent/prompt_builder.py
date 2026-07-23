@@ -922,6 +922,38 @@ TELEGRAM_RICH_MESSAGES_HINT = (
 )
 
 # ---------------------------------------------------------------------------
+# CRON_DELIVERY_INVARIANTS — cron delivery guidance for the system slot.
+#
+# Unlike PLATFORM_HINTS["cron"] above (a descriptive hint, overridable via
+# config.yaml's platform_hints.cron.{replace,append} — see
+# agent/system_prompt.py::_resolve_platform_hint), this text carries the
+# [SILENT] suppression marker, which is load-bearing: cron/scheduler.py::
+# run_job detects a bare "[SILENT]" final response to suppress delivery. The
+# no-self-delivery line is reinforcing guidance — cron agents are not granted
+# an agent-callable send_message tool (see toolsets.py), but the reminder
+# keeps the model from narrating a delivery it cannot perform.
+#
+# It is appended in agent/system_prompt.py unconditionally for platform ==
+# "cron", AFTER the overridable hint is resolved, and deliberately kept OUT of
+# PLATFORM_HINTS["cron"]: an admin customizing platform_hints.cron's
+# tone/wording via the supported .replace/.append override must not be able to
+# silently drop the [SILENT] suppression contract run_job relies on.
+#
+# Previously this guidance lived in a ~150-token "[IMPORTANT: ...]" block
+# cron/scheduler.py::_build_job_prompt prepended to the user-message body of
+# every cron invocation, duplicating the auto-delivery framing already in
+# PLATFORM_HINTS["cron"]. Moving it to the system slot keeps framework
+# delivery-instructions out of the user-message role, where they mixed with —
+# and competed for salience against — the job's own task/skill content.
+# ---------------------------------------------------------------------------
+CRON_DELIVERY_INVARIANTS = (
+    "Do NOT call send_message or any other delivery tool — the gateway handles "
+    "delivery from your final response text. If there is genuinely nothing new "
+    "to report, respond with exactly \"[SILENT]\" (nothing else) to suppress "
+    "delivery; never combine [SILENT] with content."
+)
+
+# ---------------------------------------------------------------------------
 # Environment hints — execution-environment awareness for the agent.
 # Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
 # the machine/OS the agent's tools actually run on.

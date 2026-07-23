@@ -983,3 +983,68 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+class TestWeComReadEventsClosedWsGuard:
+    def _make_adapter(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        return WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"bot_id": "bot", "secret": "secret"},
+            )
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ws", [None, SimpleNamespace(closed=True)])
+    async def test_read_events_raises_when_running_with_invalid_ws(self, ws):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._ws = ws
+
+        with pytest.raises(RuntimeError, match="websocket closed"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ws", [None, SimpleNamespace(closed=True)])
+    async def test_read_events_returns_during_shutdown(self, ws):
+        adapter = self._make_adapter()
+        adapter._running = False
+        adapter._ws = ws
+
+        await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_listen_loop_keeps_backoff_after_failed_reconnect(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._running = True
+        read_calls = 0
+        open_calls = 0
+        delays = []
+
+        async def fake_read_events():
+            nonlocal read_calls
+            read_calls += 1
+            if read_calls <= 3:
+                raise RuntimeError("WeCom websocket closed")
+            adapter._running = False
+
+        async def fake_open_connection():
+            nonlocal open_calls
+            open_calls += 1
+            if open_calls == 1:
+                raise RuntimeError("authentication failed")
+
+        async def fake_sleep(delay):
+            delays.append(delay)
+
+        monkeypatch.setattr(adapter, "_read_events", fake_read_events)
+        monkeypatch.setattr(adapter, "_open_connection", fake_open_connection)
+        monkeypatch.setattr(adapter, "_mark_connected", MagicMock())
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        await adapter._listen_loop()
+
+        assert delays == [2, 5, 2]
+        assert open_calls == 3

@@ -81,6 +81,171 @@ def test_failed_reload_is_an_error_and_no_generation_advance(reload_env, monkeyp
     assert srv._mcp_reload_loaded_rev == ""
 
 
+def test_failed_session_refresh_is_an_error_and_no_generation_advance(
+    reload_env,
+    monkeypatch,
+):
+    """A rebuilt registry is not complete until the session snapshot refreshes."""
+    agent = object()
+    monkeypatch.setitem(srv._sessions, "session-a", {"agent": agent})
+    monkeypatch.setattr(srv, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(srv, "_load_enabled_toolsets", lambda: ["terminal"])
+    monkeypatch.setattr(
+        mcp_tool,
+        "refresh_agent_mcp_tools",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("definition failure")
+        ),
+    )
+
+    envelope = srv._methods["reload.mcp"](
+        1,
+        {"session_id": "session-a", "confirm": True, "rev": "rev-a"},
+    )
+
+    assert envelope["error"]["message"] == "definition failure"
+    assert srv._mcp_reload_gen == 0
+    assert srv._mcp_reload_loaded_rev == ""
+
+
+@pytest.mark.parametrize(
+    "host_ack",
+    [
+        pytest.param(
+            {
+                "type": "control.error",
+                "message": "definition failure",
+            },
+            id="control-error",
+        ),
+        pytest.param(
+            {
+                "type": "control.ack",
+                "response": {
+                    "jsonrpc": "2.0",
+                    "id": "reload-mcp-1",
+                    "result": {"status": "reloaded", "loaded_rev": "rev-a"},
+                },
+            },
+            id="unexpected-ack-type",
+        ),
+        pytest.param(
+            {"type": "reload_mcp.ack"},
+            id="missing-response",
+        ),
+        pytest.param(
+            {"type": "reload_mcp.ack", "response": []},
+            id="malformed-response",
+        ),
+        pytest.param(
+            {
+                "type": "reload_mcp.ack",
+                "response": {
+                    "jsonrpc": "2.0",
+                    "id": "reload-mcp-1",
+                    "error": {"code": 5015, "message": "definition failure"},
+                },
+            },
+            id="nested-json-rpc-error",
+        ),
+        pytest.param(
+            {
+                "type": "reload_mcp.ack",
+                "response": {
+                    "jsonrpc": "2.0",
+                    "id": "reload-mcp-1",
+                    "result": {"status": "pending", "loaded_rev": "rev-a"},
+                },
+            },
+            id="unexpected-result-status",
+        ),
+    ],
+)
+def test_compute_host_reload_rejects_failed_child_ack_without_state_advance(
+    reload_env,
+    monkeypatch,
+    host_ack,
+):
+    """A child reload is accepted only after its nested RPC reports success."""
+    monkeypatch.setitem(
+        srv._sessions,
+        "session-a",
+        {"agent": object(), "_compute_host_active": True},
+    )
+    monkeypatch.setattr(srv, "_session_uses_compute_host", lambda _session: True)
+
+    class _Supervisor:
+        def reload_mcp(self, _sid, *, request_id):
+            assert request_id == "reload-mcp-1"
+            return host_ack
+
+    supervisor = _Supervisor()
+    monkeypatch.setattr(srv, "_get_compute_host_supervisor", lambda: supervisor)
+
+    envelope = srv._methods["reload.mcp"](
+        1,
+        {"session_id": "session-a", "confirm": True, "rev": "rev-a"},
+    )
+
+    assert "error" in envelope
+    assert srv._mcp_reload_gen == 0
+    assert srv._mcp_reload_loaded_rev == ""
+
+
+def test_compute_host_reload_recovers_and_propagates_child_loaded_rev(
+    reload_env,
+    monkeypatch,
+):
+    """The same revision remains retryable and carries the recovered child rev."""
+    monkeypatch.setitem(
+        srv._sessions,
+        "session-a",
+        {"agent": object(), "_compute_host_active": True},
+    )
+    monkeypatch.setattr(srv, "_session_uses_compute_host", lambda _session: True)
+
+    class _Supervisor:
+        calls = 0
+
+        def reload_mcp(self, _sid, *, request_id):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "type": "reload_mcp.ack",
+                    "response": {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": 5015, "message": "definition failure"},
+                    },
+                }
+            return {
+                "type": "reload_mcp.ack",
+                "response": {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"status": "reloaded", "loaded_rev": "rev-recovered"},
+                },
+            }
+
+    supervisor = _Supervisor()
+    monkeypatch.setattr(srv, "_get_compute_host_supervisor", lambda: supervisor)
+
+    failed = srv._methods["reload.mcp"](
+        1,
+        {"session_id": "session-a", "confirm": True, "rev": "rev-a"},
+    )
+    recovered = srv._methods["reload.mcp"](
+        1,
+        {"session_id": "session-a", "confirm": True, "rev": "rev-a"},
+    )
+
+    assert "error" in failed
+    assert recovered["result"]["status"] == "reloaded"
+    assert recovered["result"]["loaded_rev"] == "rev-recovered"
+    assert srv._mcp_reload_gen == 1
+    assert srv._mcp_reload_loaded_rev == "rev-recovered"
+
+
 def test_leader_rehashes_until_stable_when_config_changes_mid_reload(reload_env, monkeypatch):
     """Revision A starts a reload; the config changes to revision B while
     discovery is connecting servers. The leader must not mark A complete —

@@ -5,7 +5,7 @@ import threading
 import time
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager, inject_memory_provider_tools
@@ -315,6 +315,20 @@ class TestMemoryManager:
         schemas = mgr.get_all_tool_schemas()
         names = {s["name"] for s in schemas}
         assert names == {"recall_builtin", "recall_ext"}
+
+    def test_strict_tool_schema_collection_propagates_provider_failure(self):
+        mgr = MemoryManager()
+        mgr.add_provider(FakeMemoryProvider("builtin", tools=[{"name": "good"}]))
+        broken = FakeMemoryProvider("broken")
+        mgr.add_provider(broken)
+        broken.get_tool_schemas = lambda: (_ for _ in ()).throw(
+            RuntimeError("schema callback failed")
+        )
+
+        with pytest.raises(RuntimeError, match="schema callback failed"):
+            mgr.get_all_tool_schemas_strict()
+
+        assert {schema["name"] for schema in mgr.get_all_tool_schemas()} == {"good"}
 
     def test_tool_name_conflict_first_wins(self):
         mgr = MemoryManager()
@@ -1379,17 +1393,21 @@ class TestMemoryToolToolsetGate:
     These tests exercise the shared gate used by agent init and ACP refreshes.
     The gate condition is:
 
+        disabled toolsets include memory → skip injection (deny wins)
         enabled_toolsets is None        → no filter, inject (backward compat)
         selected toolsets include memory → user opted in, inject
         otherwise (incl. [])            → skip injection
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager):
+    def _run_memory_injection(
+        enabled_toolsets, memory_manager, disabled_toolsets=None
+    ):
         """Run the shared memory-tool injection helper against a fake agent."""
         fake_agent = SimpleNamespace(
             _memory_manager=memory_manager,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
             tools=[],
             valid_tool_names=set(),
         )
@@ -1418,6 +1436,168 @@ class TestMemoryToolToolsetGate:
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
+
+    def test_registry_collision_is_not_provider_owned_or_dispatched(self):
+        manager = self._mgr_with_tools("shared_tool")
+        agent = SimpleNamespace(
+            _memory_manager=manager,
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "shared_tool",
+                    "description": "registry",
+                    "parameters": {},
+                },
+            }],
+            valid_tool_names={"shared_tool"},
+            session_id="session",
+            _current_turn_id="turn",
+            _current_api_request_id="request",
+        )
+        inject_memory_provider_tools(agent)
+        assert agent._memory_provider_tool_names == set()
+
+        from agent.agent_runtime_helpers import invoke_tool
+        with (
+            patch(
+                "hermes_cli.plugins.get_pre_tool_call_block_message",
+                return_value=None,
+            ),
+            patch("hermes_cli.middleware.apply_tool_request_middleware") as request_mw,
+            patch(
+                "hermes_cli.middleware.run_tool_execution_middleware",
+                side_effect=lambda _name, args, execute, **_kw: execute(args),
+            ),
+            patch("run_agent.handle_function_call", return_value="registry") as generic,
+        ):
+            request_mw.return_value = SimpleNamespace(payload={}, trace=[])
+            assert invoke_tool(agent, "shared_tool", {}, "task") == "registry"
+            generic.assert_called_once()
+
+    def test_injected_provider_tool_keeps_provider_dispatch(self):
+        manager = self._mgr_with_tools("provider_tool")
+        agent = SimpleNamespace(
+            _memory_manager=manager,
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+            session_id="session",
+            _current_turn_id="turn",
+            _current_api_request_id="request",
+        )
+        inject_memory_provider_tools(agent)
+        assert agent._memory_provider_tool_names == {"provider_tool"}
+
+        from agent.agent_runtime_helpers import invoke_tool
+        with (
+            patch(
+                "hermes_cli.plugins.get_pre_tool_call_block_message",
+                return_value=None,
+            ),
+            patch("hermes_cli.middleware.apply_tool_request_middleware") as request_mw,
+            patch(
+                "hermes_cli.middleware.run_tool_execution_middleware",
+                side_effect=lambda _name, args, execute, **_kw: execute(args),
+            ),
+            patch("run_agent.handle_function_call") as generic,
+        ):
+            request_mw.return_value = SimpleNamespace(payload={}, trace=[])
+            result = json.loads(invoke_tool(agent, "provider_tool", {}, "task"))
+            assert result["handled"] == "provider_tool"
+            generic.assert_not_called()
+
+    def test_disabled_memory_toolset_blocks_default_injection(self):
+        """An explicit memory denial overrides the default-open tool surface."""
+        mgr = self._mgr_with_tools("fact_store", "fact_feedback")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["memory"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_memory_toolset_overrides_explicit_enable(self):
+        """The global disabled-toolset policy takes precedence over enablement."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            ["memory"], mgr, disabled_toolsets=["memory"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_all_toolsets_blocks_injection(self):
+        """The wildcard global denial also suppresses provider memory tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["*"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_composite_with_memory_blocks_injection(self):
+        """Composite subtraction also denies its provider-owned equivalent."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["coding"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_toolset_resolution_failure_blocks_injection(self, monkeypatch):
+        """Resolver failures must not reopen provider-owned memory tools."""
+        import toolsets
+
+        monkeypatch.setattr(
+            toolsets,
+            "resolve_toolset",
+            lambda _name: (_ for _ in ()).throw(RuntimeError("resolution failed")),
+        )
+        mgr = self._mgr_with_tools("fact_store")
+
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["coding"]
+        )
+
+        assert tools == []
+        assert names == set()
+
+    def test_unrelated_disabled_toolset_preserves_injection(self):
+        """A denial outside the memory toolset must not affect provider tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["terminal"]
+        )
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
+
+    def test_custom_toolset_subtracts_exact_provider_schema(self, monkeypatch):
+        """Provider schemas participate in ordinary resolved subtraction."""
+        import toolsets
+
+        monkeypatch.setitem(
+            toolsets.TOOLSETS,
+            "deny-fact-store",
+            {"description": "test", "tools": ["fact_store"], "includes": []},
+        )
+        mgr = self._mgr_with_tools("fact_store", "fact_search")
+
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["deny-fact-store"]
+        )
+
+        assert names == {"fact_search"}
+        assert [tool["function"]["name"] for tool in tools] == ["fact_search"]
+
+    def test_disabled_platform_bundle_preserves_shared_memory_tool(self):
+        """Bundle subtraction preserves core memory just like static tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["hermes-acp"]
+        )
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
 
     def test_composite_toolset_with_memory_injects(self):
         """Composite toolsets that include memory should inject provider tools."""

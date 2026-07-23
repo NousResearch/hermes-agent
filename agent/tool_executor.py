@@ -32,6 +32,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.agent_runtime_helpers import memory_provider_owns_tool
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -1462,7 +1463,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
-        elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+        elif agent._memory_manager and memory_provider_owns_tool(agent, function_name):
             # Memory provider tools (hindsight_retain, honcho_search, etc.)
             # These are not in the tool registry — route through MemoryManager.
             spinner = None

@@ -43,6 +43,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.toolset_validation import normalize_toolset_names
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -168,7 +169,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """
     disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    user_disabled = normalize_toolset_names(
+        agent_cfg.get("disabled_toolsets")
+    ) or []
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:

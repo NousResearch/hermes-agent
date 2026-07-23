@@ -48,6 +48,7 @@ def _make_background_cli_stub():
     })
     cli.max_turns = 90
     cli.enabled_toolsets = []
+    cli.disabled_toolsets = []
     cli._session_db = None
     cli.reasoning_config = {}
     cli.service_tier = None
@@ -66,7 +67,75 @@ def _make_background_cli_stub():
     return cli
 
 
+class _MemoryProviderSurfaceAgent:
+    """Build the real registry plus external-provider final tool surface."""
+
+    last_disabled_toolsets = None
+    last_valid_tool_names = None
+
+    def __init__(self, **kwargs):
+        import model_tools
+        from agent.memory_manager import inject_memory_provider_tools
+
+        self.enabled_toolsets = kwargs.get("enabled_toolsets")
+        self.disabled_toolsets = kwargs.get("disabled_toolsets")
+        self.tools = model_tools.get_tool_definitions(
+            enabled_toolsets=self.enabled_toolsets,
+            disabled_toolsets=self.disabled_toolsets,
+            quiet_mode=True,
+        )
+        self.valid_tool_names = {
+            definition["function"]["name"] for definition in self.tools
+        }
+        self._memory_manager = SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {
+                    "name": "fact_store",
+                    "description": "store a fact",
+                    "parameters": {},
+                }
+            ]
+        )
+        inject_memory_provider_tools(self)
+        self._print_fn = None
+        self.thinking_callback = None
+        type(self).last_disabled_toolsets = self.disabled_toolsets
+        type(self).last_valid_tool_names = set(self.valid_tool_names)
+
+    def run_conversation(self, **_kwargs):
+        return {"final_response": "done", "messages": []}
+
+
 class TestCliApprovalUi:
+    def test_foreground_scalar_memory_absent_from_final_agent_surface(self):
+        with patch.dict(
+            cli_module.CLI_CONFIG["agent"],
+            {"disabled_toolsets": "memory"},
+        ):
+            cli = HermesCLI(toolsets=["memory"], compact=True, max_turns=1)
+
+        cli._session_db = object()
+        cli._resumed = False
+        cli.conversation_history = []
+        cli._install_tool_callbacks = MagicMock()
+        cli._ensure_tirith_security = MagicMock()
+        cli._ensure_runtime_credentials = MagicMock(return_value=True)
+
+        _MemoryProviderSurfaceAgent.last_disabled_toolsets = None
+        _MemoryProviderSurfaceAgent.last_valid_tool_names = None
+        with patch.object(cli_module, "AIAgent", _MemoryProviderSurfaceAgent), \
+             patch.object(cli_module, "_prepare_deferred_agent_startup"), \
+             patch("hermes_cli.mcp_startup.wait_for_mcp_discovery"):
+            assert cli._init_agent() is True
+
+        assert cli.disabled_toolsets == ["memory"]
+        assert _MemoryProviderSurfaceAgent.last_disabled_toolsets == ["memory"]
+        assert _MemoryProviderSurfaceAgent.last_valid_tool_names is not None
+        assert _MemoryProviderSurfaceAgent.last_valid_tool_names.isdisjoint(
+            {"memory", "fact_store"}
+        )
+        cli_module._active_agent_ref = None
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}
@@ -397,6 +466,52 @@ class TestCliApprovalUi:
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
         assert not cli._background_tasks
+
+    def test_background_task_inherits_disabled_toolsets(self):
+        """Classic CLI background agents retain global final subtraction."""
+        cli = _make_background_cli_stub()
+        cli.disabled_toolsets = ["memory", "deny-provider-store"]
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+                self._print_fn = None
+                self.thinking_callback = None
+
+            def run_conversation(self, **_kwargs):
+                return {"final_response": "done", "messages": []}
+
+        with patch.object(cli_module, "AIAgent", FakeAgent), \
+             patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "ChatConsole") as chat_console:
+            chat_console.return_value.print = MagicMock()
+            cli._handle_background_command("/btw check policy")
+            for thread in list(cli._background_tasks.values()):
+                thread.join(timeout=10)
+
+        assert seen["disabled_toolsets"] == cli.disabled_toolsets
+
+    def test_background_scalar_memory_absent_from_final_agent_surface(self):
+        cli = _make_background_cli_stub()
+        cli.enabled_toolsets = ["memory"]
+        cli.disabled_toolsets = "memory"
+
+        _MemoryProviderSurfaceAgent.last_disabled_toolsets = None
+        _MemoryProviderSurfaceAgent.last_valid_tool_names = None
+        with patch.object(cli_module, "AIAgent", _MemoryProviderSurfaceAgent), \
+             patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "ChatConsole") as chat_console:
+            chat_console.return_value.print = MagicMock()
+            cli._handle_background_command("/btw check policy")
+            for thread in list(cli._background_tasks.values()):
+                thread.join(timeout=10)
+
+        assert _MemoryProviderSurfaceAgent.last_disabled_toolsets == ["memory"]
+        assert _MemoryProviderSurfaceAgent.last_valid_tool_names is not None
+        assert _MemoryProviderSurfaceAgent.last_valid_tool_names.isdisjoint(
+            {"memory", "fact_store"}
+        )
 
 
 def _make_real_paint_cli_stub():
@@ -768,4 +883,3 @@ class TestClearOverlaysForInterrupt:
 
         assert not t.is_alive(), "worker thread never unblocked"
         assert result["value"] == "deny"
-

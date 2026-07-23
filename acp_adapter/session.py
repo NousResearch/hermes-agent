@@ -9,6 +9,7 @@ history.
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home
+from hermes_cli.toolset_validation import normalize_toolset_names
 
 import copy
 import json
@@ -620,12 +621,20 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        agent_cfg = config.get("agent")
+        disabled_toolsets = normalize_toolset_names(
+            agent_cfg.get("disabled_toolsets")
+            if isinstance(agent_cfg, dict)
+            else None
+        )
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
                 ["hermes-acp"],
                 mcp_server_names=configured_mcp_servers,
             ),
+            "disabled_toolsets": disabled_toolsets,
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

@@ -63,6 +63,7 @@ class SmsAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
@@ -164,7 +165,7 @@ class SmsAdapter(BasePlatformAdapter):
         import aiohttp
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_result = SendResult(success=True)
 
         url = f"{TWILIO_API_BASE}/{self._account_sid}/Messages.json"

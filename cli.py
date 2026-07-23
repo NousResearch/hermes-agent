@@ -2789,6 +2789,64 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
+def _win32_stdout_lacks_console() -> bool:
+    """True on Windows when stdout is not attached to a real console.
+
+    prompt_toolkit's POSIX ``create_output()`` falls back to a plain-text
+    output when stdout is not a tty, but its win32 branch unconditionally
+    builds ``Win32Output``, whose console-buffer query raises
+    ``NoConsoleScreenBufferError`` when stdout is a pipe or file — the
+    normal state for any automation wrapper capturing output (#65558).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        return not sys.stdout.isatty()
+    except Exception:
+        return True
+
+
+def _plain_print(text: str, *, keep_ansi: bool = False) -> None:
+    """Console-less fallback for ``_cprint``: plain, encode-safe ``print``.
+
+    Mirrors what prompt_toolkit's plain-text output does on POSIX pipes:
+    ANSI styling is stripped, the text survives. Encoding failures (e.g. a
+    cp1252 pipe on Windows without ``PYTHONIOENCODING=utf-8`` meeting the
+    braille spinner or box-drawing banner) degrade via ``errors="replace"``
+    instead of raising or silently dropping the line.
+    """
+    if not keep_ansi:
+        from tools.ansi_strip import strip_ansi
+
+        text = strip_ansi(text)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
+def _emit_pt_or_plain(text: str) -> None:
+    """Emit through prompt_toolkit, degrading to ``_plain_print`` on failure.
+
+    Single guarded emission point for every ``_cprint`` path — direct
+    (no-app, same-loop) and scheduled (cross-thread ``run_in_terminal``)
+    alike. ``_win32_stdout_lacks_console()`` catches the common
+    piped-stdout case up front, but a detection miss (``isatty()`` reports
+    a tty yet the console-buffer query still fails) must not raise or lose
+    the line from an active-application arm either. prompt_toolkit raises
+    ``NoConsoleScreenBufferError`` (Windows) or ``OSError`` (other); both
+    fall through to the plain-text path POSIX pipes already get. (#65558)
+    """
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        try:
+            _plain_print(text)
+        except Exception:
+            pass
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -2807,10 +2865,18 @@ def _cprint(text: str):
     """
     _record_output_history(text)
 
+    # Windows + piped/redirected stdout: prompt_toolkit has no console to
+    # render into (``Win32Output`` raises ``NoConsoleScreenBufferError``),
+    # so short-circuit to the plain-text path that POSIX pipes already get
+    # from prompt_toolkit itself. Fixes #65558.
+    if _win32_stdout_lacks_console():
+        _plain_print(text)
+        return
+
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _emit_pt_or_plain(text)
         return
 
     app = None
@@ -2823,16 +2889,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            # Fallback when stdout is not a real console (e.g. subprocess
-            # worker logging to a file). prompt_toolkit raises
-            # NoConsoleScreenBufferError (Windows) or OSError (other).
-            try:
-                print(text)
-            except Exception:
-                pass
+        _emit_pt_or_plain(text)
         return
 
     try:
@@ -2840,7 +2897,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _emit_pt_or_plain(text)
         return
 
     import asyncio as _asyncio
@@ -2856,7 +2913,7 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _emit_pt_or_plain(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -2877,7 +2934,10 @@ def _cprint(text: str):
         try:
             import asyncio as _aio
             import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            # Guarded inner emit: a detection-miss console failure inside
+            # run_in_terminal degrades to _plain_print instead of raising
+            # on the app loop or losing the line (#65558).
+            coro = run_in_terminal(lambda: _emit_pt_or_plain(text))
             if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
                 _aio.ensure_future(coro)
             # else: run_in_terminal ran the lambda synchronously; nothing more
@@ -2888,10 +2948,7 @@ def _cprint(text: str):
     try:
         loop.call_soon_threadsafe(_schedule)
     except Exception:
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            pass
+        _emit_pt_or_plain(text)
 
 
 def _prepend_note_to_message(message, note: str):
@@ -16507,7 +16564,11 @@ def main(
                         ):
                             print(f"Error: {result['error']}", file=sys.stderr)
                         elif response:
-                            print(response)
+                            # Encode-safe: a cp1252 pipe (Windows automation
+                            # without PYTHONIOENCODING=utf-8) must degrade the
+                            # response, not crash with UnicodeEncodeError and
+                            # exit 1 after the turn already ran (#65558).
+                            _plain_print(response, keep_ansi=True)
 
                         # Kanban goal-loop mode: a worker spawned for a
                         # goal_mode card keeps working in THIS session until an

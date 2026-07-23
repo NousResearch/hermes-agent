@@ -24,6 +24,7 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -337,12 +338,28 @@ class CodexAppServerSession:
                         f"{json.dumps(self._reasoning_effort)}",
                     ]
                 )
-            self._client = self._client_factory(
-                codex_bin=self._codex_bin,
-                codex_home=self._codex_home,
-                extra_args=extra_args,
-                workspace_cwd=self._cwd,
-            )
+            factory_kwargs = {
+                "codex_bin": self._codex_bin,
+                "codex_home": self._codex_home,
+                "extra_args": extra_args,
+                "workspace_cwd": self._cwd,
+            }
+            try:
+                parameters = inspect.signature(self._client_factory).parameters
+            except (TypeError, ValueError):
+                accepted = {"codex_bin", "codex_home"}
+            else:
+                accepted = None if any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                ) else parameters
+            if accepted is not None:
+                factory_kwargs = {
+                    name: value
+                    for name, value in factory_kwargs.items()
+                    if name in accepted
+                }
+            self._client = self._client_factory(**factory_kwargs)
         self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",

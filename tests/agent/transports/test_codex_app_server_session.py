@@ -197,6 +197,28 @@ class TestLifecycle:
             'model_reasoning_effort="high"',
         ]
 
+    def test_legacy_client_factory_without_new_kwargs_is_supported(self):
+        client = FakeClient()
+        captured: dict = {}
+
+        def factory(codex_bin, codex_home) -> Any:
+            captured.update(codex_bin=codex_bin, codex_home=codex_home)
+            return client
+
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            codex_bin="codex-test",
+            codex_home="/tmp/codex-home",
+            model="gpt-5.6-terra",
+            client_factory=factory,
+        )
+        session.ensure_started()
+
+        assert captured == {
+            "codex_bin": "codex-test",
+            "codex_home": "/tmp/codex-home",
+        }
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

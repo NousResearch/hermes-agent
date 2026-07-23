@@ -1008,6 +1008,38 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_worker_graph_mutations_can_be_disabled(monkeypatch, worker_env):
+    """Task-scoped workers hand off findings instead of fanning out or rewiring."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {"kanban": {"worker_graph_mutations": False}},
+    )
+
+    created = json.loads(kt._handle_create({"title": "duplicate", "assignee": "peer"}))
+    linked = json.loads(kt._handle_link({"parent_id": worker_env, "child_id": worker_env}))
+
+    assert "reserved for an orchestrator" in created["error"]
+    assert "reserved for an orchestrator" in linked["error"]
+    assert kt._check_kanban_graph_mutation_mode() is False
+
+
+def test_orchestrator_keeps_graph_mutations_when_workers_are_disabled(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        kt,
+        "load_config",
+        lambda: {"kanban": {"worker_graph_mutations": False}},
+    )
+    monkeypatch.setattr(kt, "_profile_has_kanban_toolset", lambda: True)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    assert kt._check_kanban_graph_mutation_mode() is True
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

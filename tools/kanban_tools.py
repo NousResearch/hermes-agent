@@ -93,6 +93,28 @@ def _check_kanban_orchestrator_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _check_kanban_graph_mutation_mode() -> bool:
+    """Expose create/link to orchestrators and, optionally, task workers."""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return _profile_has_kanban_toolset()
+    try:
+        return bool(cfg_get(
+            load_config(), "kanban", "worker_graph_mutations", default=True,
+        ))
+    except Exception:
+        return True
+
+
+def _enforce_worker_graph_mutation_policy() -> Optional[str]:
+    if os.environ.get("HERMES_KANBAN_TASK") and not _check_kanban_graph_mutation_mode():
+        return tool_error(
+            "kanban graph mutations are reserved for an orchestrator on this "
+            "installation; add a followup-request comment to your current task "
+            "instead of creating or linking cards"
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -1070,6 +1092,9 @@ def _handle_create(args: dict, **kw) -> str:
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
     """
+    policy_err = _enforce_worker_graph_mutation_policy()
+    if policy_err:
+        return policy_err
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -1319,6 +1344,9 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
+    policy_err = _enforce_worker_graph_mutation_policy()
+    if policy_err:
+        return policy_err
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     if not parent_id or not child_id:
@@ -2035,7 +2063,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_CREATE_SCHEMA,
     handler=_handle_create,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_graph_mutation_mode,
     emoji="➕",
 )
 
@@ -2053,6 +2081,6 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_LINK_SCHEMA,
     handler=_handle_link,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_graph_mutation_mode,
     emoji="🔗",
 )

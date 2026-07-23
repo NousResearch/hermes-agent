@@ -39,6 +39,8 @@ class _StubAgent:
         self.platform = "cli"
         self._interrupt_requested = False
         self._interrupt_message = None
+        self._pending_steer = None
+        self.background_review_calls = []
         self._tool_guardrail_halt_decision = None
         self._response_was_previewed = False
         self._skill_nudge_interval = 0
@@ -91,13 +93,18 @@ class _StubAgent:
         return False
 
     def _drain_pending_steer(self):
-        return None
+        pending_steer = self._pending_steer
+        self._pending_steer = None
+        return pending_steer
 
     def clear_interrupt(self):
         pass
 
     def _sync_external_memory_for_turn(self, **k):
         pass
+
+    def _spawn_background_review(self, **kwargs):
+        self.background_review_calls.append(kwargs)
 
 
 def _run(
@@ -182,3 +189,17 @@ def test_text_response_on_last_allowed_call_is_completed():
     )
     assert result["final_response"] == "final report"
     assert result["completed"] is True
+
+
+def test_pending_steer_is_snapshotted_before_cleanup():
+    agent = _StubAgent(raise_in=())
+    agent._pending_steer = "queued next turn"
+    agent._skill_nudge_interval = 10
+    agent._iters_since_skill = 10
+    agent.valid_tool_names = ["skill_manage"]
+
+    result = _run(agent, final_response="final report")
+
+    assert result["pending_steer"] == "queued next turn"
+    assert agent.background_review_calls == []
+    assert agent._iters_since_skill == 9

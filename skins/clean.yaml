@@ -1,0 +1,28 @@
+name: clean
+description: "Clean skin - no tool emojis, no decorative borders, pure text output"
+
+branding:
+  agent_name: "Hermes"
+  response_label: "Hermes"
+  goodbye: "Goodbye!"
+
+tool_prefix: " "
+
+tool_emojis:
+  search: ""
+  fetch: ""
+  terminal: ""
+  read: ""
+  write: ""
+  patch: ""
+  grep: ""
+  navigate: ""
+  snapshot: ""
+  click: ""
+  type: ""
+  scroll: ""
+  back: ""
+  press: ""
+  images: ""
+  proc: ""
+  delegate: ""

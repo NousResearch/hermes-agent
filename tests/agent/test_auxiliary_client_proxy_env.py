@@ -96,3 +96,43 @@ def test_openai_http_client_kwargs_async_mode():
         async_mode=True,
     )
     assert isinstance(kwargs["http_client"], httpx.AsyncClient)
+
+
+# ── no_proxy CIDR matching ──────────────────────────────────────────────
+
+def test_no_proxy_cidr_bypass(monkeypatch):
+    from agent.process_bootstrap import _get_proxy_for_base_url
+
+    for key in ("HTTPS_PROXY", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,10.0.0.0/8")
+
+    # 10.0.0.0/8 includes private-range IPs like 10.10.10.101
+    # socket.getaddrinfo won't resolve random names, so test with a
+    # host that is already an IP — CIDR matching works on IPs directly.
+    assert _get_proxy_for_base_url("https://10.10.10.101/v1") is None
+
+
+def test_no_proxy_cidr_no_match(monkeypatch):
+    from agent.process_bootstrap import _get_proxy_for_base_url
+
+    for key in ("HTTPS_PROXY", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", "10.0.0.0/8")
+
+    # 1.2.3.4 is outside the excluded subnet — proxy should apply.
+    assert _get_proxy_for_base_url("https://1.2.3.4/v1") == "http://127.0.0.1:7897"
+
+
+def test_no_proxy_cidr_invalid_entry_ignored(monkeypatch):
+    from agent.process_bootstrap import _get_proxy_for_base_url
+
+    for key in ("HTTPS_PROXY", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", "not-a-cidr,not/a/network,192.168.1.0/24")
+
+    # Invalid entries are ignored; 192.168.1.0/24 still works.
+    assert _get_proxy_for_base_url("https://192.168.1.50/v1") is None

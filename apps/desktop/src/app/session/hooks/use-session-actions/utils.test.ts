@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
+import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -35,6 +36,32 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
+  })
+})
+
+const initialOnboardingState = $desktopOnboarding.get()
+
+describe('applyRuntimeInfo credential warnings', () => {
+  beforeEach(() => {
+    $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
+  })
+
+  afterEach(() => {
+    $desktopOnboarding.set(initialOnboardingState)
+  })
+
+  it('requests setup for the exact empty-key warning returned by the server', () => {
+    const warning = "No API key configured for provider 'openrouter'. First message will fail."
+
+    applyRuntimeInfo({ credential_warning: warning })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+  })
+
+  it('ignores an auxiliary-provider warning', () => {
+    applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
   })
 })
 

@@ -1248,6 +1248,15 @@ DEFAULT_CONFIG = {
         # "chrome"     — explicitly request Chrome
         # Also settable via AGENT_BROWSER_ENGINE env var.
         "engine": "auto",
+        # Directory for the Playwright-managed Chromium / headless-shell builds
+        # agent-browser drives (~500MB on Windows with ffmpeg + headless shell).
+        # Empty = Playwright's per-platform default (%LOCALAPPDATA%\ms-playwright
+        # on Windows, ~/.cache/ms-playwright on Linux,
+        # ~/Library/Caches/ms-playwright on macOS). Set it to keep the download
+        # off a small system drive, e.g. "D:/ms-playwright". Bridged to
+        # PLAYWRIGHT_BROWSERS_PATH for browser subprocesses; an already-set
+        # PLAYWRIGHT_BROWSERS_PATH (Docker image, or the operator's shell) wins.
+        "browsers_path": "",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely

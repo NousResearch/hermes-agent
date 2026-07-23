@@ -87,6 +87,51 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 )
 
 
+def _configured_browsers_path() -> str:
+    """Return ``browser.browsers_path`` from config.yaml, or ``""``.
+
+    The Chromium / headless-shell builds agent-browser drives are Playwright
+    downloads (~500MB on Windows once ffmpeg and the headless shell are
+    counted). Playwright puts them under a fixed per-platform cache
+    (``%LOCALAPPDATA%\\ms-playwright`` on Windows, ``~/.cache/ms-playwright``
+    on Linux, ``~/Library/Caches/ms-playwright`` on macOS) unless
+    ``PLAYWRIGHT_BROWSERS_PATH`` says otherwise. This config key is the
+    persistent, user-facing way to move them off a small system drive.
+
+    ``~`` is expanded; the value is otherwise passed through verbatim so
+    Windows drive-letter paths (``D:/ms-playwright``) survive unchanged.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            raw = str(browser_cfg.get("browsers_path", "") or "").strip()
+            if raw:
+                return os.path.expanduser(raw)
+    except Exception as e:
+        logger.debug("Could not read browser.browsers_path from config: %s", e)
+
+    return ""
+
+
+def _browsers_path_env_overrides() -> Dict[str, str]:
+    """``PLAYWRIGHT_BROWSERS_PATH`` to inject into a browser subprocess env.
+
+    Empty dict when nothing needs overriding. Precedence mirrors
+    :func:`_get_cdp_override`: an explicit ``PLAYWRIGHT_BROWSERS_PATH`` in the
+    ambient environment always wins, because the Docker image sets it
+    (``Dockerfile``) and an operator who exports it in their shell means it.
+    The config key is the fallback, so adding it can never relocate an
+    existing install out from under a Docker or env-var user.
+    """
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip():
+        return {}
+    configured = _configured_browsers_path()
+    return {"PLAYWRIGHT_BROWSERS_PATH": configured} if configured else {}
+
+
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
@@ -102,6 +147,7 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    env.update(_browsers_path_env_overrides())
     return env
 
 try:
@@ -4553,15 +4599,25 @@ def _chromium_search_roots() -> List[str]:
 
     1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
        ``/opt/hermes/.playwright``).
-    2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
-    3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
+    2. ``browser.browsers_path`` from config.yaml, when the env var is unset —
+       the persistent way to keep the ~500MB of Playwright browsers off a
+       small system drive.
+    3. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
+    4. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
+    5. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
     """
     roots: List[str] = []
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    if env_path and env_path != "0":
-        roots.append(env_path)
+    if env_path:
+        # "0" is Playwright's "store browsers next to the package" sentinel,
+        # not a directory — honour the env var by adding no root at all.
+        if env_path != "0":
+            roots.append(env_path)
+    else:
+        configured = _configured_browsers_path()
+        if configured:
+            roots.append(configured)
     home = os.path.expanduser("~")
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
     if sys.platform == "darwin":

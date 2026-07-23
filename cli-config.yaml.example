@@ -366,6 +366,18 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Where to keep the Playwright-managed Chromium / headless-shell builds the
+  # browser tool drives. Leave empty for Playwright's per-platform default:
+  #   Windows: %LOCALAPPDATA%\ms-playwright   (~500MB with ffmpeg + headless shell)
+  #   Linux:   ~/.cache/ms-playwright
+  #   macOS:   ~/Library/Caches/ms-playwright
+  # Set it to move the download off a small system drive. Applies to the
+  # download and to browser startup, and survives Hermes updates.
+  #   browsers_path: "D:/ms-playwright"
+  # An already-set PLAYWRIGHT_BROWSERS_PATH env var (the Docker image sets one)
+  # takes precedence over this key.
+  browsers_path: ""
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

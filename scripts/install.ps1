@@ -352,6 +352,44 @@ function Write-BrowserEnv {
     Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
 }
 
+# Point installer-driven Playwright downloads at browser.browsers_path so the
+# ~500MB of browsers lands where the runtime will later look for it.
+# tools/browser_tool.py reads the same key (_configured_browsers_path, consulted
+# by _chromium_search_roots), so an installer that ignores it fills the system
+# drive while the runtime searches the configured directory and finds nothing.
+# This matters most on Windows, where Playwright's default cache is under
+# %LOCALAPPDATA% on C: and moving it off C: is the whole point of the setting.
+#
+# Precedence matches the runtime exactly: an ambient PLAYWRIGHT_BROWSERS_PATH
+# always wins; config.yaml is only the fallback. Every failure path is a silent
+# no-op, so a missing venv, missing config, or unparseable YAML leaves behaviour
+# identical to before this function existed.
+function Set-ConfiguredBrowsersPathEnv {
+    if ($env:PLAYWRIGHT_BROWSERS_PATH) { return }
+    $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+    $configPath = Join-Path $HermesHome "config.yaml"
+    if (-not (Test-Path $venvPython) -or -not (Test-Path $configPath)) { return }
+    $configured = & $venvPython -c @'
+import os, sys
+try:
+    import yaml
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+except Exception:
+    sys.exit(0)
+browser = cfg.get("browser")
+if isinstance(browser, dict):
+    raw = str(browser.get("browsers_path") or "").strip()
+    if raw:
+        print(os.path.expanduser(raw))
+'@ $configPath 2>$null
+    if ($configured) { $configured = "$configured".Trim() }
+    if ($configured) {
+        $env:PLAYWRIGHT_BROWSERS_PATH = $configured
+        Write-Info "Browser cache directory (browser.browsers_path): $configured"
+    }
+}
+
 function Install-AgentBrowser {
     param([switch]$SkipChromium)
     $npm = Resolve-NpmCmd
@@ -389,6 +427,7 @@ function Install-AgentBrowser {
             $abExe = Join-Path $prefixDir "agent-browser.cmd"
             if (Test-Path $abExe) {
                 Write-Info "Installing Chromium via agent-browser install..."
+                Set-ConfiguredBrowsersPathEnv
                 $abLog = [System.IO.Path]::GetTempFileName()
                 $prevEAP = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
@@ -2636,6 +2675,7 @@ function Install-NodeDeps {
                     # each pipeline item to a string strips that wrapper so
                     # the user sees clean playwright output instead of the
                     # alarming-looking error formatting.
+                    Set-ConfiguredBrowsersPathEnv
                     $ErrorActionPreference = "Continue"
                     & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE

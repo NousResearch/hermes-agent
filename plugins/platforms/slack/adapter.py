@@ -101,6 +101,26 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
     r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
 )
 
+
+def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
+    """Render a compact text marker for a Slack file attachment.
+
+    Used by :meth:`SlackAdapter._render_message_text` so thread-context and
+    parent-text rendering surface that a message carried images/files even
+    though the context fetch is text-only. Name is sanitized (newlines and
+    brackets stripped) so a hostile filename can't fake context structure.
+    """
+    name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
+    name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
+    mimetype = str(file_obj.get("mimetype") or "")
+    if mimetype.startswith("image/"):
+        return f"[image: {name}]"
+    if mimetype.startswith("video/"):
+        return f"[video: {name}]"
+    if mimetype.startswith("audio/"):
+        return f"[audio: {name}]"
+    return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -6029,6 +6049,19 @@ class SlackAdapter(BasePlatformAdapter):
             new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
             if new_urls:
                 extras.append("URLs: " + ", ".join(new_urls))
+        # Surface file/image attachments as compact text markers. The
+        # thread-context fetch is text-only, so without this the agent has
+        # no idea prior messages carried images/files at all (#69185,
+        # #32315): "@bot what do you think of the chart above?" reads as a
+        # question about nothing. Markers keep context bounded — the agent
+        # can ask for a re-share when it needs the actual bytes.
+        files = msg.get("files")
+        if isinstance(files, list):
+            markers = [
+                _slack_file_marker(f) for f in files if isinstance(f, dict)
+            ]
+            if markers:
+                extras.append(" ".join(markers))
         if extras:
             addendum = "\n".join(extras)
             msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum

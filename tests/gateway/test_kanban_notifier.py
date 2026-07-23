@@ -307,3 +307,46 @@ def _unseen_terminal_events_for(tid, chat_id):
         return events
     finally:
         conn.close()
+
+
+def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch):
+    """One bad subscription must not block delivery for all others.
+
+    Regression for #59269: when claim_unseen_events_for_sub raises for one
+    subscription, the entire notifier tick used to abort — silently blocking
+    delivery for every other subscription.
+    """
+    db_path = tmp_path / "isolation.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    # Create two tasks with subscriptions and complete both.
+    conn = kb.connect()
+    try:
+        tid_good = kb.create_task(conn, title="good task", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid_good, platform="telegram", chat_id="chat-good")
+        kb.complete_task(conn, tid_good, summary="done")
+
+        tid_bad = kb.create_task(conn, title="bad task", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid_bad, platform="telegram", chat_id="chat-bad")
+        kb.complete_task(conn, tid_bad, summary="done")
+    finally:
+        conn.close()
+
+    original_claim = kb.claim_unseen_events_for_sub
+
+    def selective_claim(conn, task_id, **kwargs):
+        if task_id == tid_bad:
+            raise RuntimeError("simulated DB corruption for bad task")
+        return original_claim(conn, task_id=task_id, **kwargs)
+
+    monkeypatch.setattr(kb, "claim_unseen_events_for_sub", selective_claim)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # The good task must still be delivered despite the bad task failing.
+    assert len(adapter.sent) == 1
+    assert tid_good in adapter.sent[0]["text"]

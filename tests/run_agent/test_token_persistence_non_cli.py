@@ -93,3 +93,63 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
     assert agent._session_db is sentinel_db
+
+
+def test_session_search_forwards_profile_in_runtime_helper_path(monkeypatch):
+    """Path 1: agent_runtime_helpers._execute forwards profile to session_search()."""
+    captured = {}
+
+    session_search_mod = ModuleType("tools.session_search_tool")
+
+    def fake_session_search(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True, "results": []})
+
+    session_search_mod.session_search = fake_session_search
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+
+    agent = _make_agent(MagicMock(), platform="acp")
+    result = json.loads(agent._invoke_tool(
+        "session_search",
+        {"query": "Hermes", "profile": "work"},
+        "task-id",
+    ))
+
+    assert result["success"] is True
+    assert captured["profile"] == "work"
+    assert captured["query"] == "Hermes"
+
+
+def test_session_search_forwards_profile_in_sequential_executor_path(monkeypatch):
+    """Path 2: tool_executor._execute forwards profile to session_search()."""
+    from agent.tool_executor import execute_tool_calls_sequential
+
+    captured = {}
+
+    session_search_mod = ModuleType("tools.session_search_tool")
+
+    def fake_session_search(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True, "results": []})
+
+    session_search_mod.session_search = fake_session_search
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+
+    agent = _make_agent(MagicMock(), platform="acp")
+    # Ensure _session_db is set so _get_session_db_for_recall() doesn't return None
+    agent._session_db = MagicMock()
+
+    tool_call = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(
+            name="session_search",
+            arguments=json.dumps({"query": "test", "profile": "staging"}),
+        ),
+    )
+    assistant_message = SimpleNamespace(tool_calls=[tool_call])
+    messages = [{"role": "user", "content": "search sessions"}]
+
+    execute_tool_calls_sequential(agent, assistant_message, messages, "task-id")
+
+    assert captured["profile"] == "staging"
+    assert captured["query"] == "test"

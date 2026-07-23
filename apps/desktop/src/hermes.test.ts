@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  addSessionsToFolder,
+  createSessionFolder,
+  deleteSessionFolder,
   AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
   AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS,
@@ -14,13 +17,17 @@ import {
   getHermesConfigDefaults,
   getProfiles,
   getSessionMessages,
+  getSessionFolderMap,
   getStatus,
   listAllProfileSessions,
+  listSessionFolders,
   listSessions,
+  removeSessionsFromFolder,
   listSidebarSessions,
   resetSidebarBatchCapability,
   speakText,
-  transcribeAudio
+  transcribeAudio,
+  updateSessionFolder
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -404,5 +411,59 @@ describe('Hermes REST helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+
+  it('routes session-folder calls through the profile envelope', async () => {
+    api.mockResolvedValue([])
+    await listSessionFolders('remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders?profile=remote',
+      profile: 'remote'
+    })
+
+    await createSessionFolder('Folder', 'remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders',
+      method: 'POST',
+      profile: 'remote',
+      body: { name: 'Folder', profile: 'remote' }
+    })
+
+    await updateSessionFolder('folder-1', 'Renamed', 'remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders/folder-1',
+      method: 'PATCH',
+      profile: 'remote',
+      body: { name: 'Renamed', profile: 'remote' }
+    })
+
+    await deleteSessionFolder('folder-1', 'remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders/folder-1?profile=remote',
+      method: 'DELETE',
+      profile: 'remote'
+    })
+
+    await addSessionsToFolder('folder-1', ['session-1'], 'remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders/folder-1/sessions',
+      method: 'POST',
+      profile: 'remote',
+      body: { session_ids: ['session-1'], profile: 'remote' }
+    })
+
+    await removeSessionsFromFolder('folder-1', ['session-1'], 'remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders/folder-1/sessions',
+      method: 'DELETE',
+      profile: 'remote',
+      body: { session_ids: ['session-1'], profile: 'remote' }
+    })
+
+    await getSessionFolderMap(['session-1'], 'remote')
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/session-folders/map?session_ids=session-1&profile=remote',
+      profile: 'remote'
+    })
   })
 })

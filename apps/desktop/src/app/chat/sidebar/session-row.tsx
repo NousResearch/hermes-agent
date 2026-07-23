@@ -31,6 +31,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  currentFolderId?: string
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
@@ -60,6 +61,7 @@ export function SidebarSessionRow({
   isPinned,
   isSelected,
   isWorking,
+  currentFolderId,
   onArchive,
   onBranch,
   onDelete,
@@ -96,6 +98,7 @@ export function SidebarSessionRow({
       onPin={onPin}
       pinned={isPinned}
       profile={session.profile}
+      currentFolderId={currentFolderId}
       sessionId={session.id}
       title={title}
     >
@@ -114,6 +117,7 @@ export function SidebarSessionRow({
               onPin={onPin}
               pinned={isPinned}
               profile={session.profile}
+              currentFolderId={currentFolderId}
               sessionId={session.id}
               title={title}
               tooltip={r.actionsFor(title)}

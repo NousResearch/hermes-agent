@@ -44,6 +44,8 @@ import urllib.error
 import urllib.parse
 import zipfile
 
+import secrets
+import sqlite3
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
@@ -11388,6 +11390,124 @@ def _open_session_db_for_profile(profile: Optional[str]):
         return SessionDB()
     _name, home = _cron_profile_home(profile)
     return SessionDB(db_path=Path(home) / "state.db")
+
+
+# ── Session Folders ──────────────────────────────────────────────────
+
+
+class FolderCreate(BaseModel):
+    name: str
+    profile: Optional[str] = None
+
+
+class FolderUpdate(BaseModel):
+    name: str
+    profile: Optional[str] = None
+
+
+class FolderMemberships(BaseModel):
+    session_ids: List[str]
+    profile: Optional[str] = None
+
+
+class FolderMembershipResponse(BaseModel):
+    ok: bool
+    count: int
+
+
+@app.get("/api/session-folders")
+async def get_session_folders(profile: Optional[str] = None):
+    """List all folders with per-folder session count."""
+    db = _open_session_db_for_profile(profile)
+    try:
+        return db.list_folders()
+    finally:
+        db.close()
+
+
+@app.post("/api/session-folders")
+async def create_session_folder(body: FolderCreate):
+    """Create a folder and return its row."""
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        try:
+            return db.create_folder(name=body.name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.patch("/api/session-folders/{folder_id}")
+async def update_session_folder(folder_id: str, body: FolderUpdate):
+    """Rename a folder."""
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        ok = db.update_folder(folder_id, name=body.name)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.delete("/api/session-folders/{folder_id}")
+async def delete_session_folder(folder_id: str, profile: Optional[str] = None):
+    """Delete a folder. Sessions in it are NOT deleted."""
+    db = _open_session_db_for_profile(profile)
+    try:
+        ok = db.delete_folder(folder_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/session-folders/{folder_id}/sessions")
+async def add_sessions_to_folder(folder_id: str, body: FolderMemberships):
+    """Add sessions to a folder. Returns count of newly added."""
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        try:
+            count = db.add_sessions_to_folder(folder_id, body.session_ids)
+            return {"ok": True, "count": count}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except sqlite3.IntegrityError:
+            raise HTTPException(
+                status_code=500,
+                detail="Folder not found or foreign key constraint violated",
+            )
+    finally:
+        db.close()
+
+
+@app.delete("/api/session-folders/{folder_id}/sessions")
+async def remove_sessions_from_folder(folder_id: str, body: FolderMemberships):
+    """Remove sessions from a folder. Returns count of removed."""
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        count = db.remove_sessions_from_folder(folder_id, body.session_ids)
+        return {"ok": True, "count": count}
+    finally:
+        db.close()
+
+
+@app.get("/api/session-folders/map")
+async def get_folder_map(session_ids: str = "", profile: Optional[str] = None):
+    """Get folder membership map for a comma-separated list of session IDs.
+
+    Returns ``{session_id: [folder_id, ...]}``.
+    """
+    ids = [s.strip() for s in session_ids.split(",") if s.strip()]
+    db = _open_session_db_for_profile(profile)
+    try:
+        return db.get_session_folder_map(ids)
+    finally:
+        db.close()
 
 
 @app.get("/api/sessions/{session_id}")

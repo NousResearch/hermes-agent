@@ -209,6 +209,16 @@ test('pathWithGlobalRemoteProfile preserves existing query params', () => {
   )
 })
 
+test('pathWithGlobalRemoteProfile scopes session-folder reads for global remotes', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/session-folders/map?session_ids=s1%2Cs2', 'iris', {
+      globalRemote: true,
+      profileRemoteOverride: false
+    }),
+    '/api/session-folders/map?session_ids=s1%2Cs2&profile=iris'
+  )
+})
+
 test('pathWithGlobalRemoteProfile does not replace an explicit profile query', () => {
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info?profile=default', 'iris', {

@@ -78,6 +78,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Session management (gated on dashboard API being reachable via check_fn)
+    "session_list", "session_archive", "session_rename", "session_delete",
+    "session_folder_list", "session_folder_create", "session_folder_add",
+    "session_folder_rename", "session_folder_delete",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -167,6 +171,16 @@ TOOLSETS = {
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "session_management": {
+        "description": "Manage Hermes sessions — list, archive, rename, delete, and organize into folders. Requires the Hermes dashboard to be running (service-gated via check_fn).",
+        "tools": [
+            "session_list", "session_archive", "session_rename", "session_delete",
+            "session_folder_list", "session_folder_create", "session_folder_add",
+            "session_folder_rename", "session_folder_delete",
+        ],
         "includes": []
     },
     

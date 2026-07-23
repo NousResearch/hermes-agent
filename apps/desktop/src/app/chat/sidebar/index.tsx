@@ -131,6 +131,7 @@ import {
 } from './projects'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import { SidebarFoldersSection } from './folders-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
@@ -289,6 +290,7 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  const [foldersOpen, setFoldersOpen] = useState(true)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
@@ -1257,6 +1259,19 @@ export function ChatSidebar({
                 showProfileTags={showAllProfiles}
                 sortable={pinnedSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}
+              />
+            )}
+
+            {!trimmedQuery && !showAllProfiles && (
+              <SidebarFoldersSection
+                label={s.row.folders ?? 'Folders'}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onResumeSession={onResumeSession}
+                onToggle={() => setFoldersOpen(!foldersOpen)}
+                onTogglePin={pinSession}
+                open={foldersOpen}
+                profile={profileScope}
               />
             )}
 

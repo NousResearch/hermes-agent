@@ -2654,6 +2654,29 @@ class TestDeleteAndExport:
         ).fetchone()[0]
         assert count == 0
 
+    def test_delete_session_removes_folder_memberships(self, db):
+        db.create_session(session_id="foldered", source="cli")
+        folder = db.create_folder(name="Folder")
+        db.add_sessions_to_folder(folder["id"], ["foldered"])
+
+        assert db.delete_session("foldered") is True
+        assert db.list_folders()[0]["session_count"] == 0
+        assert db.list_folders()[0]["session_ids"] == []
+
+    def test_delete_delegate_children_removes_folder_memberships(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(
+            session_id="delegate",
+            source="cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+        folder = db.create_folder(name="Folder")
+        db.add_sessions_to_folder(folder["id"], ["delegate"])
+
+        assert db.delete_session("parent") is True
+        assert db.list_folders()[0]["session_count"] == 0
+
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
@@ -2689,6 +2712,80 @@ class TestDeleteAndExport:
         assert db.export_session("nope") is None
 
     def test_export_all(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+    # ── Session Folders ──────────────────────────────────────────────
+
+    def test_create_list_folder(self, db):
+        folder = db.create_folder(name="Test Folder")
+        assert folder["name"] == "Test Folder"
+        assert folder["session_count"] == 0
+        folders = db.list_folders()
+        assert any(f["id"] == folder["id"] for f in folders)
+
+    def test_folder_empty_name_raises(self, db):
+        with pytest.raises(ValueError, match="name must not be empty"):
+            db.create_folder(name="")
+
+    def test_delete_folder(self, db):
+        folder = db.create_folder(name="To Delete")
+        assert db.delete_folder(folder["id"]) is True
+        assert db.delete_folder("nonexistent") is False
+
+    def test_add_sessions_to_folder(self, db):
+        folder = db.create_folder(name="My Folder")
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        count = db.add_sessions_to_folder(folder["id"], ["s1", "s2"])
+        assert count == 2
+        count = db.add_sessions_to_folder(folder["id"], ["s1", "s2"])
+        assert count == 0
+
+    def test_add_sessions_to_folder_rejects_unknown_session(self, db):
+        folder = db.create_folder(name="My Folder")
+        db.create_session(session_id="s1", source="cli")
+        with pytest.raises(ValueError, match="session not found: missing"):
+            db.add_sessions_to_folder(folder["id"], ["s1", "missing"])
+        assert db.list_folders()[0]["session_count"] == 0
+
+    def test_remove_sessions_from_folder(self, db):
+        folder = db.create_folder(name="My Folder")
+        db.create_session(session_id="s1", source="cli")
+        db.add_sessions_to_folder(folder["id"], ["s1"])
+        count = db.remove_sessions_from_folder(folder["id"], ["s1"])
+        assert count == 1
+        count = db.remove_sessions_from_folder(folder["id"], ["s1"])
+        assert count == 0
+
+    def test_folder_session_map(self, db):
+        folder_a = db.create_folder(name="A")
+        folder_b = db.create_folder(name="B")
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.add_sessions_to_folder(folder_a["id"], ["s1"])
+        db.add_sessions_to_folder(folder_b["id"], ["s1", "s2"])
+        result = db.get_session_folder_map(["s1", "s2"])
+        assert "s1" in result
+        assert "s2" in result
+        assert folder_a["id"] in result["s1"]
+        assert folder_b["id"] in result["s1"]
+        assert folder_b["id"] in result["s2"]
+
+    def test_folder_orphan_cleanup_on_session_delete(self, db):
+        folder = db.create_folder(name="F")
+        db.create_session(session_id="s1", source="cli")
+        db.add_sessions_to_folder(folder["id"], ["s1"])
+        db.delete_session("s1")
+        result = db.get_session_folder_map(["s1"])
+        assert "s1" not in result
+
+    def test_folder_cascade_on_folder_delete(self, db):
+        folder = db.create_folder(name="F")
+        db.create_session(session_id="s1", source="cli")
+        db.add_sessions_to_folder(folder["id"], ["s1"])
+        db.delete_folder(folder["id"])
+        result = db.get_session_folder_map(["s1"])
+        assert "s1" not in result
         db.create_session(session_id="s1", source="cli")
         db.create_session(session_id="s2", source="telegram")
         db.append_message("s1", role="user", content="A")

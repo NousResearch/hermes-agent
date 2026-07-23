@@ -1766,7 +1766,16 @@ export const en: Translations = {
       ageNow: 'now',
       ageDay: 'd',
       ageHour: 'h',
-      ageMin: 'm'
+      ageMin: 'm',
+      folders: 'Folders',
+      createFolder: 'New folder…',
+      renameFolder: 'Rename folder',
+      deleteFolder: 'Delete folder',
+      deleteFolderConfirm: "Delete \"{name}\"? Sessions in it won't be deleted.",
+      moveToFolder: 'Move to folder',
+      removeFromFolder: 'Remove from folder',
+      addToFolder: 'Add to folder',
+      noFolders: 'No folders yet'
     }
   },
 

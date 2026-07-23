@@ -57,6 +57,7 @@ import {
   sessionPinId,
   setSessions
 } from '@/store/session'
+import { $folders, moveToFolder as storeMoveToFolder, removeFromFolder as storeRemoveFromFolder } from '@/store/session-folders'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -117,6 +118,7 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
+  currentFolderId?: string | null
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
   onClose?: () => void
@@ -138,8 +140,8 @@ interface MenuKit {
   Item: MenuItem
   Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
   Sub: typeof DropdownMenuSub | typeof ContextMenuSub
-  SubTrigger: typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
   SubContent: typeof DropdownMenuSubContent | typeof ContextMenuSubContent
+  SubTrigger: typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
 }
 
 const DROPDOWN_KIT: MenuKit = {
@@ -149,7 +151,6 @@ const DROPDOWN_KIT: MenuKit = {
   SubContent: DropdownMenuSubContent,
   SubTrigger: DropdownMenuSubTrigger
 }
-
 const CONTEXT_KIT: MenuKit = {
   Item: ContextMenuItem,
   Separator: ContextMenuSeparator,
@@ -193,6 +194,7 @@ function useSessionActions({
   title,
   pinned = false,
   profile,
+  currentFolderId,
   onPin,
   onBranch,
   onArchive,
@@ -205,6 +207,7 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const foldersList = useStore($folders)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
 
@@ -404,6 +407,39 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderMenuItem(kit.Item, item))}
+      {currentFolderId && (
+        <kit.Item
+          onSelect={() => {
+            triggerHaptic('selection')
+            void storeRemoveFromFolder(sessionId, currentFolderId, profile)
+          }}
+        >
+          <Codicon name="close" size="0.875rem" />
+          <span>{r.removeFromFolder ?? 'Remove from folder'}</span>
+        </kit.Item>
+      )}
+      {foldersList.length > 0 && (
+        <kit.Sub>
+          <kit.SubTrigger>
+            <Codicon name="folder" size="0.875rem" />
+            <span>{r.moveToFolder ?? 'Move to folder'}</span>
+          </kit.SubTrigger>
+          <kit.SubContent>
+            {foldersList.map(folder => (
+              <kit.Item
+                key={folder.id}
+                onSelect={() => {
+                  triggerHaptic('selection')
+                  void storeMoveToFolder(sessionId, folder.id, currentFolderId, profile)
+                }}
+              >
+                <span>{folder.name}</span>
+                {folder.id === currentFolderId && <span className="ml-auto text-(--ui-text-tertiary)">✓</span>}
+              </kit.Item>
+            ))}
+          </kit.SubContent>
+        </kit.Sub>
+      )}
       {tabCloseItems.length > 0 && (
         <>
           <kit.Separator />

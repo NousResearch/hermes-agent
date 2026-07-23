@@ -2457,7 +2457,7 @@ export const ja = defineLocale({
       continueLabel: '続行',
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint: 'この質問はタイムアウトしました。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
+      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
     },
     tool: {
       code: 'コード',

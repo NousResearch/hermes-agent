@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process'
 import * as path from 'node:path'
 
 import { type TestInfo } from '@playwright/test'
@@ -15,13 +14,16 @@ import {
   writeMockProviderConfig,
 } from './fixtures'
 import { MOCK_REPLY, startMockServer, type MockServer, type MockServerOptions } from './mock-server'
+import { RealSessionBuilder } from './real-session-builder'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
-const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
-const SEED_SCRIPT = path.resolve(import.meta.dirname, 'scripts', 'seed_large_session.py')
 const SESSION_TITLE = 'E2E large persisted session'
 const EXPECTED_TEXT = 'E2E persisted user message 52'
 const BACKGROUND_PROMPT = 'E2E background inference must remain attached across resume'
+const HISTORY_TURNS = Array.from(
+  { length: 27 },
+  (_, index) => `E2E persisted user message ${index * 2}: audit the compatibility matrix`,
+)
 
 interface SeededFixture {
   app: ElectronApplication
@@ -43,13 +45,11 @@ async function setupSeededDesktop(mockServer?: MockServerOptions): Promise<Seede
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
   writeEnvFile(sandbox.hermesHome)
 
-  const seeded = spawnSync('python3', [SEED_SCRIPT, path.join(sandbox.hermesHome, 'state.db')], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    env: { ...process.env, PYTHONPATH: REPO_ROOT },
-  })
-  if (seeded.status !== 0) {
-    throw new Error(`large-session seed failed:\n${seeded.stdout}\n${seeded.stderr}`)
+  const builder = await RealSessionBuilder.start(sandbox.hermesHome)
+  try {
+    await builder.createSession({ title: SESSION_TITLE, turns: HISTORY_TURNS })
+  } finally {
+    await builder.close()
   }
 
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
@@ -210,6 +210,7 @@ test.describe('large session resume', () => {
       await waitForAppReady(fixture, 120_000)
 
       await openSeededSession(fixture.page)
+      const initialMockReplyCount = await textNodeOccurrences(fixture.page, MOCK_REPLY)
       await submitPrompt(fixture.page, BACKGROUND_PROMPT)
       await fixture.mock.waitForHeldStream()
       await openNewSession(fixture.page)
@@ -229,7 +230,10 @@ test.describe('large session resume', () => {
       await fixture.page.screenshot({ path: testInfo.outputPath(`${resumeKind}-background-inference-resume.png`), fullPage: false })
 
       expect(await textNodeOccurrences(fixture.page, BACKGROUND_PROMPT), 'the running user prompt should appear once').toBe(1)
-      expect(await textNodeOccurrences(fixture.page, MOCK_REPLY), 'the completed assistant reply should appear once').toBe(1)
+      expect(
+        await textNodeOccurrences(fixture.page, MOCK_REPLY),
+        'the completed assistant reply should add exactly one transcript row',
+      ).toBe(initialMockReplyCount + 1)
     })
   }
 })

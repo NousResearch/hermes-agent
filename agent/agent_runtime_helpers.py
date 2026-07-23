@@ -1523,6 +1523,7 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        agent._fallback_extra_body = None
 
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves

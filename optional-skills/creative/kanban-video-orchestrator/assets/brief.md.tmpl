@@ -39,8 +39,7 @@ Beat-by-beat breakdown. Each scene gets a row.
 
 | # | Time | Content | Target tool / skill | Audio | Notes |
 |---|------|---------|---------------------|-------|-------|
-| 1 | 0:00–0:0X | {{SCENE_1_CONTENT}} | {{SCENE_1_TOOL}} | {{SCENE_1_AUDIO}} | {{SCENE_1_NOTES}} |
-| 2 | 0:0X–0:0Y | ... | ... | ... | ... |
+{{SCENE_ROWS}}
 
 ## 5. Audio
 
@@ -51,8 +50,7 @@ Beat-by-beat breakdown. Each scene gets a row.
 *(provider, voice, language, script source — "n/a" if no VO)*
 
 **Music.** {{MUSIC_DETAILS}}
-*(provided track path / commission via Suno / commission via heartmula /
-license-free / "n/a")*
+*(provided track path / commission via Suno / commission via heartmula / license-free / "n/a")*
 
 **SFX.** {{SFX_DETAILS}}
 *(generated, library, or "n/a")*
@@ -60,9 +58,8 @@ license-free / "n/a")*
 ## 6. Deliverables
 
 | Format | Resolution | Notes |
-|--------|-----------|-------|
-| {{PRIMARY_FORMAT}} | {{PRIMARY_RES}} | The main output |
-| {{ALT_FORMAT_1}} | {{ALT_RES_1}} | {{ALT_NOTES_1}} |
+|--------|------------|-------|
+{{DELIVERABLE_ROWS}}
 
 **Final filename.** `output/final.mp4`
 *(plus optional `output/final-9x16.mp4`, `output/captions.srt`, etc.)*
@@ -75,5 +72,4 @@ license-free / "n/a")*
 
 ---
 
-**This brief is the contract. The director and every downstream profile read
-it. If the brief changes, the kanban must be re-fired — don't edit live.**
+**This brief is the contract. The director and every downstream profile read it. If the brief changes, the kanban must be re-fired — don't edit live.**

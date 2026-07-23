@@ -235,6 +235,43 @@ All context files are:
 - **Truncated** — capped at `context_file_max_chars` characters (default 20,000) using 70/20 head/tail ratio with a truncation marker
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
+### Session-scoped context experiments
+
+Operators who want to compare prompt layouts across real sessions can enable a
+`context_experiments` block in `config.yaml`. Hermes assigns each session to one
+arm before system-prompt assembly, then loads that arm's `context_file` /
+`context_files` and optional preloaded `skills` instead of the normal cwd project
+context. The assignment is fixed for the session, so the system prompt remains
+byte-stable after the session starts.
+
+```yaml
+context_experiments:
+  active: agentsmd_split
+  agentsmd_split:
+    enabled: true
+    assignment: round_robin   # or hash
+    unit: session             # currently the only supported unit
+    platforms: [slack]        # optional; omit to include every platform
+    arms:
+      old:
+        context_file: /opt/hermes-prompts/AGENTS.old.md
+      new:
+        context_file: /opt/hermes-prompts/AGENTS.slim.md
+        skills:
+          - workflow-capture
+          - agent-tool-selection
+```
+
+Notes:
+
+- `round_robin` persists `session_id -> arm` under
+  `~/.hermes/context_experiments/<experiment>.json` so Slack/gateway restarts do
+  not reshuffle existing sessions.
+- `hash` is deterministic and does not require shared state.
+- Relative `context_file` paths resolve against the session cwd.
+- If an experiment is active, the default `.hermes.md` / `AGENTS.md` /
+  `CLAUDE.md` discovery is intentionally suppressed for that session arm.
+
 ## API-call-time-only layers
 
 These are intentionally *not* persisted as part of the cached system prompt:

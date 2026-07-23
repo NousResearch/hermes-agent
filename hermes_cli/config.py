@@ -936,6 +936,11 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Optional prompt-context A/B experiments. Disabled by default.
+    # When enabled, Hermes assigns each session to one configured arm before
+    # prompt assembly and loads that arm's context files / preloaded skills in
+    # place of the normal cwd project context. See agent/context_experiments.py.
+    "context_experiments": {},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

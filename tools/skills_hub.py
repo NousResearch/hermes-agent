@@ -2922,6 +2922,18 @@ class LobeHubSource(SkillSource):
                 )
         return None
 
+    @staticmethod
+    def _sanitize_agent_id(agent_id: str) -> Optional[str]:
+        """Reject path traversal / absolute / scheme-bearing agent ids."""
+        cleaned = (agent_id or "").strip()
+        if not cleaned or len(cleaned) > 200:
+            return None
+        if any(ch in cleaned for ch in ("/", "\\", ":", "?", "#", "@")):
+            return None
+        if ".." in cleaned or cleaned.startswith("."):
+            return None
+        return cleaned
+
     def _fetch_index(self) -> Optional[Any]:
         """Fetch the LobeHub agent index (cached for 1 hour)."""
         cache_key = "lobehub_index"
@@ -2929,27 +2941,32 @@ class LobeHubSource(SkillSource):
         if cached is not None:
             return cached
 
+        resp = _guarded_http_get(self.INDEX_URL, timeout=30)
+        if resp is None or resp.status_code != 200:
+            return None
         try:
-            resp = httpx.get(self.INDEX_URL, timeout=30)
-            if resp.status_code != 200:
-                return None
             data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except (ValueError, json.JSONDecodeError):
             return None
 
         _write_index_cache(cache_key, data)
         return data
 
     def _fetch_agent(self, agent_id: str) -> Optional[dict]:
-        """Fetch a single agent's JSON file."""
-        url = f"https://chat-agents.lobehub.com/{agent_id}.json"
+        """Fetch a single agent's JSON file via the guarded Skills Hub HTTP path."""
+        safe_id = self._sanitize_agent_id(agent_id)
+        if not safe_id:
+            logger.warning("LobeHub: rejected unsafe agent id %r", agent_id)
+            return None
+        url = f"https://chat-agents.lobehub.com/{safe_id}.json"
+        resp = _guarded_http_get(url, timeout=15)
+        if resp is None or resp.status_code != 200:
+            return None
         try:
-            resp = httpx.get(url, timeout=15)
-            if resp.status_code == 200:
-                return resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            return resp.json()
+        except (ValueError, json.JSONDecodeError) as e:
             logger.debug("LobeHub agent fetch failed: %s", e)
-        return None
+            return None
 
     @staticmethod
     def _convert_to_skill_md(agent_data: dict) -> str:

@@ -16318,33 +16318,54 @@ def main(
         # unwinds the main thread; the worker thread keeps running, the
         # process gets reparented to init, and the dispatcher's _pid_alive
         # check returns True forever — task stuck in 'running' indefinitely.
-        # Skip the controlled-unwind dance and call os._exit(0) so the kernel
-        # reclaims the PID immediately and detect_crashed_workers can reclaim
-        # the stale claim on the next tick. Flush logging + stdout/stderr
-        # first so the final debug trace isn't lost; SIGALRM deadman guards
-        # the flush against any rare blocking-I/O case (the reporter measured
-        # flush in <1ms; the alarm is a failsafe, not the common path).
+        #
+        # We now distinguish two SIGTERM origins (feat/kanban-sigterm):
+        #
+        #   Fast-reclaim (foreign-host reclaim):
+        #       The dispatcher's _terminate_reclaimed_worker() writes a
+        #       marker at /tmp/hermes_fast_reclaim_<pid> before sending
+        #       SIGTERM. The worker picks up the marker and calls
+        #       os._exit(0) immediately so the kernel reclaims the PID and
+        #       the other host can claim the task.
+        #
+        #   Infra SIGTERM (normal shutdown):
+        #       No marker is present. The worker raises KeyboardInterrupt
+        #       instead of os._exit(0), allowing graceful state preservation
+        #       before exit — the agent loop catches the interrupt and saves
+        #       work-in-progress so the task can be resumed later.
         if os.environ.get("HERMES_KANBAN_TASK"):
+            _is_fast_reclaim = False
+            _marker_path = f"/tmp/hermes_fast_reclaim_{os.getpid()}"
             try:
-                import signal as _sig_mod
-                if hasattr(_sig_mod, "SIGALRM"):
-                    # Cancel any pre-existing alarm to avoid colliding with
-                    # caller-installed timers.
-                    _sig_mod.signal(_sig_mod.SIGALRM, lambda *_: os._exit(0))
-                    _sig_mod.alarm(2)
+                _is_fast_reclaim = os.path.exists(_marker_path)
+                if _is_fast_reclaim:
+                    os.unlink(_marker_path)
             except Exception:
-                pass
-            try:
-                import logging as _lg
-                _lg.shutdown()
-            except Exception:
-                pass
-            for _stream in (sys.stdout, sys.stderr):
+                pass  # best-effort; missing marker = infra SIGTERM
+
+            if _is_fast_reclaim:
+                # Fast-reclaim from another host — exit immediately so the
+                # dispatcher can release the claim for the new claimer.
                 try:
-                    _stream.flush()
+                    import signal as _sig_mod
+                    if hasattr(_sig_mod, "SIGALRM"):
+                        _sig_mod.signal(_sig_mod.SIGALRM, lambda *_: os._exit(0))
+                        _sig_mod.alarm(2)
                 except Exception:
                     pass
-            os._exit(0)
+                try:
+                    import logging as _lg
+                    _lg.shutdown()
+                except Exception:
+                    pass
+                for _stream in (sys.stdout, sys.stderr):
+                    try:
+                        _stream.flush()
+                    except Exception:
+                        pass
+                os._exit(0)
+            # Infra SIGTERM — fall through to KeyboardInterrupt for
+            # graceful state-preserving shutdown.
         raise KeyboardInterrupt()
     try:
         import signal as _signal

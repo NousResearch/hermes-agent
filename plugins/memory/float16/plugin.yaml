@@ -1,0 +1,6 @@
+name: float16
+version: 1.0.0
+description: "Float16 semantic memory — local sentence-transformer embeddings stored as float16 vectors with automatic turn capture and cosine-similarity retrieval."
+pip_dependencies:
+  - numpy>=2.0.0,<3
+  - sentence-transformers>=3.0.0,<4

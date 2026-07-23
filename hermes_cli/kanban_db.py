@@ -311,6 +311,27 @@ _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 
 
+def _parse_resume_state(row: sqlite3.Row, keys: set[str]) -> Optional[dict]:
+    """Parse the resume_state JSON column from a tasks row.
+
+    Returns the parsed dict, or None when the column is absent, NULL,
+    empty, or not valid JSON — so existing DBs without the column
+    always get a clean ``None`` and never crash.
+    """
+    if "resume_state" not in keys:
+        return None
+    raw = row["resume_state"]
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
     """Render the age of an epoch-seconds timestamp as a coarse, human-
     readable string like ``just now``, ``18h ago``, ``3d ago``.
@@ -949,6 +970,12 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Intermediate checkpoint state saved by a prior worker run. When the
+    # worker crashed or was reclaimed, this JSON blob carries forward what
+    # was accomplished so the next worker can resume rather than restart
+    # from scratch. Stored as a JSON TEXT column. Cleared on completion.
+    # Workers call ``kanban_save_resume_state`` to write checkpoints.
+    resume_state: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1038,6 +1065,7 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            resume_state=_parse_resume_state(row, keys),
         )
 
 
@@ -2370,6 +2398,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "resume_state" not in cols:
+        # Intermediate checkpoint state saved by a prior worker run.
+        # Workers call kanban_save_resume_state to write checkpoints.
+        # Cleared on completion/block. JSON TEXT, NULL = no saved state.
+        _add_column_if_missing(
+            conn, "tasks", "resume_state", "resume_state TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4677,6 +4713,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       resume_state = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -4694,6 +4731,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       resume_state = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -5443,6 +5481,7 @@ def block_task(
                 """
                 UPDATE tasks
                    SET status        = 'todo',
+                       resume_state  = NULL,
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
@@ -5496,6 +5535,7 @@ def block_task(
                 """
                 UPDATE tasks
                    SET status        = 'triage',
+                       resume_state  = NULL,
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
@@ -5538,6 +5578,7 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           resume_state  = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -5553,6 +5594,7 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           resume_state  = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -9060,6 +9102,27 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 except Exception:
                     pass
             lines.append("")
+
+    # Resume state — intermediate checkpoint saved by a prior worker run.
+    # When the task was interrupted (crash, reclaim, infra SIGTERM) the
+    # previous worker may have saved partial progress via
+    # ``kanban_save_resume_state``. Show it as a prompt for the current
+    # worker to resume from rather than starting over.
+    if task.resume_state:
+        lines.append("## Interrupted — resume from saved state")
+        lines.append(
+            "_A prior worker was interrupted and saved checkpoint "
+            "state below. Review what was accomplished and continue "
+            "from where it left off._"
+        )
+        try:
+            rs_str = json.dumps(
+                task.resume_state, ensure_ascii=False, indent=2,
+            )
+            lines.append(f"```json\n{_cap(rs_str, _CTX_MAX_FIELD_BYTES * 4)}\n```")
+        except Exception:
+            lines.append(str(task.resume_state))
+        lines.append("")
 
     # Parents: prefer the most-recent 'completed' run's summary + metadata,
     # fall back to ``task.result`` when no run rows exist (legacy DBs,

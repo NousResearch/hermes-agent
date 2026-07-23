@@ -1408,6 +1408,8 @@ display:
 # Shared metrics are disabled by default. When enabled, Hermes writes only
 # allowlisted aggregate counters and immutable JSON
 # packages under $HERMES_HOME/telemetry/shared_metrics; it does not upload them.
+# Packages include a random profile-scoped ID that stays stable until this
+# directory is deleted. It is not derived from hardware, account, or host data.
 telemetry:
   shared_metrics:
     enabled: false

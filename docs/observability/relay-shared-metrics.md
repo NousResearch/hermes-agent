@@ -74,6 +74,19 @@ The database keeps transactional aggregate and package-outbox state. Package
 files are immutable delta documents that conform to a closed JSON schema and
 are written with atomic replacement.
 
+Each package contains an `install_id` generated as a random UUID. Despite the
+schema field name, its current scope is one `HERMES_HOME`, so it is more
+precisely a persistent pseudonymous profile identifier. It is not derived from
+hardware, account, host, path, or credential data. It remains stable across
+packages from that profile and can therefore link those local packages.
+Deleting `$HERMES_HOME/telemetry/shared_metrics` resets the identifier together
+with all aggregates and package files.
+
+This slice has no remote-delivery path. A future remote exporter must not reuse
+the persistent local identifier by default. It requires a separate product and
+privacy decision covering consent, identity scope, rotation or keyed
+pseudonymization, reset behavior, retention, and deletion.
+
 ## Smoke Test
 
 Run a real Hermes CLI turn against the deterministic local model server:

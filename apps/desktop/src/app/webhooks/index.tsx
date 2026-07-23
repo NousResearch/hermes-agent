@@ -558,8 +558,8 @@ function WebhookRow({
           </div>
         )}
 
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate font-mono">{sub.url}</span>
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+          <span className="min-w-0 truncate font-mono">{sub.url}</span>
           <CopyButton label={w.copy} value={sub.url} />
         </div>
       </div>

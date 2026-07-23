@@ -69,7 +69,7 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_caching import apply_anthropic_cache_control, _build_marker
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -434,6 +434,16 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        # Also cache the parts so the cross-session block layout can be
+        # constructed at API-call time.  Rebuild from agent state (the
+        # parts are deterministic for the same agent/session).
+        try:
+            from agent.system_prompt import build_system_prompt_parts as _build_parts
+            agent._cached_system_prompt_parts = _build_parts(agent, system_message=None)
+        except Exception:
+            # Non-fatal: the block layout falls back to plain string when
+            # parts are unavailable.
+            pass
         return
     if stored_prompt:
         stored_state = "stale_runtime"
@@ -460,7 +470,23 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    try:
+        from agent.system_prompt import build_system_prompt_parts as _build_parts
+        agent._cached_system_prompt_parts = _build_parts(agent, system_message=system_message)
+        agent._cached_system_prompt = "\n\n".join(
+            p for p in (
+                agent._cached_system_prompt_parts["stable"],
+                agent._cached_system_prompt_parts["context"],
+                agent._cached_system_prompt_parts["volatile"],
+            ) if p
+        )
+        # Surface context-file truncation warnings.
+        from agent.prompt_builder import drain_truncation_warnings as _dtw
+        for _w in _dtw():
+            agent._emit_status(_w)
+    except Exception:
+        # Fallback to the original single-string build.
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
@@ -1055,14 +1081,39 @@ def run_conversation(
         #
         # Hermes invariant: the system prompt is built ONCE per session
         # (cached on ``_cached_system_prompt``) and replayed verbatim on
-        # every turn.  We send it as a single content string so the
-        # bytes are byte-stable across turns and upstream prompt caches
-        # stay warm.
+        # every turn.  For Anthropic-compatible endpoints with prompt
+        # caching enabled, we split the system prompt into two content
+        # blocks (stable + context/volatile) so the stable prefix can
+        # hit cross-session cache even when context/volatile bytes
+        # differ between sessions (issue #68191).
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
-            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            _sys_parts = getattr(agent, "_cached_system_prompt_parts", None)
+            if agent._use_prompt_caching and _sys_parts and isinstance(_sys_parts, dict):
+                # Build content blocks: stable (with breakpoint) + rest
+                _stable = (_sys_parts.get("stable") or "").strip()
+                _ctx = (_sys_parts.get("context") or "").strip()
+                _vol = (_sys_parts.get("volatile") or "").strip()
+                # Merge ephemeral_system_prompt into the volatile tail
+                if agent.ephemeral_system_prompt:
+                    _vol = (_vol + "\n\n" + agent.ephemeral_system_prompt).strip()
+                _rest = "\n\n".join(p for p in (_ctx, _vol) if p)
+                _blocks = []
+                if _stable:
+                    _blk = {"type": "text", "text": _stable}
+                    # Cross-session breakpoint on the stable block
+                    _blk["cache_control"] = _build_marker(agent._cache_ttl)
+                    _blocks.append(_blk)
+                if _rest:
+                    _blocks.append({"type": "text", "text": _rest})
+                if _blocks:
+                    api_messages = [{"role": "system", "content": _blocks}] + api_messages
+                else:
+                    api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            else:
+                api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
         if moa_config:
             try:

@@ -550,6 +550,68 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     return joined
 
 
+def build_system_prompt_as_content_blocks(
+    agent: Any,
+    system_message: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Build the system prompt as Anthropic content blocks with cache breakpoints.
+
+    Returns a list of ``{"type": "text", "text": ..., "cache_control": ...}``
+    dicts suitable for the ``system`` parameter of the Anthropic API, or
+    ``None`` when the prompt is empty.
+
+    Two-block layout:
+
+      * **Block 1 (stable)** — identity, tool guidance, skills, environment
+        hints, platform hints.  Carries a ``cache_control`` breakpoint so
+        that **cross-session** prefix-cache hits can reuse this block even
+        when context/volatile bytes differ.
+      * **Block 2 (context + volatile)** — context files, system_message,
+        memory snapshot, user profile, timestamp.  No explicit breakpoint;
+        ``apply_anthropic_cache_control`` will place one at the end of the
+        system message (covering this block) and three on recent messages.
+
+    This layout means the stable prefix — which is byte-identical across
+    sessions of the same profile/surface — stays warm across session
+    boundaries instead of being invalidated by per-session divergences
+    in the context/volatile tier.
+
+    Called at API-call time (not cached) because the breakpoint markers
+    are a transport concern, not part of the stored/cached prompt string.
+    """
+    parts = build_system_prompt_parts(agent, system_message=system_message)
+
+    stable = parts.get("stable", "").strip()
+    context = parts.get("context", "").strip()
+    volatile = parts.get("volatile", "").strip()
+
+    # Surface context-file truncation warnings.
+    for warning in drain_truncation_warnings():
+        agent._emit_status(warning)
+
+    # Context + volatile merged into one block (they are both
+    # per-session/per-turn content that diverges across sessions).
+    rest = "\n\n".join(p for p in (context, volatile) if p)
+
+    if not stable and not rest:
+        return None
+
+    blocks: List[Dict[str, Any]] = []
+
+    if stable:
+        block: Dict[str, Any] = {"type": "text", "text": stable}
+        # Marker is placed here; apply_anthropic_cache_control will see
+        # the system message already carries a cache_control and skip
+        # re-marking it, using its breakpoint budget on messages instead.
+        block["cache_control"] = {"type": "ephemeral"}
+        blocks.append(block)
+
+    if rest:
+        blocks.append({"type": "text", "text": rest})
+
+    return blocks if blocks else None
+
+
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
@@ -588,6 +650,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "build_system_prompt_as_content_blocks",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
 ]

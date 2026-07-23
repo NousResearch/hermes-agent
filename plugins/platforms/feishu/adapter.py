@@ -1437,12 +1437,39 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
                 msg = await self._conn.recv()
                 _loop.create_task(self._handle_message(msg))
         except Exception as e:
-            ws_client_module.logger.error(self._fmt_log("receive message loop exit, err: {}", e))
-            await self._disconnect()
-            if self._auto_reconnect:
+            # ponytail: ConnectionClosedOK (code 1000) is a normal WS close —
+            # keepalive timeout or server-side rotation. The SDK's _auto_reconnect
+            # flag is unreliable here (adapter shutdown sets it to False, but
+            # mid-flight closes see whatever value was last set). The patched
+            # loop is the adapter's reconnect authority since we monkey-patched
+            # the SDK's loop out, so ALWAYS attempt reconnect here. Without this,
+            # the task silently dies (asyncio "Task exception was never retrieved")
+            # and the gateway serves 0 inbound feishu messages until restarted.
+            is_clean_close = "ConnectionClosed" in type(e).__name__
+            log_fn = (
+                ws_client_module.logger.info if is_clean_close
+                else ws_client_module.logger.error
+            )
+            log_fn(self._fmt_log("receive message loop exit, err: {}", e))
+            try:
+                await self._disconnect()
+            except Exception as disconnect_err:
+                ws_client_module.logger.warning(
+                    self._fmt_log("disconnect after receive loop exit failed: {}", disconnect_err),
+                )
+            try:
                 await self._reconnect()
-            else:
-                raise e
+            except Exception as reconnect_err:
+                # Don't raise into the asyncio void — log loudly instead.
+                # Permanent failure surfaces via "0 inbound feishu messages"
+                # which a watchdog can detect.
+                ws_client_module.logger.error(
+                    self._fmt_log(
+                        "reconnect failed after receive loop exit: {} "
+                        "(feishu adapter for this profile is OFFLINE until gateway restart)",
+                        reconnect_err,
+                    ),
+                )
 
     def _patched_start(self: Any) -> None:
         _loop = self._hermes_loop

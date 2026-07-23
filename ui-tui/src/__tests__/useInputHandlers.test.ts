@@ -5,6 +5,7 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  resolveOverlayCtrlC,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -56,6 +57,16 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('resolveOverlayCtrlC — copy selection instead of denying the overlay (#18375)', () => {
+  it('copies when the user has a text selection', () => {
+    expect(resolveOverlayCtrlC(true)).toBe('copy')
+  })
+
+  it('denies (cancels the overlay) when nothing is selected', () => {
+    expect(resolveOverlayCtrlC(false)).toBe('deny')
   })
 })
 

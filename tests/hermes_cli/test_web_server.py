@@ -21,6 +21,39 @@ from hermes_cli.config import (
 )
 
 
+class _RecordingCronProvider:
+    name = "recording"
+
+    def __init__(self, stop_event):
+        self.stop_event = stop_event
+        self.stopped = False
+        self.stop_saw_event_set = False
+        self.stop_thread_id = None
+
+    def stop(self):
+        self.stop_saw_event_set = self.stop_event.is_set()
+        self.stop_thread_id = threading.get_ident()
+        self.stopped = True
+
+
+class _RecordingCronThread:
+    def __init__(self, provider, stop_event):
+        self.provider = provider
+        self.stop_event = stop_event
+        self.join_timeouts = []
+        self.join_thread_id = None
+        self.alive = False
+
+    def join(self, timeout=None):
+        assert self.provider.stopped is True
+        assert self.stop_event.is_set()
+        self.join_timeouts.append(timeout)
+        self.join_thread_id = threading.get_ident()
+
+    def is_alive(self):
+        return self.alive
+
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -133,6 +166,89 @@ def _install_example_plugin(_isolate_hermes_home):
 # ---------------------------------------------------------------------------
 # reload_env tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_desktop_cron_shutdown_stops_signals_and_joins_provider():
+    from hermes_cli.web_server import _shutdown_desktop_cron_scheduler
+
+    stop_event = threading.Event()
+    provider = _RecordingCronProvider(stop_event)
+    thread = _RecordingCronThread(provider, stop_event)
+    event_loop_thread_id = threading.get_ident()
+
+    await _shutdown_desktop_cron_scheduler(provider, stop_event, thread)
+
+    assert provider.stopped is True
+    assert provider.stop_saw_event_set is True
+    assert provider.stop_thread_id != event_loop_thread_id
+    assert stop_event.is_set()
+    assert thread.join_timeouts == [pytest.approx(65.0)]
+    assert thread.join_thread_id != event_loop_thread_id
+
+
+@pytest.mark.asyncio
+async def test_desktop_cron_shutdown_stop_failure_still_joins(monkeypatch, caplog):
+    from hermes_cli import web_server
+
+    stop_event = threading.Event()
+
+    class FailingProvider(_RecordingCronProvider):
+        def stop(self):
+            super().stop()
+            raise RuntimeError("stop failed")
+
+    provider = FailingProvider(stop_event)
+    thread = _RecordingCronThread(provider, stop_event)
+
+    with caplog.at_level("ERROR"):
+        await web_server._shutdown_desktop_cron_scheduler(
+            provider, stop_event, thread
+        )
+
+    assert provider.stop_saw_event_set is True
+    assert thread.join_timeouts == [pytest.approx(65.0)]
+    assert "Desktop cron provider stop failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_desktop_cron_shutdown_timeouts_are_bounded_and_warn_if_alive(
+    monkeypatch, caplog
+):
+    from hermes_cli import web_server
+
+    stop_event = threading.Event()
+    provider = _RecordingCronProvider(stop_event)
+    thread = _RecordingCronThread(provider, stop_event)
+    thread.alive = True
+    calls = []
+
+    async def fake_to_thread(function, *args):
+        calls.append(("to_thread", function, args))
+
+    async def fake_wait_for(awaitable, *, timeout):
+        calls.append(("wait_for", timeout))
+        await awaitable
+        raise TimeoutError
+
+    monkeypatch.setattr(web_server.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(web_server.asyncio, "wait_for", fake_wait_for)
+
+    with caplog.at_level("WARNING"):
+        await web_server._shutdown_desktop_cron_scheduler(
+            provider, stop_event, thread
+        )
+
+    assert stop_event.is_set()
+    assert [call[1] for call in calls if call[0] == "wait_for"] == [5.0, 70.0]
+    offloaded = [call for call in calls if call[0] == "to_thread"]
+    assert offloaded == [
+        ("to_thread", provider.stop, ()),
+        ("to_thread", thread.join, (65.0,)),
+    ]
+    assert "Desktop cron provider stop timed out after 5.0s" in caplog.text
+    assert "Desktop cron thread drain timed out after 70.0s" in caplog.text
+    assert "Desktop cron thread remains alive after shutdown" in caplog.text
 
 
 class TestReloadEnv:
@@ -9429,7 +9545,7 @@ class TestValidateProviderCredential:
 
 
 class TestDesktopCronTicker:
-    """The dashboard backend fires cron jobs itself only when desktop-spawned."""
+    """Desktop cron fallback follows explicit and automatic ownership."""
 
     def _client(self):
         try:
@@ -9440,16 +9556,39 @@ class TestDesktopCronTicker:
 
         return TestClient(app)
 
-    def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
+    def test_ticker_runs_for_explicit_desktop_owner(
+        self, monkeypatch, _isolate_hermes_home
+    ):
         import threading
         import cron.scheduler as sched
 
         called = threading.Event()
         monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+            "cron:\n  scheduler_owner: desktop\n",
+            encoding="utf-8",
+        )
 
         with self._client():
-            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+            assert called.wait(3.0), "expected cron tick for explicit desktop owner"
+
+    def test_ticker_skipped_for_explicit_gateway_owner(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+            "cron:\n  scheduler_owner: gateway\n",
+            encoding="utf-8",
+        )
+
+        with self._client():
+            assert not called.wait(0.5), "explicit gateway must suppress Desktop ticker"
 
     def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
         import threading

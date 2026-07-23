@@ -217,6 +217,46 @@ The credential pool integrates at the provider resolution layer:
 3. **`hermes_cli/runtime_provider.py`** — Pool-aware credential resolution
 4. **`run_agent.py`** — Error recovery: 429/402/401 → pool rotation → fallback
 
+## Tool Credential Pools
+
+Credential pools are also available for non-LLM web tools that use API keys. The first supported tool is **Firecrawl** (web search and extract).
+
+When you have multiple Firecrawl accounts (each with its own credit/billing limit), you can register all keys as a pool. If one key hits a rate limit (429) or billing/quota error (402), Hermes automatically rotates to the next healthy key — keeping your web search and extract operations running.
+
+### Quick Start (Firecrawl)
+
+If you already have `FIRECRAWL_API_KEY` set in `.env`, Hermes auto-discovers it:
+
+```bash
+# Add a second (or third) Firecrawl key
+hermes auth add firecrawl --api-key «redacted:fc-…»
+```
+
+List your Firecrawl pool:
+
+```bash
+hermes auth list
+# Shows:
+#   firecrawl (2 credentials):
+#     #1  FIRECRAWL_API_KEY   api_key env:FIRECRAWL_API_KEY ←
+#     #2  fc-backup-1         api_key manual
+```
+
+### How it works
+
+The Firecrawl web provider (`plugins/web/firecrawl/provider.py`) checks the credential pool before falling back to direct configuration:
+
+1. **Pool path** — if the `firecrawl` pool has healthy entries, the selected API key is used to build the Firecrawl client.
+2. **Gateway path** — if no pool entries exist, falls through to the managed Tool Gateway (if configured).
+3. **Direct config** — if neither pool nor gateway is available, reads `FIRECRAWL_API_KEY` from the environment (original behaviour).
+
+When a request fails with HTTP 429 (rate limit) or 402 (billing/quota), the provider:
+1. Marks the exhausted credential in the pool with an appropriate cooldown
+2. Forces a new client instance
+3. Retries the request once with the next healthy key
+
+This gives you seamless failover across multiple Firecrawl accounts with zero configuration beyond `hermes auth add firecrawl`.
+
 ## Storage
 
 Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:

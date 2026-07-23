@@ -134,6 +134,20 @@ def test_background_review_installs_thread_local_whitelist():
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
 
+    _plugins.set_thread_tool_whitelist(
+        whitelist,
+        deny_msg_fmt=captured["deny_msg_fmt"],
+    )
+    try:
+        deny_msg = _plugins.get_pre_tool_call_block_message("read_file", {})
+    finally:
+        _plugins.clear_thread_tool_whitelist()
+
+    assert "read_file" in deny_msg
+    assert "skill_view" in deny_msg
+    assert "skill_manage(action='patch'" in deny_msg
+    assert "memory" in deny_msg
+
 
 def test_background_review_agent_tools_are_limited():
     """Verify the resolved memory+skills toolsets only contain memory and skill tools.

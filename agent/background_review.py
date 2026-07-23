@@ -830,7 +830,10 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Use skills_list to find skills, "
+                    "skill_view(name) to read SKILL.md before editing, and "
+                    "skill_manage(action='patch', ...) to change it. Use "
+                    "memory for notes only when it is allowed."
                 ),
             )
             try:

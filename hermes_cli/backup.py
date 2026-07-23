@@ -1004,7 +1004,18 @@ def create_quick_snapshot(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    # #68805 review: skip pruning when a present DB failed to capture — the
+    # incomplete snapshot must not delete the older snapshot that may contain
+    # the last good database (the recovery source this hardening is meant to
+    # preserve).
+    if not failed_dbs:
+        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    else:
+        logger.warning(
+            "Skipping snapshot prune because %d DB(s) failed to capture — "
+            "preserving older snapshots as recovery source",
+            len(failed_dbs),
+        )
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id

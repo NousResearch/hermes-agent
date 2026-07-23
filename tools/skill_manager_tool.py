@@ -102,9 +102,7 @@ except ImportError:
 def _guard_agent_created_enabled() -> bool:
     """Read skills.guard_agent_created from config (default False).
 
-    Off by default because the agent can already execute the same code
-    paths via terminal() with no gate, so the scan adds friction without
-    meaningful security.  Users who want belt-and-suspenders can turn it
+    Enabled by default so agent-created skills are scanned for threats.  Users who want belt-and-suspenders can turn it
     on via `hermes config set skills.guard_agent_created true`.
     """
     try:
@@ -112,7 +110,7 @@ def _guard_agent_created_enabled() -> bool:
         cfg = load_config()
         return is_truthy_value(
             cfg_get(cfg, "skills", "guard_agent_created"),
-            default=False,
+            default=True,
         )
     except Exception:
         return False

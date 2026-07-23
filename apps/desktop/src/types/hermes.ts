@@ -442,7 +442,7 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?: 'async_delegation_complete' | 'hidden' | 'model_switch' | string
-  display_metadata?: TimelineDisplayMetadata
+  display_metadata?: string | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: unknown
   timestamp?: number

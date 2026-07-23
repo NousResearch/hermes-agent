@@ -8290,11 +8290,22 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
+    """Get a value from ~/.hermes/.env or environment.
+
+    Under an active secret scope (multiplexed gateway turn), the scope is
+    checked before ``os.environ`` so a named profile without its own ``.env``
+    does not inherit another profile's credentials from the process environment.
+    """
+    try:
+        from agent.secret_scope import get_secret as _get_secret
+        val = _get_secret(key)
+        if val is not None:
+            return val
+    except Exception:
+        pass
+    # Check environment
     if key in os.environ:
         return os.environ[key]
-
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)

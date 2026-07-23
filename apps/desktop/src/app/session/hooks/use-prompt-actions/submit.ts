@@ -352,9 +352,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             session_id: startingStoredSessionId
           })
 
-            return abortForSessionSwitch(sessionId)
-          }
-
           if (resumed?.session_id) {
             sessionId = resumed.session_id
 
@@ -371,7 +368,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(null)
         }
 
-        if (sessionContextDrifted()) {
+        const resumeSettleDrift = sessionDriftReason()
+
+        if (resumeSettleDrift) {
           return abortForSessionSwitch(sessionId)
         }
 
@@ -482,7 +481,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
+              session_id: routedStoredSessionId,
               source: 'desktop'
             })
 

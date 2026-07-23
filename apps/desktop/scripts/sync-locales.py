@@ -84,6 +84,11 @@ def should_skip(key: str) -> bool:
 
 # ── JSON → nested TS conversion ────────────────────────────────
 
+NUMERIC_PARAMS: set[str] = {'count', 'n', 'total'}
+
+def _param_type(name: str) -> str:
+    return 'number' if name in NUMERIC_PARAMS else 'string'
+
 def flat_to_nested(flat: dict) -> dict:
     tree = {}
     for orig_key, value in flat.items():
@@ -98,9 +103,11 @@ def flat_to_nested(flat: dict) -> dict:
                     if params:
                         ts_val = re.sub(r'\{(\w+)\}', r'${\1}', value)
                         if len(params) == 1:
-                            cur[part] = f'__FN__:{params[0]} => `{ts_val}`'
+                            pt = _param_type(params[0])
+                            cur[part] = f'__FN__:({params[0]}: {pt}) => `{ts_val}`'
                         else:
-                            cur[part] = f'__FN__:({", ".join(params)}) => `{ts_val}`'
+                            typed_params = ', '.join(f'{p}: {_param_type(p)}' for p in params)
+                            cur[part] = f'__FN__:({typed_params}) => `{ts_val}`'
                     else:
                         cur[part] = value
                 else:

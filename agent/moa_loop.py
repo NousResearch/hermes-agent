@@ -1268,3 +1268,58 @@ class MoAClient:
         return self.chat.completions.consume_and_save_trace(
             session_id, aggregator_output_fallback=aggregator_output_fallback
         )
+
+
+def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
+    """Build the MoA facade client for ``agent``, wiring the reference relay.
+
+    Single construction point for ``MoAClient`` wherever the agent's shared
+    client is (re)built: initial setup (``agent_init``), turn-start fallback
+    restore (``restore_primary_runtime``), transient transport recovery
+    (``try_recover_primary_transport``), and mid-session model switches
+    (``switch_model``).
+
+    Constructing a bare ``MoAClient(preset)`` at any of those sites silently
+    drops the ``reference_callback`` relay that ``agent_init`` wires to
+    ``agent.tool_progress_callback`` — after a fallback+restore cycle the
+    facade would still work, but every frontend (CLI spinner, TUI, desktop,
+    gateway) would stop receiving ``moa.reference`` / ``moa.aggregating``
+    display events for the rest of the session (#53802).
+
+    The relay reads ``agent.tool_progress_callback`` at *emit* time, so a
+    callback attached after client construction is picked up automatically.
+    Best-effort and display-only — it never raises into the model call.
+    """
+    def _moa_reference_relay(event: str, **kwargs: Any) -> None:
+        cb = getattr(agent, "tool_progress_callback", None)
+        if cb is None:
+            return
+        try:
+            if event == "moa.reference":
+                label = str(kwargs.get("label") or "")
+                text = str(kwargs.get("text") or "")
+                idx = kwargs.get("index")
+                count = kwargs.get("count")
+                cb(
+                    "moa.reference",
+                    label,
+                    text,
+                    None,
+                    moa_index=idx,
+                    moa_count=count,
+                )
+            elif event == "moa.aggregating":
+                cb(
+                    "moa.aggregating",
+                    str(kwargs.get("aggregator") or ""),
+                    None,
+                    None,
+                    moa_ref_count=kwargs.get("ref_count"),
+                )
+        except Exception:
+            pass
+
+    return MoAClient(
+        str(preset_name or getattr(agent, "model", None) or "default"),
+        reference_callback=_moa_reference_relay,
+    )

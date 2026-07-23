@@ -1225,6 +1225,14 @@ def try_recover_primary_transport(
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
+        elif (agent.provider or "").strip().lower() == "moa":
+            # MoA is a virtual provider with empty client_kwargs — rebuilding
+            # via _create_openai_client would raise "api_key client option
+            # must be set". Recreate the facade through the shared factory so
+            # the reference_callback relay survives recovery (#53802).
+            from agent.moa_loop import build_moa_facade
+
+            agent.client = build_moa_facade(agent, agent.model)
         else:
             agent.client = agent._create_openai_client(
                 dict(rt["client_kwargs"]),
@@ -1391,10 +1399,13 @@ def restore_primary_runtime(agent) -> bool:
         if agent.provider == "moa":
             # MoA is a virtual chat-completions provider.  It never has real
             # OpenAI client kwargs; restoring it after a fallback must recreate
-            # the facade, not call OpenAI() with an empty api_key.
-            from agent.moa_loop import MoAClient
+            # the facade, not call OpenAI() with an empty api_key.  Use the
+            # shared factory so the restored facade keeps the reference_callback
+            # relay wired at init — a bare MoAClient() would silently stop
+            # emitting moa.reference/moa.aggregating display events (#53802).
+            from agent.moa_loop import build_moa_facade
 
-            agent.client = MoAClient(agent.model or "default")
+            agent.client = build_moa_facade(agent, agent.model)
             agent._anthropic_client = None
         elif agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -2132,7 +2143,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
         # ── Build new client ──
         if (new_provider or "").strip().lower() == "moa":
-            from agent.moa_loop import MoAClient
+            from agent.moa_loop import build_moa_facade
 
             # The MoA virtual provider speaks only chat.completions via the
             # MoAClient facade — the aggregator's real transport
@@ -2149,7 +2160,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
-            agent.client = MoAClient(agent.model or "default")
+            agent.client = build_moa_facade(agent, agent.model)
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

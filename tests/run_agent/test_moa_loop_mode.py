@@ -141,6 +141,80 @@ moa:
     assert getattr(agent, "_fallback_activated") is False
 
 
+def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path):
+    """A restored MoA facade must keep the reference_callback relay wired.
+
+    Regression for the naive-rebuild flaw in the original #53802 approach:
+    ``MoAClient(preset)`` without ``reference_callback`` restores a *working*
+    facade that silently stops emitting ``moa.reference``/``moa.aggregating``
+    display events for the rest of the session. The shared ``build_moa_facade``
+    factory rewires the relay to ``agent.tool_progress_callback`` on restore.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
+    )
+
+    # Simulate a fallback to a real provider, then restore.
+    setattr(agent, "_fallback_activated", True)
+    setattr(agent, "provider", "zai")
+    setattr(agent, "model", "glm-5.2")
+    agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+    agent.api_key = "fallback-key"
+    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
+    assert agent._restore_primary_runtime() is True
+
+    # The relay reads tool_progress_callback at emit time — attach a recorder
+    # and fire the facade's internal _emit exactly as the fan-out does.
+    events = []
+
+    def record_progress(event, *args, **kwargs):
+        events.append((event, args, kwargs))
+
+    agent.tool_progress_callback = record_progress
+    completions = agent.client.chat.completions
+    assert completions.reference_callback is not None, (
+        "restored MoA facade lost its reference_callback relay"
+    )
+    completions._emit(
+        "moa.reference", index=0, count=1, label="openai-codex/gpt-5.5", text="advice"
+    )
+    completions._emit("moa.aggregating", aggregator="openrouter", ref_count=1)
+
+    assert [e[0] for e in events] == ["moa.reference", "moa.aggregating"]
+    ref_event = events[0]
+    assert ref_event[1][0] == "openai-codex/gpt-5.5"
+    assert ref_event[1][1] == "advice"
+    assert ref_event[2] == {"moa_index": 0, "moa_count": 1}
+
+
 def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
     """MoA must not inject an output cap on reference or aggregator calls.
 

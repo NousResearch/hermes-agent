@@ -498,6 +498,75 @@ def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):
     relay_runtime._reset_for_tests()
 
 
+def test_tool_intercept_bypass_does_not_create_relay_host(monkeypatch):
+    relay_runtime._reset_for_tests()
+    imports = []
+
+    def load_relay():
+        imports.append("nemo_relay")
+        raise AssertionError("disabled helper created Relay host")
+
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
+    args = {"command": "true"}
+
+    assert (
+        relay_runtime.apply_tool_request_intercepts(
+            session_id="s1",
+            tool_name="terminal",
+            args=args,
+        )
+        is args
+    )
+    assert relay_runtime.get_host(create=False) is None
+    assert imports == []
+
+
+def test_profile_key_caches_absolute_path_resolution(monkeypatch):
+    relay_runtime._reset_for_tests()
+
+    class Home:
+        def __init__(self):
+            self.resolve_calls = 0
+
+        def expanduser(self):
+            return self
+
+        def is_absolute(self):
+            return True
+
+        def resolve(self):
+            self.resolve_calls += 1
+            return self
+
+        def __str__(self):
+            return "/profiles/cached"
+
+    home = Home()
+    monkeypatch.setattr(relay_runtime, "get_hermes_home", lambda: home)
+
+    assert relay_runtime.current_profile_key() == "/profiles/cached"
+    assert relay_runtime.current_profile_key() == "/profiles/cached"
+    assert home.resolve_calls == 1
+
+
+def test_host_registry_reads_existing_host_without_lock():
+    registry = relay_runtime.RelayHostRegistry()
+    host = relay_runtime.NoopRelayRuntime("profile", "test")
+    registry._hosts["profile"] = host
+
+    class UnexpectedLock:
+        def __enter__(self):
+            raise AssertionError("registry read acquired the write lock")
+
+        def __exit__(self, *_args):
+            return False
+
+    registry._lock = UnexpectedLock()
+
+    assert registry.for_profile("profile", create=False) is host
+    assert registry.for_profile("missing", create=False) is None
+
+
 def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, caplog):
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()

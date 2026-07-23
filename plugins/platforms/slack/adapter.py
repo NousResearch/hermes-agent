@@ -1625,17 +1625,11 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 # Warn if the token file is world- or group-readable — it
                 # contains plaintext bot tokens for all saved workspaces.
-                import stat as _stat
+                from utils import warn_if_credential_file_broadly_readable
 
-                mode = tokens_file.stat().st_mode
-                if mode & (_stat.S_IRGRP | _stat.S_IROTH):
-                    logger.warning(
-                        "[Slack] %s is group/world-readable (mode 0%o). "
-                        "Run: chmod 600 %s",
-                        tokens_file.name,
-                        _stat.S_IMODE(mode),
-                        tokens_file,
-                    )
+                warn_if_credential_file_broadly_readable(
+                    tokens_file, label="[Slack]", log=logger
+                )
                 saved = json.loads(tokens_file.read_text(encoding="utf-8"))
                 for team_id, entry in saved.items():
                     tok = entry.get("token", "") if isinstance(entry, dict) else ""
@@ -7199,13 +7193,42 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             return False
 
+    # Hostname suffixes Slack serves file content from. ``url_private`` /
+    # ``url_private_download`` values in file objects always point at the
+    # Slack CDN (``files.slack.com``, Enterprise Grid variants under
+    # ``*.slack.com``, and the legacy public-share ``*.slack-files.com``).
+    # The download helpers below attach the bot token as a Bearer header, so
+    # a forged file object from a malicious workspace app or a compromised
+    # event stream could otherwise exfiltrate the token to ANY public host —
+    # a hole the generic private-IP SSRF check cannot close.
+    _SLACK_CDN_HOST_SUFFIXES = (".slack.com", ".slack-files.com")
+    _SLACK_CDN_EXACT_HOSTS = frozenset({"slack.com", "slack-files.com"})
+
+    @classmethod
+    def _is_slack_cdn_url(cls, url: str) -> bool:
+        """Return True when *url* is an https URL on a Slack CDN host."""
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
+        if parsed.scheme != "https":
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return False
+        return host in cls._SLACK_CDN_EXACT_HOSTS or host.endswith(
+            cls._SLACK_CDN_HOST_SUFFIXES
+        )
+
     async def _download_slack_file(
         self, url: str, ext: str, audio: bool = False, team_id: str = ""
     ) -> str:
         """Download a Slack file using the bot token for auth, with retry."""
         import httpx
         from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
 
         # SSRF guard: the download attaches the bot token, so a URL that
         # resolves to (or 3xx-redirects into) a private/internal address would
@@ -7217,13 +7240,28 @@ class SlackAdapter(BasePlatformAdapter):
                 f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
             )
 
+        # Tighter than the generic SSRF check: these URLs come from Slack file
+        # objects (``url_private`` / ``url_private_download``) and legitimately
+        # only ever point at the Slack CDN. Refusing everything else stops a
+        # forged file object from steering the Bearer-token download at an
+        # arbitrary public host (token exfiltration), which the private-IP
+        # check alone cannot prevent.
+        if not self._is_slack_cdn_url(url):
+            raise ValueError(
+                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
+                f"{safe_url_for_log(url)}"
+            )
+
         bot_token = (
             self._team_clients[team_id].token
             if team_id and team_id in self._team_clients
             else self.config.token
         )
 
-        async with httpx.AsyncClient(
+        # DNS-pinned client: resolve + validate once, dial the vetted IP
+        # (closes the DNS-rebinding TOCTOU window between is_safe_url and
+        # TCP connect — the redirect hook still re-validates every hop).
+        async with create_ssrf_safe_async_client(
             timeout=30.0,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
@@ -7277,7 +7315,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Download a Slack file and return raw bytes, with retry."""
         import httpx
         from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
 
         # SSRF guard (CWE-918): see _download_slack_file. This sibling path
         # also attaches the bot token and must validate the destination plus
@@ -7287,13 +7325,23 @@ class SlackAdapter(BasePlatformAdapter):
                 f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
             )
 
+        # Slack-CDN allowlist — see _download_slack_file for the rationale.
+        if not self._is_slack_cdn_url(url):
+            raise ValueError(
+                "Blocked non-Slack-CDN file URL (token-exfiltration protection): "
+                f"{safe_url_for_log(url)}"
+            )
+
         bot_token = (
             self._team_clients[team_id].token
             if team_id and team_id in self._team_clients
             else self.config.token
         )
 
-        async with httpx.AsyncClient(
+        # DNS-pinned client: resolve + validate once, dial the vetted IP
+        # (closes the DNS-rebinding TOCTOU window between is_safe_url and
+        # TCP connect — the redirect hook still re-validates every hop).
+        async with create_ssrf_safe_async_client(
             timeout=30.0,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},

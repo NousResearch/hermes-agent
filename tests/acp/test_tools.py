@@ -689,3 +689,74 @@ class TestExtractLocations:
         args = {"command": "echo hi"}
         locs = extract_locations(args)
         assert locs == []
+
+
+# ---------------------------------------------------------------------------
+# read_file fence truncation
+# ---------------------------------------------------------------------------
+
+
+class TestReadFileFenceTruncation:
+    def _read_file_text(self, content: str) -> str:
+        import json
+
+        result = build_tool_complete(
+            "tc-fence",
+            "read_file",
+            json.dumps({"content": content, "path": "big.txt"}),
+            function_args={"path": "big.txt"},
+        )
+        return result.content[0].content.text
+
+    def test_short_payload_is_fenced_and_untruncated(self):
+        text = self._read_file_text("1| hello\n2| world")
+        fence_lines = [ln for ln in text.splitlines() if ln and set(ln) == {"`"}]
+        assert len(fence_lines) == 2
+        assert "truncated" not in text
+
+    def test_long_payload_keeps_closing_fence(self):
+        content = "\n".join(f"{i:4}| line {i} of a fairly long file" for i in range(400))
+        assert len(content) > 5000
+        text = self._read_file_text(content)
+        assert len(text) <= 5000
+        lines = text.splitlines()
+        fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
+        # Both the opening and the closing fence must survive truncation.
+        assert len(fence_lines) == 2
+        assert fence_lines[0] == fence_lines[1]
+        # The truncation note must sit after the closing fence, not inside it.
+        assert lines[-1].startswith("... (")
+        assert lines[-2] == fence_lines[1]
+        assert f"({len(content)} chars total, truncated)" in lines[-1]
+
+    def test_long_payload_with_backticks_keeps_fence_unbroken(self):
+        chunk = "1| some text with a ```python fence inside\n"
+        content = chunk * 200
+        assert len(content) > 5000
+        text = self._read_file_text(content)
+        assert len(text) <= 5000
+        lines = text.splitlines()
+        fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
+        assert len(fence_lines) == 2
+        assert len(fence_lines[0]) > 3
+
+    def test_wide_fence_still_respects_size_cap(self):
+        # A 1,000-char interior backtick-delimited segment widens the fence to
+        # ~1,001 backticks on both sides, so a fixed content reserve overshoots
+        # the UI size cap even though the fence stays paired. The rendered
+        # block (header + fences + note included) must stay within the limit.
+        content = (
+            "1| prefix line\n"
+            + "2| `" + "x" * 1000 + "`\n"
+            + "".join(f"{i}| filler line of ordinary text\n" for i in range(3, 600))
+        )
+        assert len(content) > 5000
+        text = self._read_file_text(content)
+        assert len(text) <= 5000
+        lines = text.splitlines()
+        fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
+        assert len(fence_lines) == 2
+        assert fence_lines[0] == fence_lines[1]
+        assert len(fence_lines[0]) > 1000
+        assert lines[-1].startswith("... (")
+        assert lines[-2] == fence_lines[1]

@@ -566,14 +566,21 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
                         None,
                     )
                     source = plugin.get("source") if plugin else "user"
+                    # Membership counts both the manifest name and the
+                    # install-directory key, matching the loader's
+                    # back-compat lookup (an unknown plugin keeps the
+                    # URL-derived name only, and blocks).
+                    gate_ids = (
+                        _plugin_gate_ids(plugin) if plugin else {plugin_name}
+                    )
                     if source == "user":
-                        if plugin_name in disabled_set or plugin_name not in enabled_set:
+                        if gate_ids & disabled_set or not (gate_ids & enabled_set):
                             return JSONResponse(
                                 status_code=404,
                                 content={"detail": "Plugin not found"},
                             )
                     elif source == "bundled":
-                        if plugin_name in disabled_set:
+                        if gate_ids & disabled_set:
                             return JSONResponse(
                                 status_code=404,
                                 content={"detail": "Plugin not found"},
@@ -18997,6 +19004,11 @@ def _discover_dashboard_plugins() -> list:
                     "source": source,
                     "_dir": str(dashboard_dir),
                     "_api_file": safe_api,
+                    # Install-directory key — the identifier
+                    # ``hermes plugins enable`` writes to
+                    # ``plugins.enabled`` (may differ from the manifest
+                    # ``name``, which doubles as the mount prefix).
+                    "_owner_key": child.name,
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
@@ -19016,6 +19028,15 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
         if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
             _dashboard_plugins_cache = _discover_dashboard_plugins()
     return _dashboard_plugins_cache
+
+
+def _plugin_gate_ids(plugin: dict) -> set:
+    """Identifiers under which ``plugins.enabled``/``disabled`` may
+    reference a dashboard plugin: its manifest ``name`` and its
+    install-directory key (what ``hermes plugins enable`` writes) —
+    the same "accept both" back-compat lookup the agent loader uses.
+    """
+    return {plugin.get("name", ""), plugin.get("_owner_key", "")} - {""}
 
 
 @app.get("/api/dashboard/plugins")
@@ -19040,13 +19061,14 @@ async def get_dashboard_plugins():
         name = p.get("name", "")
         if name in hidden:
             return False
+        ids = _plugin_gate_ids(p)
         if p.get("source") == "user":
-            if name in disabled_set:
+            if ids & disabled_set:
                 return False
-            if name not in enabled_set:
+            if not (ids & enabled_set):
                 return False
         elif p.get("source") == "bundled":
-            if name in disabled_set:
+            if ids & disabled_set:
                 return False
         return True
 
@@ -19365,11 +19387,12 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     except Exception:
         enabled_set = set()
         disabled_set = set()
+    gate_ids = _plugin_gate_ids(plugin)
     if plugin.get("source") == "user":
-        if plugin_name in disabled_set or plugin_name not in enabled_set:
+        if gate_ids & disabled_set or not (gate_ids & enabled_set):
             raise HTTPException(status_code=404, detail="Plugin not found")
     elif plugin.get("source") == "bundled":
-        if plugin_name in disabled_set:
+        if gate_ids & disabled_set:
             raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])
@@ -19456,23 +19479,28 @@ def _mount_plugin_api_routes():
         # Gate: user plugins must be in plugins.enabled and not in
         # plugins.disabled before we import their Python code.
         # Bundled plugins are trusted (they ship with the release) but
-        # still respect an explicit disable.
+        # still respect an explicit disable.  Membership counts both the
+        # manifest name and the install-directory key, matching the
+        # agent loader's back-compat lookup.  Skips log at INFO: an
+        # enabled-but-unmounted plugin presents as its API 404ing, and
+        # a DEBUG-level skip leaves no trace of why.
+        gate_ids = _plugin_gate_ids(plugin)
         if plugin.get("source") == "user":
-            if plugin_name in disabled_set:
-                _log.debug(
+            if gate_ids & disabled_set:
+                _log.info(
                     "Plugin %s: skipping API mount (explicitly disabled)",
                     plugin_name,
                 )
                 continue
-            if plugin_name not in enabled_set:
-                _log.debug(
+            if not (gate_ids & enabled_set):
+                _log.info(
                     "Plugin %s: skipping API mount (not in plugins.enabled)",
                     plugin_name,
                 )
                 continue
         elif plugin.get("source") == "bundled":
-            if plugin_name in disabled_set:
-                _log.debug(
+            if gate_ids & disabled_set:
+                _log.info(
                     "Plugin %s: skipping API mount (explicitly disabled)",
                     plugin_name,
                 )

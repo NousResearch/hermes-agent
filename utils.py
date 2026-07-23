@@ -35,6 +35,49 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def _skip_config_yaml_mode_cap() -> bool:
+    """True when the config.yaml 0600 cap in atomic_yaml_write should be skipped.
+
+    Mirrors hermes_cli.config._secure_file's own managed/container checks: the
+    NixOS module deliberately sets config.yaml to group-readable 0640 so
+    interactive users in the ``hermes`` group can read it alongside the
+    gateway service, and containers with volume-mounted config often need the
+    gateway/dashboard -- running as different UIDs -- to both reach it.
+    Capping to 0600 would silently fight both of those documented sharing
+    setups. Lazy import avoids a hard dependency from this lower-level module
+    on hermes_cli.config.
+    """
+    try:
+        from hermes_cli.config import is_managed, _is_container
+    except ImportError:
+        return False
+    return is_managed() or _is_container()
+
+
+def _is_canonical_hermes_config_yaml(path: Path) -> bool:
+    """True when *path* is Hermes's own config.yaml, not just same-named.
+
+    ``atomic_yaml_write()`` is a generic arbitrary-path YAML writer (Docker/NAS
+    installs route other YAML files through it too), so matching on basename
+    alone would also cap the mode of unrelated files that happen to be named
+    ``config.yaml`` elsewhere. Comparing against the profile-aware canonical
+    path (``hermes_cli.config.get_config_path()``, which honors ``HERMES_HOME``
+    and active-profile resolution) scopes the 0600 cap to Hermes's own config.
+    Lazy import avoids a hard dependency from this lower-level module on
+    hermes_cli.config.
+    """
+    if path.name != "config.yaml":
+        return False
+    try:
+        from hermes_cli.config import get_config_path
+    except ImportError:
+        return False
+    try:
+        return path.resolve() == get_config_path().resolve()
+    except OSError:
+        return False
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Capture the permission bits of *path* if it exists, else ``None``."""
     try:
@@ -291,6 +334,21 @@ def atomic_yaml_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
+    if (
+        original_mode is not None
+        and _is_canonical_hermes_config_yaml(path)
+        and not _skip_config_yaml_mode_cap()
+    ):
+        # config.yaml must never round-trip wider than 0600, even if it was
+        # ever created wider (pre-hardening install, a HERMES_HOME_MODE
+        # window, a manual chmod). save_config() enforces 0600 with a final
+        # _secure_file() chmod, but several other call sites write
+        # config.yaml through this function directly (slash commands, auth,
+        # doctor migrations, onboarding) without that follow-up -- capping
+        # here closes the gap for all of them at the source instead of
+        # relying on every call site to remember it. Skipped in
+        # managed/container mode (see _skip_config_yaml_mode_cap).
+        original_mode &= 0o600
     original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(

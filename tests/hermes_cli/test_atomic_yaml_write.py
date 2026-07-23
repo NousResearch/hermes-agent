@@ -1,5 +1,8 @@
 """Tests for utils.atomic_yaml_write — crash-safe YAML file writes."""
 
+import os
+import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -74,3 +77,102 @@ class TestAtomicYamlWrite:
         assert "(=^･ω･^=)" in text
         # And it reloads to exactly what was written.
         assert yaml.safe_load(text) == data
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="POSIX mode bits not enforced on Windows",
+)
+class TestConfigYamlModeCap:
+    """config.yaml must never round-trip wider than 0600 through this
+    function, even for call sites that write it directly without following
+    up with hermes_cli.config._secure_file() (slash commands, auth, doctor
+    migrations, onboarding all do this today).
+
+    Without the cap, a config.yaml that was ever wide (pre-hardening
+    install, a HERMES_HOME_MODE window, a manual chmod) stays wide forever
+    through those call sites, because _restore_file_mode() otherwise
+    round-trips whatever mode the file had before the write.
+    """
+
+    def _mode(self, path) -> int:
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def test_wide_preexisting_config_yaml_is_capped_to_0600(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "config.yaml"
+        target.write_text("agent:\n  system_prompt: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"agent": {"system_prompt": "new"}})
+
+        assert self._mode(target) == 0o600
+
+    def test_new_config_yaml_is_0600(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "config.yaml"
+
+        atomic_yaml_write(target, {"agent": {"system_prompt": "hello"}})
+
+        assert self._mode(target) == 0o600
+
+    def test_non_config_yaml_file_mode_still_preserved(self, tmp_path, monkeypatch):
+        """Sanity check: the cap is name-scoped to config.yaml -- it must not
+        regress the Docker/NAS mode-preservation behavior for other files."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "other.yaml"
+        target.write_text("key: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"key": "new"})
+
+        assert self._mode(target) == 0o666
+
+    def test_unrelated_config_yaml_outside_hermes_home_still_preserved(self, tmp_path, monkeypatch):
+        """The cap is scoped to Hermes's own config.yaml (get_config_path()),
+        not any file that happens to share the basename. A Docker/NAS install
+        writing an unrelated config.yaml through this generic YAML writer
+        must keep its existing mode-preservation behavior unchanged."""
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        unrelated_dir = tmp_path / "unrelated_app"
+        unrelated_dir.mkdir()
+        target = unrelated_dir / "config.yaml"
+        target.write_text("key: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"key": "new"})
+
+        assert self._mode(target) == 0o666
+
+    def test_managed_mode_skips_cap(self, tmp_path, monkeypatch):
+        """The NixOS module sets config.yaml to group-readable 0640 so
+        interactive users in the 'hermes' group can read it alongside the
+        gateway service (hermes_cli.config._secure_file's documented
+        behavior). Capping to 0600 would silently fight that sharing --
+        the cap must be a no-op in managed mode, same as _secure_file()."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "config.yaml"
+        target.write_text("agent:\n  system_prompt: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        with patch("hermes_cli.config.is_managed", return_value=True):
+            atomic_yaml_write(target, {"agent": {"system_prompt": "new"}})
+
+        assert self._mode(target) == 0o666
+
+    def test_container_mode_skips_cap(self, tmp_path, monkeypatch):
+        """Same as managed mode: containers with volume-mounted config often
+        need the gateway/dashboard (different UIDs) to both reach it -- see
+        hermes_cli.config._is_container's docstring."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CONTAINER", "1")
+        target = tmp_path / "config.yaml"
+        target.write_text("agent:\n  system_prompt: old\n", encoding="utf-8")
+        os.chmod(target, 0o666)
+
+        atomic_yaml_write(target, {"agent": {"system_prompt": "new"}})
+
+        assert self._mode(target) == 0o666

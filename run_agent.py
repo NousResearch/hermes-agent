@@ -5584,6 +5584,15 @@ class AIAgent:
             )
 
         self._anthropic_image_fallback_cache[cache_key] = note
+        # Bound per-agent image-description cache so a long-lived session
+        # doesn't accumulate one entry per distinct image (esp. base64 data:
+        # URLs, each with a unique hash) forever. Plain dict is insertion-
+        # ordered on 3.7+, so next(iter(...)) yields the oldest key. #leak-fix
+        _IMG_FALLBACK_CACHE_MAX = 128
+        if len(self._anthropic_image_fallback_cache) > _IMG_FALLBACK_CACHE_MAX:
+            self._anthropic_image_fallback_cache.pop(
+                next(iter(self._anthropic_image_fallback_cache))
+            )
         return note
 
     def _model_supports_vision(self) -> bool:

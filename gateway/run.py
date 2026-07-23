@@ -2074,6 +2074,11 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # and run_sync) must not leak into a future conversation's first user
     # message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes",
+    # Native image paths staged for a session that never consumed them
+    # (turn aborted, platform delivery dropped) otherwise accumulate for
+    # the gateway lifetime with no eviction. Conversation-scoped like the
+    # siblings above. #leak-fix
+    "_pending_native_image_paths_by_session",
 )
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
@@ -8638,6 +8643,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self._clear_conversation_scope(
                             key, reason="expiry_finalized"
                         )
+                        # _session_run_generation is deliberately NOT in
+                        # _CONVERSATION_SCOPED_STATE (clearing it at /new or
+                        # /resume would reset the monotonic counter and break
+                        # stale-run detection, #28686). But at expiry
+                        # finalization the session is permanently dead — it
+                        # will never be resumed — so the entry is pure leak
+                        # with no correctness value. Pop it here only. #leak-fix
+                        _srg = getattr(self, "_session_run_generation", None)
+                        if isinstance(_srg, dict):
+                            _srg.pop(key, None)
                         # Persist the finalized flag to sessions.json AND
                         # state.db (single write-path, #9006) — also drops
                         # the persisted /model override, since finalization

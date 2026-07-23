@@ -244,6 +244,8 @@ class QQAdapter(BasePlatformAdapter):
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
+        # Strong-ref set for tracked background tasks (see _create_task).
+        self._background_tasks: set = set()
 
         # Inline-keyboard interaction routing. The callback (if set) is invoked
         # for every INTERACTION_CREATE event after the adapter has already
@@ -799,18 +801,24 @@ class QQAdapter(BasePlatformAdapter):
             self._session_id = None
             self._last_seq = None
 
-    @staticmethod
-    def _create_task(coro):
-        """Schedule a coroutine, silently skipping if no event loop is running.
+    def _create_task(self, coro):
+        """Schedule a coroutine, tracking it so the event loop's weak task
+        reference cannot GC it mid-await (which would silently drop the
+        message and swallow exceptions). Silently skip if no event loop is
+        running (tests call _dispatch_payload synchronously outside
+        asyncio.run()). #leak-fix
 
-        This avoids ``RuntimeError: no running event loop`` when tests call
-        ``_dispatch_payload`` synchronously outside of ``asyncio.run()``.
+        Was @staticmethod returning an untracked task; now an instance method
+        holding a strong ref until completion via a done-callback.
         """
         try:
             loop = asyncio.get_running_loop()
-            return loop.create_task(coro)
         except RuntimeError:
             return None
+        task = loop.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
@@ -854,7 +862,7 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
             }:
-                asyncio.create_task(self._on_message(t, d))
+                self._create_task(self._on_message(t, d))
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
             else:

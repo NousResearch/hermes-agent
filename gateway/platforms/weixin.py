@@ -1226,12 +1226,29 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Strong-ref set for fire-and-forget background tasks so the event
+        # loop's weak reference doesn't GC them mid-await (silent message
+        # loss / swallowed exceptions). Discarded via done-callback. #leak-fix
+        self._background_tasks: set = set()
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+
+    def _track_task(self, coro) -> "asyncio.Task":
+        """Create a tracked background task.
+
+        Holds a strong reference until completion so the event loop's weak
+        task reference cannot GC the coroutine mid-await (which would
+        silently drop the message and swallow exceptions). Mirrors the
+        yuanbao adapter's _track_task pattern. #leak-fix
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
@@ -1385,7 +1402,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
 
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._track_task(self._process_message_safe(message))
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1436,7 +1453,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
-        asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+        self._track_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
         media_paths: List[str] = []
         media_types: List[str] = []

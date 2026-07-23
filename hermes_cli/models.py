@@ -371,6 +371,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
+    # Vertex has no /models discovery endpoint (see plugins/model-providers/
+    # vertex: fetch_models returns None by design), so without a curated entry
+    # here provider_model_ids("vertex") returns [] and the /model picker's
+    # vertex row enumerates zero models. Exact publisher-qualified IDs only:
+    # bare aliases 404 on the Vertex OpenAI-compat surface.
+    "vertex": [
+        "google/gemini-3.5-flash",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3-flash-preview",
+        "deepseek-ai/deepseek-v3.2-maas",
+    ],
     "anthropic": [
         "claude-fable-5",
         "claude-sonnet-5",

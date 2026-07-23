@@ -2914,14 +2914,18 @@ def run_job(
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
-
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
     from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+
+    # Mark this as a cron session via ContextVar (task-local) so the
+    # approval system can apply cron_mode.  Using a ContextVar instead of
+    # process-global os.environ keeps the flag scoped to THIS cron job's
+    # execution context — concurrent user-interactive sessions in the same
+    # gateway process never see it (#73195).  The value is "1" to match
+    # the legacy os.environ truthiness contract (env_var_enabled returns
+    # True when the value is truthy).
+    _VAR_MAP["HERMES_CRON_SESSION"].set("1")
 
     # Cron execution is an internal scheduler context, not a live inbound
     # gateway message. Do not seed HERMES_SESSION_* contextvars from the

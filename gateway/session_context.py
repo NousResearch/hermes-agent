@@ -120,6 +120,30 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Cron session flag — task-local replacement for the old process-global
+# os.environ["HERMES_CRON_SESSION"].  When the scheduler runs inside a
+# gateway process (InProcessCronScheduler), a process-global env var
+<<<<<<< HEAD
+# leaks into user-interactive sessions after the first job runs.  A
+# ContextVar scopes the flag to the cron job's own task/thread.
+#
+# Resolution (mirrors get_session_env):
+#   _UNSET → fall back to os.environ (dedicated cron process compat)
+#   "1"    → this task is a cron session
+#   ""     → explicitly cleared (suppress os.environ fallback)
+=======
+# leaks the cron flag into user-interactive sessions after the first
+# job runs, blocking execute_code and other cron-gated tools in every
+# subsequent user turn.  A ContextVar scopes the flag to the cron job's
+# own task/thread, so concurrent gateway sessions never see it.
+#
+# Resolution (mirrors the pattern used by HERMES_SESSION_* vars):
+#   _UNSET → fall back to os.environ (dedicated CLI/cron process compat)
+#   "1"    → this task is a cron session
+#   ""     → explicitly cleared (not a cron session, suppress fallback)
+>>>>>>> b673cf605c (fix(cron): migrate HERMES_CRON_SESSION from os.environ to ContextVar)
+_CRON_SESSION_FLAG: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
@@ -136,6 +160,7 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
+    "HERMES_CRON_SESSION": _CRON_SESSION_FLAG,
 }
 
 
@@ -211,6 +236,12 @@ def set_session_vars(
         set_session_cwd(cwd)
     except Exception:
         pass
+    # Gate the cron-session flag: any explicit set_session_vars call
+    # is binding a non-cron session (gateway, TUI, CLI, API server).
+    # Setting the flag to "" suppresses the os.environ fallback so a
+    # leaked HERMES_CRON_SESSION env var from a different process can
+    # never miscategorize a user-interactive session as a cron job.
+    _CRON_SESSION_FLAG.set("")
     return tokens
 
 
@@ -238,6 +269,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
+        _CRON_SESSION_FLAG,
     ):
         var.set("")
     # Reset async-delivery capability to the "never set" sentinel rather than a
@@ -371,3 +403,42 @@ def async_delivery_supported() -> bool:
     if value is _UNSET:
         return True
     return bool(value)
+
+
+def is_cron_session() -> bool:
+    """Whether the current execution context is a cron job.
+
+<<<<<<< HEAD
+    A ContextVar (not process-global ``os.environ``) scopes the flag to
+    the cron job's own task/thread so concurrent gateway sessions never
+    see it.  Falls back to ``os.environ`` for dedicated cron processes.
+
+    Resolution:
+      1. ContextVar — set by ``run_job()`` or ``set_session_vars()``.
+         ``_UNSET`` → fall through.
+      2. ``os.environ`` — dedicated cron process / CLI tests.
+      3. Default: ``False``.
+    """
+    import os
+
+=======
+    Uses a ContextVar (not process-global ``os.environ``) so the flag is
+    scoped to the cron job's own task/thread.  When the scheduler runs
+    inside a gateway process, concurrent user-interactive sessions never
+    see it.
+
+    Resolution order:
+    1. ContextVar — set by ``run_job()`` in the cron scheduler.
+       ``_UNSET`` means "never bound in this context" → fall through.
+    2. ``os.environ`` — fallback for dedicated cron processes (not
+       gateway-co-located) and CLI tests where the session-context
+       system is not engaged.
+    3. Default: ``False``
+    """
+    import os
+    
+>>>>>>> b673cf605c (fix(cron): migrate HERMES_CRON_SESSION from os.environ to ContextVar)
+    value = _CRON_SESSION_FLAG.get()
+    if value is not _UNSET:
+        return value == "1"
+    return os.getenv("HERMES_CRON_SESSION", "") == "1"

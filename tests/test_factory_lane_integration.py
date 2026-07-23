@@ -201,6 +201,68 @@ def test_gate_detects_owned_worktree_referenced_in_terminal_command(wired, tmp_p
         holder.wait(timeout=10)
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["git -C repo status", "cd repo && touch blocked.txt", "touch repo/blocked.txt"],
+)
+def test_gate_detects_relative_worktree_in_terminal_command(
+    wired, tmp_path, monkeypatch, command,
+):
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    make_git_worktree(worktree)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_lane(registry, "admit", "HER-95", "--mode", "owner", "--agent", "default",
+                 "--session", "owner", "--worktree", str(worktree),
+                 "--owner-pid", str(holder.pid), check=True)
+        register_gate(shell_hooks, hook_command(registry, "default"))
+        monkeypatch.chdir(tmp_path)
+
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="terminal", args={"command": command}, session_id="intruder",
+        )
+        assert msg is not None, f"relative terminal target bypassed admission: {command}"
+        assert "HER-95" in msg
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+@pytest.mark.parametrize("relative", [True, False])
+def test_gate_reads_apply_patch_change_paths(wired, tmp_path, monkeypatch, relative):
+    plugins, shell_hooks = wired
+    registry = tmp_path / "registry"
+    worktree = tmp_path / "repo"
+    make_git_worktree(worktree)
+
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        run_lane(registry, "admit", "HER-95", "--mode", "owner", "--agent", "default",
+                 "--session", "owner", "--worktree", str(worktree),
+                 "--owner-pid", str(holder.pid), check=True)
+        register_gate(
+            shell_hooks,
+            hook_command(registry, "default"),
+            matcher="terminal|patch|write_file|str_replace_editor|apply_patch",
+        )
+        monkeypatch.chdir(tmp_path)
+        path = "repo/a.py" if relative else str(worktree / "a.py")
+
+        msg = plugins.get_pre_tool_call_block_message(
+            tool_name="apply_patch",
+            args={"changes": [{"kind": "add", "path": path}]},
+            session_id="intruder",
+        )
+        assert msg is not None, "apply_patch changes[*].path bypassed admission"
+        assert "HER-95" in msg
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
 def test_gate_allows_owning_session_mutation(wired, tmp_path, monkeypatch):
     plugins, shell_hooks = wired
     registry = tmp_path / "registry"

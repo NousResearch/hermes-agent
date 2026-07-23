@@ -1014,6 +1014,35 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert "codex_reasoning_items" not in result
 
+    def test_strict_provider_drops_reasoning_details(self, monkeypatch):
+        """Strict OpenAI-compatible gateways (OpenCode Go relay, Mistral,
+        Fireworks, Moonshot/Kimi) reject reasoning_details with HTTP 400
+        "Extra inputs are not permitted, field: messages[N].reasoning_details".
+        The field must NOT be persisted on assistant messages for these
+        providers, even if the upstream SDK attached it to the response.
+        Regression for opencode-go sub + glm-5.2 user report.
+        """
+        agent = _make_agent(
+            monkeypatch,
+            "opencode-go",
+            api_mode="chat_completions",
+            base_url="https://opencode.ai/zen/go/v1",
+            model="glm-5.2",
+        )
+        msg = SimpleNamespace(
+            content="answer",
+            tool_calls=None,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=[
+                {"type": "thinking", "thinking": "...", "signature": "opaque"},
+            ],
+        )
+        result = agent._build_assistant_message(msg, "stop")
+        # The strict provider does not accept this field, so it must not be
+        # persisted on the assistant message dict.
+        assert "reasoning_details" not in result
+
 
 # ── Auxiliary client provider resolution ─────────────────────────────────────
 

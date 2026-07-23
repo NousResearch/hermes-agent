@@ -215,6 +215,58 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_anthropic_provider_uses_configured_base_url_for_live_catalog(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "enterprise-claude"}]}'
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "anthropic",
+                    "base_url": "http://localhost:6655/anthropic/v1",
+                    "api_key": "proxy-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=_Resp(),
+        ) as mock_urlopen:
+            assert provider_model_ids("anthropic") == ["enterprise-claude"]
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.get_header("X-api-key") == "proxy-key"
+
+    def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "http://localhost:6655/anthropic/v1",
+                    "api_key": "proxy-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["enterprise-claude"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["enterprise-claude"]
+
+        mock_fetch.assert_called_once_with(
+            "proxy-key",
+            "http://localhost:6655/anthropic/v1",
+            api_mode="anthropic_messages",
+        )
+
 
 # -- fetch_api_models --------------------------------------------------------
 
@@ -223,7 +275,7 @@ class TestFetchApiModels:
         assert fetch_api_models("key", None) is None
 
     def test_returns_none_on_network_error(self):
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=Exception("timeout")):
             assert fetch_api_models("key", "https://example.com/v1") is None
 
     def test_probe_api_models_tries_v1_fallback(self):
@@ -245,7 +297,7 @@ class TestFetchApiModels:
                 return _Resp()
             raise Exception("404")
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_fake_urlopen):
             probe = probe_api_models("key", "http://localhost:8000")
 
         assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
@@ -264,7 +316,7 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()) as mock_urlopen:
             probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
 
         assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
@@ -283,7 +335,7 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
             catalog = fetch_github_model_catalog("gh-token")
 
         assert catalog is not None
@@ -372,6 +424,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
+        # Qwen on Zen is served via /v1/messages per the Zen endpoint table.
+        assert opencode_model_api_mode("opencode-zen", "qwen3.7-max") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "qwen3.6-plus") == "anthropic_messages"
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
@@ -384,6 +439,80 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+        # All Qwen models on Go route via /v1/messages (Go endpoint table).
+        assert opencode_model_api_mode("opencode-go", "qwen3.7-plus") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go", "qwen3.6-plus") == "anthropic_messages"
+        # DeepSeek / MiMo on Go are OpenAI-compatible chat completions.
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-pro") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "deepseek-v4-flash") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "mimo-v2.5") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+
+
+class TestNormalizeOpencodeBaseUrl:
+    """Symmetric /v1 normalization for OpenCode Zen / Go base URLs.
+
+    Regression for the 'only minimax works on opencode-go' bug: switching into
+    an anthropic-routed model strips /v1 from the base URL and that stripped
+    URL gets persisted to model.base_url; every later chat_completions model
+    (glm, deepseek, kimi) then POSTed to https://opencode.ai/zen/go/chat/completions
+    — a 404 (the marketing site).  The normalizer must heal a stripped URL.
+    """
+
+    def test_strips_v1_for_anthropic_messages(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/go/v1"
+        ) == "https://opencode.ai/zen/go"
+        assert normalize_opencode_base_url(
+            "opencode-zen", "anthropic_messages", "https://opencode.ai/zen/v1/"
+        ) == "https://opencode.ai/zen"
+
+    def test_strip_is_idempotent(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/go"
+        ) == "https://opencode.ai/zen/go"
+
+    def test_reappends_v1_for_chat_completions(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # The healing case: a stripped URL persisted by a prior anthropic switch.
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/zen/go"
+        ) == "https://opencode.ai/zen/go/v1"
+        assert normalize_opencode_base_url(
+            "opencode-zen", "codex_responses", "https://opencode.ai/zen"
+        ) == "https://opencode.ai/zen/v1"
+
+    def test_reappend_is_idempotent(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/zen/go/v1"
+        ) == "https://opencode.ai/zen/go/v1"
+
+    def test_custom_host_not_suffixed(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        # A user's proxy override without /v1 is left alone (we can't know its
+        # path layout), but the anthropic strip still applies when it has /v1.
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://myproxy.example.com/opencode"
+        ) == "https://myproxy.example.com/opencode"
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://myproxy.example.com/opencode/v1"
+        ) == "https://myproxy.example.com/opencode"
+
+    def test_non_opencode_provider_untouched(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "openrouter", "chat_completions", "https://openrouter.ai/api"
+        ) == "https://openrouter.ai/api"
+
+    def test_empty_url_passthrough(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url("opencode-go", "chat_completions", "") == ""
+        assert normalize_opencode_base_url("opencode-go", "chat_completions", None) == ""
 
 
 class TestAzureFoundryModelApiMode:
@@ -620,9 +749,22 @@ class TestValidateApiFallback:
             b']}'
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_resp):
             models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
 
+        assert models == ["publisher/chat-model"]
+
+    def test_fetch_lmstudio_models_normalizes_native_api_base_url(self):
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+        mock_resp.read.return_value = b'{"models":[{"key":"publisher/chat-model","type":"llm"}]}'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_resp) as mock_urlopen:
+            models = fetch_lmstudio_models(base_url="http://localhost:1234/api/v1")
+
+        request = mock_urlopen.call_args[0][0]
+        assert request.full_url == "http://localhost:1234/api/v1/models"
         assert models == ["publisher/chat-model"]
 
     def test_validate_lmstudio_rejects_embedding_models(self):
@@ -636,7 +778,7 @@ class TestValidateApiFallback:
             b']}'
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_resp):
             result = validate_requested_model(
                 "publisher/embed-model",
                 "lmstudio",
@@ -660,7 +802,7 @@ class TestValidateApiFallback:
             fp=None,
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=http_error):
             with pytest.raises(AuthError) as excinfo:
                 fetch_lmstudio_models(base_url="http://localhost:1234/v1")
 
@@ -670,7 +812,7 @@ class TestValidateApiFallback:
 
     def test_fetch_lmstudio_models_returns_empty_on_network_error(self):
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             side_effect=ConnectionRefusedError(),
         ):
             models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
@@ -688,7 +830,7 @@ class TestValidateApiFallback:
             fp=None,
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=http_error):
             result = validate_requested_model(
                 "publisher/chat-model",
                 "lmstudio",
@@ -701,7 +843,7 @@ class TestValidateApiFallback:
 
     def test_validate_lmstudio_distinguishes_unreachable(self):
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             side_effect=ConnectionRefusedError(),
         ):
             result = validate_requested_model(
@@ -768,7 +910,7 @@ class TestProbeApiModelsUserAgent:
 
         body = b'{"data":[{"id":"claude-opus-4.7"}]}'
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=self._make_mock_response(body),
         ) as mock_urlopen:
             result = probe_api_models("sk-test", "https://example.com/v1")
@@ -790,7 +932,7 @@ class TestProbeApiModelsUserAgent:
 
         body = b'{"data":[]}'
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=self._make_mock_response(body),
         ) as mock_urlopen:
             probe_api_models(None, "https://example.com/v1")
@@ -800,3 +942,33 @@ class TestProbeApiModelsUserAgent:
         assert ua and ua.startswith("hermes-cli/")
         # No Authorization was set, but UA must still be present.
         assert req.get_header("Authorization") is None
+
+    def test_probe_sends_client_context_to_gemini(self):
+        from unittest.mock import patch
+        from hermes_cli.models import _HERMES_VERSION
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models(
+                "gemini-key",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("X-goog-api-client") == f"hermes-agent/{_HERMES_VERSION}"
+
+    def test_probe_omits_gemini_client_context_for_other_providers(self):
+        from unittest.mock import patch
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models("provider-key", "https://api.example.com/v1")
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("X-goog-api-client") is None

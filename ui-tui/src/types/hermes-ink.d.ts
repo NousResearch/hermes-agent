@@ -107,6 +107,11 @@ declare module '@hermes/ink' {
   export const TextInput: React.ComponentType<any>
   export const stringWidth: (s: string) => number
   export function isXtermJs(): boolean
+  export function onTerminalBackground(listener: (hex: string) => void): void
+  export function terminalBackgroundHex(): string | undefined
+  export function onTerminalForeground(listener: (hex: string) => void): void
+  export function terminalForegroundHex(): string | undefined
+  export function parseOscColor(data: string): string | undefined
 
   export type ScrollFastPathStats = {
     captured: number
@@ -156,7 +161,10 @@ declare module '@hermes/ink' {
     readonly setSelectionBgColor: (color: string) => void
   }
   export function useHasSelection(): boolean
-  export function useStdout(): { readonly stdout?: NodeJS.WriteStream }
+  export function useStdout(): {
+    readonly stdout?: NodeJS.WriteStream
+    readonly write: (data: string) => boolean
+  }
   export function useTerminalFocus(): boolean
   export function useTerminalTitle(title: string | null): void
   export function useDeclaredCursor(args: {

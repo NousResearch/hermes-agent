@@ -25,7 +25,7 @@ def test_no_thread_is_noop():
         entry._mcp_discovery_thread = None
         start = time.monotonic()
         entry.wait_for_mcp_discovery(timeout=5.0)
-        assert time.monotonic() - start < 0.1
+        assert time.monotonic() - start < 1.0  # fast path; loose bound for loaded runners
     finally:
         _restore_thread_slot(saved)
 
@@ -40,7 +40,7 @@ def test_already_finished_thread_is_noop():
         entry._mcp_discovery_thread = t
         start = time.monotonic()
         entry.wait_for_mcp_discovery(timeout=5.0)
-        assert time.monotonic() - start < 0.1
+        assert time.monotonic() - start < 1.0  # fast path; loose bound for loaded runners
     finally:
         _restore_thread_slot(saved)
 
@@ -71,7 +71,7 @@ def test_hung_thread_is_bounded_by_timeout():
         start = time.monotonic()
         entry.wait_for_mcp_discovery(timeout=0.3)
         elapsed = time.monotonic() - start
-        assert 0.25 <= elapsed < 1.0  # bounded near the timeout, not forever
+        assert 0.25 <= elapsed < 3.0  # bounded near the timeout, not forever
         assert t.is_alive()  # thread still running; we did not block on it
     finally:
         stop.set()

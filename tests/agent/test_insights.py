@@ -320,6 +320,76 @@ class TestInsightsPopulated:
         claude = next(m for m in models if "claude-sonnet" in m["model"])
         assert claude["sessions"] == 2
 
+    def test_model_breakdown_splits_mid_session_switch(self, db):
+        """A session that switches models mid-flight is split across both
+        models in the breakdown, not dumped on the initial model (#51607).
+        """
+        now = time.time()
+        db.create_session(session_id="sw", source="cli",
+                          model="deepseek/deepseek-v4-pro")
+        # 40k tokens on deepseek, then switch and 50k on opus.
+        db.update_token_counts("sw", input_tokens=40000, output_tokens=8000,
+                               model="deepseek/deepseek-v4-pro",
+                               billing_provider="deepseek", api_call_count=2)
+        db.update_session_model("sw", "anthropic/claude-opus-4.8")
+        db.update_token_counts("sw", input_tokens=50000, output_tokens=4000,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="openrouter", api_call_count=3)
+        db._conn.commit()
+
+        report = InsightsEngine(db).generate(days=30)
+        models = {m["model"]: m for m in report["models"]}
+        assert "deepseek-v4-pro" in models
+        assert "claude-opus-4.8" in models
+        # Tokens attributed to the model that actually incurred them.
+        assert models["deepseek-v4-pro"]["input_tokens"] == 40000
+        assert models["claude-opus-4.8"]["input_tokens"] == 50000
+        assert models["claude-opus-4.8"]["api_calls"] == 3
+        # The summary row's single model would have hidden one of these.
+        assert models["deepseek-v4-pro"]["total_tokens"] == 48000
+        assert models["claude-opus-4.8"]["total_tokens"] == 54000
+
+    def test_partial_per_model_rows_preserve_session_totals(self, db):
+        """A partial rolling-upgrade row must not hide aggregate residuals."""
+        db.create_session(session_id="partial", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "partial", input_tokens=100, output_tokens=20,
+            model="gpt-4o", billing_provider="openai", api_call_count=1,
+        )
+        db.update_token_counts(
+            "partial", input_tokens=1000, output_tokens=200,
+            model="gpt-4o", billing_provider="openai", api_call_count=10,
+            absolute=True,
+        )
+
+        report = InsightsEngine(db).generate(days=30)
+        model = next(m for m in report["models"] if m["model"] == "gpt-4o")
+        assert model["input_tokens"] == 1000
+        assert model["output_tokens"] == 200
+        assert model["api_calls"] == 10
+        assert sum(m["total_tokens"] for m in report["models"]) == \
+            report["overview"]["total_tokens"]
+
+    def test_overview_cost_matches_per_model_stored_cost(self, db):
+        db.create_session(session_id="cost", source="cli", model="model-a")
+        db.update_token_counts(
+            "cost", input_tokens=10, model="model-a", billing_provider="custom",
+            estimated_cost_usd=1.25, actual_cost_usd=1.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        db.update_session_model("cost", "model-b")
+        db.update_session_billing_route("cost", provider="custom-b", base_url=None)
+        db.update_token_counts(
+            "cost", input_tokens=20, model="model-b", billing_provider="custom-b",
+            estimated_cost_usd=2.5, actual_cost_usd=2.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+
+        report = InsightsEngine(db).generate(days=30)
+        assert sum(m["cost"] for m in report["models"]) == pytest.approx(3.75)
+        assert report["overview"]["estimated_cost"] == pytest.approx(3.75)
+        assert report["overview"]["actual_cost"] == pytest.approx(3.0)
+
     def test_platform_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

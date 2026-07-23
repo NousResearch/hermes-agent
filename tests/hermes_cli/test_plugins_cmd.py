@@ -173,6 +173,54 @@ class TestResolveGitUrl:
         assert url == "git@github.com:owner/repo.git"
         assert subdir == "sub"
 
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo/tree/main",
+            "https://github.com/owner/repo/blob/main/README.md",
+            "https://github.com/owner/repo/pull/123",
+            "https://github.com/owner/repo/commit/abc123def",
+            "https://github.com/owner/repo/releases/tag/v1.0",
+            "https://github.com/owner/repo/issues/42",
+        ],
+    )
+    def test_github_browser_url_normalized_to_repo(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir is None
+
+    @pytest.mark.parametrize(
+        ("identifier", "expected_subdir"),
+        [
+            ("https://github.com/owner/repo/tree/main/plugins/foo", "plugins/foo"),
+            ("https://github.com/owner/repo/tree/feature-branch/plugin", "plugin"),
+            ("https://github.com/owner/repo/tree/main/plugins/foo?plain=1", "plugins/foo"),
+            ("https://github.com/owner/repo.git/tree/main/plugins/foo", "plugins/foo"),
+        ],
+    )
+    def test_github_tree_browser_url_preserves_subdir(self, identifier, expected_subdir):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == expected_subdir
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/branches",
+            "https://github.com/owner//tree/main",
+            "https://gitlab.com/owner/repo/tree/main",
+            "git@github.com:owner/repo.git",
+            "file:///tmp/repo/tree/main",
+        ],
+    )
+    def test_non_browser_urls_passthrough(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == identifier
+        assert subdir is None
+
 
 # ── _resolve_subdir_within ──────────────────────────────────────────────────
 

@@ -1,12 +1,9 @@
 import { cn } from '@/lib/utils'
 
 /**
- * The composer surface and everything docked to it (slash·@ popover, `?` help)
- * paint ONE shared `--composer-fill` var. The state ladder (rest / scrolled /
- * focused / drawer-open) lives in styles.css on `[data-slot='composer-root']`,
- * so the two layers can never disagree — drawer-open forces an opaque fill via
- * `:has()`, because translucent glass sampling different backdrops (thread vs
- * fade gradient) renders as different colors even with identical tints.
+ * The composer surface and the status/queue stack paint ONE shared
+ * `--composer-fill` var. The state ladder (rest / scrolled) lives in styles.css
+ * on `[data-slot='composer-root']`, so the layers can never disagree.
  */
 export const composerFill = 'bg-(--composer-fill)'
 
@@ -26,6 +23,13 @@ const composerDockEdge = (edge: 'bottom' | 'top') =>
 export const composerDockCard = (edge: 'bottom' | 'top' = 'top') =>
   cn(composerDockEdge(edge), composerFill, composerSurfaceGlass)
 
-/** Fused docked card — completion drawers. Shares `--composer-fill` with the
- *  composer surface, which goes opaque while a drawer is open. */
-export const composerFusedDockCard = (edge: 'bottom' | 'top' = 'top') => cn(composerDockEdge(edge), composerFill)
+/** Floating composer panel skin — the `/`·`@`·`?` completion drawer and the
+ *  attach (`+`) menu. Glassy translucent card, hairline border, full radius,
+ *  smallest type, soft nous shadow. Uses an explicit fill (not `--composer-fill`)
+ *  so it renders identically whether mounted inside the composer or portaled out
+ *  of it. Visual skin only — consumers add their own size/position/padding. */
+export const composerPanelCard = cn(
+  'rounded-2xl border border-border/65 shadow-nous text-[length:var(--conversation-tool-font-size)]',
+  'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
+  composerSurfaceGlass
+)

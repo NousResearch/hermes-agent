@@ -91,3 +91,34 @@ def test_custom_provider_extra_body_ignores_other_custom_models():
     )
 
     assert agent.request_overrides == {}
+
+
+def test_named_custom_provider_extra_body_matches_provider_key():
+    agent = SimpleNamespace(
+        provider="custom:zai-coding-plan",
+        model="glm-5.2",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        request_overrides={},
+    )
+
+    _merge_custom_provider_extra_body(
+        agent,
+        [
+            {
+                "provider_key": "other-provider",
+                "name": "Other Provider",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "model": "glm-5.2",
+                "extra_body": {"enable_thinking": True},
+            },
+            {
+                "provider_key": "zai-coding-plan",
+                "name": "Z.AI Coding Plan",
+                "base_url": "https://api.z.ai/api/coding/paas/v4/",
+                "model": "glm-5.2",
+                "extra_body": {"enable_thinking": False},
+            },
+        ],
+    )
+
+    assert agent.request_overrides == {"extra_body": {"enable_thinking": False}}

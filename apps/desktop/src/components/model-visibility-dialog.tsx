@@ -7,17 +7,17 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
-import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { normalize } from '@/lib/text'
 import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
-  emptyProviderSentinelKey,
-  isProviderSentinel,
   modelVisibilityKey,
-  setVisibleModels
+  setVisibleModels,
+  toggleModelVisibility
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
@@ -26,6 +26,7 @@ interface ModelVisibilityDialogProps {
   onOpenChange: (open: boolean) => void
   onOpenProviders: () => void
   open: boolean
+  profile?: string
   sessionId?: string | null
 }
 
@@ -34,6 +35,7 @@ export function ModelVisibilityDialog({
   onOpenChange,
   onOpenProviders,
   open,
+  profile = 'default',
   sessionId
 }: ModelVisibilityDialogProps) {
   const { t } = useI18n()
@@ -42,14 +44,8 @@ export function ModelVisibilityDialog({
   const stored = useStore($visibleModels)
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
-    queryFn: (): Promise<ModelOptionsResponse> => {
-      if (gw && sessionId) {
-        return gw.request<ModelOptionsResponse>('model.options', { session_id: sessionId })
-      }
-
-      return getGlobalModelOptions()
-    },
+    queryKey: modelOptionsQueryKey(profile, sessionId),
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })
 
@@ -61,28 +57,10 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
-    const key = modelVisibilityKey(provider.slug, model)
-    const sentinel = emptyProviderSentinelKey(provider.slug)
-
-    if (next.has(key)) {
-      next.delete(key)
-
-      // Check if this was the last real model for this provider.
-      const remainingForProvider = [...next].some(k => k.startsWith(`${provider.slug}::`) && !isProviderSentinel(k))
-
-      if (!remainingForProvider) {
-        next.add(sentinel)
-      }
-    } else {
-      next.delete(sentinel)
-      next.add(key)
-    }
-
-    setVisibleModels(next)
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)

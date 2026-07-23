@@ -241,7 +241,11 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
     assert kwargs["session_id"] == session_id
     assert kwargs["gateway_session_key"] == "client-42"
     assert kwargs["ephemeral_system_prompt"] == "stay focused"
-    assert kwargs["conversation_history"] == [
+    history = kwargs["conversation_history"]
+    assert len(history) == 2
+    assert isinstance(history[0].pop("timestamp"), (int, float))
+    assert isinstance(history[1].pop("timestamp"), (int, float))
+    assert history == [
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "prior answer"},
     ]
@@ -412,7 +416,7 @@ async def test_session_endpoints_require_auth_when_key_configured(auth_adapter):
         resp = await cli.get("/api/sessions")
         assert resp.status == 401
         body = await resp.json()
-        assert body["error"]["code"] == "invalid_api_key"
+        assert body["error"]["code"] == "gateway_auth_failed"
 
         ok = await cli.get("/api/sessions", headers={"Authorization": "Bearer sk-test"})
         assert ok.status == 200

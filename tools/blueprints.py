@@ -73,7 +73,7 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
     """Return the parsed YAML frontmatter mapping, or None if absent/invalid."""
     if not isinstance(text, str):
         return None
-    stripped = text.lstrip()
+    stripped = text.lstrip("\ufeff").lstrip()  # BOM is not whitespace; strip explicitly
     if not stripped.startswith("---"):
         return None
     # Find the closing fence after the opening one.

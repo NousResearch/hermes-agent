@@ -46,7 +46,7 @@ hermes profile create researcher --description "Reads source code and external d
 hermes profile create work --clone
 ```
 
-将当前 profile 的 `config.yaml`、`.env` 和 `SOUL.md` 复制到新 profile。API 密钥和模型相同，但会话和记忆是全新的。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
+将当前 profile 的 `config.yaml`、`.env`、`SOUL.md` 和 skills 复制到新 profile。API 密钥、模型和能力相同，但会话和记忆是全新的。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
 
 ### 克隆全部内容（`--clone-all`）
 
@@ -54,16 +54,22 @@ hermes profile create work --clone
 hermes profile create backup --clone-all
 ```
 
-复制**所有内容**——配置、API 密钥、人格、所有记忆、完整会话历史、技能、cron 任务、插件。完整快照。适用于备份或 fork 已有上下文的 agent。
+复制**所有内容**——配置、API 密钥、人格、记忆、技能、cron 任务、插件。会排除每个 profile 自己的历史数据（会话历史、`state.db`、`backups/`、`state-snapshots/`、`checkpoints/`），这些数据属于源 profile 且可能达到数十 GB。若要包含历史的完整备份，请使用 `hermes profile export` 或 `hermes backup`。
 
 ### 从指定 profile 克隆
 
 ```bash
-hermes profile create work --clone --clone-from coder
+hermes profile create work --clone-from coder
+```
+
+`--clone-from <source>` 会直接选择源 profile，并隐含执行 config/skills/SOUL 克隆。若要完整复制该源 profile，请与 `--clone-all` 组合使用：
+
+```bash
+hermes profile create work-backup --clone-from coder --clone-all
 ```
 
 :::tip Honcho 记忆 + profiles
-启用 Honcho 后，`--clone` 会自动为新 profile 创建专属 AI 对等体，同时共享同一用户工作区。每个 profile 构建各自的观察记录和身份标识。详见 [Honcho——多 agent / Profiles](./features/memory-providers.md#honcho)。
+启用 Honcho 后，克隆操作会自动为新 profile 创建专属 AI 对等体，同时共享同一用户工作区。每个 profile 构建各自的观察记录和身份标识。详见 [Honcho——多 agent / Profiles](./features/memory-providers.md#honcho)。
 :::
 
 ## 使用 profile

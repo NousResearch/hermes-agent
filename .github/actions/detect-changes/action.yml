@@ -1,0 +1,105 @@
+name: Detect affected areas
+description: >-
+  Classify a PR's changed files into CI work lanes (python, frontend, site,
+  scan, deps, mcp_catalog) so the orchestrator can conditionally call only
+  the sub-workflows a PR can affect. Outputs are always "true" on push/dispatch
+  events and fail open (everything "true") when the diff cannot be computed.
+
+inputs:
+  github-token:
+    description: Token for the GitHub API (gh CLI). Pass steps.app-token.outputs.token from the calling workflow.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  python:
+    description: Run Python tests / ruff / ty / windows-footguns.
+    value: ${{ steps.classify.outputs.python }}
+  frontend:
+    description: Run the TypeScript testing matrix + desktop build.
+    value: ${{ steps.classify.outputs.frontend }}
+  docker_meta:
+    description: Docker setup and meta files have changed.
+    value: ${{ steps.classify.outputs.docker_meta }}
+  site:
+    description: Build the Docusaurus docs site.
+    value: ${{ steps.classify.outputs.site }}
+  scan:
+    description: Run the supply-chain critical-pattern scanner.
+    value: ${{ steps.classify.outputs.scan }}
+  deps:
+    description: Check pyproject.toml dependency upper bounds.
+    value: ${{ steps.classify.outputs.deps }}
+  npm_lock:
+    description: Post/update the semantic package-lock.json diff PR comment.
+    value: ${{ steps.classify.outputs.npm_lock }}
+  mcp_catalog:
+    description: Require MCP catalog security review label.
+    value: ${{ steps.classify.outputs.mcp_catalog }}
+  ci_review:
+    description: Require CI-sensitive file review label.
+    value: ${{ steps.classify.outputs.ci_review }}
+  ci_review_files:
+    description: JSON list of CI-sensitive files changed by the pull request.
+    value: ${{ steps.classify.outputs.ci_review_files }}
+
+runs:
+  using: composite
+  steps:
+    - name: Classify changed files
+      id: classify
+      shell: bash
+      env:
+        # Fall back to the built-in read-only token when the caller passes an
+        # empty value. Fork PRs get no repo secrets, so AUTOFIX_BOT_PAT is ""
+        # there, and an input `default:` only applies when the input is omitted,
+        # not when it's passed empty. Without this fallback the compare API
+        # fails on forks and the classifier fails open (every lane forced on).
+        GH_TOKEN: ${{ inputs.github-token || github.token }}
+        REPO: ${{ github.repository }}
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+
+        # Only pull_request events are gated. Other events (push, release,
+        # dispatch) leave CHANGED empty, so the classifier fails open and every
+        # lane runs. Post-merge / on-demand validation is never weakened.
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          # Use the compare endpoint with the pinned base/head SHAs from the
+          # event payload instead of the "current PR files" endpoint. The SHAs
+          # are frozen at trigger time, so the file list is deterministic even
+          # if the PR receives a new push between trigger and detect.
+          #
+          # Retried: a rate-limit blip or eventual-consistency 404 on a
+          # freshly-pushed HEAD would otherwise silently fall open (all lanes
+          # run — safe, but wasteful and it masks the API failure).
+          #
+          # `.files[]?` (null-safe): with --paginate, a PR more than 100
+          # commits ahead of its merge-base paginates the compare, and pages
+          # after the first carry `files: null` — bare `.files[]` makes jq
+          # die with "cannot iterate over: null", which fails every retry
+          # and forces the fail-open path (seen on stacked PRs). The full
+          # file list (up to the API's 300-file cap) is on page one.
+          CHANGED=""
+          for i in 1 2 3; do
+            if CHANGED="$(gh api \
+              --paginate \
+              "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
+              --jq '.files[]?.filename')"; then
+              break
+            fi
+            if [ "$i" = 3 ]; then
+              echo "::warning::compare API failed after 3 attempts — failing open (all lanes run)"
+              CHANGED=""
+              break
+            fi
+            echo "::warning::compare API failed (attempt $i); retrying in 10s"
+            sleep 10
+          done
+        fi
+
+        echo "Changed files:"
+        printf '%s\n' "${CHANGED:-(none)}"
+        printf '%s\n' "${CHANGED:-}" | python3 scripts/ci/classify_changes.py

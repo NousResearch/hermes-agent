@@ -143,33 +143,40 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 
 ## Platform Adapters
 
-Each messaging platform has an adapter in `gateway/platforms/`:
+Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>/adapter.py`; a few legacy adapters still live directly in `gateway/platforms/`. All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
 
 ```text
-gateway/platforms/
-├── base.py              # BaseAdapter — shared logic for all platforms
-├── telegram.py          # Telegram Bot API (long polling or webhook)
-├── discord.py           # Discord bot via discord.py
-├── slack.py             # Slack Socket Mode
-├── whatsapp.py          # WhatsApp Business Cloud API
+plugins/platforms/                  # plugin-packaged adapters (one dir each)
+├── telegram/adapter.py     # Telegram Bot API (long polling or webhook)
+├── discord/adapter.py      # Discord bot via discord.py
+├── slack/adapter.py        # Slack Socket Mode
+├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
+├── mattermost/adapter.py   # Mattermost WebSocket API
+├── email/adapter.py        # Email via IMAP/SMTP
+├── sms/adapter.py          # SMS via Twilio
+├── dingtalk/adapter.py     # DingTalk WebSocket
+├── feishu/adapter.py       # Feishu/Lark WebSocket or webhook
+├── wecom/adapter.py        # WeCom (WeChat Work) callback
+├── line/adapter.py         # LINE Messaging API
+├── teams/adapter.py        # Microsoft Teams
+├── irc/adapter.py          # IRC (canonical scoped-lock example)
+├── homeassistant/adapter.py # Home Assistant conversation integration
+└── …                       # google_chat, ntfy, photon, raft, simplex, …
+
+gateway/platforms/                  # core base + legacy direct adapters
+├── base.py              # BasePlatformAdapter — shared logic for all platforms
 ├── signal.py            # Signal via signal-cli REST API
-├── matrix.py            # Matrix via mautrix (optional E2EE)
-├── mattermost.py        # Mattermost WebSocket API
-├── email.py             # Email via IMAP/SMTP
-├── sms.py               # SMS via Twilio
-├── dingtalk.py          # DingTalk WebSocket
-├── feishu.py            # Feishu/Lark WebSocket or webhook
-├── wecom.py             # WeCom (WeChat Work) callback
 ├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
 ├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
-├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package: adapter.py, crypto.py, keyboards.py, …)
+├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)
 ├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
-├── feishu_comment.py    # Feishu document/drive comment-reply handler
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)
 ├── webhook.py           # Inbound/outbound webhook adapter
-├── api_server.py        # REST API server adapter
-└── homeassistant.py     # Home Assistant conversation integration
+└── api_server.py        # REST API server adapter
 ```
+
+Experimental connector-backed platforms use the generic relay adapter in `gateway/relay/` instead of a direct platform module. When `GATEWAY_RELAY_URL` or `gateway.relay_url` is configured, the gateway registers the `relay` platform, dials the connector over an outbound WebSocket, and receives `descriptor`, `inbound`, and `interrupt_inbound` frames on that same socket. The connector advertises a `CapabilityDescriptor`; Hermes can send normal outbound replies, token-less `follow_up` operations, and interrupt frames back through the relay. The source-grounded wire contract lives in [`docs/relay-connector-contract.md`](https://github.com/NousResearch/hermes-agent/blob/main/docs/relay-connector-contract.md).
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
@@ -186,7 +193,7 @@ Outgoing deliveries (`gateway/delivery.py`) handle:
 
 - **Direct reply** — send response back to the originating chat
 - **Home channel delivery** — route cron job outputs and background results to a configured home channel
-- **Explicit target delivery** — `send_message` tool specifying `telegram:-1001234567890`, or the [`hermes send` CLI](/guides/pipe-script-output) wrapping the same tool for shell scripts
+- **Explicit target delivery** — the send engine specifying `telegram:-1001234567890`, exposed via the [`hermes send` CLI](/guides/pipe-script-output) for shell scripts and via cron `deliver:` targets
 - **Cross-platform delivery** — deliver to a different platform than the originating message
 
 Cron job deliveries are NOT mirrored into gateway session history — they live in their own cron session only. This is a deliberate design choice to avoid message alternation violations.

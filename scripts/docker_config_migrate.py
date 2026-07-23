@@ -28,16 +28,26 @@ def _backup_path(path: Path, stamp: str) -> Path:
     raise RuntimeError(f"could not choose a backup path for {path}")
 
 
-def _backup_existing(paths: Iterable[Path]) -> list[Path]:
+def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backups: list[Path] = []
+    backups: dict[Path, Path] = {}
     for path in paths:
         if not path.is_file():
             continue
         dest = _backup_path(path, stamp)
         shutil.copy2(path, dest)
-        backups.append(dest)
+        backups[path] = dest
     return backups
+
+
+def _restore_backups(backups: dict[Path, Path]) -> list[Path]:
+    restored: list[Path] = []
+    for original, backup in backups.items():
+        if not backup.is_file():
+            continue
+        shutil.copy2(backup, original)
+        restored.append(original)
+    return restored
 
 
 def main() -> int:
@@ -50,12 +60,30 @@ def main() -> int:
         return 0
 
     backups = _backup_existing((get_config_path(), get_env_path()))
-    backup_text = ", ".join(str(path) for path in backups) if backups else "none"
+    backup_text = ", ".join(str(path) for path in backups.values()) if backups else "none"
     print(
         f"[config-migrate] Migrating config schema {current_ver} -> {latest_ver}; "
         f"backups: {backup_text}"
     )
-    migrate_config(interactive=False, quiet=False)
+    try:
+        migrate_config(interactive=False, quiet=False)
+    except Exception:
+        restored = _restore_backups(backups)
+        if restored:
+            print(
+                "[config-migrate] Migration failed; restored "
+                + ", ".join(str(path) for path in restored)
+            )
+        raise
+
+    post_ver, _ = check_config_version()
+    if post_ver < latest_ver:
+        restored = _restore_backups(backups)
+        restored_text = ", ".join(str(path) for path in restored) if restored else "none"
+        raise RuntimeError(
+            f"migration did not advance config version to {latest_ver} "
+            f"(still {post_ver}); restored: {restored_text}"
+        )
     return 0
 
 

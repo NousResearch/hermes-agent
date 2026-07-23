@@ -1,0 +1,39 @@
+name: email-platform
+label: Email
+kind: platform
+version: 1.0.0
+description: >
+  Email gateway adapter for Hermes Agent. Polls an IMAP mailbox for inbound
+  messages and replies over SMTP, relaying email threads to and from the
+  Hermes agent.
+author: NousResearch
+requires_env:
+  - name: EMAIL_ADDRESS
+    description: "Email account address"
+    prompt: "Email address"
+    password: false
+  - name: EMAIL_PASSWORD
+    description: "Email account password / app password"
+    prompt: "Email password"
+    password: true
+  - name: EMAIL_SMTP_HOST
+    description: "SMTP host (e.g. smtp.gmail.com)"
+    prompt: "SMTP host"
+    password: false
+optional_env:
+  - name: EMAIL_SMTP_PORT
+    description: "SMTP port (default 587)"
+    prompt: "SMTP port"
+    password: false
+  - name: EMAIL_IMAP_HOST
+    description: "IMAP host for inbound polling (e.g. imap.gmail.com)"
+    prompt: "IMAP host"
+    password: false
+  - name: EMAIL_ALLOWED_USERS
+    description: "Comma-separated email addresses allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: EMAIL_HOME_ADDRESS
+    description: "Default address for cron / notification delivery"
+    prompt: "Home address"
+    password: false

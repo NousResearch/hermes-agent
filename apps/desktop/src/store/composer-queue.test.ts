@@ -2,14 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from './composer'
 import {
+  $parkedQueueSessions,
   $queuedPromptsBySession,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  isQueueParked,
+  migrateQueuedPrompts,
+  parkQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
-  shouldAutoDrainOnSettle,
+  shouldAutoDrain,
+  unparkQueuedPrompts,
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
@@ -117,32 +122,128 @@ describe('composer queue store', () => {
   })
 })
 
-describe('shouldAutoDrainOnSettle', () => {
-  const base = { isBusy: false, queueLength: 1, wasBusy: true }
-
-  it('drains the next queued prompt when a turn settles', () => {
-    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+describe('migrateQueuedPrompts', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
   })
 
-  it('drains after an interrupt — the settle edge is the same', () => {
-    // Interrupting to reach a queued message is the point of the queue; the
-    // gateway emits the same settle whether the turn finished or was stopped.
-    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+  it('moves entries from a dead runtime key onto the live one', () => {
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'stranded' })
+
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(true)
+    expect(getQueuedPrompts('rt-old')).toEqual([])
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['stranded'])
+    // The dead key is dropped from the store entirely.
+    expect($queuedPromptsBySession.get()['rt-old']).toBeUndefined()
   })
 
-  it('does not drain when the queue is empty', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0 })).toBe(false)
+  it('appends after existing target entries (FIFO preserved)', () => {
+    enqueueQueuedPrompt('rt-new', { attachments: [], text: 'already here' })
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'migrated' })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['already here', 'migrated'])
   })
 
-  it('ignores steady busy state (no true → false transition)', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true })).toBe(false)
+  it('is a no-op when source is empty or keys match', () => {
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
+    expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
+  })
+})
+
+describe('shouldAutoDrain', () => {
+  it('drains whenever idle with a non-empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
   })
 
-  it('ignores busy entry (false → true, not a settle)', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true, wasBusy: false })).toBe(false)
+  it('drains on mount/reconnect with no observed busy edge', () => {
+    // The whole point of dropping the edge: a remount resets the busy ref, so an
+    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
   })
 
-  it('ignores steady idle state (was not busy)', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, wasBusy: false })).toBe(false)
+  it('does not drain mid-turn', () => {
+    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
+  })
+
+  it('does not drain an empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
+  })
+
+  it('does not drain a parked queue, even when idle', () => {
+    // The Stop/Esc settle edge: busy just flipped false but the user asked to
+    // HALT — the park must hold the head back until they resume.
+    expect(shouldAutoDrain({ isBusy: false, parked: true, queueLength: 1 })).toBe(false)
+  })
+
+  it('drains again once the park is lifted', () => {
+    expect(shouldAutoDrain({ isBusy: false, parked: false, queueLength: 1 })).toBe(true)
+  })
+})
+
+describe('parked queue sessions', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+  })
+
+  it('parks only sessions with queued entries', () => {
+    expect(parkQueuedPrompts(SESSION_KEY)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+
+    expect(parkQueuedPrompts(SESSION_KEY)).toBe(true)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('unparks explicitly', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+    parkQueuedPrompts(SESSION_KEY)
+
+    unparkQueuedPrompts(SESSION_KEY)
+
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('queueing a fresh prompt lifts the park', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+    parkQueuedPrompts(SESSION_KEY)
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'new intent' })
+
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('emptying the queue drops the park', () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'held back' })
+    parkQueuedPrompts(SESSION_KEY)
+
+    removeQueuedPrompt(SESSION_KEY, entry!.id)
+
+    expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('a park travels with migrated entries', () => {
+    // A backend bounce right after Stop re-keys the queue; shedding the park
+    // there would auto-send the exact prompts the user just halted.
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'held back' })
+    parkQueuedPrompts('rt-old')
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(isQueueParked('rt-old')).toBe(false)
+    expect(isQueueParked('rt-new')).toBe(true)
+  })
+
+  it('migration without a park does not invent one', () => {
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'flowing' })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(isQueueParked('rt-new')).toBe(false)
   })
 })

@@ -1192,8 +1192,10 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("rate_limit_circuit_open_seconds")
             or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_OPEN_SECONDS", "30.0")
         )
-        self._rate_limit_circuit_until = 0.0
-        self._rate_limit_events: List[float] = []
+        # Per-chat-id isolation — each chat_id tracks its own rate-limit events and cooldown
+        from collections import defaultdict
+        self._rate_limit_circuit_until: Dict[str, float] = defaultdict(float)
+        self._rate_limit_events: Dict[str, List[float]] = defaultdict(list)
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "pairing")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
@@ -1688,36 +1690,39 @@ class WeixinAdapter(BasePlatformAdapter):
             content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages,
         )
 
-    def _rate_limit_cooldown_remaining(self) -> float:
-        return max(0.0, self._rate_limit_circuit_until - time.monotonic())
+    def _rate_limit_cooldown_remaining(self, chat_id: str = "") -> float:
+        return max(0.0, self._rate_limit_circuit_until[chat_id] - time.monotonic())
 
-    def _rate_limit_error(self) -> RuntimeError:
+    def _rate_limit_error(self, chat_id: str = "") -> RuntimeError:
         return RuntimeError(
-            f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s"
+            f"iLink sendmessage rate limited to {chat_id or 'default'}; "
+            f"cooldown active for {self._rate_limit_cooldown_remaining(chat_id):.1f}s"
         )
 
-    def _open_rate_limit_circuit(self) -> None:
+    def _open_rate_limit_circuit(self, chat_id: str) -> None:
         if self._rate_limit_circuit_open_seconds <= 0:
             return
-        self._rate_limit_circuit_until = max(
-            self._rate_limit_circuit_until,
+        self._rate_limit_circuit_until[chat_id] = max(
+            self._rate_limit_circuit_until[chat_id],
             time.monotonic() + self._rate_limit_circuit_open_seconds,
         )
 
-    def _record_rate_limit_event(self) -> bool:
-        """Record a genuine iLink rate limit and return True if breaker opened."""
+    def _record_rate_limit_event(self, chat_id: str) -> bool:
+        """Record a genuine iLink rate limit for this chat and return True if breaker opened."""
         now = time.monotonic()
         window_start = now - self._rate_limit_circuit_window_seconds
-        self._rate_limit_events = [ts for ts in self._rate_limit_events if ts >= window_start]
-        self._rate_limit_events.append(now)
-        if len(self._rate_limit_events) >= self._rate_limit_circuit_threshold:
-            self._open_rate_limit_circuit()
-            return self._rate_limit_cooldown_remaining() > 0
+        events = self._rate_limit_events[chat_id]
+        self._rate_limit_events[chat_id] = [ts for ts in events if ts >= window_start]
+        self._rate_limit_events[chat_id].append(now)
+        if len(self._rate_limit_events[chat_id]) >= self._rate_limit_circuit_threshold:
+            self._open_rate_limit_circuit(chat_id)
+            return self._rate_limit_cooldown_remaining(chat_id) > 0
         return False
 
-    def _reset_rate_limit_circuit(self) -> None:
-        self._rate_limit_events.clear()
-        self._rate_limit_circuit_until = 0.0
+    def _reset_rate_limit_circuit(self, chat_id: str = "") -> None:
+        if chat_id and chat_id in self._rate_limit_events:
+            self._rate_limit_events[chat_id].clear()
+        self._rate_limit_circuit_until[chat_id] = 0.0
 
     async def _send_text_chunk(
         self,
@@ -1754,8 +1759,8 @@ class WeixinAdapter(BasePlatformAdapter):
         last_error: Optional[Exception] = None
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
-            if self._rate_limit_cooldown_remaining() > 0:
-                raise self._rate_limit_error()
+            if self._rate_limit_cooldown_remaining(chat_id) > 0:
+                raise self._rate_limit_error(chat_id)
             try:
                 resp = await _send_message(
                     self._send_session,
@@ -1801,8 +1806,8 @@ class WeixinAdapter(BasePlatformAdapter):
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
-                            if self._record_rate_limit_event():
-                                last_error = self._rate_limit_error()
+                            if self._record_rate_limit_event(chat_id):
+                                last_error = self._rate_limit_error(chat_id)
                                 break
                             if attempt >= self._send_chunk_retries:
                                 break
@@ -1817,7 +1822,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         raise RuntimeError(
                             f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
                         )
-                self._reset_rate_limit_circuit()
+                self._reset_rate_limit_circuit(chat_id)
                 return
             except Exception as exc:
                 last_error = exc

@@ -4530,10 +4530,14 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        # #34452: the bare "(empty)" sentinel is now replaced by a
-        # user-visible end-of-turn explanation so the failure isn't silent.
+        # The bare "(empty)" sentinel is never delivered for reasoning-only
+        # exhaustion: the labeled reasoning excerpt (which may contain the
+        # answer) replaces it at the terminal. See
+        # test_empty_terminal_reasoning_surface.py; #34452's explainer still
+        # covers the truly-empty case.
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "only internal reasoning" in result["final_response"]
+        assert "reasoning only" in result["final_response"]
         assert result["turn_exit_reason"] == "empty_response_exhausted"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
@@ -4554,9 +4558,12 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        # #34452: explanation replaces the bare "(empty)" sentinel.
+        # Reasoning-only exhaustion delivers the labeled reasoning excerpt
+        # instead of the bare "(empty)" sentinel (see
+        # test_empty_terminal_reasoning_surface.py).
         assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
+        assert "only internal reasoning" in result["final_response"]
+        assert "structured reasoning answer" in result["final_response"]
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):

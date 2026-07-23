@@ -39,6 +39,7 @@ import {
   buildTextSendPayload,
   createBoundedMessageStore,
   extractBridgeEvent,
+  inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
@@ -74,6 +75,12 @@ const FORWARD_OWNER_MESSAGES =
   process.env &&
   typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
+
+const SEND_READ_RECEIPTS =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -647,6 +654,15 @@ async function startSocket() {
         }
       }
 
+      const receiptKeys = inboundReadReceiptKeys({ key: msg.key, enabled: SEND_READ_RECEIPTS });
+      if (receiptKeys.length > 0) {
+        try {
+          await sock.readMessages(receiptKeys);
+        } catch (err) {
+          console.warn('[bridge] failed to send read receipt:', err.message);
+        }
+      }
+
       const messageContent = getMessageContent(msg);
       if (messageContent.pollUpdateMessage) {
         const pollUpdateMessage = messageContent.pollUpdateMessage;
@@ -1074,6 +1090,7 @@ app.get('/health', (req, res) => {
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
+    sendReadReceipts: SEND_READ_RECEIPTS,
   });
 });
 

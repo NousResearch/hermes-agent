@@ -379,6 +379,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
     - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "pairing")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
+    - send_read_receipts: Mark accepted inbound WhatsApp messages as read
 
     Behavior (gating, mention parsing, markdown conversion, chunking) is
     provided by ``WhatsAppBehaviorMixin`` so the Cloud API adapter can
@@ -410,6 +411,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        read_receipts = config.extra.get("send_read_receipts", False)
+        self._send_read_receipts = (
+            read_receipts if isinstance(read_receipts, bool)
+            else str(read_receipts or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -626,6 +632,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env = with_hermes_node_path()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
+                "true" if self._send_read_receipts else "false"
+            )
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges

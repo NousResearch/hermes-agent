@@ -494,6 +494,12 @@ export function inferMediaType(ext) {
   return 'document';
 }
 
+export function inboundReadReceiptKeys({ key, enabled }) {
+  if (!enabled || !key || key.fromMe || !key.id || !key.remoteJid) return [];
+  // Preserve participant for group messages: Baileys needs the original key.
+  return [key];
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

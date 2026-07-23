@@ -13,6 +13,7 @@ This is a library module (not an agent tool). It provides:
 Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 """
 
+from __future__ import annotations
 import hashlib
 import json
 import logging
@@ -489,6 +490,576 @@ class SkillSource(ABC):
         return "community"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Generic git repo adapter
+# ---------------------------------------------------------------------------
+
+GIT_TIMEOUT_SECONDS = 30
+if os.name == "nt":
+    GIT_CREATIONFLAGS = subprocess.CREATE_NO_WINDOW
+else:
+    GIT_CREATIONFLAGS = 0
+
+@dataclass(slots=True)
+class GitTreeEntry:
+    """Single entry returned from `git ls-tree`."""
+
+    mode: str
+    type: str
+    sha: str
+    path: str
+
+class GitSource(SkillSource):
+    """
+    Generic Git-backed SkillSource.
+
+    Unlike GitHubSource this implementation talks directly to Git instead of
+    any hosting provider's REST API.
+
+    Repositories are mirrored locally as bare repositories under
+
+        _index_cache_dir()/repos/<sha>.git
+
+    No working tree is ever created.
+
+    File contents are read lazily using `git show`.
+    """
+
+    def __init__(self, extra_taps: Optional[List[Dict]]):
+        self.taps = []
+        for tap in extra_taps:
+            if tap["repo"].rstrip("/").endswith(".git"):
+                self.taps.append(tap)
+
+        # repo_url -> parsed git tree
+        self._tree_cache: Dict[str, List[GitTreeEntry]] = {}
+
+        # repo_url -> parsed skills.sh.json
+        self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
+
+
+    def source_id(self) -> str:
+        return "git"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    # ------------------------------------------------------------------
+    # Git helpers
+    # ------------------------------------------------------------------
+
+    def _repo_cache_dir(self) -> Path:
+        """Directory containing all cached bare repositories."""
+        path = _index_cache_dir() / "repos"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _repo_path(self, repo_url: str) -> Path:
+        """
+        Return the on-disk location of a repository mirror.
+
+        We hash the URL because Git URLs can contain characters unsuitable
+        for filenames (':', '/', '@', etc.).
+        """
+        digest = hashlib.sha256(
+            repo_url.encode("utf-8")
+        ).hexdigest()[:16]
+        return self._repo_cache_dir() / f"{digest}.git"
+
+    def _ensure_repo(self, tap: Dict) -> Path:
+        """
+        Ensure a local bare mirror exists.
+
+        A bare mirror stores Git objects only—there is no checked-out working
+        directory.
+
+        Mirrors are refreshed periodically using `git fetch`.
+        """
+        repo_dir = self._repo_path(tap["repo"])
+
+        # Initial clone
+        if not repo_dir.exists():
+            logger.debug("Creating bare mirror of %s", tap["repo"])
+            self._git_exec(
+                "clone",
+                "--bare",
+                "--filter=blob:none",
+                "--no-tags",
+                tap["repo"],
+                str(repo_dir),
+            )
+            return repo_dir
+
+        # Refresh stale mirrors (Hysteresis of 30s)
+        age_seconds = time.time() - repo_dir.stat().st_mtime
+        max_age_seconds = 30
+        if age_seconds >= max_age_seconds:
+            logger.debug("Refreshing %s", tap["repo"])
+            self._git_exec(
+                "--git-dir",
+                str(repo_dir),
+                "fetch",
+                "--quiet",
+                "--prune",
+                "origin",
+            )
+
+            # Bump the timestamp so we know when the last successful refresh
+            # occurred
+            repo_dir.touch()
+
+            # Tree cache is now stale
+            self._tree_cache.pop(tap["repo"], None)
+
+        return repo_dir
+
+    def _git_exec(
+        self,
+        *args: str,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run git in a bounded, non-interactive subprocess."""
+        return subprocess.run(
+            ["git", *args],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT_SECONDS,
+            creationflags=GIT_CREATIONFLAGS,
+            capture_output=capture_output,
+            text=True,
+        )
+
+    def _git_repo(
+        self,
+        repo: Path,
+        *args: str,
+    ) -> str:
+        """
+        Execute a git command against a cached bare repository.
+
+        Returns stdout as text.
+
+        Raises:
+            subprocess.CalledProcessError
+                If git exits non-zero.
+        """
+        return self._git_exec(
+            "--git-dir",
+            str(repo),
+            *args,
+            capture_output=True,
+        ).stdout
+
+    def _ls_tree(self, tap: Dict) -> List[GitTreeEntry]:
+        """
+        Return every object in HEAD.
+
+        The result is cached because many operations (search(), fetch(),
+        inspect()) repeatedly walk the same repository.
+        """
+        cached = self._tree_cache.get(tap["repo"])
+        if cached is not None:
+            return cached
+        repo = self._ensure_repo(tap)
+        output = self._git_repo(
+            repo,
+            "ls-tree",
+            "-r",
+            "HEAD",
+        )
+
+        entries: List[GitTreeEntry] = []
+        for line in output.splitlines():
+            # Example:
+            #   100644 blob 8c73...    skills/python/SKILL.md
+            left, path = line.split("\t", 1)
+            mode, objtype, sha = left.split()
+            entries.append(
+                GitTreeEntry(
+                    mode=mode,
+                    type=objtype,
+                    sha=sha,
+                    path=path,
+                )
+            )
+        self._tree_cache[tap["repo"]] = entries
+        return entries
+
+    def _show(
+        self,
+        tap: Dict,
+        path: str,
+    ) -> Optional[str]:
+        """
+        Read a file directly from the Git object database.
+
+        Equivalent to
+
+            git show HEAD:path/to/file
+        """
+        repo = self._ensure_repo(tap)
+        try:
+            return self._git_repo(
+                repo,
+                "show",
+                f"HEAD:{path}",
+            )
+        except subprocess.CalledProcessError:
+            return None
+
+
+    # ------------------------------------------------------------------
+    # Repository helpers
+    # ------------------------------------------------------------------
+
+    def _find_tap(self, repo_url: str) -> Optional[Dict]:
+        """Return the configured tap for a repository."""
+        for tap in self.taps:
+            if tap["repo"] == repo_url:
+                return tap
+        return None
+
+    def _download_directory(
+        self,
+        tap: Dict,
+        directory: str,
+    ) -> Dict[str, str]:
+        """
+        Download every file beneath a directory.
+
+        Files are returned relative to the requested directory so the result
+        can be passed directly into SkillBundle.
+        """
+        directory = directory.rstrip("/") + "/"
+        files: Dict[str, str] = {}
+        for entry in self._ls_tree(tap):
+            if entry.type != "blob":
+                continue
+
+            if not entry.path.startswith(directory):
+                continue
+
+            rel_path = entry.path[len(directory):]
+            content = self._show(
+                tap,
+                entry.path,
+            )
+            if content is not None:
+                files[rel_path] = content
+
+        return files
+
+    def _list_skills(
+        self,
+        tap: Dict,
+    ) -> List[SkillMeta]:
+        """
+        Discover every skill beneath the configured tap path.
+
+        A skill is simply any directory containing a SKILL.md file.
+        """
+        prefix = tap["path"].rstrip("/") + "/"
+        groupings = self._get_skillsh_groupings(tap)
+        seen: set[str] = set()
+        skills: List[SkillMeta] = []
+
+        for entry in self._ls_tree(tap):
+            if entry.type != "blob":
+                continue
+            if not entry.path.endswith("/SKILL.md"):
+                continue
+            if not entry.path.startswith(prefix):
+                continue
+
+            skill_dir = entry.path[:-len("/SKILL.md")]
+            skill_name = Path(skill_dir).name
+            if skill_name.startswith(".") or skill_name.startswith("_"):
+                continue
+            if skill_dir in seen:
+                continue
+
+            seen.add(skill_dir)
+            identifier = f'{tap["repo"]}:{skill_dir}'
+            meta = self.inspect(identifier)
+            if meta:
+                if groupings:
+                    category = groupings.get(meta.name) or groupings.get(skill_name)
+                    if category:
+                        meta.extra["category"] = category
+                skills.append(meta)
+
+        return skills
+
+    # ------------------------------------------------------------------
+    # skills.sh.json support
+    # ------------------------------------------------------------------
+
+    def _get_skillsh_groupings(
+        self,
+        tap: Dict,
+    ) -> Optional[Dict[str, str]]:
+        """Fetch and parse the repo-root ``skills.sh.json`` grouping sidecar.
+
+        ``skills.sh.json`` is a published cross-ecosystem standard
+        (``$schema: https://skills.sh/schemas/skills.sh.schema.json``) that
+        lets a tap declare human-readable category groupings for its skills:
+
+            {"groupings": [{"title": "Inference AI", "skills": ["dynamo-..."]}]}
+
+        We flatten it into ``{skill_name: grouping_title}`` so the Skills Hub
+        UI can show a real category pill instead of a tag-derived guess. Any
+        tap that ships this file gets categorization for free — this is not
+        NVIDIA-specific.
+
+        Returns the map (possibly empty) on success, or ``None`` when the repo
+        has no sidecar / it couldn't be parsed. Cached per-repo on the instance.
+        """
+        cached = self._skillsh_groupings.get(tap["repo"])
+        if cached is not None:
+            return cached
+        
+        content = self._show(tap, "skills.sh.json")
+        parsed = (self._parse_skillsh_groupings(content) if content else None)
+        self._skillsh_groupings[tap["repo"]] = parsed
+        return parsed
+
+    @staticmethod
+    def _parse_skillsh_groupings(
+        content: str,
+    ) -> Optional[Dict[str, str]]:
+        try:
+            data = json.loads(content)
+        except Exception:
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        groups = data.get("groupings")
+        if not isinstance(groups, list):
+            return None
+
+        mapping: Dict[str, str] = {}
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            title = group.get("title")
+            members = group.get("skills")
+            if not isinstance(title, str) or not isinstance(members, list):
+                continue
+            for member in members:
+                if isinstance(member, str):
+                    mapping.setdefault(member, title)
+
+        return mapping
+
+    # ------------------------------------------------------------------
+    # Metadata parsing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_frontmatter(
+        content: str,
+    ) -> Dict[str, Any]:
+        """
+        Parse YAML frontmatter from SKILL.md.
+        """
+
+        if not content.startswith("---"):
+            return {}
+
+        match = re.search(r"\n---\s*\n", content[3:])
+
+        if not match:
+            return {}
+
+        yaml_text = content[3 : match.start() + 3]
+
+        try:
+            parsed = yaml.safe_load(yaml_text)
+        except yaml.YAMLError:
+            return {}
+
+        return parsed if isinstance(parsed, dict) else {}
+
+    # ------------------------------------------------------------------
+    # Index Cache
+    # ------------------------------------------------------------------
+
+    def _list_skills_with_index(self, tap: Dict) ->List[SkillMeta]:
+        """
+        Lists all skills with use of local index cache
+        """
+        # Attempt to use skill cache from index (fast)
+        cache_key = f'git_{hashlib.md5(tap["repo"].encode()).hexdigest()}'
+        cached_skills = _read_index_cache(cache_key)
+        if cached_skills:
+            return [SkillMeta(**item) for item in cached_skills]
+
+        # Extract skills from repository (slow)
+        new_skills = self._list_skills(tap)
+        
+        # Write new skills to cache and return
+        _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in new_skills])
+        return new_skills
+
+    def _list_skill_entry_with_index(self, tap: Dict, skill_name: str) -> Optional[dict]:
+        """
+        Get skill entry with use of local index cache
+        """
+        skills = self._list_skills_with_index(tap)
+        if not skills:
+            return None
+        for entry in skills:
+            if entry.name == skill_name:
+                return entry
+        return None
+
+    # ------------------------------------------------------------------
+    # SkillSource API
+    # ------------------------------------------------------------------
+
+    def inspect(
+        self,
+        identifier: str,
+    ) -> Optional[SkillMeta]:
+        """
+        Read only the SKILL.md metadata for a skill.
+
+        Identifier format:
+            <repo-url>:path/to/skill
+        """
+        try:
+            repo_url, path = identifier.rsplit(":", 1)
+        except ValueError:
+            return None
+
+        tap = self._find_tap(repo_url)
+        if tap is None:
+            return None
+
+        text = self._show(tap, f"{path}/SKILL.md")
+        if text is None:
+            return None
+
+        fm = self._parse_frontmatter(text)
+        metadata = fm.get("metadata", {})
+        tags: List[str] = []
+
+        if isinstance(metadata, dict):
+            hermes = metadata.get("hermes", {})
+            if isinstance(hermes, dict):
+                tags = hermes.get("tags", [])
+
+        if not tags:
+            raw = fm.get("tags", [])
+            if isinstance(raw, list):
+                tags = raw
+
+        return SkillMeta(
+            name=fm.get("name", Path(path).name),
+            description=str(fm.get("description", "")),
+            source="git",
+            identifier=identifier,
+            trust_level=self.trust_level_for(identifier),
+            repo=repo_url,
+            path=path,
+            tags=[str(t) for t in tags],
+            extra={},
+        )
+
+    def fetch(
+        self,
+        identifier: str,
+    ) -> Optional[SkillBundle]:
+        """
+        Download every file belonging to a skill.
+
+        Identifier format:
+            <repo-url>:path/to/skill
+        """
+        try:
+            repo_url, skill_path = identifier.rsplit(":", 1)
+        except ValueError:
+            return None
+
+        try:
+            revision = self._git_repo(repo_url, "rev-parse", "HEAD").strip()
+        except subprocess.CalledProcessError as exc:
+            logger.warning("Unable to resolve git revision for %s: %s", repo_url, exc)
+            return None
+        
+        tap = self._find_tap(repo_url)
+        if tap is None:
+            return None
+
+        files = self._download_directory(tap, skill_path)
+        if "SKILL.md" not in files:
+            return None
+        
+        skill_name = skill_path.rstrip("/").split("/")[-1]
+        trust = self.trust_level_for(identifier)
+
+        return SkillBundle(
+            name=skill_name,
+            files=files,
+            source="git",
+            identifier=identifier,
+            trust_level=trust,
+            metadata={
+                "repo_url": repo_url,
+                "revision": revision,
+                "path": skill_path,
+            },
+        )
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> List[SkillMeta]:
+        """
+        Search every configured Git repository.
+        """
+
+        query = query.lower()
+        results: List[SkillMeta] = []
+
+        for tap in self.taps:
+            try:
+                skills = self._list_skills_with_index(tap)
+            except Exception as exc:
+                logger.error(
+                    "Failed searching %s: %s" %(
+                    tap["repo"],
+                    exc),
+                )
+                continue
+
+            for skill in skills:
+                searchable = " ".join(
+                    [
+                        skill.name,
+                        skill.description,
+                        *skill.tags,
+                    ]
+                ).lower()
+
+                if query in searchable:
+                    results.append(skill)
+
+        # Deduplicate identical identifiers.
+        seen: Dict[str, SkillMeta] = {}
+        for skill in results:
+            seen.setdefault(
+                skill.identifier,
+                skill,
+            )
+
+        return list(seen.values())[:limit]
+
 # ---------------------------------------------------------------------------
 # GitHub source adapter
 # ---------------------------------------------------------------------------
@@ -571,7 +1142,9 @@ class GitHubSource(SkillSource):
         self.auth = auth
         self.taps = list(self.DEFAULT_TAPS)
         if extra_taps:
-            self.taps.extend(extra_taps)
+            for tap in extra_taps:
+                if not tap["repo"].rstrip("/").endswith(".git"):
+                    self.taps.append(tap)
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
@@ -3332,6 +3905,7 @@ class OptionalSkillSource(SkillSource):
             return {}
 
 
+
 # ---------------------------------------------------------------------------
 # Shared cache helpers (used by multiple adapters)
 # ---------------------------------------------------------------------------
@@ -4071,6 +4645,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
         UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
+        GitSource(extra_taps=extra_taps), # Git repo introspection
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),

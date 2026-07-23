@@ -2,6 +2,8 @@
 
 import json
 import time
+from pathlib import Path
+from subprocess import CalledProcessError
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
@@ -9,6 +11,8 @@ import httpx
 import pytest
 
 from tools.skills_hub import (
+    GitTreeEntry,
+    GitSource,
     GitHubAuth,
     GitHubSource,
     LobeHubSource,
@@ -31,6 +35,506 @@ from tools.skills_hub import (
     quarantine_bundle,
 )
 
+
+# ---------------------------------------------------------------------------
+# GitSource
+# ---------------------------------------------------------------------------
+
+
+class TestGitSource:
+    """Tests for GitSource — bare-repo backed SkillSource."""
+
+    def _source(self, extra_taps=None):
+        return GitSource(extra_taps=extra_taps or [])
+
+    @patch("tools.skills_hub.subprocess.run")
+    @patch("tools.skills_hub._index_cache_dir")
+    def test_init_filters_taps_without_git_suffix(self, mock_cache_dir, mock_run):
+        # Taps ending in .git pass through; others are dropped.
+        mock_cache_dir.return_value = Path("/tmp/cache")
+        src = self._source(extra_taps=[
+            {"repo": "https://github.com/owner/repo.git", "path": "skills/"},
+            {"repo": "git@github.com:owner/repo.git", "path": "skills/"},
+            {"repo": "https://github.com/owner/repo", "path": "skills/"},  # no .git → dropped
+            {"repo": "ssh://git@gitlab.com/a/b", "path": "skills/"},       # no .git → dropped
+        ])
+        assert len(src.taps) == 2
+
+    def test_init_empty_taps(self):
+        src = self._source()
+        assert src.taps == []
+
+    # ------------------------------------------------------------------
+    # _ls_tree
+    # ------------------------------------------------------------------
+
+    @patch("tools.skills_hub.subprocess.run")
+    @patch.object(GitSource, "_repo_cache_dir")
+    def test_ls_tree_parses_output(self, mock_cache_dir, mock_run):
+        mock_cache_dir.return_value = Path("/tmp/cache")
+        mock_run.return_value = MagicMock(
+            stdout=(
+                "100644 blob abc123\tskills/foo/SKILL.md\n"
+                "100644 blob def456\tskills/foo/README.md\n"
+                "040000 tree ghi789\tskills/bar\n"
+            )
+        )
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        tap = src.taps[0]
+
+        entries = src._ls_tree(tap)
+
+        assert len(entries) == 3
+        assert entries[0].mode == "100644"
+        assert entries[0].type == "blob"
+        assert entries[0].sha == "abc123"
+        assert entries[0].path == "skills/foo/SKILL.md"
+        assert entries[2].type == "tree"
+
+    @patch("tools.skills_hub.subprocess.run")
+    @patch.object(GitSource, "_repo_cache_dir")
+    def test_ls_tree_caches_results(self, mock_cache_dir, mock_run):
+        mock_cache_dir.return_value = Path("/tmp/cache")
+        call_count = [0]
+
+        def _run(cmd, **kwargs):
+            if "ls-tree" in cmd:
+                call_count[0] += 1
+
+            return MagicMock(stdout="100644 blob abc\tskills/foo/SKILL.md")
+
+        mock_run.side_effect = _run
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        tap = src.taps[0]
+
+        _ = src._ls_tree(tap)
+        _ = src._ls_tree(tap)  # should use cache, not call subprocess again
+
+        assert call_count[0] == 1
+
+    @patch("tools.skills_hub.subprocess.run")
+    @patch.object(GitSource, "_repo_cache_dir")
+    def test_ls_tree_clears_cache_on_refresh(self, mock_cache_dir, mock_run):
+        import os
+        import shutil
+        import time
+
+        mock_cache_dir.return_value = Path("/tmp/cache")
+        call_count = {
+            "clone": 0,
+            "fetch": 0,
+            "ls_tree": 0,
+        }
+
+        def _run(cmd, **kwargs):
+            if "--bare" in cmd:
+                call_count["clone"] += 1
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+                return MagicMock(returncode=0)
+
+            if "fetch" in cmd:
+                call_count["fetch"] += 1
+                return MagicMock(returncode=0)
+
+            if "ls-tree" in cmd:
+                call_count["ls_tree"] += 1
+                return MagicMock(stdout="100644 blob xyz\tskills/foo/SKILL.md")
+
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = _run
+
+        src = self._source(
+            extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}]
+        )
+        tap = src.taps[0]
+
+        # Trigger clone + ls-tree (caches entries)
+        _ = src._ls_tree(tap)
+        assert call_count["clone"] == 1
+        assert call_count["ls_tree"] == 1
+        assert call_count["fetch"] == 0
+
+        # Simulate a stale refresh
+        repo_dir = src._repo_path(tap["repo"])
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        old_time = time.time() - 60
+        os.utime(repo_dir, (old_time, old_time))
+        src._ensure_repo(tap)
+        assert call_count["fetch"] == 1
+
+        # ls-tree again - cache was cleared, so new ls-tree call
+        _ = src._ls_tree(tap)
+        assert call_count["ls_tree"] == 2
+
+    # ------------------------------------------------------------------
+    # _show
+    # ------------------------------------------------------------------
+
+    @patch("tools.skills_hub.subprocess.run")
+    @patch.object(GitSource, "_repo_cache_dir")
+    def test_show_returns_file_content(self, mock_cache_dir, mock_run):
+        mock_cache_dir.return_value = Path("/tmp/cache")
+        mock_run.return_value = MagicMock(stdout="---\nname: test\n---\n\n# Body\n")
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        tap = src.taps[0]
+
+        content = src._show(tap, "skills/foo/SKILL.md")
+
+        assert content == "---\nname: test\n---\n\n# Body\n"
+        # Verify the git show command
+        calls = [c.args for c in mock_run.call_args_list if "show" in str(c.args)]
+        assert any("HEAD:skills/foo/SKILL.md" in str(call) for call in calls)
+
+    @patch("tools.skills_hub.subprocess.run")
+    @patch.object(GitSource, "_repo_cache_dir")
+    def test_show_returns_none_on_404(self, mock_cache_dir, mock_run):
+        mock_cache_dir.return_value = Path("/tmp/cache")
+
+        def _run(cmd, **kwargs):
+            if "--bare" in cmd:
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+                return MagicMock(returncode=0)
+
+            if "show" in cmd:
+                raise CalledProcessError(128, cmd)
+
+            return MagicMock(stdout="")
+
+        mock_run.side_effect = _run
+
+        src = self._source(
+            extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}]
+        )
+        tap = src.taps[0]
+        content = src._show(tap, "skills/nonexistent.txt")
+        assert content is None
+
+    # ------------------------------------------------------------------
+    # _download_directory
+    # ------------------------------------------------------------------
+
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_download_directory_filters_by_prefix(self, mock_show, mock_ls_tree):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills/foo/SKILL.md"),
+            GitTreeEntry(mode="100644", type="blob", sha="b", path="skills/foo/README.md"),
+            GitTreeEntry(mode="100644", type="blob", sha="c", path="skills/bar/SKILL.md"),
+            GitTreeEntry(mode="040000", type="tree", sha="d", path="skills/baz"),
+        ]
+        mock_show.side_effect = lambda t, p: f"content of {p}"
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        tap = src.taps[0]
+
+        files = src._download_directory(tap, "skills/foo")
+
+        assert files == {
+            "SKILL.md": "content of skills/foo/SKILL.md",
+            "README.md": "content of skills/foo/README.md",
+        }
+
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_download_directory_strips_prefix(self, mock_show, mock_ls_tree):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills/skill-a/SKILL.md"),
+        ]
+        mock_show.return_value = "# Test"
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        tap = src.taps[0]
+
+        files = src._download_directory(tap, "skills/skill-a")
+
+        # Keys are relative to the directory, not the full repo path
+        assert list(files.keys()) == ["SKILL.md"]
+
+    # ------------------------------------------------------------------
+    # _parse_frontmatter
+    # ------------------------------------------------------------------
+
+    def test_parse_frontmatter_basic(self):
+        src = self._source()
+        content = "---\nname: my-skill\ndescription: Test skill\ntags: [test]\n---\n\n# Body\n"
+        fm = src._parse_frontmatter(content)
+        assert fm["name"] == "my-skill"
+        assert fm["description"] == "Test skill"
+        assert fm["tags"] == ["test"]
+
+    def test_parse_frontmatter_no_frontmatter(self):
+        src = self._source()
+        assert src._parse_frontmatter("# Just a heading") == {}
+
+    def test_parse_frontmatter_no_closing_dashes(self):
+        src = self._source()
+        assert src._parse_frontmatter("---\nname: test") == {}
+
+    def test_parse_frontmatter_yaml_error(self):
+        src = self._source()
+        # Invalid YAML
+        assert src._parse_frontmatter("---\n: : : invalid") == {}
+
+    def test_parse_frontmatter_returns_empty_dict_for_non_dict(self):
+        src = self._source()
+        # YAML that parses to a list instead of dict
+        fm = src._parse_frontmatter("---\n- item1\n- item2\n---\n\n")
+        assert fm == {}
+
+    # ------------------------------------------------------------------
+    # inspect
+    # ------------------------------------------------------------------
+
+    @patch.object(GitSource, "_show")
+    def test_inspect_parses_metadata(self, mock_show):
+        mock_show.return_value = (
+            "---\n"
+            "name: code-review\n"
+            "description: Review code\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    tags: [code, review]\n"
+            "---\n\n# Body\n"
+        )
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+
+        meta = src.inspect("https://github.com/x/y.git:skills/code-review")
+
+        assert meta is not None
+        assert meta.name == "code-review"
+        assert meta.description == "Review code"
+        assert meta.tags == ["code", "review"]
+        assert meta.source == "git"
+        assert meta.trust_level == "community"
+
+    @patch.object(GitSource, "_show")
+    def test_inspect_tags_from_root_level(self, mock_show):
+        mock_show.return_value = "---\nname: x\ndescription: y\ntags: [a, b]\n---\n"
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+
+        meta = src.inspect("https://github.com/x/y.git:skills/x")
+
+        assert meta.tags == ["a", "b"]
+
+    def test_inspect_bad_identifier_format(self):
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        assert src.inspect("no-double-colon-here") is None
+
+    def test_inspect_unknown_repo(self):
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        assert src.inspect("https://github.com/other/repo.git:skills/foo") is None
+
+    @patch.object(GitSource, "_show")
+    def test_inspect_falls_back_to_dir_name_for_name(self, mock_show):
+        mock_show.return_value = "---\ndescription: unnamed\n---\n"
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+
+        meta = src.inspect("https://github.com/x/y.git:skills/unnamed-skill")
+
+        assert meta.name == "unnamed-skill"
+
+    # ------------------------------------------------------------------
+    # fetch
+    # ------------------------------------------------------------------
+
+    @patch.object(GitSource, "_git_repo")
+    @patch.object(GitSource, "_download_directory")
+    def test_fetch_returns_bundle_with_skill_md(self, mock_download, mock_git_repo):
+        mock_git_repo.return_value = "abc123\n"
+        mock_download.return_value = {
+            "SKILL.md": "---\nname: my-skill\n---\n\n# Body\n",
+            "README.md": "# Readme",
+        }
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        bundle = src.fetch("https://github.com/x/y.git:skills/my-skill")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.source == "git"
+        assert bundle.trust_level == "community"
+        assert "SKILL.md" in bundle.files
+        assert "README.md" in bundle.files
+
+    @patch.object(GitSource, "_download_directory")
+    def test_fetch_returns_none_without_skill_md(self, mock_download):
+        mock_download.return_value = {"README.md": "# Readme"}
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+
+        bundle = src.fetch("https://github.com/x/y.git:skills/no-skill-md")
+
+        assert bundle is None
+
+    def test_fetch_bad_identifier(self):
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        assert src.fetch("bad-format") is None
+
+    def test_fetch_unknown_repo(self):
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        assert src.fetch("https://github.com/other.git:skills/foo") is None
+
+    # ------------------------------------------------------------------
+    # search
+    # ------------------------------------------------------------------
+
+    id="a9a2t8"
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_search_finds_matching_skills(self, mock_show, mock_ls_tree, mock_cache):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills/review/SKILL.md"),
+            GitTreeEntry(mode="100644", type="blob", sha="b", path="skills/format/SKILL.md"),
+        ]
+
+        def fake_show(tap, path):
+            if path == "skills.sh.json":
+                return """
+    {
+    "skills": []
+    }
+    """
+
+            name = path.split("/")[-2]
+            return f"""---
+    name: {name}
+    description: {name} skill
+    tags:
+    - test
+    ---
+
+    # {name}
+
+    This is the {name} skill.
+    """
+
+        mock_show.side_effect = fake_show
+
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+        results = src.search("review", limit=10)
+        assert len(results) == 1
+        assert results[0].name == "review"
+
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_search_searches_across_multiple_taps(self, mock_show, mock_ls_tree):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills/foo/SKILL.md"),
+        ]
+        mock_show.return_value = "---\nname: foo\ndescription: bar\n---\n"
+
+        src = self._source(extra_taps=[
+            {"repo": "https://github.com/owner1/repo1.git", "path": "skills/"},
+            {"repo": "https://github.com/owner2/repo2.git", "path": "skills/"},
+        ])
+
+        results = src.search("foo", limit=10)
+
+        # Both taps have the same skill content
+        assert len(results) == 2
+
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_search_limits_results(self, mock_show, mock_ls_tree):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha=f"{i}", path=f"skills/skill-{i}/SKILL.md")
+            for i in range(20)
+        ]
+        mock_show.return_value = "---\nname: skill-{i}\ndescription: desc\n---\n"
+
+        def fake_show(tap, path):
+            if path == "skills.sh.json":
+                return """
+    {
+        "skills": []
+    }
+    """
+
+            idx = path.split("/")[-2].split("-")[1]
+            return f"""---
+    name: skill-{idx}
+    description: desc
+    ---
+
+    # skill-{idx}
+    """
+
+        mock_show.side_effect = fake_show
+
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+
+        results = src.search("skill", limit=5)
+
+        assert len(results) == 5
+
+    @patch.object(GitSource, "_show")
+    @patch.object(GitSource, "_ls_tree")
+    def test_search_skips_hidden_dirs(self, mock_ls_tree, mock_show):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills/public/SKILL.md"),
+            GitTreeEntry(mode="100644", type="blob", sha="b", path="skills/.hidden/SKILL.md"),
+            GitTreeEntry(mode="100644", type="blob", sha="c", path="skills/_private/SKILL.md"),
+        ]
+        mock_show.return_value = """---
+name: public
+description: public skill
+---
+
+# Public
+"""
+
+        src = self._source(
+            extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}]
+        )
+        results = src.search("", limit=10)
+        assert len(results) == 1
+        assert results[0].name == "public"
+
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_search_deduplicates_by_identifier(self, mock_show, mock_ls_tree):
+        # Two taps pointing to the same repo — should deduplicate
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills/foo/SKILL.md"),
+        ]
+        mock_show.return_value = "---\nname: foo\ndescription: bar\n---\n"
+
+        src = self._source(extra_taps=[
+            {"repo": "https://github.com/x/y.git", "path": "skills/"},
+            {"repo": "https://github.com/x/y.git", "path": "skills/"},  # duplicate tap
+        ])
+
+        results = src.search("", limit=10)
+        assert len(results) == 1
+
+    @patch.object(GitSource, "_ls_tree")
+    @patch.object(GitSource, "_show")
+    def test_search_includes_category_from_skills_sh_json(self, mock_show, mock_ls_tree):
+        mock_ls_tree.return_value = [
+            GitTreeEntry(mode="100644", type="blob", sha="a", path="skills.sh.json"),
+            GitTreeEntry(mode="100644", type="blob", sha="b", path="skills/foo/SKILL.md"),
+        ]
+        mock_show.side_effect = lambda tap, path: (
+            '{"groupings": [{"title": "Inference AI", "skills": ["foo"]}]}'
+            if path == "skills.sh.json"
+            else "---\nname: foo\ndescription: bar\n---\n"
+        )
+
+        src = self._source(extra_taps=[{"repo": "https://github.com/x/y.git", "path": "skills/"}])
+
+        results = src.search("", limit=10)
+
+        assert len(results) == 1
+        assert results[0].extra.get("category") == "Inference AI"
+
+    # ------------------------------------------------------------------
+    # source_id + trust_level_for
+    # ------------------------------------------------------------------
+
+    def test_source_id(self):
+        src = self._source()
+        assert src.source_id() == "git"
+
+    def test_trust_level_for(self):
+        src = self._source()
+        assert src.trust_level_for("any/identifier") == "community"
 
 # ---------------------------------------------------------------------------
 # GitHubSource._parse_frontmatter_quick

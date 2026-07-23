@@ -246,6 +246,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("display", "streaming"),
         ("display", "skin"),
         ("display", "show_reasoning"),
+        ("display", "auto_compact_local"),
         ("privacy", "redact_pii"),
         ("tts", "provider"),
     ]

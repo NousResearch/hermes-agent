@@ -1812,6 +1812,10 @@ DEFAULT_CONFIG = {
     
     "display": {
         "compact": False,
+        # When true (default), auto-enable compact mode + suppress tool progress
+        # for local providers (Ollama, localhost).  The spinner rendering loop
+        # can starve slow local inference causing exit 130/124 (issue #43028).
+        "auto_compact_local": True,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the

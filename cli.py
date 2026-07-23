@@ -3851,6 +3851,31 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 # ============================================================================
+
+def _is_local_provider(provider: str, base_url: str) -> bool:
+    """Check if the provider is a local model server (Ollama, llama.cpp, etc.).
+
+    Local providers often have slow first-inference (model loading) that can
+    cause the CLI spinner rendering loop to starve the inference process
+    (issue #43028).  Auto-enabling compact mode suppresses the spinner and
+    avoids the timeout.
+    """
+    if not provider:
+        return False
+    _p = provider.lower()
+    if _p in ("ollama", "llama", "llamacpp", "local", "llama-cpp"):
+        return True
+    if base_url:
+        _b = base_url.lower()
+        for host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            if host in _b:
+                return True
+        # mDNS / .local hostnames (common for LAN model servers)
+        if ".local:" in _b:
+            return True
+    return False
+
+
 # HermesCLI Class
 # ============================================================================
 
@@ -4034,6 +4059,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
+        # Auto-compact for local providers (Ollama, localhost).  The spinner
+        # rendering loop can starve slow local inference, causing exit 130/124
+        # before first response (issue #43028).  Compact mode + suppressed tool
+        # progress avoids the timeout.  Override with display.auto_compact_local: false.
+        if not self.compact:
+            _auto_compact_local = CLI_CONFIG["display"].get("auto_compact_local", True)
+            if _auto_compact_local and _is_local_provider(self.requested_provider, self.base_url):
+                self.compact = True
+                if self.tool_progress_mode != "off":
+                    self.tool_progress_mode = "off"
+
         # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
         # custom endpoint → prefer OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.

@@ -886,6 +886,150 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_fallbacks_reorder_preserves_credential_metadata(self):
+        """Reordering a chain must not strip credential references.
+
+        The dashboard reorders by re-sending the entries it got from GET. The
+        PUT schema previously declared only provider/model/base_url/api_mode,
+        so `key_env` / `api_key_env` / `api_key` were dropped on every move —
+        `fallback_config.resolve_entry_api_key` then found no credential and
+        the configured chain became unusable at runtime.
+        """
+        from hermes_cli.config import load_config
+
+        first = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-opus-4.8",
+            "key_env": "OPENROUTER_FALLBACK_KEY",
+        }
+        second = {
+            "provider": "custom-local",
+            "model": "llama-4-70b",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_mode": "chat",
+            "api_key_env": "LOCAL_FALLBACK_KEY",
+        }
+
+        resp = self.client.put("/api/model/fallbacks", json={"fallbacks": [first, second]})
+        assert resp.status_code == 200, resp.text
+
+        # Read back the way the dashboard does, swap the two, and save again.
+        stored = self.client.get("/api/model/fallbacks").json()["fallbacks"]
+        assert stored[0]["key_env"] == "OPENROUTER_FALLBACK_KEY"
+        assert stored[1]["api_key_env"] == "LOCAL_FALLBACK_KEY"
+
+        resp = self.client.put(
+            "/api/model/fallbacks", json={"fallbacks": [stored[1], stored[0]]}
+        )
+        assert resp.status_code == 200, resp.text
+
+        chain = load_config()["fallback_providers"]
+        assert [entry["provider"] for entry in chain] == ["custom-local", "openrouter"]
+        assert chain[0]["api_key_env"] == "LOCAL_FALLBACK_KEY"
+        assert chain[0]["base_url"] == "http://127.0.0.1:8000/v1"
+        assert chain[0]["api_mode"] == "chat"
+        assert chain[1]["key_env"] == "OPENROUTER_FALLBACK_KEY"
+
+    def test_put_fallbacks_drops_duplicate_routes(self):
+        """Duplicates must be dropped on write, not merely hidden on read.
+
+        `get_fallback_chain` dedupes when reading, so a repeated route was
+        invisible in the dashboard while `config.yaml` accumulated another
+        copy on every add — the stored file drifting from what the UI shows.
+        The first occurrence wins so the user's ordering is preserved.
+        """
+        from hermes_cli.config import load_config
+
+        payload = [
+            {"provider": "openrouter", "model": "gpt-4"},
+            {"provider": "openai", "model": "gpt-5.5"},
+            {"provider": "openrouter", "model": "gpt-4"},
+        ]
+        resp = self.client.put("/api/model/fallbacks", json={"fallbacks": payload})
+        assert resp.status_code == 200, resp.text
+
+        assert [(e["provider"], e["model"]) for e in resp.json()["fallbacks"]] == [
+            ("openrouter", "gpt-4"),
+            ("openai", "gpt-5.5"),
+        ]
+        chain = load_config()["fallback_providers"]
+        assert [(e["provider"], e["model"]) for e in chain] == [
+            ("openrouter", "gpt-4"),
+            ("openai", "gpt-5.5"),
+        ]
+
+    def test_put_fallbacks_keeps_same_model_on_distinct_base_urls(self):
+        """Same provider/model at different endpoints are different routes."""
+        from hermes_cli.config import load_config
+
+        payload = [
+            {"provider": "custom", "model": "llama-4", "base_url": "http://a.local/v1"},
+            {"provider": "custom", "model": "llama-4", "base_url": "http://b.local/v1"},
+        ]
+        resp = self.client.put("/api/model/fallbacks", json={"fallbacks": payload})
+        assert resp.status_code == 200, resp.text
+        assert len(load_config()["fallback_providers"]) == 2
+
+    def test_get_fallbacks_does_not_expose_inline_api_key(self):
+        """An inline key is a secret — the chain endpoint must not hand it out.
+
+        `_custom_endpoint_response` already establishes the convention for the
+        provider surface: never return the raw key, only a presence flag. The
+        documented shape for a fallback entry is `key_env` (the *name* of an
+        env var), so only that is safe to round-trip through the browser.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["fallback_providers"] = [
+            {
+                "provider": "custom-local",
+                "model": "llama-4-70b",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "api_key": "sk-INLINE-SECRET",
+            },
+        ]
+        save_config(cfg)
+
+        resp = self.client.get("/api/model/fallbacks")
+        assert resp.status_code == 200, resp.text
+        assert "sk-INLINE-SECRET" not in resp.text
+
+        entry = resp.json()["fallbacks"][0]
+        assert "api_key" not in entry
+        assert entry["has_api_key"] is True
+
+    def test_put_fallbacks_reorder_preserves_inline_api_key(self):
+        """Reordering must not destroy an inline key the client never sees.
+
+        The dashboard cannot echo back a secret it was never given, so the
+        write path carries the stored value forward by provider/model/base_url.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["fallback_providers"] = [
+            {"provider": "openrouter", "model": "claude-opus-4.8", "key_env": "OR_KEY"},
+            {
+                "provider": "custom-local",
+                "model": "llama-4-70b",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "api_key": "sk-INLINE-SECRET",
+            },
+        ]
+        save_config(cfg)
+
+        # Reorder exactly as the dashboard does: GET, swap, PUT back.
+        got = self.client.get("/api/model/fallbacks").json()["fallbacks"]
+        resp = self.client.put("/api/model/fallbacks", json={"fallbacks": [got[1], got[0]]})
+        assert resp.status_code == 200, resp.text
+        assert "sk-INLINE-SECRET" not in resp.text
+
+        chain = load_config()["fallback_providers"]
+        assert [e["provider"] for e in chain] == ["custom-local", "openrouter"]
+        assert chain[0]["api_key"] == "sk-INLINE-SECRET"
+        assert chain[1]["key_env"] == "OR_KEY"
+
     def test_put_moa_models_rejects_half_filled_slot_with_422(self):
         """#64156: a mid-edit autosave (provider picked, model empty) used to be
         silently normalized into the hardcoded default preset — the user's

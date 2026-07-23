@@ -788,6 +788,202 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
+def test_restart_reclaims_foreign_claim_after_heartbeat_grace_when_singleton_owned(
+    kanban_home, monkeypatch,
+):
+    """A stopped foreign heartbeat plus singleton ownership proves an orphan."""
+    import json
+    import hermes_cli.kanban_db as _kb
+
+    now = 3_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setattr(_kb, "_claimer_id", lambda: "new-container:42")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="restart orphan", assignee="a")
+        kb.claim_task(conn, tid, claimer="old-container:11967")
+        kb._set_worker_pid(conn, tid, 11967)
+        conn.execute(
+            "UPDATE tasks SET started_at=?, last_heartbeat_at=?, claim_expires=? "
+            "WHERE id=?",
+            (now - 1600, now - 1500, now + 900, tid),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at=?, last_heartbeat_at=?, claim_expires=? "
+            "WHERE task_id=? AND status='running'",
+            (now - 1600, now - 1500, now + 900, tid),
+        )
+        conn.commit()
+
+        result = kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            owns_singleton_dispatcher_lock=True,
+        )
+
+        assert result.restart_reclaimed == [tid]
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        run = kb.list_runs(conn, tid)[0]
+        assert run.outcome == "infra_killed"
+        event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id=? AND kind='restart_reclaimed'",
+            (tid,),
+        ).fetchone()
+        assert event is not None
+        payload = json.loads(event["payload"])
+        assert payload["reason"] == "orphaned_foreign_claim"
+        assert payload["claim_host"] == "old-container"
+        assert payload["dispatcher_host"] == "new-container"
+        assert payload["heartbeat_age_seconds"] == 1500
+        assert payload["latency_to_reclaim_seconds"] == 1600
+
+
+def test_restart_preserves_foreign_claim_with_fresh_heartbeat_when_singleton_owned(
+    kanban_home, monkeypatch,
+):
+    """The dispatcher lock alone cannot prove a foreign worker has stopped."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 3_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setattr(_kb, "_claimer_id", lambda: "new-container:42")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live foreign worker", assignee="a")
+        kb.claim_task(conn, tid, claimer="old-container:11967")
+        kb._set_worker_pid(conn, tid, 11967)
+        conn.execute(
+            "UPDATE tasks SET started_at=?, last_heartbeat_at=?, claim_expires=? "
+            "WHERE id=?",
+            (now - 120, now - 5, now - 1, tid),
+        )
+        conn.commit()
+
+        result = kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            owns_singleton_dispatcher_lock=True,
+        )
+
+        assert result.restart_reclaimed == []
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_restart_classifies_expired_foreign_claim_before_generic_reclaim(
+    kanban_home, monkeypatch,
+):
+    """Expired restart orphans retain infra-killed telemetry."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setattr(_kb, "_claimer_id", lambda: "new-container:42")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="expired restart orphan", assignee="a")
+        kb.claim_task(conn, tid, claimer="old-container:11967")
+        kb._set_worker_pid(conn, tid, 11967)
+        conn.execute(
+            "UPDATE tasks SET started_at=?, last_heartbeat_at=?, claim_expires=? "
+            "WHERE id=?",
+            (now - 1600, now - 1500, now - 1, tid),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at=?, last_heartbeat_at=?, claim_expires=? "
+            "WHERE task_id=? AND status='running'",
+            (now - 1600, now - 1500, now - 1, tid),
+        )
+        conn.commit()
+
+        result = kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            owns_singleton_dispatcher_lock=True,
+        )
+
+        assert result.restart_reclaimed == [tid]
+        assert result.reclaimed == 0
+        assert kb.list_runs(conn, tid)[0].outcome == "infra_killed"
+        kinds = [
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=?", (tid,),
+            )
+        ]
+        assert "restart_reclaimed" in kinds
+        assert "reclaimed" not in kinds
+
+
+def test_restart_preserves_recent_foreign_claim_without_heartbeat(
+    kanban_home, monkeypatch,
+):
+    """Missing heartbeat data is not proof that a newly launched worker died."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 6_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setattr(_kb, "_claimer_id", lambda: "new-container:42")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy foreign worker", assignee="a")
+        kb.claim_task(conn, tid, claimer="old-container:11967")
+        kb._set_worker_pid(conn, tid, 11967)
+        conn.execute(
+            "UPDATE tasks SET started_at=?, last_heartbeat_at=NULL WHERE id=?",
+            (now - 120, tid),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at=?, last_heartbeat_at=NULL "
+            "WHERE task_id=? AND status='running'",
+            (now - 120, tid),
+        )
+        conn.commit()
+
+        reclaimed = kb.detect_orphaned_foreign_claims(
+            conn, owns_singleton_dispatcher_lock=True,
+        )
+
+        assert reclaimed == []
+        assert kb.get_task(conn, tid).status == "running"
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1000)
+        assert kb.detect_orphaned_foreign_claims(
+            conn, owns_singleton_dispatcher_lock=True,
+        ) == [tid]
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_foreign_claim_is_preserved_without_singleton_ownership(
+    kanban_home, monkeypatch,
+):
+    """A dispatcher that lost the singleton race must not duplicate live work."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 4_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setattr(_kb, "_claimer_id", lambda: "new-container:42")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="possibly live foreign", assignee="a")
+        kb.claim_task(conn, tid, claimer="foreign-host:77")
+        kb._set_worker_pid(conn, tid, 77)
+        conn.execute(
+            "UPDATE tasks SET started_at=?, last_heartbeat_at=? WHERE id=?",
+            (now - 120, now - 5, tid),
+        )
+        conn.commit()
+
+        reclaimed = kb.detect_orphaned_foreign_claims(
+            conn, owns_singleton_dispatcher_lock=False,
+        )
+
+        assert reclaimed == []
+        assert kb.get_task(conn, tid).status == "running"
+
+
 def test_detect_crashed_workers_skips_freshly_claimed_tasks(
     kanban_home, monkeypatch,
 ):

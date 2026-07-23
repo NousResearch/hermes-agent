@@ -246,7 +246,6 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 # during the launch window.
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
-
 # Sentinel exit code a kanban worker uses to signal "I bailed because the
 # provider rate-limited / exhausted quota, not because the task failed."
 # The dispatcher's reap classifier maps this to a ``rate_limited`` exit kind
@@ -1259,7 +1258,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | done | blocked | crashed | timed_out | failed | released |
+    --         infra_killed
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
@@ -1269,7 +1269,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | infra_killed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -4221,9 +4221,10 @@ def release_stale_claims(
 ) -> int:
     """Reset any ``running`` task whose claim has expired.
 
-    A stale-by-TTL claim whose host-local worker PID is still alive is
-    *extended* (with a ``claim_extended`` event) instead of being
-    reclaimed. Reclaiming a live worker mid-flight produces the spawn-
+    A stale-by-TTL claim whose host-local worker PID is still alive, or whose
+    foreign-host worker sent a heartbeat within one claim TTL, is *extended*
+    (with a ``claim_extended`` event) instead of being reclaimed. Reclaiming a
+    live worker mid-flight produces the spawn-
     then-immediately-reclaim loop seen on slow models that spend longer
     than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM
     call (#23025): no tool calls means no ``kanban_heartbeat``, even
@@ -4258,6 +4259,7 @@ def release_stale_claims(
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
         hb = row["last_heartbeat_at"]
+        heartbeat_age = (now - int(hb)) if hb is not None else None
         # Heartbeat staleness backstop: if we have a heartbeat at all
         # and it's older than the max-stale threshold, the worker is
         # not making observable progress.  Reclaim instead of extending,
@@ -4266,12 +4268,19 @@ def release_stale_claims(
             hb is not None
             and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         )
+        foreign_heartbeat_fresh = (
+            not host_local
+            and heartbeat_age is not None
+            and heartbeat_age <= _resolve_claim_ttl_seconds()
+        )
         if (
-            host_local
-            and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
-            and not heartbeat_stale
-        ):
+            (
+                host_local
+                and row["worker_pid"]
+                and _pid_alive(row["worker_pid"])
+            )
+            or foreign_heartbeat_fresh
+        ) and not heartbeat_stale:
             new_expires = now + _resolve_claim_ttl_seconds()
             with write_txn(conn):
                 cur = conn.execute(
@@ -4293,8 +4302,14 @@ def release_stale_claims(
                 _append_event(
                     conn, row["id"], "claim_extended",
                     {
-                        "reason": "pid_alive",
-                        "worker_pid": int(row["worker_pid"]),
+                        "reason": (
+                            "pid_alive" if host_local
+                            else "foreign_fresh_heartbeat"
+                        ),
+                        "worker_pid": (
+                            int(row["worker_pid"])
+                            if row["worker_pid"] is not None else None
+                        ),
                         "claim_lock": row["claim_lock"],
                         "claim_expires_was": int(row["claim_expires"]),
                         "claim_expires_now": new_expires,
@@ -6560,6 +6575,9 @@ class DispatchResult:
     "task is genuinely stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
+    restart_reclaimed: list[str] = field(default_factory=list)
+    """Task ids requeued after a singleton dispatcher restart proved their
+    foreign-host claim belonged to the previous container."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
@@ -7168,6 +7186,110 @@ def detect_stale_running(
         # event already lives in task_events for auditability; that's the
         # right surface for "this happened" without conflating with the
         # spawn_failed / timed_out / crashed counters.
+
+    return reclaimed
+
+
+def detect_orphaned_foreign_claims(
+    conn: sqlite3.Connection,
+    *,
+    owns_singleton_dispatcher_lock: bool = False,
+) -> list[str]:
+    """Requeue claims left behind by a previous container incarnation.
+
+    A PID from another host is not a meaningful liveness probe, so host mismatch
+    alone is never enough to reclaim: another dispatcher may still own that
+    worker. The embedded gateway passes ``owns_singleton_dispatcher_lock=True``
+    only after acquiring the process-lifetime, machine-global dispatcher lock.
+    That lock proves no prior/foreign gateway dispatcher sharing this Hermes
+    home is still alive. It does *not* prove a worker child died with its
+    dispatcher, so a fresh heartbeat remains a hard no-reclaim signal. Only a
+    changed host plus singleton ownership plus no heartbeat for a full claim TTL
+    identifies a restart orphan. That never reclaims sooner than the existing
+    TTL path, but avoids waiting for the longer heartbeat-stale timeout.
+
+    Fresh claims retain the normal launch grace. Reclaims are infrastructure-
+    neutral: they close the run as ``infra_killed`` and return the task to
+    ``ready`` without incrementing the task failure counter.
+    """
+    if not owns_singleton_dispatcher_lock:
+        return []
+
+    now = int(time.time())
+    dispatcher_host = _claimer_id().split(":", 1)[0]
+    reclaimed: list[str] = []
+    # Read and transition under one BEGIN IMMEDIATE transaction. A heartbeat,
+    # respawn, or run replacement cannot land between eligibility
+    # classification and _end_run and accidentally close a newer run.
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT t.id, t.claim_lock, t.worker_pid, t.last_heartbeat_at, "
+            "       t.current_run_id, "
+            "       COALESCE(r.started_at, t.started_at) AS active_started_at "
+            "FROM tasks t "
+            "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.claim_lock IS NOT NULL"
+        ).fetchall()
+
+        for row in rows:
+            claim_lock = str(row["claim_lock"] or "")
+            claim_host = claim_lock.split(":", 1)[0]
+            if not claim_host or claim_host == dispatcher_host:
+                continue
+            started_at = row["active_started_at"]
+            if started_at is None:
+                continue
+            latency = max(0, now - int(started_at))
+            if latency < _resolve_crash_grace_seconds():
+                continue
+
+            last_hb = row["last_heartbeat_at"]
+            heartbeat_age = (
+                max(0, now - int(last_hb)) if last_hb is not None else None
+            )
+            liveness_age = heartbeat_age if heartbeat_age is not None else latency
+            if liveness_age <= _resolve_claim_ttl_seconds():
+                continue
+            payload = {
+                "reason": "orphaned_foreign_claim",
+                "claim_lock": claim_lock,
+                "claim_host": claim_host,
+                "dispatcher_host": dispatcher_host,
+                "worker_pid": int(row["worker_pid"]) if row["worker_pid"] else None,
+                "last_heartbeat_at": int(last_hb) if last_hb is not None else None,
+                "heartbeat_age_seconds": heartbeat_age,
+                "liveness_age_seconds": liveness_age,
+                "latency_to_reclaim_seconds": latency,
+                "singleton_dispatcher_lock_owned": True,
+            }
+            cur = conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL, last_heartbeat_at=NULL "
+                "WHERE id=? AND status='running' AND claim_lock IS ? "
+                "AND worker_pid IS ? AND current_run_id IS ? "
+                "AND last_heartbeat_at IS ?",
+                (
+                    row["id"], row["claim_lock"], row["worker_pid"],
+                    row["current_run_id"], row["last_heartbeat_at"],
+                ),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _end_run(
+                conn,
+                row["id"],
+                outcome="infra_killed",
+                status="infra_killed",
+                error=(
+                    f"foreign-host worker claim {claim_lock} orphaned by "
+                    "dispatcher restart"
+                ),
+                metadata=payload,
+            )
+            _append_event(
+                conn, row["id"], "restart_reclaimed", payload, run_id=run_id,
+            )
+            reclaimed.append(row["id"])
 
     return reclaimed
 
@@ -7954,6 +8076,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    owns_singleton_dispatcher_lock: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7988,6 +8111,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            owns_singleton_dispatcher_lock=owns_singleton_dispatcher_lock,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8004,6 +8128,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            owns_singleton_dispatcher_lock=owns_singleton_dispatcher_lock,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8024,15 +8149,17 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    owns_singleton_dispatcher_lock: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
     Steps:
-      1. Reclaim stale running tasks (TTL expired).
-      2. Reclaim stale running tasks (no recent heartbeat).
-      3. Reclaim crashed running tasks (host-local PID no longer alive).
-      3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      1. Reclaim foreign-host claims proven orphaned by a dispatcher restart.
+      2. Reclaim stale running tasks (TTL expired).
+      3. Reclaim stale running tasks (no recent heartbeat).
+      4. Reclaim crashed running tasks (host-local PID no longer alive).
+      5. Promote todo -> ready where all parents are done.
+      6. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
@@ -8058,6 +8185,10 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    result.restart_reclaimed = detect_orphaned_foreign_claims(
+        conn,
+        owns_singleton_dispatcher_lock=owns_singleton_dispatcher_lock,
+    )
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,

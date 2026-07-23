@@ -12,7 +12,10 @@ managed, which is False on a NAS-hosted Fly agent). The real gate is
 
 from __future__ import annotations
 
+import json
 import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
 import pytest
 
@@ -228,7 +231,7 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         sent["body"] = json.loads(req.data.decode())
         return _Resp()
 
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", _fake_urlopen)
 
     # With an instance id -> present in the body.
     relay._post_provision(
@@ -321,7 +324,7 @@ def test_post_provision_body_includes_wakeUrl_only_when_set(monkeypatch):
         sent["body"] = json.loads(req.data.decode())
         return _Resp()
 
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", _fake_urlopen)
 
     # With a wake url -> present in the body.
     relay._post_provision(
@@ -375,3 +378,82 @@ def test_connector_failure_is_non_fatal(monkeypatch):
     monkeypatch.setattr(relay, "_post_provision", _boom)
     assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)
+
+
+# ───────────────── redirect credential stripping (real servers) ─────────────────
+
+class _RedirectingProvisionHandler(BaseHTTPRequestHandler):
+    """Answers POST /relay/provision with a 302 to a configurable target.
+
+    A second, independent server plays the redirect target and records the
+    headers it received — used to prove the gateway's Bearer identity token
+    never reaches an unintended origin. 302 (not 307/308) because stdlib's
+    HTTPRedirectHandler only follows a POST redirect for 301/302/303 — 307/308
+    are reserved for method-preserving redirects and raise immediately for
+    POST, so they can't carry the header anywhere in the first place.
+    """
+
+    redirect_to = ""  # full URL, set per test
+    received_headers: dict = {}
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        if self.path.rstrip("/") == "/relay/provision":
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_to)
+            self.end_headers()
+        else:
+            self._respond()
+
+    def do_GET(self):
+        # A 302 to a POST converts the redirected request to a bodyless GET
+        # (stdlib drops the body on any POST redirect); the target server
+        # only ever receives that GET, never the original POST.
+        self._respond()
+
+    def _respond(self):
+        type(self).received_headers = dict(self.headers)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"secret": "leaked"}).encode())
+
+    def log_message(self, format, *args):
+        pass
+
+
+def test_post_provision_strips_bearer_on_cross_host_redirect(monkeypatch):
+    """The connector's own Bearer identity token must not follow a redirect
+    to a different origin (compromised/misconfigured proxy in front of the
+    connector) — mirrors the cross-host credential-redirect fix already
+    applied to the model-catalog fetch paths. The redirect is still followed
+    (a legitimate reachability concern), just without the credential."""
+    _RedirectingProvisionHandler.received_headers = {}
+    server = HTTPServer(("127.0.0.1", 0), _RedirectingProvisionHandler)
+    target_server = HTTPServer(("127.0.0.1", 0), _RedirectingProvisionHandler)
+    port = server.server_address[1]
+    target_port = target_server.server_address[1]
+    _RedirectingProvisionHandler.redirect_to = f"http://127.0.0.1:{target_port}/collect"
+    Thread(target=server.serve_forever, daemon=True).start()
+    Thread(target=target_server.serve_forever, daemon=True).start()
+
+    try:
+        result = relay._post_provision(
+            provision_url=f"http://127.0.0.1:{port}/relay/provision",
+            access_token="super-secret-bearer",
+            gateway_id="gw-1",
+            platform="discord",
+            bot_id="app",
+            gateway_endpoint=None,
+            route_keys=[],
+        )
+    finally:
+        server.shutdown()
+        target_server.shutdown()
+
+    # The redirect target answered normally (it isn't blocked), proving the
+    # request really was followed — but without the Bearer token attached.
+    assert result["secret"] == "leaked"
+    headers = {k.lower(): v for k, v in _RedirectingProvisionHandler.received_headers.items()}
+    assert "authorization" not in headers

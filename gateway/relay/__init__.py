@@ -398,6 +398,8 @@ def _post_provision(
     import urllib.error
     import urllib.request
 
+    from hermes_cli.urllib_security import open_credentialed_url
+
     body: dict = {
         "gatewayId": gateway_id,
         "platform": platform,
@@ -425,7 +427,7 @@ def _post_provision(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -486,7 +488,6 @@ def _resolve_relay_identity_token() -> str:
 
     # Mode 1 — generic OAuth2 client_credentials grant.
     import json
-    import urllib.error
     import urllib.parse
     import urllib.request
 
@@ -668,6 +669,8 @@ def _post_policy(*, policy_url: str, token: str, policy: dict, timeout: float = 
     import urllib.error
     import urllib.request
 
+    from hermes_cli.urllib_security import open_credentialed_url
+
     data = json.dumps(policy).encode("utf-8")
     req = urllib.request.Request(
         policy_url,
@@ -680,7 +683,7 @@ def _post_policy(*, policy_url: str, token: str, policy: dict, timeout: float = 
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             return int(resp.status)
     except urllib.error.HTTPError as exc:
         return int(exc.code)

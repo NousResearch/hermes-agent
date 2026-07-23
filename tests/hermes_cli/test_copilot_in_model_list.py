@@ -20,3 +20,22 @@ def test_copilot_picker_uses_live_catalog_when_available():
     assert copilot is not None
     assert copilot["models"] == live_models
     assert copilot["total_models"] == len(live_models)
+
+
+def test_copilot_acp_picker_detects_installed_cli():
+    with patch("agent.models_dev.fetch_models_dev", return_value={}), \
+         patch("hermes_cli.auth.shutil.which", return_value="/usr/local/bin/copilot"), \
+         patch("hermes_cli.models.cached_provider_model_ids", return_value=["copilot-acp"]):
+        providers = list_authenticated_providers(
+            current_provider="openrouter",
+            max_models=50,
+        )
+
+    copilot_acp = next(
+        (p for p in providers if p["slug"] == "copilot-acp"),
+        None,
+    )
+
+    assert copilot_acp is not None
+    assert copilot_acp["models"] == ["copilot-acp"]
+    assert copilot_acp["total_models"] == 1

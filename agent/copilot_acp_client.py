@@ -473,6 +473,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            model=model,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -501,7 +502,15 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+    ) -> tuple[str, str]:
+        selected_model = str(model or "").strip()
+
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -640,6 +649,15 @@ class CopilotACPClient:
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            if selected_model and selected_model != "copilot-acp":
+                _request(
+                    "session/set_model",
+                    {
+                        "sessionId": session_id,
+                        "modelId": selected_model,
+                    },
+                )
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

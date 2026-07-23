@@ -317,3 +317,78 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+
+def test_chat_completion_sets_model_on_created_acp_session(monkeypatch, tmp_path):
+    class FakeACPProcess:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO(
+                "\n".join(
+                    json.dumps(message)
+                    for message in [
+                        {"jsonrpc": "2.0", "id": 1, "result": {}},
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "result": {"sessionId": "session-1"},
+                        },
+                        {"jsonrpc": "2.0", "id": 3, "result": {}},
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {"text": "ok"},
+                                }
+                            },
+                        },
+                        {"jsonrpc": "2.0", "id": 4, "result": {}},
+                    ]
+                )
+                + "\n"
+            )
+            self.stderr = io.StringIO()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    process = FakeACPProcess()
+    client = _make_home_client(tmp_path)
+    monkeypatch.setattr(
+        "agent.copilot_acp_client.subprocess.Popen",
+        lambda *args, **kwargs: process,
+    )
+
+    response = client.chat.completions.create(
+        model="claude-opus-4.7",
+        messages=[{"role": "user", "content": "hello"}],
+        timeout=1,
+    )
+
+    requests = [
+        json.loads(line)
+        for line in process.stdin.getvalue().splitlines()
+        if line.strip()
+    ]
+    assert requests[2] == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/set_model",
+        "params": {
+            "sessionId": "session-1",
+            "modelId": "claude-opus-4.7",
+        },
+    }
+    assert response.choices[0].message.content == "ok"

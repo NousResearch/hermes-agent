@@ -9,8 +9,8 @@ apiario_dev = ProviderProfile(
     display_name="Apiário Dev",
     description="Provedor oficial do Apiário Dev",
     fallback_models=(
-        "claude-3-5-sonnet-20240620",
-        "claude-3-haiku-20240307",
+        "deepseek/deepseek-v4-flash",
+        "openai/gpt-5.5",
     ),
     base_url="https://api.apiario.dev/v1", 
 )

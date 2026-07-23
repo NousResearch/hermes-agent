@@ -1843,6 +1843,7 @@ class GatewaySlashCommandsMixin:
                         session_key=session_key,
                         on_model_selected=_on_model_selected,
                         metadata=metadata,
+                        chat_type=source.chat_type or "",
                     )
                     if result.success:
                         return None  # Picker sent — adapter handles the response

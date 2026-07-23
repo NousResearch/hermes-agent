@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - dependency gate
     CRYPTO_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, TextModelPicker
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -1226,6 +1226,7 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._model_picker = TextModelPicker(self)
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1468,6 +1469,22 @@ class WeixinAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
+
+        # Model picker response intercept: if there's active picker state for
+        # this session and the message is plain text, handle it as a picker
+        # selection instead of forwarding to the agent.
+        if text and event.message_type == MessageType.TEXT:
+            picker_session_key = self._text_batch_key(event)
+            picker_result = await self._handle_picker_response(
+                chat_id=effective_chat_id,
+                session_key=picker_session_key,
+                text=text,
+                requester_user_id=sender_id,
+                chat_type=chat_type,
+            )
+            if picker_result is not None:
+                return  # message consumed by picker flow
+
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
         else:
@@ -2269,6 +2286,65 @@ class WeixinAdapter(BasePlatformAdapter):
                 "len": str(kw["plaintext_size"]),
             },
         }
+
+    # ------------------------------------------------------------------
+    # Model picker (text-only interactive flow for platforms without
+    # inline keyboards, e.g. WeChat).
+    # Uses shared TextModelPicker from helpers.py
+    # ------------------------------------------------------------------
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        requester_user_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        chat_type: str = "",
+    ) -> SendResult:
+        """Send an interactive text-based model picker.
+
+        Two-step drill-down: provider selection -> model selection.
+        On WeChat, the user replies with a number at each step, or 0/q/quit/exit/cancel/done to cancel.
+
+        DM-only: ``chat_type`` is forwarded to the picker which rejects
+        non-DM scopes (groups) so the gateway falls back to its static list.
+        """
+        return await self._model_picker.send(
+            chat_id=chat_id,
+            providers=providers,
+            current_model=current_model,
+            current_provider=current_provider,
+            session_key=session_key,
+            on_model_selected=on_model_selected,
+            requester_user_id=requester_user_id,
+            metadata=metadata,
+            chat_type=chat_type,
+        )
+
+    async def _handle_picker_response(
+        self,
+        chat_id: str,
+        session_key: str,
+        text: str,
+        requester_user_id: Optional[str] = None,
+        chat_type: str = "",
+    ) -> Optional[str]:
+        """Process a user reply as a model picker selection.
+
+        Returns None if there's no active picker state for this session (the
+        message should be forwarded to the agent normally). Returns a
+        non-None value when the message was consumed by the picker flow.
+        """
+        return await self._model_picker.handle_response(
+            session_key=session_key,
+            text=text,
+            requester_user_id=requester_user_id,
+            chat_type=chat_type,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_type = "group" if chat_id.endswith("@chatroom") else "dm"

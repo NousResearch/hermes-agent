@@ -60,7 +60,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_video_from_bytes,
 )
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, TextModelPicker
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url,
     get_cos_credentials,
@@ -3228,6 +3228,25 @@ class DispatchMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
 
+        # Model picker response intercept: if there's active picker state for
+        # this session and the message is plain text, handle it as a picker
+        # selection instead of forwarding to the agent.
+        if ctx.raw_text and ctx.msg_type == MessageType.TEXT and ctx.source is not None:
+            picker_session_key = build_session_key(
+                ctx.source,
+                group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+            )
+            picker_result = await adapter._handle_picker_response(
+                chat_id=ctx.chat_id,
+                session_key=picker_session_key,
+                text=ctx.raw_text,
+                requester_user_id=ctx.source.user_id,
+                chat_type=ctx.chat_type,
+            )
+            if picker_result is not None:
+                return  # message consumed by picker flow
+
         _sk = build_session_key(
             ctx.source,
             group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
@@ -5263,6 +5282,9 @@ class YuanbaoAdapter(BasePlatformAdapter):
         )
         self._auto_sethome_done: bool = bool(_existing_home) and not _existing_home.startswith("group:")
 
+        # Text-based model picker for platforms without inline keyboards
+        self._model_picker = TextModelPicker(self)
+
     # ------------------------------------------------------------------
     # Task tracking helper
     # ------------------------------------------------------------------
@@ -5516,6 +5538,65 @@ class YuanbaoAdapter(BasePlatformAdapter):
             reply_to=reply_to, caption=caption,
             file_path=file_path, filename=filename,
             **kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # Model picker (text-only interactive flow for platforms without
+    # inline keyboards, e.g. Yuanbao).
+    # Uses shared TextModelPicker from helpers.py
+    # ------------------------------------------------------------------
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        requester_user_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        chat_type: str = "",
+    ) -> SendResult:
+        """Send an interactive text-based model picker.
+
+        Two-step drill-down: provider selection -> model selection.
+        On Yuanbao, the user replies with a number at each step, or 0/q/quit/exit/cancel/done to cancel.
+
+        DM-only: ``chat_type`` is forwarded to the picker which rejects
+        non-DM scopes (groups) so the gateway falls back to its static list.
+        """
+        return await self._model_picker.send(
+            chat_id=chat_id,
+            providers=providers,
+            current_model=current_model,
+            current_provider=current_provider,
+            session_key=session_key,
+            on_model_selected=on_model_selected,
+            requester_user_id=requester_user_id,
+            metadata=metadata,
+            chat_type=chat_type,
+        )
+
+    async def _handle_picker_response(
+        self,
+        chat_id: str,
+        session_key: str,
+        text: str,
+        requester_user_id: Optional[str] = None,
+        chat_type: str = "",
+    ) -> Optional[str]:
+        """Process a user reply as a model picker selection.
+
+        Returns None if there's no active picker state for this session (the
+        message should be forwarded to the agent normally). Returns a
+        non-None value when the message was consumed by the picker flow.
+        """
+        return await self._model_picker.handle_response(
+            session_key=session_key,
+            text=text,
+            requester_user_id=requester_user_id,
+            chat_type=chat_type,
         )
 
     async def _get_cached_token(self) -> dict:

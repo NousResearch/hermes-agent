@@ -35,6 +35,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from tools.environments.local import hermes_subprocess_env
+
 logger = logging.getLogger("agent.lsp.install")
 
 # Package-name → install-strategy hint registry.  Each entry is a
@@ -267,6 +269,7 @@ def _install_npm(
             capture_output=True,
             text=True,
             timeout=300,
+            env=hermes_subprocess_env(inherit_credentials=False),
             stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
@@ -305,7 +308,7 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
         logger.info("[install] cannot install %s: go not on PATH", pkg)
         return None
     staging = hermes_lsp_bin_dir()
-    env = dict(os.environ)
+    env = hermes_subprocess_env(inherit_credentials=False)
     env["GOBIN"] = str(staging)
     try:
         logger.info("[install] go install %s (GOBIN=%s)", pkg, staging)
@@ -348,15 +351,18 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
     pip_target.mkdir(parents=True, exist_ok=True)
     try:
         logger.info("[install] pip install --target %s %s", pip_target, pkg)
-        from hermes_cli.tools_config import _pip_install
-
-        proc = _pip_install(
-            ["--target", str(pip_target), "--quiet", pkg],
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--target", str(pip_target), "--quiet", pkg],
+            check=False,
+            capture_output=True,
+            text=True,
             timeout=300,
+            env=hermes_subprocess_env(inherit_credentials=False),
+            stdin=subprocess.DEVNULL,
         )
         if proc.returncode != 0:
             logger.warning(
-                "[install] pip install failed for %s: %s", pkg, (proc.stderr or "").strip()[:500]
+                "[install] pip install failed for %s: %s", pkg, proc.stderr.strip()[:500]
             )
             return None
     except (subprocess.TimeoutExpired, OSError) as e:

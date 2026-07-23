@@ -94,6 +94,73 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     assert install_targets == ["pyright"]
 
 
+def test_install_npm_strips_parent_credentials(tmp_path, monkeypatch):
+    """NPM install scripts must not inherit Hermes/API credentials."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-openai")
+    monkeypatch.setenv("GH_TOKEN", "gh-parent-token")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+
+    install_mod._install_npm("pyright", "pyright-langserver")
+
+    assert "OPENAI_API_KEY" not in captured["env"]
+    assert "GH_TOKEN" not in captured["env"]
+
+
+def test_install_go_strips_parent_credentials_and_keeps_gobin(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-parent-anthropic")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-parent-token")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/go" if c == "go" else None)
+
+    install_mod._install_go("golang.org/x/tools/gopls@latest", "gopls")
+
+    assert "ANTHROPIC_API_KEY" not in captured["env"]
+    assert "TELEGRAM_BOT_TOKEN" not in captured["env"]
+    assert captured["env"]["GOBIN"] == str(install_mod.hermes_lsp_bin_dir())
+
+
+def test_install_pip_strips_parent_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-parent-openrouter")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "dashboard-token")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+
+    install_mod._install_pip("fake-lsp", "fake-language-server")
+
+    assert "OPENROUTER_API_KEY" not in captured["env"]
+    assert "HERMES_DASHBOARD_SESSION_TOKEN" not in captured["env"]
+
+
 def test_existing_binary_finds_windows_wrapper_in_staging(tmp_path, monkeypatch):
     """Installed Windows shims should satisfy later status/probe calls."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

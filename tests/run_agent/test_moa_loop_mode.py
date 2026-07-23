@@ -2310,3 +2310,171 @@ def test_moa_facade_acts_aggregator_alone_when_all_references_fail_silent(
     assert "[failed:" not in prompt
     assert "Reference models unavailable" not in prompt
     assert "Mixture of Agents reference context" not in prompt
+
+
+def test_interrupted_but_completed_reference_keeps_real_accounting(monkeypatch):
+    """A reference that finishes between the interrupt check and the reap
+    must keep its REAL output and accounting — the call billed."""
+    from concurrent.futures import wait as real_wait
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    fake_agent = SimpleNamespace(_interrupt_requested=True)
+
+    def fake_call_llm(**kwargs):
+        return _response_with_usage("slowish output", prompt=11, completion=4)
+
+    # Force the exact race: the wait loop reports the future as still
+    # pending (so the interrupt path is taken) even though the underlying
+    # call has already completed — the reap must then hit the done() branch
+    # and keep the real result instead of writing a placeholder.
+    def fake_wait(pending, timeout=None):
+        real_wait(pending)  # let the call actually finish (it billed)
+        return set(), set(pending)  # report it as still pending
+
+    monkeypatch.setattr(moa_loop, "_futures_wait", fake_wait)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    out = moa_loop._run_references_parallel(
+        [{"provider": "slowish", "model": "m1"}],
+        [{"role": "user", "content": "hi"}],
+        agent=fake_agent,
+    )
+
+    # The completed call's real output + usage must survive the reap.
+    assert out[0][1] == "slowish output"
+    acct = out[0][2]
+    assert isinstance(acct, moa_loop._RefAccounting)
+    assert acct.usage.input_tokens == 11
+
+
+def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch):
+    """A reference still in flight at interrupt time gets a placeholder in
+    the results, but its eventual REAL accounting must reach the sink."""
+    import threading
+    import time
+
+    from agent import moa_loop
+
+    monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.05)
+
+    fake_agent = SimpleNamespace(_interrupt_requested=False)
+    release = threading.Event()
+    sink_calls = []
+    sink_seen = threading.Event()
+
+    def sink(label, accounting):
+        sink_calls.append((label, accounting))
+        sink_seen.set()
+
+    def fake_call_llm(**kwargs):
+        if kwargs["provider"] == "fast":
+            fake_agent._interrupt_requested = True
+            return _response("fast output")
+        # wedged: blocks past the interrupt, completes later.
+        release.wait(timeout=5)
+        return _response_with_usage("late output", prompt=21, completion=2)
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    out = moa_loop._run_references_parallel(
+        [
+            {"provider": "fast", "model": "m1"},
+            {"provider": "wedged", "model": "m2"},
+        ],
+        [{"role": "user", "content": "hi"}],
+        agent=fake_agent,
+        late_accounting_sink=sink,
+    )
+
+    # The wedged slot returned a placeholder with zeroed accounting…
+    assert out[1][1] == moa_loop._INTERRUPTED_REFERENCE_NOTE
+    assert out[1][2].usage.input_tokens == 0
+
+    # …then completes late; its real billed usage must reach the sink.
+    release.set()
+    assert sink_seen.wait(timeout=5), "late accounting sink never called"
+    label, acct = sink_calls[0]
+    assert "wedged" in label
+    assert acct.usage.input_tokens == 21
+
+
+def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_path):
+    """An interrupted fan-out is a partial snapshot — caching it would replay
+    placeholder notes on every later iteration of the turn. The facade must
+    leave the cache empty so the next create() re-runs the references, and
+    a late-completing reference's real spend must land in pending usage."""
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: advisor
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    interrupted_outputs = [
+        (
+            "openrouter:advisor",
+            moa_loop._INTERRUPTED_REFERENCE_NOTE,
+            moa_loop._RefAccounting(CanonicalUsage()),
+        )
+    ]
+
+    def fake_fanout(*args, **kwargs):
+        return list(interrupted_outputs)
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **k: _response("acted"))
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "go"}], tools=[])
+
+    # Interrupted results must not be cached as this state's advice.
+    assert facade._ref_cache_key is None
+    assert facade._ref_cache_outputs == []
+
+    # A late completion depositing real spend is picked up by consume().
+    facade._record_late_reference_accounting(
+        "openrouter:advisor",
+        moa_loop._RefAccounting(CanonicalUsage(input_tokens=33), 0.42),
+    )
+    usage, cost = facade.consume_reference_usage()
+    assert usage.input_tokens == 33
+    assert cost == pytest.approx(0.42)
+    # And consume() drained it — no double count.
+    usage2, cost2 = facade.consume_reference_usage()
+    assert usage2.input_tokens == 0
+    assert cost2 is None

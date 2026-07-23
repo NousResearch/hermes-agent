@@ -340,3 +340,72 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("custom", "other-model", cfg) == "text"
         finally:
             clear_runtime_main()
+
+
+# ---------------------------------------------------------------------------
+# Background task (/background) must carry the named custom-provider identity
+# so per-model vision capability survives — #69894.
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundTaskCustomProviderIdentity:
+    def _run_background_and_capture_agent_kwargs(self, runtime: dict) -> dict:
+        """Invoke ``/background`` with a mocked route and return the kwargs the
+        handler passed to ``AIAgent``. Runs the background thread synchronously
+        and aborts right after construction so no real turn executes."""
+        from unittest.mock import MagicMock, patch
+        import hermes_cli.cli_commands_mixin as ccm
+
+        captured: dict = {}
+
+        class _Recorder:
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+                raise RuntimeError("captured — stop before running the turn")
+
+        class _SyncThread:
+            def __init__(self, target=None, **_kw):
+                self._target = target
+
+            def start(self):
+                try:
+                    self._target()
+                except Exception:
+                    pass
+
+        shell = MagicMock()
+        shell._background_task_counter = 0
+        shell._ensure_runtime_credentials.return_value = True
+        shell._resolve_turn_agent_config.return_value = {
+            "model": "qwen3.8-max-preview",
+            "runtime": runtime,
+            "request_overrides": None,
+        }
+
+        with patch.object(ccm, "threading") as mock_threading, patch(
+            "cli.AIAgent", _Recorder
+        ):
+            mock_threading.Thread = _SyncThread
+            ccm.CLICommandsMixin._handle_background_command.__get__(shell)(
+                "/background inspect this screenshot"
+            )
+        return captured
+
+    def test_background_agent_receives_named_custom_provider(self):
+        """A ``--provider custom:<name>`` session's background task must forward
+        the routable ``custom:<name>`` identity to the AIAgent; otherwise
+        init_agent defaults requested_provider to the bare ``custom`` and native
+        vision breaks for the custom provider (#69894)."""
+        runtime = {
+            "provider": "custom",
+            "requested_provider": "custom:qwen-token-plan",
+            "api_key": "sk-test",
+            "base_url": "https://token-plan.example/v1",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "max_tokens": None,
+            "credential_pool": None,
+        }
+        captured = self._run_background_and_capture_agent_kwargs(runtime)
+        assert captured.get("requested_provider") == "custom:qwen-token-plan"

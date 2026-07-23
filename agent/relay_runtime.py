@@ -23,6 +23,7 @@ LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
+_PROFILE_KEY_CACHE: dict[str, str] = {}
 
 
 @dataclass
@@ -409,6 +410,9 @@ class RelayHostRegistry:
         create: bool = True,
     ) -> RelayHost | None:
         key = profile_key or current_profile_key()
+        host = self._hosts.get(key)
+        if host is not None or not create:
+            return host
         with self._lock:
             host = self._hosts.get(key)
             if host is not None or not create:
@@ -823,7 +827,7 @@ def apply_tool_request_intercepts(
     """Return Relay-rewritten arguments at Hermes's authorization boundary."""
     if not session_id:
         return args
-    runtime = get_runtime()
+    runtime = get_runtime(create=False)
     if runtime is None:
         return args
     return runtime.apply_tool_request_intercepts(
@@ -930,7 +934,15 @@ def get_host(
 
 def current_profile_key() -> str:
     """Return the canonical profile identity used for runtime isolation."""
-    return str(get_hermes_home().expanduser().resolve())
+    home = get_hermes_home().expanduser()
+    if not home.is_absolute():
+        return str(home.resolve())
+    raw = str(home)
+    cached = _PROFILE_KEY_CACHE.get(raw)
+    if cached is not None:
+        return cached
+    resolved = str(home.resolve())
+    return _PROFILE_KEY_CACHE.setdefault(raw, resolved)
 
 
 def _load_nemo_relay() -> Any:
@@ -946,3 +958,4 @@ def _reset_for_tests() -> None:
     """Reset all profile-scoped Relay hosts for isolated tests."""
     SESSION_COORDINATOR._reset_active_turns_for_tests()
     HOST_REGISTRY.shutdown_all()
+    _PROFILE_KEY_CACHE.clear()

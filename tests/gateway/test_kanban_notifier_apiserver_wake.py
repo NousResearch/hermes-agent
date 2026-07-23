@@ -152,3 +152,68 @@ def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
     # fallback is attempted for stateless api_server subs) — cursor advances
     # once the wake succeeds.
     assert _unseen_terminal_events(tid, "api_server", "raw-sid-123") == []
+
+
+def test_apiserver_failed_self_post_rewinds_cursor(tmp_path, monkeypatch):
+    """A failed/exhausted wake self-post must NOT advance the cursor: on the
+    api_server path the self-post IS the delivery, so advancing first would
+    permanently lose the event behind a best-effort except. The claim is
+    rewound and the event stays visible for the next tick's retry."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver_fail.db"))
+    kb.init_db()
+    tid = _create_completed_subscription(
+        "api_server", "raw-sid-999", session_id="raw-sid-999",
+    )
+
+    async def failing_self_post(adapter, *, text, session_id):
+        raise RuntimeError("self-post exhausted retries")
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", failing_self_post)
+
+    adapter = ApiServerLikeAdapter()
+    runner = _make_runner({Platform.API_SERVER: adapter})
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    # Event NOT lost: the cursor was rewound, so the completed event is still
+    # unseen and will be re-claimed (and the self-post retried) next tick.
+    assert [ev.kind for ev in _unseen_terminal_events(tid, "api_server", "raw-sid-999")] == [
+        "completed"
+    ]
+    # And the failure was counted toward the drop threshold.
+    assert list(runner._kanban_sub_fail_counts.values()) == [1]
+
+
+def test_apiserver_self_post_succeeds_after_earlier_failure(tmp_path, monkeypatch):
+    """The rewound event is retried on the next tick; a successful self-post
+    then advances the cursor and clears the failure counter."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver_retry.db"))
+    kb.init_db()
+    tid = _create_completed_subscription(
+        "api_server", "raw-sid-777", session_id="raw-sid-777",
+    )
+
+    calls = {"n": 0}
+
+    async def flaky_self_post(adapter, *, text, session_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient outage")
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", flaky_self_post)
+
+    adapter = ApiServerLikeAdapter()
+    runner = _make_runner({Platform.API_SERVER: adapter})
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert calls["n"] == 1
+    assert len(_unseen_terminal_events(tid, "api_server", "raw-sid-777")) == 1
+
+    # Second tick: the re-claimed event's self-post succeeds → cursor advances.
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert calls["n"] == 2
+    assert _unseen_terminal_events(tid, "api_server", "raw-sid-777") == []
+    assert runner._kanban_sub_fail_counts == {}

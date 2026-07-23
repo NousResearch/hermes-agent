@@ -13232,7 +13232,13 @@ def _(rid, params: dict) -> dict:
             },
         )
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        try:
+            from hermes_cli.runtime_provider import format_runtime_provider_error
+
+            message = format_runtime_provider_error(e)
+        except Exception:
+            message = str(e)
+        return _ok(rid, {"ok": False, "error": message})
 
 
 # ── Methods: tools & system ──────────────────────────────────────────

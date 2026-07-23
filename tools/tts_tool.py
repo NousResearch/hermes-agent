@@ -1815,6 +1815,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     raw_gemini_config = tts_config.get("gemini") or {}
     gemini_config = raw_gemini_config if isinstance(raw_gemini_config, dict) else {}
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+    fallback_model = str(gemini_config.get("fallback_model", "")).strip()
+    if fallback_model == model:
+        fallback_model = ""
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     base_url = str(
         gemini_config.get("base_url")
@@ -1863,38 +1866,84 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         # https://ai.google.dev/gemini-api/docs/partner-integration
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
 
-    endpoint = f"{base_url}/models/{model}:generateContent"
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        headers=headers,
-        json=payload,
-        timeout=60,
-    )
-    if response.status_code != 200:
-        # Surface the API error message when present
+    models_to_try = [model]
+    if fallback_model:
+        models_to_try.append(fallback_model)
+
+    response = None
+    audio_b64 = ""
+    active_model = model
+    for candidate_model in models_to_try:
+        active_model = candidate_model
+        endpoint = f"{base_url}/models/{candidate_model}:generateContent"
+        response = requests.post(
+            endpoint,
+            params={"key": api_key},
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        has_another_model = candidate_model != models_to_try[-1]
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                parts = data["candidates"][0]["content"]["parts"]
+                audio_part = next(
+                    (p for p in parts if "inlineData" in p or "inline_data" in p),
+                    None,
+                )
+                if audio_part is None:
+                    if has_another_model:
+                        logger.warning(
+                            "Gemini TTS model %s returned no audio; trying fallback model %s",
+                            candidate_model,
+                            models_to_try[-1],
+                        )
+                        continue
+                    raise RuntimeError("Gemini TTS response contained no audio data")
+                inline = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
+                audio_b64 = inline.get("data", "")
+            except (KeyError, IndexError, TypeError) as e:
+                if has_another_model:
+                    logger.warning(
+                        "Gemini TTS model %s returned malformed data; trying fallback model %s",
+                        candidate_model,
+                        models_to_try[-1],
+                    )
+                    continue
+                raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
+            if not audio_b64:
+                if has_another_model:
+                    logger.warning(
+                        "Gemini TTS model %s returned empty audio; trying fallback model %s",
+                        candidate_model,
+                        models_to_try[-1],
+                    )
+                    continue
+                raise RuntimeError("Gemini TTS returned empty audio data")
+            break
+
         try:
             err = response.json().get("error", {})
             detail = err.get("message") or response.text[:300]
         except Exception:
             detail = response.text[:300]
+
+        retryable = response.status_code in (404, 429) or response.status_code >= 500
+        if retryable and has_another_model:
+            logger.warning(
+                "Gemini TTS model %s failed with HTTP %s; trying fallback model %s",
+                candidate_model,
+                response.status_code,
+                models_to_try[-1],
+            )
+            continue
         raise RuntimeError(
-            f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+            f"Gemini TTS API error (HTTP {response.status_code}, model {active_model}): {detail}"
         )
 
-    try:
-        data = response.json()
-        parts = data["candidates"][0]["content"]["parts"]
-        audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
-        if audio_part is None:
-            raise RuntimeError("Gemini TTS response contained no audio data")
-        inline = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
-        audio_b64 = inline.get("data", "")
-    except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
-
-    if not audio_b64:
-        raise RuntimeError("Gemini TTS returned empty audio data")
+    if response is None or not audio_b64:
+        raise RuntimeError("Gemini TTS request produced no audio")
 
     pcm_bytes = base64.b64decode(audio_b64)
     wav_bytes = _wrap_pcm_as_wav(pcm_bytes)

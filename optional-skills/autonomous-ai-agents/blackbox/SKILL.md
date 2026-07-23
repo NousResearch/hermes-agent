@@ -15,7 +15,7 @@ metadata:
 
 Delegate coding tasks to [Blackbox AI](https://www.blackbox.ai/) via the Hermes terminal. Blackbox is a multi-model coding agent CLI that dispatches tasks to multiple LLMs (Claude, Codex, Gemini, Blackbox Pro) and uses a judge to select the best implementation.
 
-The CLI is [open-source](https://github.com/blackboxaicode/cli) (GPL-3.0, TypeScript, forked from Gemini CLI) and supports interactive sessions, non-interactive one-shots, checkpointing, MCP, and vision model switching.
+The CLI is [open-source](https://www.blackbox.ai/cli) (GPL-3.0, TypeScript, forked from Gemini CLI) and supports interactive sessions, non-interactive one-shots, checkpointing, MCP, and vision model switching.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ The CLI is [open-source](https://github.com/blackboxaicode/cli) (GPL-3.0, TypeSc
 - Blackbox CLI installed: `npm install -g @blackboxai/cli`
 - Or install from source:
   ```
-  git clone https://github.com/blackboxaicode/cli.git
+  git clone https://www.blackbox.ai/cli.git
   cd cli && npm install && npm install -g .
   ```
 - API key from [app.blackbox.ai/dashboard](https://app.blackbox.ai/dashboard)

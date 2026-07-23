@@ -106,6 +106,28 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")
     profile_show.add_argument("profile_name", help="Profile to show")
 
+    profile_audit = profile_subparsers.add_parser(
+        "audit",
+        help="Read-only cleanup audit: profile size, state counts, and reset hints",
+    )
+    profile_audit.add_argument("profile_name", help="Profile to audit")
+    profile_audit.add_argument(
+        "--top",
+        type=int,
+        default=12,
+        help="Number of largest root entries to show (default: 12)",
+    )
+    profile_audit.add_argument(
+        "--compare",
+        metavar="OTHER_PROFILE",
+        help="Also audit another profile and print size/state deltas",
+    )
+    profile_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
+
     profile_alias = profile_subparsers.add_parser(
         "alias", help="Manage wrapper scripts"
     )

@@ -67,6 +67,7 @@ def test_profile_has_expected_actions():
         "create": ["work"],
         "delete": ["work"],
         "show": ["work"],
+        "audit": ["work"],
         "rename": ["old", "new"],
         "export": ["work"],
         "import": ["/tmp/x.zip"],
@@ -74,6 +75,15 @@ def test_profile_has_expected_actions():
     for action, extra in cases.items():
         ns = p.parse_args(["profile", action, *extra])
         assert ns.profile_action == action
+
+
+def test_profile_audit_compare_flag():
+    p = _profile_parser()
+    ns = p.parse_args(["profile", "audit", "default", "--compare", "coder", "--json"])
+    assert ns.profile_action == "audit"
+    assert ns.profile_name == "default"
+    assert ns.compare == "coder"
+    assert ns.json is True
 
 
 def test_gateway_and_proxy_dispatch():

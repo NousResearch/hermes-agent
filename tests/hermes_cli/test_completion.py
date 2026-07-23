@@ -269,7 +269,7 @@ class TestProfileCompletion:
 
     def test_bash_profile_subcommand_has_action_completion(self):
         out = generate_bash(_make_parser())
-        assert "use|delete|show|alias|rename|export)" in out
+        assert "use|delete|show|audit|alias|rename|export)" in out
 
     def test_bash_profile_actions_complete_profile_names(self):
         """After 'hermes profile use', complete with profile names."""
@@ -298,7 +298,7 @@ class TestProfileCompletion:
 
     def test_zsh_profile_actions_complete_names(self):
         out = generate_zsh(_make_parser())
-        assert "use|delete|show|alias|rename|export)" in out
+        assert "use|delete|show|audit|alias|rename|export)" in out
 
     def test_fish_has_profiles_helper(self):
         out = generate_fish(_make_parser())

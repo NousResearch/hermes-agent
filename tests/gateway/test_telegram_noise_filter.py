@@ -2,7 +2,10 @@
 
 import pytest
 
-from agent.conversation_compression import ROUTINE_COMPRESSION_STATUS_SAMPLES
+from agent.conversation_compression import (
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+    ROUTINE_COMPRESSION_STATUS_SAMPLES,
+)
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
@@ -81,6 +84,30 @@ VISIBLE_COMPRESSION_MESSAGES = [
     (
         "⚠ Compression returned an empty transcript. No session split was "
         "performed; conversation continues unchanged."
+    ),
+    # Manual /compress lock-skip feedback (issue #57631): both the
+    # confirmed-holder and unconfirmed-acquire wordings must reach the user.
+    (
+        "⏳ Compression already in progress for this session "
+        "(holder: pid=12345:tid=7:agent=1:nonce=ab). Please wait for it to "
+        "finish."
+    ),
+    (
+        "⏳ Compression skipped: could not acquire this session's "
+        "compression lock. Another compression may still be running, or "
+        "the lock check failed — try again shortly."
+    ),
+    # Blocked-overflow warning (#62625/#62708): the context is over the
+    # compression threshold but compression is blocked (summary-LLM cooldown
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
+    # they can /new or /compress before the session dies at the hard token
+    # limit. Formatted from the SAME template the emit site uses, so a
+    # rewording that drifts into the noise regex fails here.
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="cooldown:30"
+    ),
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="ineffective"
     ),
 ]
 

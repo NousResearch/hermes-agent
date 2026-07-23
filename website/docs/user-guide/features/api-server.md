@@ -426,10 +426,20 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 
 ### config.yaml
 
+The same settings can live in `~/.hermes/config.yaml` under a nested `gateway.api_server:` section:
+
 ```yaml
-# Not yet supported — use environment variables.
-# config.yaml support coming in a future release.
+gateway:
+  api_server:
+    enabled: true
+    port: 8642
+    host: 127.0.0.1
+    key: your-secret-key
+    cors_origins: http://localhost:3000
+    model_name: my-hermes
 ```
+
+`port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
 
 ## Security Headers
 

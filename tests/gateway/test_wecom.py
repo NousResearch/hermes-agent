@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -480,6 +481,55 @@ class TestMediaUpload:
 
         with pytest.raises(ValueError, match="exceeds WeCom limit"):
             await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=4)
+
+    @pytest.mark.asyncio
+    async def test_download_remote_bytes_blocks_connect_time_rebind(self, monkeypatch):
+        import httpcore
+        from httpcore._backends.auto import AutoBackend
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from tools.url_safety import SSRFConnectionBlocked
+
+        for proxy_var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(proxy_var, raising=False)
+
+        answers = iter(("93.184.216.34", "169.254.169.254"))
+
+        def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+            ip = next(answers)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))
+            ]
+
+        connect_attempts = []
+
+        async def fake_connect_tcp(
+            _self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            connect_attempts.append((host, port))
+            raise httpcore.ConnectError("stop before network")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with pytest.raises(SSRFConnectionBlocked):
+            await adapter._download_remote_bytes(
+                "http://rebind.example/file.bin", max_bytes=1024
+            )
+
+        assert connect_attempts == []
 
     @pytest.mark.asyncio
     async def test_cache_media_decrypts_url_payload_before_writing(self):

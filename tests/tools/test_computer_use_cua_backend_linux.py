@@ -1,4 +1,4 @@
-"""Regression tests for Linux/X11 capture target selection (#58026)."""
+"""Regression tests for Linux/X11 capture target selection (#58026, #54173)."""
 
 from __future__ import annotations
 
@@ -36,6 +36,35 @@ ISSUE_58026_WINDOWS = [
         "window_id": 84065715,
         "title": "HERMES-CU",
         "is_on_screen": True,
+        "z_index": 0,
+    },
+]
+
+# Linux metadata-quirk fixture from #54173 (null is_on_screen, GNOME Shell
+# @!x,y;BDHF backdrop helper ahead of real app windows).
+LINUX_LIST_WINDOWS = [
+    {
+        "app_name": "",
+        "pid": 2951331,
+        "window_id": 98566147,
+        "title": "@!1921,0;BDHF",
+        "is_on_screen": None,
+        "z_index": 0,
+    },
+    {
+        "app_name": "",
+        "pid": 11715,
+        "window_id": 81790890,
+        "title": "Guides — OMC Docs - Google Chrome",
+        "is_on_screen": None,
+        "z_index": 0,
+    },
+    {
+        "app_name": "",
+        "pid": 11433,
+        "window_id": 41943052,
+        "title": "README.md - hermes-agent - Visual Studio Code",
+        "is_on_screen": False,
         "z_index": 0,
     },
 ]
@@ -83,7 +112,8 @@ def test_default_capture_prefers_x11_active_window_when_z_index_tied():
     assert target["window_id"] == 84043449
 
 
-def test_default_capture_falls_back_to_list_order_when_active_window_unknown():
+def test_default_capture_skips_desktop_helper_when_active_window_unknown():
+    """Even without _NET_ACTIVE_WINDOW, ding/Desktop helpers must not win (#54173)."""
     from tools.computer_use.cua_backend import _select_capture_target
 
     windows = _normalized_windows()
@@ -94,10 +124,10 @@ def test_default_capture_falls_back_to_list_order_when_active_window_unknown():
     ):
         target = _select_capture_target(windows, app_requested=False)
 
-    # Without informative z-order or active-window, keep list order (caller
-    # sorts higher-z frontmost; here all tied so first on-screen wins).
-    assert target["window_id"] == 33554439
-    assert target["title"] == "Desktop Icons 1"
+    # "Desktop Icons 1" is a shell helper window that captures as empty; with
+    # the active window unknown, the first REAL app window wins list order.
+    assert target["window_id"] == 60817412
+    assert target["title"] == "zcode"
 
 
 def test_default_capture_keeps_higher_z_index_when_ordering_informative():
@@ -196,3 +226,53 @@ def test_exact_pid_window_capture_does_not_probe_x11_active_window():
     assert backend._active_window_id == 60817412
     active.assert_not_called()
     assert all(c.args[0] != "list_windows" for c in session.call_tool.call_args_list)
+
+
+def test_linux_null_is_on_screen_is_treated_as_unknown_not_offscreen():
+    """cua-driver 0.6.x may return JSON null for Linux is_on_screen (#54173)."""
+    windows = _normalized_windows(LINUX_LIST_WINDOWS)
+
+    assert windows[0]["off_screen"] is False
+    assert windows[1]["off_screen"] is False
+    assert windows[2]["off_screen"] is True
+
+
+def test_default_capture_skips_gnome_shell_background_window():
+    """GNOME Shell @!x,y;BDHF windows appear before app windows but screenshot empty."""
+    from tools.computer_use.cua_backend import _select_capture_target
+
+    windows = _normalized_windows(LINUX_LIST_WINDOWS)
+
+    with patch("tools.computer_use.cua_backend.sys.platform", "linux"), patch(
+        "tools.computer_use.cua_backend._linux_x11_active_window_id",
+        return_value=None,
+    ):
+        target = _select_capture_target(windows, app_requested=False)
+
+    assert target["pid"] == 11715
+    assert target["window_id"] == 81790890
+    assert "Google Chrome" in target["title"]
+
+
+def test_default_capture_prefers_active_window_over_gnome_helper_skip_order():
+    """Helper skip and _NET_ACTIVE_WINDOW compose: probe runs on the real-app pool."""
+    from tools.computer_use.cua_backend import _select_capture_target
+
+    windows = _normalized_windows(LINUX_LIST_WINDOWS)
+
+    with patch("tools.computer_use.cua_backend.sys.platform", "linux"), patch(
+        "tools.computer_use.cua_backend._linux_x11_active_window_id",
+        return_value=81790890,
+    ):
+        target = _select_capture_target(windows, app_requested=False)
+
+    assert target["window_id"] == 81790890
+
+
+def test_explicit_app_capture_preserves_filtered_target_order():
+    """When the caller filters first, target selection should not skip the match."""
+    from tools.computer_use.cua_backend import _select_capture_target
+
+    chrome = _normalized_windows(LINUX_LIST_WINDOWS)[1]
+
+    assert _select_capture_target([chrome], app_requested=True) == chrome

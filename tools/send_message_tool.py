@@ -1071,20 +1071,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Slack: route both text and native files through the plugin's
-    # standalone sender.  This path is used by out-of-process cron runs where
-    # no live gateway adapter is available; dropping ``media_files`` here made
-    # MEDIA directives disappear while the text delivery still reported
-    # success.
+    # --- Slack: prefer the live gateway adapter, then the plugin's
+    # standalone sender.  The live adapter is multi-workspace aware (it maps
+    # channels to the workspace client that owns them) and honors adapter-side
+    # gates like ignored_channels; the standalone Web-API path may only have a
+    # comma-separated token list.  ``_send_via_adapter`` tries the in-process
+    # adapter first and falls back to the registry standalone sender for
+    # out-of-process cron runs, preserving MEDIA delivery on the fallback
+    # (media-bearing sends were already intercepted by the branch above).
     if platform == Platform.SLACK:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get("slack")
-        if entry is None or entry.standalone_sender_fn is None:
-            return {"error": "Slack plugin not registered or missing standalone_sender_fn"}
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
-            result = await entry.standalone_sender_fn(
+            result = await _send_via_adapter(
+                platform,
                 pconfig,
                 chat_id,
                 chunk,

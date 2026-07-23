@@ -1415,6 +1415,8 @@ DEFAULT_CONFIG = {
                                       # rounds cannot clear the request estimate.
                                       # Validated >= 1, hard-capped at 10.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
+        "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -1974,9 +1976,9 @@ DEFAULT_CONFIG = {
         # per platform:
         #   - Telegram has native animated draft streaming (sendMessageDraft),
         #     which is smooth, so streaming is on by default there.
-        #   - Discord/Slack/etc. only have edit-based streaming (repeated
+        #   - Discord and Slack only have edit-based streaming (repeated
         #     editMessage), which flickers and is noticeably jankier, so
-        #     streaming is off by default there.
+        #     streaming is off by default for both.
         # These are gap-fillers: a user who explicitly sets, e.g.,
         # display.platforms.discord.streaming: true keeps their value
         # (config deep-merge has user values win over defaults). The global
@@ -1985,6 +1987,7 @@ DEFAULT_CONFIG = {
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
+            "slack": {"streaming": False},
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

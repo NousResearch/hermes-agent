@@ -464,6 +464,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
         # operational allowlist → kept
         "HERMES_HOME": "/h", "HERMES_PROFILE": "p",
         "HERMES_CONFIG": "/c.yaml", "HERMES_ENV": "/e",
+        "HERMES_DELEGATED_CHILD_CONTEXT": "1",
         # other HERMES_* → dropped (broad prefix removed)
         "HERMES_BASE_URL": "https://x", "HERMES_INTERACTIVE": "1",
         "HERMES_KANBAN_DB": "postgres://u:p@h/db",
@@ -475,7 +476,10 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
     }
     out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
 
-    for kept in ("HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "PATH"):
+    for kept in (
+        "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+        "HERMES_DELEGATED_CHILD_CONTEXT", "PATH",
+    ):
         assert kept in out, f"{kept} should be kept"
     for dropped in (
         "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_DB",

@@ -17,6 +17,9 @@ Usage in tools:
 import logging
 import os
 import threading
+import weakref
+from collections.abc import Callable
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,20 @@ if _DEBUG_INTERRUPT:
 # Set of thread idents that have been interrupted.
 _interrupted_threads: set[int] = set()
 _lock = threading.Lock()
+_process_start_locks: weakref.WeakValueDictionary[int, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_T = TypeVar("_T")
+
+
+def _process_start_lock(thread_id: int) -> threading.RLock:
+    """Return the per-thread lock that orders interrupts with external starts."""
+    with _lock:
+        start_lock = _process_start_locks.get(thread_id)
+        if start_lock is None:
+            start_lock = threading.RLock()
+            _process_start_locks[thread_id] = start_lock
+        return start_lock
 
 
 def set_interrupt(active: bool, thread_id: int | None = None) -> None:
@@ -45,12 +62,14 @@ def set_interrupt(active: bool, thread_id: int | None = None) -> None:
                    current thread (backward compat for CLI/tests).
     """
     tid = thread_id if thread_id is not None else threading.current_thread().ident
-    with _lock:
-        if active:
-            _interrupted_threads.add(tid)
-        else:
-            _interrupted_threads.discard(tid)
-        _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
+    start_lock = _process_start_lock(tid)
+    with start_lock:
+        with _lock:
+            if active:
+                _interrupted_threads.add(tid)
+            else:
+                _interrupted_threads.discard(tid)
+            _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
             "[interrupt-debug] set_interrupt(active=%s, target_tid=%s) "
@@ -68,6 +87,23 @@ def is_interrupted() -> bool:
     tid = threading.current_thread().ident
     with _lock:
         return tid in _interrupted_threads
+
+
+def start_if_not_interrupted(start: Callable[[], _T]) -> tuple[bool, _T | None]:
+    """Linearize an external effect's creation with the current-thread interrupt.
+
+    A per-thread start lock remains held while ``start`` crosses the backend
+    process/transport creation boundary. Therefore either an already-published
+    interrupt prevents creation, or creation wins and a concurrent interrupt is
+    published immediately afterward for the normal process wait loop to observe.
+    """
+    tid = threading.current_thread().ident
+    start_lock = _process_start_lock(tid)
+    with start_lock:
+        with _lock:
+            if tid in _interrupted_threads:
+                return False, None
+        return True, start()
 
 
 def clear_current_thread_interrupt() -> None:

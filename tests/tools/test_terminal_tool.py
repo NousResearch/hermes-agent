@@ -1,6 +1,17 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import json
+import queue
+import threading
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import cli as cli_module
 import tools.terminal_tool as terminal_tool
+from cli import HermesCLI
+from tools.environments.base import BaseEnvironment
+from tools.interrupt import set_interrupt
 
 
 def setup_function():
@@ -120,6 +131,172 @@ def test_registered_sudo_callback_is_used_without_interactive_env(monkeypatch):
     assert calls == ["called"]
     assert transformed == "echo ok | sudo -S -p '' tee /tmp/hermes-test"
     assert sudo_stdin == "callback-pass\n"
+
+
+def test_registered_empty_sudo_callback_preserves_skip(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    terminal_tool.set_sudo_password_callback(lambda: "")
+    try:
+        transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo true")
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert transformed == "sudo true"
+    assert sudo_stdin is None
+
+
+def test_cancelled_sudo_prompt_stops_before_command_execution(monkeypatch, tmp_path):
+    task_id = "sudo-cancel-test"
+
+    class MinimalEnvironment(BaseEnvironment):
+        def __init__(self):
+            super().__init__(cwd=str(tmp_path), timeout=60)
+            self.run_bash_calls = 0
+
+        def _run_bash(self, *_args, **_kwargs):
+            self.run_bash_calls += 1
+            return object()
+
+        def _wait_for_process(self, *_args, **_kwargs):
+            return {"output": "executed", "returncode": 0}
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {"env_type": "local", "cwd": str(tmp_path), "timeout": 60},
+    )
+    environment = MinimalEnvironment()
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, environment)
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+    terminal_tool.set_sudo_password_callback(lambda: None)
+    try:
+        result = json.loads(terminal_tool.terminal_tool("sudo shutdown now", force=True))
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert result == {
+        "output": "",
+        "exit_code": 130,
+        "error": "Command cancelled: sudo password prompt was dismissed.",
+        "status": "cancelled",
+    }
+    assert environment.run_bash_calls == 0
+
+
+def test_global_interrupt_after_sudo_response_dequeue_stops_process_start(
+    monkeypatch, tmp_path
+):
+    task_id = "sudo-post-dequeue-interrupt-test"
+    response_dequeued = threading.Event()
+    resume_callback = threading.Event()
+    real_queue = queue.Queue
+
+    class PausingQueue(real_queue):
+        def get(self, block=True, timeout=None):
+            result = super().get(block=block, timeout=timeout)
+            response_dequeued.set()
+            assert resume_callback.wait(timeout=2), "callback did not resume"
+            return result
+
+    class MinimalEnvironment(BaseEnvironment):
+        def __init__(self):
+            super().__init__(cwd=str(tmp_path), timeout=60)
+            self.run_bash_calls = 0
+
+        def _run_bash(self, *_args, **_kwargs):
+            self.run_bash_calls += 1
+            return object()
+
+        def _wait_for_process(self, *_args, **_kwargs):
+            return {"output": "executed", "returncode": 0}
+
+        def cleanup(self):
+            pass
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._approval_state = None
+    cli._clarify_state = None
+    cli._clarify_freetext = False
+    cli._sudo_state = None
+    cli._sudo_deadline = 0
+    cli._sudo_lock = threading.Lock()
+    cli._sudo_state_lock = threading.Lock()
+    cli._sudo_interrupt_generation = 0
+    cli._secret_state = None
+    cli._modal_input_snapshot = None
+    cli._app = SimpleNamespace(current_buffer=MagicMock())
+    cli._paint_now = MagicMock()
+    cli._capture_modal_input_snapshot = MagicMock()
+    cli._restore_modal_input_snapshot = MagicMock()
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _task_id: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: {"env_type": "local", "cwd": str(tmp_path), "timeout": 60},
+    )
+    environment = MinimalEnvironment()
+    monkeypatch.setitem(terminal_tool._active_environments, task_id, environment)
+    monkeypatch.setitem(terminal_tool._last_activity, task_id, 0.0)
+
+    result = {}
+
+    def run_terminal():
+        terminal_tool.set_sudo_password_callback(cli._sudo_password_callback)
+        try:
+            result["value"] = json.loads(
+                terminal_tool.terminal_tool("sudo shutdown now", force=True)
+            )
+        finally:
+            terminal_tool.set_sudo_password_callback(None)
+
+    with patch.object(cli_module.queue, "Queue", PausingQueue), patch.object(
+        cli_module, "_cprint"
+    ):
+        worker = threading.Thread(target=run_terminal, daemon=True)
+        worker.start()
+
+        deadline = time.time() + 2
+        while cli._sudo_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        state = cli._sudo_state
+        assert state is not None
+        assert cli._resolve_sudo_prompt(state, "typed-password")
+        assert response_dequeued.wait(timeout=2), "sudo response was not dequeued"
+
+        generation_before = cli._sudo_interrupt_generation
+        cli._clear_active_overlays_for_interrupt()
+        assert cli._sudo_interrupt_generation == generation_before + 1
+        set_interrupt(True, thread_id=worker.ident)
+        resume_callback.set()
+
+        worker.join(timeout=2)
+        set_interrupt(False, thread_id=worker.ident)
+
+    assert not worker.is_alive()
+    assert result["value"] == {
+        "output": "",
+        "exit_code": 130,
+        "error": "Command cancelled before process start.",
+        "status": "cancelled",
+    }
+    assert environment.run_bash_calls == 0
 
 
 def test_cached_sudo_password_isolated_by_session_key(monkeypatch):

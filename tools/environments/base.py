@@ -23,7 +23,7 @@ from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.interrupt import is_interrupted
+from tools.interrupt import is_interrupted, start_if_not_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -1094,9 +1094,20 @@ class BaseEnvironment(ABC):
         # unless login itself is broken — then non-login is the only path.
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+        process_started, proc = start_if_not_interrupted(
+            lambda: self._run_bash(
+                wrapped,
+                login=login,
+                timeout=effective_timeout,
+                stdin_data=effective_stdin,
+            )
         )
+        if not process_started:
+            return {
+                "output": "",
+                "returncode": 130,
+                "_process_start_cancelled": True,
+            }
         result = self._wait_for_process(
             proc, timeout=effective_timeout, bounded_capture=bounded_capture
         )

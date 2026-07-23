@@ -4145,6 +4145,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_deadline = 0
         self._sudo_state = None
         self._sudo_deadline = 0
+        self._sudo_lock = threading.Lock()
+        self._sudo_state_lock = threading.Lock()
+        self._sudo_interrupt_generation = 0
         self._modal_input_snapshot = None
         self._approval_state = None
         self._approval_deadline = 0
@@ -11563,7 +11566,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "Use your best judgement to make the choice and proceed."
         )
 
-    def _sudo_password_callback(self) -> str:
+    def _resolve_sudo_prompt(
+        self, state: dict, result: str | None, *, reason: str = "response"
+    ) -> bool:
+        """Resolve *state* once if it is still the active sudo prompt."""
+        with self._sudo_state_lock:
+            if self._sudo_state is not state or state.get("resolved", False):
+                return False
+            state["resolved"] = True
+            state["resolution"] = reason
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            state["response_queue"].put_nowait(result)
+            return True
+
+    def _sudo_password_callback(self) -> str | None:
         """
         Prompt for sudo password through the prompt_toolkit UI.
         
@@ -11573,43 +11590,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         import time as _time
 
-        timeout = 45
-        response_queue = queue.Queue()
+        with self._sudo_state_lock:
+            interrupt_generation = self._sudo_interrupt_generation
 
-        self._capture_modal_input_snapshot()
-        self._sudo_state = {
-            "response_queue": response_queue,
-        }
-        self._sudo_deadline = _time.monotonic() + timeout
+        with self._sudo_lock:
+            timeout = 45
+            response_queue = queue.Queue()
+            deadline = _time.monotonic() + timeout
+            state = {
+                "response_queue": response_queue,
+                "deadline": deadline,
+                "resolved": False,
+            }
 
-        # Modal prompt — paint immediately, bypassing the throttle/resize guard
-        # so the prompt can't be dropped and time out unseen (#41098).
-        self._paint_now()
+            with self._sudo_state_lock:
+                if interrupt_generation != self._sudo_interrupt_generation:
+                    return None
+                self._capture_modal_input_snapshot()
+                self._sudo_state = state
+                self._sudo_deadline = deadline
 
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                self._sudo_state = None
-                self._sudo_deadline = 0
-                self._restore_modal_input_snapshot()
-                self._paint_now()
-                if result:
-                    _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
-                else:
-                    _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
-                return result
-            except queue.Empty:
-                remaining = self._sudo_deadline - _time.monotonic()
-                if remaining <= 0:
+            # Modal prompt — paint immediately, bypassing the throttle/resize guard
+            # so the prompt can't be dropped and time out unseen (#41098).
+            self._paint_now()
+
+            while True:
+                try:
+                    result = response_queue.get(timeout=1)
                     break
-                self._paint_now()
+                except queue.Empty:
+                    if deadline - _time.monotonic() <= 0:
+                        self._resolve_sudo_prompt(state, "", reason="timeout")
+                    else:
+                        self._paint_now()
 
-        self._sudo_state = None
-        self._sudo_deadline = 0
-        self._restore_modal_input_snapshot()
-        self._paint_now()
-        _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-        return ""
+            self._restore_modal_input_snapshot()
+            self._paint_now()
+            if result is None:
+                _cprint(f"\n{_DIM}  ⏭ Cancelled{_RST}")
+            elif result:
+                _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
+            elif state.get("resolution") == "timeout":
+                _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
+            else:
+                _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
+            return result
 
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
@@ -11957,10 +11982,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         thread servicing the prompt.  The result is a frozen terminal until the
         prompt's own timeout expires.  Push a terminal value onto each queue so
         any still-blocked thread unblocks cleanly, then nil the state out and
-        restore the user's pre-modal draft (#14026).
+        restore the user's pre-modal draft (#14026).  Sudo callbacks already
+        serialized behind the active prompt are invalidated at the same
+        interrupt boundary so none can publish a successor modal.
 
-        Safe default per prompt: approval -> "deny", clarify/sudo/secret ->
-        cancel (None / empty).  Each step is wrapped so a dead queue can't
+        Safe default per prompt: approval -> "deny", clarify/sudo -> None,
+        secret -> empty.  Each step is wrapped so a dead queue can't
         prevent clearing the others.
         """
         if self._approval_state:
@@ -11978,13 +12005,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 pass
             self._clarify_state = None
             self._clarify_freetext = False
-        if self._sudo_state:
-            try:
-                self._sudo_state["response_queue"].put("")
-            except Exception:
-                pass
-            self._sudo_state = None
-            self._sudo_deadline = 0
+        sudo_state = None
+        try:
+            with self._sudo_state_lock:
+                # Invalidate callbacks already waiting on _sudo_lock as well as
+                # the currently published prompt. A callback starting after this
+                # boundary captures the new generation and proceeds normally.
+                self._sudo_interrupt_generation += 1
+                sudo_state = self._sudo_state
+                if sudo_state:
+                    self._sudo_state = None
+                    self._sudo_deadline = 0
+                    if not sudo_state.get("resolved", False):
+                        sudo_state["resolved"] = True
+                        sudo_state["resolution"] = "interrupt"
+                        sudo_state["response_queue"].put_nowait(None)
+        except Exception:
+            pass
+        if sudo_state:
             self._restore_modal_input_snapshot()
         if self._secret_state:
             try:
@@ -13358,6 +13396,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Sudo password prompt state (similar mechanism to clarify)
         self._sudo_state = None         # dict with response_queue when active
         self._sudo_deadline = 0
+        self._sudo_lock = threading.Lock()  # serialize concurrent sudo prompts
+        self._sudo_state_lock = threading.Lock()  # resolve active prompt exactly once
+        self._sudo_interrupt_generation = 0  # cancel pre-interrupt serialized waiters
         self._modal_input_snapshot = None
 
         # Dangerous command approval state (similar mechanism to clarify)
@@ -13434,10 +13475,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             handled as commands, not sent as interrupt text to the agent.
             """
             # --- Sudo password prompt: submit the typed password ---
-            if self._sudo_state:
+            sudo_state = self._sudo_state
+            if sudo_state:
                 text = event.app.current_buffer.text
-                self._sudo_state["response_queue"].put(text)
-                self._sudo_state = None
+                self._resolve_sudo_prompt(sudo_state, text)
                 event.app.invalidate()
                 return
 
@@ -13959,6 +14000,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             if self._agent_running and self.agent:
+                if not _overlay_cleared:
+                    # A serialized sudo waiter can exist during the narrow
+                    # handoff where no prompt state is published yet.
+                    self._clear_active_overlays_for_interrupt()
                 if now - self._last_ctrl_c_time < 2.0:
                     print("\n⚡ Force exiting...")
                     self._should_exit = True
@@ -14044,6 +14089,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             if self._agent_running and self.agent:
+                if not _overlay_cleared:
+                    # Advance the sudo interrupt generation even during the
+                    # serialized handoff between visible prompts.
+                    self._clear_active_overlays_for_interrupt()
                 print("\n⚡ Interrupting agent...")
                 self.agent.interrupt()
             elif event.app.current_buffer.text or self._attached_images:
@@ -14083,9 +14132,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
+            sudo_state = self._sudo_state
+            if sudo_state:
+                self._resolve_sudo_prompt(sudo_state, None)
                 event.app.invalidate()
                 return
             if self._slash_confirm_state:
@@ -14471,7 +14520,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
-                return "type password (hidden), Enter to submit · ESC to skip"
+                return "type password (hidden), Enter to submit · ESC to cancel"
             if cli_ref._secret_state:
                 return "type secret (hidden), Enter to submit · ESC to skip"
             if cli_ref._approval_state:

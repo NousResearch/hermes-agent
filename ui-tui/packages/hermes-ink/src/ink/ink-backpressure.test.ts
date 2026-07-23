@@ -159,6 +159,7 @@ describe('Ink stdout backpressure coalescing (issue #31486)', () => {
       // (pendingDrainCount stays > 0). After MAX_COALESCED_BACKPRESSURE_FRAMES
       // coalesced retries, the renderer must force a write through.
       ink.render(React.createElement(Text, null, 'forced'))
+      ink.onRender()
 
       // Drive enough retry ticks to exceed the ceiling.
       for (let i = 0; i <= MAX_COALESCED_BACKPRESSURE_FRAMES + 2; i++) {

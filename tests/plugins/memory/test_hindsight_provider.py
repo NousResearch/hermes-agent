@@ -2222,7 +2222,7 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert provider._client is None
 
-    def test_shutdown_cannot_return_before_embedded_manager_mutation_finishes(
+    def test_shutdown_timeout_blocks_late_embedded_daemon_restart(
         self, tmp_path, monkeypatch
     ):
         import sys
@@ -2295,14 +2295,16 @@ class TestShutdown:
             target=lambda: (provider.shutdown(), shutdown_done.set()), daemon=True
         )
         shutdown_thread.start()
-        returned_while_manager_blocked = shutdown_done.wait(timeout=0.1)
+        returned_while_manager_blocked = shutdown_done.wait(timeout=0.5)
+        assert returned_while_manager_blocked
+        assert calls == ["is_running"]
+
         release.set()
         shutdown_thread.join(timeout=2.0)
         real_join(timeout=1.0)
 
-        assert not returned_while_manager_blocked
         assert shutdown_done.is_set()
-        assert calls == ["is_running", "stop", "ensure_started"]
+        assert calls == ["is_running"]
 
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
         inner_client = _make_mock_client()

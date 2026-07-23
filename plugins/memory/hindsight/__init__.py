@@ -716,6 +716,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._failed_retain_jobs: list = []
         self._failed_retain_lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
+        self._shutdown_requested = threading.Event()
         self._shutting_down = threading.Event()
         self._atexit_registered = False
         # Legacy alias — older tests/callers reference _sync_thread directly.
@@ -1615,7 +1616,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:
-                    if self._shutting_down.is_set():
+                    if self._shutdown_requested.is_set() or self._shutting_down.is_set():
                         return
                     # Redirect the daemon manager's Rich console to our log file
                     # instead of stderr. This avoids global fd redirects that
@@ -1626,33 +1627,38 @@ class HindsightMemoryProvider(MemoryProvider):
 
                     client: Any = self._get_client()
                     config = self._config or {}
-                    # Serialize every daemon-manager mutation with shutdown.
-                    # If shutdown wins the lock, this worker exits without
-                    # touching the shared daemon. If startup wins, shutdown
-                    # waits until stop/start has completed before it can return.
-                    with self._lifecycle_lock:
-                        if self._shutting_down.is_set():
+                    if self._shutdown_requested.is_set() or self._shutting_down.is_set():
+                        return
+                    profile = config.get("profile", "hermes")
+
+                    # Update the profile .env to match our current config so
+                    # the daemon always starts with the right settings.
+                    profile_env = _embedded_profile_env_path(config)
+                    expected_env = _build_embedded_profile_env(config)
+                    saved = _load_simple_env(profile_env)
+                    config_changed = saved != expected_env
+
+                    if config_changed:
+                        _materialize_embedded_profile_env(config)
+                        if self._shutdown_requested.is_set() or self._shutting_down.is_set():
                             return
-                        profile = config.get("profile", "hermes")
+                        running = client._manager.is_running(profile)
+                        # is_running() may block beyond shutdown's join budget.
+                        # Never let a late result mutate or restart the daemon.
+                        if self._shutdown_requested.is_set() or self._shutting_down.is_set():
+                            return
+                        if running:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write("\n=== Config changed, restarting daemon ===\n")
+                            client._manager.stop(profile)
+                            if self._shutdown_requested.is_set() or self._shutting_down.is_set():
+                                return
 
-                        # Update the profile .env to match our current config so
-                        # the daemon always starts with the right settings.
-                        # If the config changed and the daemon is running, stop it.
-                        profile_env = _embedded_profile_env_path(config)
-                        expected_env = _build_embedded_profile_env(config)
-                        saved = _load_simple_env(profile_env)
-                        config_changed = saved != expected_env
-
-                        if config_changed:
-                            profile_env = _materialize_embedded_profile_env(config)
-                            if client._manager.is_running(profile):
-                                with open(log_path, "a", encoding="utf-8") as f:
-                                    f.write("\n=== Config changed, restarting daemon ===\n")
-                                client._manager.stop(profile)
-
-                        client._ensure_started()
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write("\n=== Daemon started successfully ===\n")
+                    if self._shutdown_requested.is_set() or self._shutting_down.is_set():
+                        return
+                    client._ensure_started()
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")
@@ -2212,10 +2218,17 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        # Publish cancellation before waiting for the lifecycle lock so a
+        # blocked daemon-start worker can observe it within the bounded join.
+        if self._shutting_down.is_set():
+            return
+        self._shutdown_requested.set()
         # Serialize the final flush/sentinel boundary with sync_turn(). A turn
         # either queues before this block or observes _shutting_down afterwards;
         # it can never land behind the sentinel.
         with self._lifecycle_lock:
+            if self._shutting_down.is_set():
+                return
             self._enqueue_pending_turn_flush(reason="shutdown")
             writer = self._writer_thread
             daemon_start = self._daemon_start_thread

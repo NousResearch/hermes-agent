@@ -811,7 +811,11 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     elapsed = time.monotonic() - started
 
     assert result == "ok"
-    assert elapsed < 0.15
+    # Loose wall-clock bound per flake policy: this asserts the handler did
+    # NOT block on the hygiene-compression timeout path (which would take
+    # multiple seconds), not a precise latency. 0.15s missed by ~1-8ms on
+    # busy CI shards twice on 2026-07-23.
+    assert elapsed < 2.0
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
     assert runner._hygiene_compression_failure_cooldowns["sess-timeout"] > time.time()

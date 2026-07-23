@@ -16193,6 +16193,13 @@ def main(
         ignore_rules=ignore_rules,
     )
 
+    # Give plugin manager a CLI reference so plugins can resolve the active
+    # agent in both query (`-q`) and interactive mode. Without this,
+    # PluginContext.dispatch_tool() cannot inject parent_agent because
+    # _cli_ref remains None when HermesCLI.run() is never called.
+    from hermes_cli.plugins import get_plugin_manager
+    get_plugin_manager()._cli_ref = cli
+
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             parsed_skills,

@@ -60,6 +60,17 @@ gateway:
     usage_switch_model:     "`/model <name>` — switch model"
     usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
     usage_persist:          "`/model <name> --global` — persist"
+  session_info:
+    model: "◆ Model: `{model}`"
+    provider: "◆ Provider: {provider}"
+    context: "◆ Context: {tokens} tokens ({source})"
+    endpoint: "◆ Endpoint: {endpoint}"
+
+  session_auto_reset:
+    header: "◐ Session automatically reset ({reason})."
+    history_cleared: "Conversation history cleared."
+    resume_hint: "Use /resume to browse and restore a previous session."
+    config_hint: "Adjust reset timing in config.yaml under session_reset."
 
   agents:
     header:                "🤖 **Active Agents & Tasks**"

@@ -1097,3 +1097,64 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
+
+
+class TestEnvNameAllowlist:
+    """SSH_AUTH_SOCK matches _SECRET_ENV_NAMES via the 'AUTH' substring but is
+    a filesystem path, not a secret. It must pass through untouched —
+    critically, the 1Password socket path contains a space, and redacting it
+    corrupts shell quoting (unbalanced quote).
+    """
+
+    # The exact 1Password app-group socket path that triggered the bug.
+    OP_SOCK = (
+        '/Users/pthomas/Library/Group Containers/'
+        '2BUA8C4S2C.com.1password/t/agent.sock'
+    )
+
+    def test_ssh_auth_sock_quoted_path_with_space_untouched(self):
+        text = f'export SSH_AUTH_SOCK="{self.OP_SOCK}"'
+        result = redact_sensitive_text(text, force=True)
+        assert result == text  # no redaction, quoting intact
+        assert result.count('"') == 2  # balanced quotes preserved
+
+    def test_ssh_auth_sock_home_relative_untouched(self):
+        text = 'export SSH_AUTH_SOCK="$HOME/Library/Group Containers/x/agent.sock"'
+        result = redact_sensitive_text(text, force=True)
+        assert result == text
+
+    def test_ssh_auth_sock_unquoted_no_export_untouched(self):
+        """Bare, unquoted, no ``export`` — the common Linux ssh-agent form
+        (e.g. ``/tmp/ssh-XXXX/agent.1234``, no embedded space)."""
+        text = "SSH_AUTH_SOCK=/tmp/ssh-abc123/agent.1234"
+        result = redact_sensitive_text(text, force=True)
+        assert result == text
+
+    def test_ssh_auth_sock_quoted_no_export_with_space_untouched(self):
+        """Quoted path with a space but no ``export`` prefix — the typical
+        ``.env`` file form (as opposed to a shell ``export`` line)."""
+        text = 'SSH_AUTH_SOCK="/Users/x/Library/Group Containers/y/agent.sock"'
+        result = redact_sensitive_text(text, force=True)
+        assert result == text
+
+    def test_lowercase_auth_secret_still_masked_via_cfg_anchored(self):
+        """A genuine lowercase config-style secret (``my_auth_secret=...``)
+        only ever reaches ``_CFG_ANCHORED_RE`` (``_ENV_ASSIGN_RE`` is
+        uppercase-only). Confirms the SSH_AUTH_SOCK allowlist check in the
+        shared ``_redact_env`` closure doesn't over-exempt unrelated secrets
+        that happen to route through the same config-anchored path.
+        """
+        text = "my_auth_secret=reallylongsecretvalue1234567890"
+        result = redact_sensitive_text(text, force=True)
+        assert "reallylongsecretvalue1234567890" not in result
+
+    def test_real_auth_token_still_masked(self):
+        """Allowlist must not weaken genuine *AUTH* secret capture via
+        _ENV_ASSIGN_RE. Uses a value with no recognized vendor prefix so the
+        earlier _PREFIX_RE pass can't mask it first — this exercises the
+        _ENV_ASSIGN_RE path specifically, unlike a ``ghp_...``-style value
+        which _PREFIX_RE would already catch regardless of this fix.
+        """
+        text = "GITHUB_AUTH_TOKEN=deadbeef1234567890abcdef"
+        result = redact_sensitive_text(text, force=True)
+        assert "deadbeef1234567890abcdef" not in result

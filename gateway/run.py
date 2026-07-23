@@ -1972,6 +1972,7 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_channel_continuity_note,
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -12587,6 +12588,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+            # Slack/Discord channels/threads are long-lived: point the agent at
+            # the specific prior same-channel session so it recalls that context
+            # via session_search instead of an unrelated recent session.  Returns
+            # None (appends nothing) for other platforms or when there's no prior
+            # activity to recall.  Deterministic — no extra API/DB calls (#36220).
+            try:
+                continuity_note = build_channel_continuity_note(session_entry, source)
+            except Exception:
+                continuity_note = None
+            if continuity_note:
+                context_note = context_note + "\n\n" + continuity_note
             turn_sidecar_notes.append(context_note)
 
             # Send a user-facing notification explaining the reset, unless:

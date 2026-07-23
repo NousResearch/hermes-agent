@@ -79,6 +79,58 @@ BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _iter_frame_entries(node: Any):
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _iter_frame_entries(value)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _iter_frame_entries(item)
+
+
+def _dialog_frame_url(snapshot: Any, dialog_id: Optional[str]) -> Optional[str]:
+    pending = list(getattr(snapshot, "pending_dialogs", ()) or ())
+    if dialog_id:
+        dialog = next((d for d in pending if getattr(d, "id", None) == dialog_id), None)
+    elif len(pending) == 1:
+        dialog = pending[0]
+    else:
+        return None
+    if dialog is None:
+        return None
+
+    frame_id = getattr(dialog, "frame_id", None)
+    frame_tree = getattr(snapshot, "frame_tree", {}) or {}
+    fallback_top_url = None
+    for frame in _iter_frame_entries(frame_tree):
+        url = frame.get("url")
+        if frame.get("frame_id") == frame_id and url:
+            return str(url)
+        if fallback_top_url is None and frame.get("url"):
+            fallback_top_url = str(frame.get("url"))
+    return fallback_top_url
+
+
+def _blocked_private_dialog_url(snapshot: Any, dialog_id: Optional[str], effective_task_id: str) -> Optional[str]:
+    try:
+        from tools.browser_tool import (  # type: ignore[import-not-found]
+            _eval_ssrf_guard_active,
+            _is_always_blocked_url,
+            _is_safe_url,
+        )
+    except Exception as exc:  # pragma: no cover - defensive import guard
+        logger.debug("browser_dialog private-page guard unavailable: %s", exc)
+        return None
+
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    url = _dialog_frame_url(snapshot, dialog_id)
+    if url and (_is_always_blocked_url(url) or not _is_safe_url(url)):
+        return url
+    return None
+
+
 def browser_dialog(
     action: str,
     prompt_text: Optional[str] = None,
@@ -97,6 +149,19 @@ def browser_dialog(
                     "browser backend doesn't expose CDP (Camofox, default "
                     "Playwright) or no browser session has been started yet. "
                     "Call browser_navigate or /browser connect first."
+                ),
+            }
+        )
+
+    snapshot = supervisor.snapshot()
+    blocked_url = _blocked_private_dialog_url(snapshot, dialog_id, effective_task_id)
+    if blocked_url:
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Blocked browser_dialog on a private/internal page: "
+                    f"{blocked_url}"
                 ),
             }
         )

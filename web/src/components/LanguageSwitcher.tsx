@@ -72,7 +72,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
+          "hermes-mobile-touch-target px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
           collapsed && "hover:bg-transparent",
         )}
       >
@@ -150,6 +150,7 @@ function LanguageSwitcherOptions({
             aria-selected={selected}
             className={cn(
               "w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer",
+              "hermes-mobile-nav-target",
               "font-sans text-display text-xs tracking-[0.08em]",
               "hover:bg-accent hover:text-accent-foreground transition-colors",
               selected ? "font-semibold text-foreground" : "text-muted-foreground",

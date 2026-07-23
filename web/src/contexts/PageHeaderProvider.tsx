@@ -94,7 +94,7 @@ export function PageHeaderProvider({
               {afterTitle ? (
                 <div
                   className={cn(
-                    "min-w-0 scrollbar-none",
+                    "hermes-mobile-page-after-title min-w-0 scrollbar-none",
                     isEnvRoute
                       ? "w-full overflow-x-auto sm:flex-1 sm:overflow-x-auto"
                       : "shrink-0 overflow-visible",
@@ -108,7 +108,7 @@ export function PageHeaderProvider({
             {end ? (
               <div
                 className={cn(
-                  "flex min-w-0 sm:max-w-md sm:flex-1",
+                  "hermes-mobile-page-actions flex min-w-0 sm:max-w-md sm:flex-1",
                   isChatRoute
                     ? "w-auto shrink-0 justify-end"
                     : "w-full justify-start sm:justify-end",

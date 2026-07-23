@@ -67,6 +67,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
         size={collapsed ? "icon" : undefined}
         onClick={() => setOpen((o) => !o)}
         className={cn(
+          "hermes-mobile-touch-target",
           collapsed
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
             : "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
@@ -174,7 +175,7 @@ function ThemeSwitcherOptions({
           <ListItem
             active={isActive}
             aria-selected={isActive}
-            className="gap-3"
+            className="hermes-mobile-nav-target gap-3"
             key={th.name}
             onClick={() => {
               setTheme(th.name);
@@ -243,7 +244,7 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
       <ListItem
         active={fontId === THEME_DEFAULT_FONT_ID}
         aria-selected={fontId === THEME_DEFAULT_FONT_ID}
-        className="gap-3"
+        className="hermes-mobile-nav-target gap-3"
         onClick={() => setFont(THEME_DEFAULT_FONT_ID)}
         role="option"
       >
@@ -281,7 +282,7 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
                 <ListItem
                   active={isActive}
                   aria-selected={isActive}
-                  className="gap-3"
+                  className="hermes-mobile-nav-target gap-3"
                   key={f.id}
                   onClick={() => setFont(f.id)}
                   role="option"

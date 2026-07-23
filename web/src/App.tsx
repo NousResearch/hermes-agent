@@ -63,6 +63,7 @@ import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
@@ -98,6 +99,7 @@ import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
+import { dashboardDrawerA11yProps } from "@/lib/dashboard-modal-shell";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -353,6 +355,13 @@ export default function App() {
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileDrawerRef = useModalBehavior({
+    open: mobileOpen,
+    onClose: closeMobile,
+    modalLayout: false,
+    restoreFocusRef: mobileMenuTriggerRef,
+  });
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -457,20 +466,6 @@ export default function App() {
   const layoutVariant = theme.layoutVariant ?? "standard";
 
   useEffect(() => {
-    if (!mobileOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMobileOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [mobileOpen]);
-
-  useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
       if (e.matches) setMobileOpen(false);
@@ -483,7 +478,7 @@ export default function App() {
     <ProfileProvider>
     <div
       data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
+      className="hermes-app-shell flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
     >
       <SelectionSwitcher />
 
@@ -496,7 +491,7 @@ export default function App() {
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
+          "hermes-mobile-header lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
           "border-b border-current/20",
           "bg-background-base",
@@ -508,13 +503,14 @@ export default function App() {
         }}
       >
         <Button
+          ref={mobileMenuTriggerRef}
           ghost
           size="icon"
           onClick={() => setMobileOpen(true)}
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+          className="hermes-mobile-touch-target text-text-secondary hover:text-midground"
         >
           <Menu />
         </Button>
@@ -524,42 +520,41 @@ export default function App() {
         </Typography>
       </header>
 
-      {mobileOpen && (
-        <Button
-          ghost
-          aria-label={t.app.closeNavigation}
-          onClick={closeMobile}
-          className={cn(
-            "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/70",
-          )}
-        />
-      )}
-
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div className="hermes-mobile-content-offset flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
-          <aside
-            id="app-sidebar"
-            aria-label={t.app.navigation}
-            className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
-              "border-r border-current/20",
-              "bg-background-base",
-              "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
-              "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
-              collapsed && "lg:w-14",
+          <div ref={mobileDrawerRef} className="contents">
+            {mobileOpen && (
+              <div
+                aria-hidden
+                onClick={closeMobile}
+                className="lg:hidden fixed inset-0 z-40 bg-black/70"
+              />
             )}
-            style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
-              borderImage: "var(--component-sidebar-border-image)",
-            }}
-          >
+
+            <aside
+              id="app-sidebar"
+              aria-label={t.app.navigation}
+              {...dashboardDrawerA11yProps(mobileOpen, isMobile)}
+              className={cn(
+                "hermes-mobile-sidebar fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
+                "border-r border-current/20",
+                "bg-background-base",
+                "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                "motion-reduce:transition-none",
+                mobileOpen ? "translate-x-0" : "-translate-x-full",
+                "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
+                "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
+                collapsed && "lg:w-14",
+              )}
+              style={{
+                background: "var(--component-sidebar-background)",
+                clipPath: "var(--component-sidebar-clip-path)",
+                borderImage: "var(--component-sidebar-border-image)",
+              }}
+            >
             <div
               className={cn(
                 "flex h-14 shrink-0 items-center gap-2",
@@ -587,7 +582,7 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-text-secondary hover:text-midground"
+                className="hermes-mobile-touch-target lg:hidden text-text-secondary hover:text-midground"
               >
                 <X />
               </Button>
@@ -713,7 +708,8 @@ export default function App() {
               <AuthWidget />
               <SidebarFooter status={sidebarStatus} />
             </div>
-          </aside>
+            </aside>
+          </div>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <div
@@ -844,6 +840,7 @@ function SidebarNavLink({
           cn(
             "group/nav relative flex items-center gap-3",
             "px-5 py-2.5",
+            "hermes-mobile-nav-target",
             "font-sans text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
@@ -1104,6 +1101,7 @@ function SystemActionButton({
         className={cn(
           "group/action relative flex w-full items-center gap-3",
           "px-5 py-2.5",
+          "hermes-mobile-nav-target",
           "font-sans text-display text-xs tracking-[0.1em]",
           "whitespace-nowrap transition-colors cursor-pointer",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
@@ -1275,7 +1273,7 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
   return createPortal(
     <span
       className={cn(
-        "fixed z-[100] pointer-events-none",
+        "hermes-sidebar-tooltip fixed z-[100] pointer-events-none",
         "px-2 py-1",
         "bg-background-base border border-current/20 shadow-lg",
         "font-sans text-display text-xs tracking-[0.1em] text-midground uppercase",

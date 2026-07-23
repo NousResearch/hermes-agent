@@ -13,10 +13,31 @@
  * ModelPickerDialog / ToolsetConfigDrawer).
  */
 export const DASHBOARD_MODAL_BACKDROP =
-  "fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4";
+  "hermes-modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4";
 
 export const DASHBOARD_MODAL_PANEL =
-  "relative w-full border border-border bg-card shadow-2xl";
+  "hermes-modal-panel-viewport relative w-full border border-border bg-card shadow-2xl";
+
+interface DashboardDrawerA11yProps {
+  "aria-hidden"?: boolean;
+  "aria-modal"?: true;
+  inert?: true;
+  role?: "dialog";
+}
+
+/** Keep drawer semantics synchronized while allowing the desktop sidebar to remain navigation. */
+export function dashboardDrawerA11yProps(
+  open: boolean,
+  enabled = true,
+): DashboardDrawerA11yProps {
+  if (!enabled) return {};
+  return {
+    "aria-hidden": !open,
+    "aria-modal": open ? true : undefined,
+    inert: open ? undefined : true,
+    role: "dialog",
+  };
+}
 
 /**
  * Outer modals that host a nested picker (e.g. MoA → ModelPickerDialog)

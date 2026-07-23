@@ -524,6 +524,51 @@ class TestMemoryStoreEncoding:
         assert len(store.memory_entries) == 1
         assert "User prefers caf" in store.memory_entries[0]  # loaded, not empty
 
+    # ── Mutations must survive the same files load survives ──
+    # replace/remove/apply_batch call _detect_external_drift() BEFORE
+    # _read_file() (via _reload_target), so drift detection needs the same
+    # decoding policy or the mutation crashes before the resilient reader runs.
+
+    def test_replace_succeeds_on_bom_file(self, store):
+        store.add("memory", "User likes brevity.")
+        path = store._path_for("memory")
+        # External writer (e.g. Windows editor) re-saves the file with a BOM.
+        path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+        result = store.replace("memory", "User likes", "User prefers concise.")
+
+        assert result["success"] is True
+        # BOM neither crashes the mutation nor false-positives the drift guard.
+        assert "drift_backup" not in result
+        assert "User prefers concise." in path.read_text(encoding="utf-8")
+
+    def test_remove_succeeds_on_invalid_byte_file(self, store):
+        store.add("memory", "Keep this entry.")
+        store.add("memory", "Drop this entry.")
+        path = store._path_for("memory")
+        # External writer appends latin-1 bytes into an existing entry.
+        path.write_bytes(path.read_bytes().replace(b"Drop this entry.", b"Drop this caf\xe9 entry."))
+
+        result = store.remove("memory", "Drop this")
+
+        assert result["success"] is True  # no UnicodeDecodeError
+        remaining = path.read_text(encoding="utf-8")
+        assert "Keep this entry." in remaining
+        assert "Drop this" not in remaining
+
+    def test_batch_succeeds_on_bom_and_invalid_bytes(self, store):
+        store.add("memory", "Original entry.")
+        path = store._path_for("memory")
+        path.write_bytes(b"\xef\xbb\xbfOriginal caf\xe9 entry.")
+
+        result = store.apply_batch(
+            "memory",
+            [{"action": "replace", "old_text": "Original caf", "content": "Rewritten caf"}],
+        )
+
+        assert result["success"] is True
+        assert "Rewritten caf" in path.read_text(encoding="utf-8")
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):

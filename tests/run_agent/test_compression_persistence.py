@@ -129,6 +129,31 @@ class TestFlushAfterCompression:
             assert len(rows) == 2
             assert [row["content"] for row in rows] == ["summary", "continuing..."]
 
+    def test_current_gateway_user_row_keeps_native_platform_message_id(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            agent._persist_user_message_idx = 0
+            tokens = set_session_vars(
+                platform="telegram",
+                session_id="original-session",
+                message_id="telegram-native-9001",
+            )
+            try:
+                agent._flush_messages_to_session_db(
+                    [{"role": "user", "content": "verify topic 17"}],
+                    [],
+                )
+            finally:
+                clear_session_vars(tokens)
+
+            rows = db.get_messages("original-session")
+            assert len(rows) == 1
+            assert rows[0]["platform_message_id"] == "telegram-native-9001"
+
     def test_in_place_compression_rebaseline_prevents_duplicate_compacted_rows(self):
         """In-place compaction already persisted the compacted transcript.
 
@@ -200,7 +225,29 @@ class TestFlushAfterCompression:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
             parent_sid = "20260701_152840_parent"
-            db.create_session(parent_sid, "gateway", model="test/model")
+            db.create_session(
+                parent_sid,
+                "telegram",
+                model="test/model",
+                user_id="operator-1",
+                session_key="agent:main:telegram:group:-1003589561528:17",
+                chat_id="-1003589561528",
+                chat_type="group",
+                thread_id="17",
+                cwd="/tmp/topic17",
+                profile_name="default",
+            )
+            db.record_gateway_session_peer(
+                parent_sid,
+                source="telegram",
+                user_id="operator-1",
+                session_key="agent:main:telegram:group:-1003589561528:17",
+                chat_id="-1003589561528",
+                chat_type="group",
+                thread_id="17",
+                display_name="JAIMES Ops",
+                origin_json='{"message_id":"9001"}',
+            )
 
             agent = self._make_agent(db)
             agent.session_id = parent_sid
@@ -228,6 +275,16 @@ class TestFlushAfterCompression:
 
             assert agent.session_id != parent_sid
             child_sid = agent.session_id
+
+            child = db.get_session(child_sid)
+            assert child is not None
+            assert child["parent_session_id"] == parent_sid
+            assert child["session_key"] == "agent:main:telegram:group:-1003589561528:17"
+            assert child["chat_id"] == "-1003589561528"
+            assert child["thread_id"] == "17"
+            assert child["user_id"] == "operator-1"
+            assert child["display_name"] == "JAIMES Ops"
+            assert child["origin_json"] == '{"message_id":"9001"}'
 
             agent._flush_messages_to_session_db(compressed, None)
 

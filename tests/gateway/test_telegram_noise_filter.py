@@ -30,6 +30,7 @@ CHAT_PLATFORMS = [
 
 NOISY_STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
+    "📦 Pre-API compression: ~281,519 tokens near the context/output limit. Compacting before the next model call.",
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",

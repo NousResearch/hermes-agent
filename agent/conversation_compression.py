@@ -1240,6 +1240,11 @@ def compress_context(
                         agent._flush_messages_to_session_db(messages)
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
+                    # Snapshot the gateway peer before ending the parent.  A
+                    # compression child is the same Telegram conversation, not
+                    # a new unroutable session; losing these fields strands the
+                    # final in state.db after the model completes.
+                    parent_session = agent._session_db.get_session(agent.session_id) or {}
                     # Propagate title to the new session with auto-numbering
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     agent._session_db.end_session(agent.session_id, "compression")
@@ -1272,11 +1277,34 @@ def compress_context(
                     try:
                         agent._session_db.create_session(
                             session_id=agent.session_id,
-                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            source=(
+                                parent_session.get("source")
+                                or agent.platform
+                                or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+                            ),
                             model=agent.model,
                             model_config=agent._session_init_model_config,
+                            user_id=parent_session.get("user_id"),
+                            session_key=parent_session.get("session_key"),
+                            chat_id=parent_session.get("chat_id"),
+                            chat_type=parent_session.get("chat_type"),
+                            thread_id=parent_session.get("thread_id"),
                             parent_session_id=old_session_id,
+                            cwd=parent_session.get("cwd"),
+                            profile_name=parent_session.get("profile_name"),
                         )
+                        if parent_session.get("session_key"):
+                            agent._session_db.record_gateway_session_peer(
+                                agent.session_id,
+                                source=str(parent_session.get("source") or "gateway"),
+                                user_id=parent_session.get("user_id"),
+                                session_key=str(parent_session.get("session_key")),
+                                chat_id=parent_session.get("chat_id"),
+                                chat_type=parent_session.get("chat_type"),
+                                thread_id=parent_session.get("thread_id"),
+                                display_name=parent_session.get("display_name"),
+                                origin_json=parent_session.get("origin_json"),
+                            )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,
                         # contended write). Previously the outer handler simply

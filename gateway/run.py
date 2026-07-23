@@ -81,6 +81,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|auto-lowered\s+compression\s+threshold"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
+    r"|pre-api\s+compression"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"

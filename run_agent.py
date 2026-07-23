@@ -65,6 +65,17 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
+def _current_gateway_message_id() -> Optional[str]:
+    """Return the native inbound ID for the task-local gateway turn."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_SESSION_MESSAGE_ID").strip() or None
+    except Exception:
+        # CLI/cron agents do not bind gateway context and remain unaffected.
+        return None
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -2038,6 +2049,11 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    platform_message_id=(
+                        _current_gateway_message_id()
+                        if is_current_turn_user and role == "user"
+                        else None
+                    ),
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
                 )

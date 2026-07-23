@@ -536,3 +536,59 @@ def test_unregistered_session_never_inherits_another_sessions_record(
     assert not str(resolved).startswith(str(wt_a))
     assert not str(resolved).startswith(str(wt_b))
     assert resolved == (main / "target.py").resolve()
+
+
+# ── Cwd-shaped relative path (issue #67185) ────────────────────────────────────
+
+
+def test_cwd_shaped_relative_path_prepends_slash(tmp_path, monkeypatch):
+    """A relative path that reproduces the base dir's tail gets a leading '/'.
+
+    When a model emits ``home/user/dev/notes/x.md`` (intending
+    ``/home/user/dev/notes/x.md``), the structural check in
+    ``_resolve_path_for_task`` detects that the path starts with the base
+    dir's tail (``home/user/dev/``) and prepends ``/`` so the file lands at
+    the intended absolute path instead of a doubled path.
+    """
+    base = tmp_path / "home" / "user" / "dev"
+    base.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(base))
+
+    # This looks like an absolute path missing its leading "/".
+    cwd_shaped = "home/user/dev/notes/x.md"
+    resolved = ft._resolve_path_for_task(cwd_shaped, task_id="default")
+
+    assert resolved == (tmp_path / "home" / "user" / "dev" / "notes" / "x.md")
+    assert not str(resolved).startswith(str(base) + "/" + "home")
+
+
+def test_cwd_shaped_relative_path_through_write_file(tmp_path, monkeypatch):
+    """write_file_tool with a cwd-shaped relative path writes to the right place.
+
+    Integration-level test: the fix must work through the full write_file_tool
+    call chain, not just _resolve_path_for_task in isolation.
+    """
+    base = tmp_path / "home" / "user" / "dev"
+    base.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(base))
+
+    import json
+    cwd_shaped = "home/user/dev/notes/test.md"
+    out = json.loads(ft.write_file_tool(cwd_shaped, "hello\n", task_id="default"))
+
+    expected = str((tmp_path / "home" / "user" / "dev" / "notes" / "test.md").resolve())
+    assert out.get("resolved_path") == expected
+    assert (tmp_path / "home" / "user" / "dev" / "notes" / "test.md").read_text() == "hello\n"
+
+
+def test_legitimate_relative_path_not_affected(tmp_path, monkeypatch):
+    """A normal relative path like 'notes/x.md' is not touched by the fix."""
+    base = tmp_path / "home" / "user" / "dev"
+    base.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(base))
+
+    resolved = ft._resolve_path_for_task("notes/x.md", task_id="default")
+    assert resolved == (base / "notes" / "x.md")

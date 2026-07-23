@@ -464,6 +464,21 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
         joined = ntpath.join(str(base_dir), expanded)
         return Path(ntpath.normpath(joined))
 
+    # Structural check: if a relative path reproduces the base directory's
+    # tail as its own prefix, the model likely intended an absolute path but
+    # dropped the leading "/".  Without this fix, joining such a path with
+    # the base dir produces a doubled path like
+    #   /home/user/dev/home/user/dev/notes/x.md  (issue #67185).
+    #
+    # Example: base_dir = /home/user/dev, filepath = "home/user/dev/notes/x.md"
+    #   → base_dir.lstrip("/") = "home/user/dev"
+    #   → filepath.startswith("home/user/dev/") → True → prepend "/"
+    base_dir = _resolve_base_dir(task_id, container_paths=False)
+    if not expanded.startswith("/"):
+        base_tail = str(base_dir).lstrip("/")
+        if base_tail and expanded.startswith(base_tail + "/"):
+            expanded = "/" + expanded
+
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()

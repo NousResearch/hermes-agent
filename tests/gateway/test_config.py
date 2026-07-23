@@ -728,6 +728,140 @@ class TestLoadGatewayConfig:
 
         assert config.stt_echo_transcripts is False
 
+    @staticmethod
+    def _clear_api_server_env(monkeypatch):
+        """Keep _apply_env_overrides from masking the YAML path under test."""
+        for key in (
+            "API_SERVER_ENABLED",
+            "API_SERVER_KEY",
+            "API_SERVER_PORT",
+            "API_SERVER_HOST",
+            "API_SERVER_CORS_ORIGINS",
+            "API_SERVER_MODEL_NAME",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_api_server_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """``gateway.api_server:`` (nested YAML form) must be discovered and
+        enable the platform.
+
+        Regression for #66630: load_gateway_config handled gateway.streaming
+        and gateway.platforms.* but silently dropped nested gateway.<platform>
+        blocks, so ``gateway.api_server.enabled: true`` never started the API
+        server unless API_SERVER_* env vars were also set.
+        """
+        self._clear_api_server_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  api_server:\n    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert Platform.API_SERVER in config.platforms
+        assert config.platforms[Platform.API_SERVER].enabled is True
+
+    def test_api_server_port_bridged_into_extra(self, tmp_path, monkeypatch):
+        """``gateway.api_server.port`` must land in PlatformConfig.extra —
+        the adapter reads port/key/host/cors_origins/model_name from extra
+        (gateway/platforms/api_server.py), and from_dict discards unknown
+        top-level keys, so without the bridge the port is silently lost."""
+        self._clear_api_server_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            "    port: 8642\n"
+            "    host: 0.0.0.0\n"
+            "    key: sekrit\n"
+            "    model_name: my-hermes\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.API_SERVER].extra
+        assert extra["port"] == 8642
+        assert extra["host"] == "0.0.0.0"
+        assert extra["key"] == "sekrit"
+        assert extra["model_name"] == "my-hermes"
+
+    def test_api_server_explicit_extra_wins_over_toplevel_key(self, tmp_path, monkeypatch):
+        """An explicit ``extra: {port: X}`` must beat a sibling top-level
+        ``port:`` — the bridge's ``not in _api_extra`` guard must never
+        clobber a value the user placed in extra deliberately."""
+        self._clear_api_server_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            "    port: 9999\n"
+            "    extra:\n"
+            "      port: 8642\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.API_SERVER].extra["port"] == 8642
+
+    def test_non_platform_gateway_keys_not_misparsed_as_platforms(self, tmp_path, monkeypatch):
+        """Nested-platform discovery must only pick up keys matching the
+        Platform enum: ``gateway.streaming`` / ``gateway.timeout`` must not
+        be turned into phantom platform entries or break loading."""
+        self._clear_api_server_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  streaming:\n"
+            "    enabled: false\n"
+            "  timeout: 120\n"
+            "  api_server:\n"
+            "    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # streaming still parsed as the streaming subsection, not a platform
+        assert config.streaming.enabled is False
+        # only real platforms present; nothing named streaming/timeout leaked in
+        assert all(isinstance(p, Platform) for p in config.platforms)
+        assert config.platforms[Platform.API_SERVER].enabled is True
+
+    def test_api_server_via_gateway_platforms_block_still_works(self, tmp_path, monkeypatch):
+        """No regression: the pre-existing ``gateway.platforms.api_server``
+        path must keep working alongside the new nested discovery, and its
+        api_server keys get the same extra bridge."""
+        self._clear_api_server_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    api_server:\n"
+            "      enabled: true\n"
+            "      port: 8643\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.API_SERVER].enabled is True
+        assert config.platforms[Platform.API_SERVER].extra["port"] == 8643
+
     def test_group_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -39,6 +39,7 @@ import re
 import shutil
 import tempfile
 import contextvars as _ctxvars
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -169,6 +170,106 @@ def _skills_dir() -> Path:
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+
+# Optional temporal metadata keys stored in SKILL.md frontmatter.
+# The `.usage.json` sidecar remains authoritative for high-frequency counters
+# (use_count, last_used_at, view_count); frontmatter carries durable creation
+# and expiration timestamps so skills remain self-describing outside Hermes.
+TEMPORAL_FRONTMATTER_KEYS = frozenset(
+    {"created_at", "updated_at", "last_used_at", "use_count", "expires_at", "ttl_days"}
+)
+
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO 8601 timestamp."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp defensively."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _frontmatter_key_index(lines: List[str], key: str) -> Optional[int]:
+    """Return the index of ``key:`` in a frontmatter line list, or None."""
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*:")
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            return i
+    return None
+
+
+def _set_or_append_frontmatter_line(lines: List[str], key: str, value: str) -> None:
+    """Replace an existing frontmatter line or append it after the last field."""
+    idx = _frontmatter_key_index(lines, key)
+    if idx is not None:
+        lines[idx] = f"{key}: {value}"
+    else:
+        lines.append(f"{key}: {value}")
+
+
+def _stamp_temporal_frontmatter(content: str) -> str:
+    """Ensure SKILL.md frontmatter carries created_at and updated_at.
+
+    Preserves the existing frontmatter ordering and formatting for every line
+    except the timestamp fields. If ``created_at`` is absent it is added; if
+    ``ttl_days`` is present and ``expires_at`` is absent, ``expires_at`` is
+    computed from ``created_at`` (or now when there is no creation stamp).
+    """
+    # Tolerate a leading UTF-8 BOM the same way validation does.
+    stripped = content.lstrip("\ufeff")
+    if not stripped.startswith("---"):
+        return content
+
+    end_match = re.search(r"\n---\s*\n", stripped[3:])
+    if not end_match:
+        return content
+
+    fm_start = 3
+    fm_end = end_match.start() + 3
+    body_start = end_match.end() + 3
+
+    # Drop the leading newline that follows the opening ``---`` so the rebuilt
+    # frontmatter does not start with a blank line and the closing fence is
+    # preserved.
+    fm_text = stripped[fm_start:fm_end].lstrip("\n")
+    try:
+        parsed = yaml.safe_load(fm_text) or {}
+    except yaml.YAMLError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+
+    now = datetime.now(timezone.utc)
+    now_str = now.isoformat()
+
+    fm_lines = fm_text.splitlines()
+    created_at = parsed.get("created_at")
+    if not created_at:
+        _set_or_append_frontmatter_line(fm_lines, "created_at", now_str)
+        created_at = now_str
+    _set_or_append_frontmatter_line(fm_lines, "updated_at", now_str)
+
+    if parsed.get("expires_at") is None and parsed.get("ttl_days") is not None:
+        try:
+            ttl_days = int(parsed["ttl_days"])
+            base = _parse_iso_timestamp(created_at) or now
+            expires_dt = base + timedelta(days=ttl_days)
+            _set_or_append_frontmatter_line(fm_lines, "expires_at", expires_dt.isoformat())
+        except (ValueError, TypeError):
+            pass
+
+    new_fm = "\n".join(fm_lines) + "\n"
+    body = stripped[body_start:].lstrip("\n")
+    return f"---\n{new_fm}---\n\n{body}"
 
 
 def _containing_skills_root(skill_path: Path) -> Path:
@@ -838,6 +939,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # Stamp durable temporal metadata into the frontmatter before persisting.
+    content = _stamp_temporal_frontmatter(content)
+
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -904,6 +1008,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+
+    # Keep durable temporal metadata current on every full rewrite.
+    content = _stamp_temporal_frontmatter(content)
+
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -1022,6 +1130,8 @@ def _patch_skill(
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
+        # Update the durable edit timestamp on the canonical skill file.
+        new_content = _stamp_temporal_frontmatter(new_content)
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
@@ -1264,6 +1374,90 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     }
 
 
+def _gc_expired_agent_skills(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Garbage-collect agent-created skills whose explicit expiration has passed.
+
+    A skill is eligible for GC only when:
+      * it is curator-managed (agent-created, not bundled/hub/external/protected)
+      * its SKILL.md frontmatter declares ``expires_at`` or ``ttl_days``
+      * the computed expiration is at or before ``now``
+
+    Expired skills are archived (moved to ``~/.hermes/skills/.archive/``), not
+    permanently deleted, so a mistaken TTL is recoverable via
+    ``hermes curator restore``. Pinned skills are skipped.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    from tools import skill_usage as _u
+    from agent.skill_utils import parse_frontmatter
+
+    pruned: List[str] = []
+    skipped: List[str] = []
+    errors: List[Dict[str, str]] = []
+
+    for name in _u.list_agent_created_skill_names():
+        if _u.is_protected_builtin(name):
+            continue
+        if _u.is_bundled(name) or _u.is_hub_installed(name):
+            continue
+
+        rec = _u.get_record(name)
+        if rec.get("pinned"):
+            skipped.append(name)
+            continue
+
+        existing = _find_skill(name)
+        if not existing:
+            continue
+
+        skill_md = existing["path"] / "SKILL.md"
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        try:
+            frontmatter, _ = parse_frontmatter(text)
+        except Exception:
+            continue
+        if not isinstance(frontmatter, dict):
+            continue
+
+        expires_at = frontmatter.get("expires_at")
+        ttl_days = frontmatter.get("ttl_days")
+
+        expires_dt: Optional[datetime] = _parse_iso_timestamp(expires_at)
+        if expires_dt is None and ttl_days is not None:
+            created_dt = _parse_iso_timestamp(frontmatter.get("created_at"))
+            if created_dt is not None:
+                try:
+                    expires_dt = created_dt + timedelta(days=int(ttl_days))
+                except (ValueError, TypeError):
+                    pass
+
+        if expires_dt is None or expires_dt > now:
+            continue
+
+        ok, msg = _u.archive_skill(name)
+        if ok:
+            pruned.append(name)
+        else:
+            errors.append({"name": name, "reason": msg})
+
+    return {
+        "success": True,
+        "pruned": pruned,
+        "skipped": skipped,
+        "errors": errors,
+        "count": len(pruned),
+        "message": (
+            f"GC complete: {len(pruned)} expired skill(s) archived, "
+            f"{len(skipped)} pinned skill(s) skipped, {len(errors)} error(s)."
+        ),
+    }
+
+
 # =============================================================================
 # Main entry point
 # =============================================================================
@@ -1403,8 +1597,12 @@ def skill_manage(
             return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
+    elif action == "gc":
+        # Garbage-collect expired agent-created skills. No per-skill name needed.
+        result = _gc_expired_agent_skills()
+
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, gc"}
 
     if result.get("success"):
         try:
@@ -1445,13 +1643,13 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
+        "Manage skills (create, update, delete, garbage-collect). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
         f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
+        "delete, write_file, remove_file, gc (archive expired agent-created skills).\n\n"
         "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
         "skill's content into another one, or `absorbed_into=\"\"` when you're "
         "pruning it with no forwarding target. This lets the curator tell "
@@ -1479,7 +1677,7 @@ SKILL_MANAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
+                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file", "gc"],
                 "description": "The action to perform."
             },
             "name": {

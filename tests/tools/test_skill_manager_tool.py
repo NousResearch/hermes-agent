@@ -1,6 +1,9 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
+import datetime
 import json
+import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +21,7 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _gc_expired_agent_skills,
     skill_manage,
     MAX_NAME_LENGTH,
 )
@@ -30,6 +34,29 @@ def _skill_dir(tmp_path):
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
+
+
+@contextmanager
+def _gc_skill_dir(tmp_path, monkeypatch):
+    """Create an isolated Hermes home, set HERMES_HOME, reload skill_usage so
+    its paths resolve to the temp tree, and patch the skill manager's search
+    roots to the same tree."""
+    import importlib
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "skills").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # skill_usage caches _skills_dir() from get_hermes_home(); reload it so
+    # the new env is picked up inside this test.
+    import tools.skill_usage as _su
+    importlib.reload(_su)
+
+    skills_dir = home / "skills"
+    with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+        yield skills_dir
 
 
 VALID_SKILL_CONTENT = """\
@@ -1423,3 +1450,167 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Temporal metadata in SKILL.md frontmatter
+# ---------------------------------------------------------------------------
+
+
+class TestTemporalFrontmatter:
+    def test_create_injects_created_and_updated_at(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            result = _create_skill("dated", VALID_SKILL_CONTENT)
+        assert result["success"] is True, result
+        text = (skills_dir / "dated" / "SKILL.md").read_text(encoding="utf-8")
+        assert "created_at:" in text
+        assert "updated_at:" in text
+
+    def test_create_preserves_existing_created_at(self, tmp_path, monkeypatch):
+        content = (
+            "---\n"
+            "name: dated\n"
+            "description: A test skill for unit testing.\n"
+            "created_at: 2025-01-15T10:00:00+00:00\n"
+            "---\n\n"
+            "# Test Skill\n\nStep 1: Do the thing.\n"
+        )
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            result = _create_skill("dated", content)
+        assert result["success"] is True, result
+        text = (skills_dir / "dated" / "SKILL.md").read_text(encoding="utf-8")
+        assert "created_at: 2025-01-15T10:00:00+00:00" in text
+        assert "updated_at:" in text
+
+    def test_edit_updates_updated_at(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            _create_skill("dated", VALID_SKILL_CONTENT)
+            first = (skills_dir / "dated" / "SKILL.md").read_text(encoding="utf-8")
+            time.sleep(0.01)
+            result = _edit_skill("dated", VALID_SKILL_CONTENT_2)
+            second = (skills_dir / "dated" / "SKILL.md").read_text(encoding="utf-8")
+        assert result["success"] is True, result
+        first_updated = re.search(r"updated_at:\s*(\S+)", first).group(1)
+        second_updated = re.search(r"updated_at:\s*(\S+)", second).group(1)
+        assert first_updated != second_updated
+
+    def test_patch_updates_updated_at(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            _create_skill("dated", VALID_SKILL_CONTENT)
+            first = (skills_dir / "dated" / "SKILL.md").read_text(encoding="utf-8")
+            time.sleep(0.01)
+            result = _patch_skill("dated", "Do the thing.", "Do the new thing.")
+            second = (skills_dir / "dated" / "SKILL.md").read_text(encoding="utf-8")
+        assert result["success"] is True, result
+        first_updated = re.search(r"updated_at:\s*(\S+)", first).group(1)
+        second_updated = re.search(r"updated_at:\s*(\S+)", second).group(1)
+        assert first_updated != second_updated
+
+    def test_ttl_generates_expires_at(self, tmp_path, monkeypatch):
+        content = (
+            "---\n"
+            "name: ttl-skill\n"
+            "description: A skill with TTL.\n"
+            "ttl_days: 7\n"
+            "---\n\n"
+            "# TTL Skill\n\nBody.\n"
+        )
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            result = _create_skill("ttl-skill", content)
+        assert result["success"] is True, result
+        text = (skills_dir / "ttl-skill" / "SKILL.md").read_text(encoding="utf-8")
+        assert "expires_at:" in text
+
+
+# ---------------------------------------------------------------------------
+# Garbage collection of expired agent-created skills
+# ---------------------------------------------------------------------------
+
+
+class TestExpiredSkillGC:
+    def _write_expired(self, skills_dir, name, stamp):
+        # Create through the manager so frontmatter is stamped, then overwrite
+        # the expiration to a controlled value. Use _skill_content so the
+        # frontmatter name matches the directory name (required by
+        # skill_usage._find_skill_dir / archive_skill).
+        _create_skill(name, _skill_content(name))
+        md = skills_dir / name / "SKILL.md"
+        text = md.read_text(encoding="utf-8")
+        text = text.replace(
+            "created_at:", f"expires_at: {stamp}\ncreated_at:", 1
+        )
+        md.write_text(text, encoding="utf-8")
+
+    def test_gc_prunes_expired_skill(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            from tools import skill_usage
+            self._write_expired(skills_dir, "expired", "2020-01-01T00:00:00+00:00")
+            skill_usage.mark_agent_created("expired")
+            result = _gc_expired_agent_skills()
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert "expired" in result["pruned"]
+        assert not (skills_dir / "expired").exists()
+        assert (skills_dir / ".archive" / "expired" / "SKILL.md").exists()
+
+    def test_gc_prunes_ttl_expired_skill(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            from tools import skill_usage
+            _create_skill("ttl-expired", _skill_content("ttl-expired"))
+            md = skills_dir / "ttl-expired" / "SKILL.md"
+            text = md.read_text(encoding="utf-8")
+            text = text.replace(
+                "created_at:", "ttl_days: -1\ncreated_at:", 1
+            )
+            md.write_text(text, encoding="utf-8")
+            skill_usage.mark_agent_created("ttl-expired")
+            result = _gc_expired_agent_skills()
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert "ttl-expired" in result["pruned"]
+
+    def test_gc_respects_pinned(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            from tools import skill_usage
+            self._write_expired(skills_dir, "pinned-expired", "2020-01-01T00:00:00+00:00")
+            skill_usage.mark_agent_created("pinned-expired")
+            skill_usage.set_pinned("pinned-expired", True)
+            result = _gc_expired_agent_skills()
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert "pinned-expired" in result["skipped"]
+        assert (skills_dir / "pinned-expired").exists()
+
+    def test_gc_skips_non_agent_skill(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            self._write_expired(skills_dir, "bundled-expired", "2020-01-01T00:00:00+00:00")
+            (skills_dir / ".bundled_manifest").write_text(
+                "bundled-expired:abc\n", encoding="utf-8"
+            )
+            result = _gc_expired_agent_skills()
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert (skills_dir / "bundled-expired").exists()
+
+    def test_gc_no_op_for_future_expiry(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            from tools import skill_usage
+            future = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)).isoformat()
+            self._write_expired(skills_dir, "future", future)
+            skill_usage.mark_agent_created("future")
+            result = _gc_expired_agent_skills()
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert (skills_dir / "future").exists()
+
+    def test_gc_via_dispatcher(self, tmp_path, monkeypatch):
+        with _gc_skill_dir(tmp_path, monkeypatch) as skills_dir:
+            from tools import skill_usage
+            self._write_expired(skills_dir, "disp-expired", "2020-01-01T00:00:00+00:00")
+            skill_usage.mark_agent_created("disp-expired")
+            raw = skill_manage(action="gc", name="")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert "disp-expired" in result["pruned"]
+        assert not (skills_dir / "disp-expired").exists()

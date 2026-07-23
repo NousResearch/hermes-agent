@@ -43,6 +43,13 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
       hermes:
         tags: [fine-tuning, llm]
         related_skills: [peft, lora]
+    # Temporal metadata (optional). created_at/updated_at are auto-stamped by
+    # skill_manage; expires_at / ttl_days enable automatic garbage collection
+    # of agent-created skills. High-frequency counters live in ~/.hermes/skills/.usage.json.
+    created_at: 2026-07-18T00:00:00+00:00
+    updated_at: 2026-07-18T00:00:00+00:00
+    expires_at: 2026-08-18T00:00:00+00:00  # Optional explicit expiration
+    ttl_days: 30                              # Optional alternative to expires_at
     ---
 
     # Skill Title

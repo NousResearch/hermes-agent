@@ -184,6 +184,10 @@ describe("Operational page mobile foundations", () => {
     expect(toolbar?.getAttribute("aria-label")).toBe("Log filters");
     expect(segment?.className).toContain("[&_button]:min-h-11");
     expect(output?.className).toContain("h-[45dvh]");
+    expect(output?.className).toContain("lg:h-auto");
+    expect(output?.className).toContain("lg:min-h-[400px]");
+    expect(output?.className).toContain("lg:max-h-[calc(100vh-220px)]");
+    expect(output?.className).not.toContain("sm:min-h-[400px]");
     expect(output?.className).toContain("overflow-auto");
     expect(line?.className).toContain("whitespace-pre");
     expect(line?.textContent).toBe("2026-07-23  keep   exact spacing");

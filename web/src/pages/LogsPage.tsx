@@ -149,7 +149,7 @@ export function LogOutput({ emptyLabel, lines, loading, scrollRef }: LogOutputPr
     <div
       ref={scrollRef}
       data-testid="log-output"
-      className="h-[45dvh] min-h-48 max-w-full overflow-auto p-3 font-mono-ui text-xs leading-5 sm:h-auto sm:min-h-[400px] sm:max-h-[calc(100vh-220px)] sm:p-4"
+      className="h-[45dvh] min-h-48 max-w-full overflow-auto p-3 font-mono-ui text-xs leading-5 sm:p-4 lg:h-auto lg:min-h-[400px] lg:max-h-[calc(100vh-220px)]"
     >
       {lines.length === 0 && !loading ? (
         <p className="py-8 text-center text-muted-foreground">{emptyLabel}</p>

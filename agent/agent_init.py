@@ -163,6 +163,22 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _emit_credential_banner(kind: str) -> None:
+    """Print a credential-status banner without leaking key material.
+
+    Used by both the Anthropic-token and OpenAI-API-key branches of
+    ``init_agent``. A fixed ``[configured]`` marker conveys the
+    operational signal ("a credential is set") with zero disclosure
+    surface — the previous ``key[:8]...[-4:]`` form leaked a
+    12-character key fingerprint to orchestrator logs and run
+    transcripts (#60319).
+
+    Public for tests so they can capture stdout without invoking the
+    full ``init_agent`` setup (which has many heavy dependencies).
+    """
+    print(f"🔑 Using {kind}: [configured]")
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -725,7 +741,7 @@ def init_agent(
                     # A fixed ``[configured]`` marker conveys the same
                     # operational signal ("a credential is set") with
                     # zero disclosure surface.
-                    print("🔑 Using token: [configured]")
+                    _emit_credential_banner("token")
     elif agent.provider == "moa":
         from agent.moa_loop import MoAClient
         agent.api_mode = "chat_completions"
@@ -1036,7 +1052,7 @@ def init_agent(
                     # surface; the previous ``key_used[:8]...[-4:]`` form
                     # leaked a 12-character key fingerprint to
                     # orchestrator logs and run transcripts.
-                    print("🔑 Using API key: [configured]")
+                    _emit_credential_banner("API key")
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:

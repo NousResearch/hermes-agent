@@ -185,15 +185,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
     # cwd project instructions disabled.
     _soul_loaded = False
+    _blocked_soul_notice = None
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
-            stable_parts.append(_soul_content)
-            _soul_loaded = True
+            _trimmed_soul = _soul_content.strip()
+            if _trimmed_soul.startswith("[BLOCKED:"):
+                _blocked_soul_notice = _trimmed_soul
+            else:
+                stable_parts.append(_soul_content)
+                _soul_loaded = True
 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+    if _blocked_soul_notice:
+        stable_parts.append(_blocked_soul_notice)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
@@ -471,9 +478,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+            cwd=resolve_context_cwd(),
+            skip_soul=_soul_loaded or _blocked_soul_notice is not None,
             context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+            allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+        )
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

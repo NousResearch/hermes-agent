@@ -754,13 +754,16 @@ def test_reference_failure_controls_are_normalized_per_preset_and_flattened():
 
 @pytest.mark.parametrize("value", [None, "", 0, -1, "bad"])
 def test_reference_timeout_invalid_values_fall_back_to_default(value):
-    assert resolve_moa_preset(_preset(reference_timeout=value), "p")["reference_timeout"] == 30.0
+    # None = inherit auxiliary.moa_reference.timeout (no per-preset override).
+    assert resolve_moa_preset(_preset(reference_timeout=value), "p")["reference_timeout"] is None
 
 
-def test_reference_timeout_is_capped_and_unknown_policy_is_loud():
+def test_reference_timeout_is_uncapped_and_unknown_policy_is_loud():
     preset = resolve_moa_preset(
         _preset(reference_timeout=9999, degraded_reference_policy="wat"), "p"
     )
 
-    assert preset["reference_timeout"] == 300.0
+    # Explicit per-preset values are honored as-is — long-thinking advisor
+    # models legitimately run beyond any fixed cap.
+    assert preset["reference_timeout"] == 9999.0
     assert preset["degraded_reference_policy"] == "loud"

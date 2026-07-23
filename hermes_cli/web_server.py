@@ -1365,13 +1365,17 @@ class MoaModelSlot(BaseModel):
 
 
 class _MoaReferenceControls(BaseModel):
-    reference_timeout: float = 30.0
+    # None = no per-preset override; the fan-out inherits
+    # auxiliary.moa_reference.timeout (900s default).
+    reference_timeout: Optional[float] = None
     degraded_reference_policy: Literal["loud", "silent"] = "loud"
 
     @field_validator("reference_timeout", mode="before")
     @classmethod
-    def _validate_reference_timeout(cls, value: Any) -> float:
+    def _validate_reference_timeout(cls, value: Any) -> Optional[float]:
         """Reject JSON booleans/non-finite values before float coercion."""
+        if value is None or value == "":
+            return None
         if isinstance(value, bool):
             raise ValueError("reference_timeout must be a finite positive number")
         try:

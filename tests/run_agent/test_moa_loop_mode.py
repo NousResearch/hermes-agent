@@ -1889,6 +1889,31 @@ def test_reference_filtering_preserves_accounting_triples():
     assert _failed_reference_labels(outputs) == ["bad-model"]
 
 
+def test_reference_filtering_excludes_recursion_guard_skips():
+    """[skipped: …] recursion-guard notes are internal sentinels, not advice —
+    they must be filtered out of the aggregator prompt like [failed: …]."""
+    from agent.moa_loop import (
+        _RefAccounting,
+        _failed_reference_labels,
+        _is_failed_reference,
+        _successful_references,
+    )
+    from agent.usage_pricing import CanonicalUsage
+
+    outputs = [
+        ("good-model", "useful advice", _RefAccounting(CanonicalUsage())),
+        (
+            "moa:nested",
+            "[skipped: MoA presets cannot recursively reference MoA]",
+            _RefAccounting(CanonicalUsage()),
+        ),
+    ]
+
+    assert _is_failed_reference(outputs[1][1])
+    assert _successful_references(outputs) == [outputs[0]]
+    assert _failed_reference_labels(outputs) == ["moa:nested"]
+
+
 def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(monkeypatch):
     from agent import moa_loop
     from agent.usage_pricing import CanonicalUsage

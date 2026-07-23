@@ -21,7 +21,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import _entry_identity, get_fallback_chain
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +184,13 @@ def cmd_fallback_add(args) -> None:
         return
 
     # Picker picked the same thing that's already the primary → nothing changed,
-    # and there's nothing useful to add as a fallback to itself.
+    # and there's nothing useful to add as a fallback to itself.  Compare on the
+    # full (provider, model, base_url) identity — the same tuple get_fallback_chain()
+    # dedups on — so keeping the current model as primary on endpoint A while adding
+    # endpoint B (same provider+model, different base_url) as a fallback is not
+    # wrongly rejected as "same as primary".  See #54251.
     primary_entry = _extract_fallback_from_model_cfg(model_before)
-    if primary_entry and primary_entry["provider"] == new_entry["provider"] \
-            and primary_entry["model"] == new_entry["model"]:
+    if primary_entry and _entry_identity(primary_entry) == _entry_identity(new_entry):
         _restore_model_cfg(model_before)
         _restore_auth_active_provider(active_provider_before)
         print()
@@ -205,10 +208,13 @@ def cmd_fallback_add(args) -> None:
     final_cfg = load_config()
     chain = _read_chain(final_cfg)
 
-    # Reject exact-duplicate fallback entries.
+    # Reject exact-duplicate fallback entries — matched on the chain's own
+    # (provider, model, base_url) identity so two routes that share a provider
+    # label and model name but target different base_urls are kept as separate
+    # entries.  See #54251.
+    new_identity = _entry_identity(new_entry)
     for existing in chain:
-        if existing.get("provider") == new_entry["provider"] \
-                and existing.get("model") == new_entry["model"]:
+        if _entry_identity(existing) == new_identity:
             print()
             print(f"  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
             return

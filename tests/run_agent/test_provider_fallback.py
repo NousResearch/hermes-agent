@@ -334,3 +334,45 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+    def test_does_not_skip_same_provider_model_different_base_url(self):
+        """Regression: a pool of backends sharing provider+model but with
+        distinct base_urls (e.g. several LM Studio servers running the same
+        model) are different endpoints. provider+model matching alone must
+        NOT dedup them, or every backup server gets skipped and no fallback
+        ever activates."""
+        fbs = [
+            # Backup servers: same provider+model as the (intermittent) primary,
+            # different URLs. Neither may be skipped.
+            {"provider": "lmstudio", "model": "qwen/qwen3.6-35b-a3b",
+             "base_url": "http://10.0.0.2:1234/v1"},
+            {"provider": "lmstudio", "model": "qwen/qwen3.6-35b-a3b",
+             "base_url": "http://10.0.0.3:1234/v1"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        # Currently active on the fast, intermittently-online primary server.
+        agent.provider = "lmstudio"
+        agent.model = "qwen/qwen3.6-35b-a3b"
+        agent.base_url = "http://10.0.0.1:1234/v1"
+
+        called = []
+
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            url = kwargs.get("explicit_base_url")
+            called.append((provider, model, url))
+            return _mock_client(base_url=url), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider",
+                        side_effect=lambda m, p: m):
+                # First activation: must land on the first backup server, not skip it.
+                assert agent._try_activate_fallback() is True
+                assert agent.base_url == "http://10.0.0.2:1234/v1"
+                # Second activation: advances to the next distinct server.
+                assert agent._try_activate_fallback() is True
+                assert agent.base_url == "http://10.0.0.3:1234/v1"
+
+        assert called == [
+            ("lmstudio", "qwen/qwen3.6-35b-a3b", "http://10.0.0.2:1234/v1"),
+            ("lmstudio", "qwen/qwen3.6-35b-a3b", "http://10.0.0.3:1234/v1"),
+        ], f"expected both backup servers tried in order, got: {called}"

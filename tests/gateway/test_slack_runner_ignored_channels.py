@@ -114,3 +114,23 @@ async def test_platform_notice_suppressed_for_slack_ignored_channel():
 
     adapter.send.assert_not_called()
     adapter.send_private_notice.assert_not_called()
+
+
+def test_slack_ignored_channels_env_bridge_fallback(monkeypatch):
+    """SLACK_IGNORED_CHANNELS (set by the plugin's YAML→env bridge) is
+    honored when PlatformConfig.extra carries no ignored_channels (#46925)."""
+    monkeypatch.setenv("SLACK_IGNORED_CHANNELS", "C_ENV1, C_ENV2")
+    config = _config_with_slack_extra({})
+
+    assert _slack_ignored_channels_from_gateway_config(config) == {"C_ENV1", "C_ENV2"}
+    assert _is_slack_ignored_channel(config, "C_ENV1")
+    assert not _is_slack_ignored_channel(config, "C_OTHER")
+
+
+def test_slack_ignored_channels_extra_wins_over_env(monkeypatch):
+    """Explicit PlatformConfig.extra config takes precedence over the env
+    bridge fallback."""
+    monkeypatch.setenv("SLACK_IGNORED_CHANNELS", "C_ENV")
+    config = _config_with_slack_extra({"ignored_channels": ["C_CFG"]})
+
+    assert _slack_ignored_channels_from_gateway_config(config) == {"C_CFG"}

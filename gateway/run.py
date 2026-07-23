@@ -966,6 +966,11 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
     raw = None
     if platform_cfg is not None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
+    if raw is None:
+        # Top-level ``slack.ignored_channels`` config flows through the
+        # plugin's YAML→env bridge (SLACK_IGNORED_CHANNELS) rather than
+        # PlatformConfig.extra — honor it here too (#46925).
+        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
 
 

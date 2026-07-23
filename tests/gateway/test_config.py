@@ -592,6 +592,42 @@ class TestLoadGatewayConfig:
 
         assert os.getenv("SLACK_DISABLE_DMS") == "true"
 
+    def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  ignored_channels:\n"
+            "    - C0123456789\n"
+            "    - C0987654321\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SLACK_IGNORED_CHANNELS", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
+
+    def test_slack_ignored_channels_env_takes_precedence(self, tmp_path, monkeypatch):
+        """An explicit SLACK_IGNORED_CHANNELS env var must not be overwritten
+        by the config.yaml bridge."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  ignored_channels: C_FROM_YAML\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SLACK_IGNORED_CHANNELS", "C_FROM_ENV")
+
+        load_gateway_config()
+
+        assert os.getenv("SLACK_IGNORED_CHANNELS") == "C_FROM_ENV"
+
     def test_typing_status_text_from_toplevel_platform_block(self, tmp_path, monkeypatch):
         """A top-level ``slack:`` block reaches PlatformConfig via the
         shared-key bridge (bridged into extra, then the from_dict extra

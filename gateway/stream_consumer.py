@@ -23,6 +23,13 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+
+# Internal tool-trace banner lines — stripped from streaming output so
+# finalized split-message chunks don't permanently expose diagnostics.
+_TOOL_TRACE_RE = re.compile(
+    r"^[ \t]*(?:⚠️?\s*)?(?:🛠️?\s*)?`[^`]+`\s+failed\s*$",
+    re.MULTILINE,
+)
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
@@ -1121,8 +1128,28 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        Also redacts secrets and strips tool-trace banners, matching the
+        sanitization that ``_sanitize_gateway_final_response`` applies to
+        non-streaming responses.  Without this, finalized split-message
+        chunks (``finalize=True``, never edited again) could permanently
+        expose secrets or internal diagnostics to chat users.
         """
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        text = _BasePlatformAdapter.strip_media_directives_for_display(text)
+
+        # Redact secrets (matches _sanitize_gateway_final_response path)
+        try:
+            from gateway.run import _redact_gateway_user_facing_secrets
+            text = _redact_gateway_user_facing_secrets(text)
+        except Exception:
+            pass
+
+        # Strip tool-trace banners (⚠️ 🛠️ `tool` failed)
+        text = _TOOL_TRACE_RE.sub("", text)
+
+        # Collapse excessive blank lines and strip trailing whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.rstrip()
 
     async def _send_new_chunk(
         self,

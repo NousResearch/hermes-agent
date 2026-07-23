@@ -1823,6 +1823,44 @@ class CLICommandsMixin:
         _DEFAULT_CDP = DEFAULT_BROWSER_CDP_URL
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
+        if sub == "use" or sub.startswith("use "):
+            # /browser use [off] — toggle Browser Use mode (browser.backend),
+            arg = sub.split(None, 1)[1].strip() if " " in sub else "on"
+            from hermes_cli.config import load_config, save_config
+            from tools.registry import invalidate_check_fn_cache
+
+            if arg not in {"on", "off"}:
+                print()
+                print("Usage: /browser use [off]")
+                print("   /browser use       — switch to Browser Use mode (browser_exec via CLI 3.0)")
+                print("   /browser use off   — revert to the built-in browser tools")
+                print()
+                return
+
+            config = load_config()
+            browser_cfg = config.setdefault("browser", {})
+            if arg == "on":
+                browser_cfg["backend"] = "browser-use"
+                save_config(config)
+                invalidate_check_fn_cache()
+                self.new_session()
+                print()
+                print("🌐 Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0")
+                print("   Session reset. New tool configuration is active.")
+                print()
+            else:
+                from tools.browser_use_cli import BACKEND_DISABLED
+
+                browser_cfg["backend"] = BACKEND_DISABLED
+                save_config(config)
+                invalidate_check_fn_cache()
+                self.new_session()
+                print()
+                print("🌐 Browser Use mode disabled — built-in browser tools restored")
+                print("   Session reset. New tool configuration is active.")
+                print()
+            return
+
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
@@ -1986,6 +2024,18 @@ class CLICommandsMixin:
 
         elif sub == "status":
             print()
+            try:
+                from tools.browser_use_cli import is_browser_use_cli_mode
+                _bu_mode = is_browser_use_cli_mode()
+            except Exception:
+                _bu_mode = False
+            if _bu_mode:
+                print("🌐 Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)")
+                print("   Local Chrome via CDP, or Browser Use cloud browsers")
+                print()
+                print("   /browser use off      — revert to the built-in browser tools")
+                print()
+                return
             if current:
                 print("🌐 Browser: connected to live Chromium-family browser via CDP")
                 print(f"   Endpoint: {current}")
@@ -2035,11 +2085,12 @@ class CLICommandsMixin:
 
         else:
             print()
-            print("Usage: /browser connect|disconnect|status")
+            print("Usage: /browser connect|disconnect|status|use")
             print()
             print("   connect      Connect browser tools to your live Chromium-family browser session")
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
+            print("   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
             print()
 
     def _handle_goal_command(self, cmd: str) -> None:

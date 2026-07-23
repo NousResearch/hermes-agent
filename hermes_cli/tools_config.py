@@ -520,6 +520,7 @@ TOOL_CATEGORIES = {
         #     underlying backend but has a distinct setup UX.
         #   - "Camofox" — anti-detection local Firefox; short-circuits the
         #     cloud-provider dispatch path via _is_camofox_mode().
+        #   - "Browser Use" — the Browser Use CLI 3.0
         "providers": [
             {
                 "name": "Local Browser",
@@ -550,6 +551,14 @@ TOOL_CATEGORIES = {
                 ],
                 "browser_provider": "camofox",
                 "post_setup": "camofox",
+            },
+            {
+                "name": "Browser Use",
+                "badge": "free · local · cloud",
+                "tag": "New SOTA web harness (CLI 3.0)",
+                "env_vars": [],
+                "browser_backend": "browser-use",
+                "post_setup": "browser_use_cli",
             },
         ],
     },
@@ -1342,6 +1351,18 @@ def _run_post_setup(post_setup_key: str):
         except Exception as exc:
             _print_warning(f"    Chromium install failed: {exc}")
             _print_info("    Run manually: npx agent-browser install --with-deps")
+
+    elif post_setup_key == "browser_use_cli":
+        if shutil.which("browser-use"):
+            _print_success("    browser-use CLI found on PATH")
+        elif shutil.which("uvx"):
+            _print_info("    browser-use CLI not installed — it will run via `uvx browser-use`")
+            _print_info("    For a persistent install: uv tool install browser-use")
+        else:
+            _print_warning("    browser-use CLI not found and uvx is unavailable")
+            _print_info("    Install with: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+        _print_info("    Local Chrome needs remote debugging: chrome://inspect/#remote-debugging")
+        _print_info("    Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
@@ -3061,6 +3082,8 @@ def _is_provider_active(
                 and cfg_get(config, "tts", "provider") == provider["tts_provider"]
             )
         if "browser_provider" in provider:
+            if cfg_get(config, "browser", "backend"):
+                return False
             current = cfg_get(config, "browser", "cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
@@ -3071,8 +3094,24 @@ def _is_provider_active(
     if provider.get("tts_provider"):
         return cfg_get(config, "tts", "provider") == provider["tts_provider"]
     if "browser_provider" in provider:
+        if cfg_get(config, "browser", "backend"):
+            return False
         current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
+    if provider.get("browser_backend"):
+        if cfg_get(config, "browser", "backend") == provider["browser_backend"]:
+            return True
+        # Legacy direct-API Browser Use cloud auto-routes to CLI
+        try:
+            from tools.browser_use_cli import is_legacy_browser_use_cloud_config
+
+            browser_cfg = config.get("browser") if isinstance(config, dict) else None
+            return (
+                provider["browser_backend"] == "browser-use"
+                and is_legacy_browser_use_cloud_config(browser_cfg or {})
+            )
+        except Exception:
+            return False
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
@@ -3469,7 +3508,14 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         browser_cfg = config.setdefault("browser", {})
         if bp:
             browser_cfg["cloud_provider"] = bp
+        # Leaving Browser Use CLI mode
+        browser_cfg.pop("backend", None)
         browser_cfg["use_gateway"] = bool(managed_feature)
+
+    if provider.get("browser_backend"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["backend"] = provider["browser_backend"]
+        browser_cfg["use_gateway"] = False
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -3609,6 +3655,9 @@ def _configure_provider(
             _print_success("  Browser set to local mode")
         elif bp:
             _print_success(f"  Browser cloud provider set to: {bp}")
+
+    if provider.get("browser_backend"):
+        _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -4091,7 +4140,15 @@ def _reconfigure_provider(
         elif bp:
             browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
+        # Leaving Browser Use CLI mode
+        browser_cfg.pop("backend", None)
         browser_cfg["use_gateway"] = bool(managed_feature)
+
+    if provider.get("browser_backend"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["backend"] = provider["browser_backend"]
+        browser_cfg["use_gateway"] = False
+        _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):

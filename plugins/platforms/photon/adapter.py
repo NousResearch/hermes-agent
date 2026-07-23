@@ -83,7 +83,13 @@ _MAX_MESSAGE_LENGTH = 8000
 _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 
-_SIDECAR_DIR = Path(__file__).parent / "sidecar"
+# Resolved once at import: the installed plugin tree when writable (dev
+# installs), or a mirror on the durable data volume when the install tree
+# is immutable and the baked deps are missing/stale (hosted images, NS-606).
+# See sidecar_paths.resolve_sidecar_dir for the full decision table.
+from .sidecar_paths import dir_writable as _dir_writable, resolve_sidecar_dir
+
+_SIDECAR_DIR = resolve_sidecar_dir()
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
 # install of the pinned spectrum-ts tree normally takes well under a minute;
@@ -136,10 +142,15 @@ def check_requirements() -> bool:
     if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
         return False
     if not (_SIDECAR_DIR / "node_modules").exists():
-        # spectrum-ts not installed yet — `hermes photon setup` will
-        # install it.  check_fn still returns False so the gateway
-        # surfaces the missing-deps state in `hermes setup` / status.
-        return False
+        # spectrum-ts not installed yet. If we can self-install at connect
+        # time — npm on PATH and the (resolved, possibly mirrored) sidecar
+        # dir is writable — report available so the gateway creates the
+        # adapter and ``_start_sidecar`` cold-installs from the committed
+        # lockfile (NS-606: on hosted images the user has no CLI to run
+        # `hermes photon setup`, so the connect path must self-heal).
+        # Otherwise keep returning False so `hermes setup` / status surface
+        # the missing-deps state with the install hint.
+        return bool(shutil.which("npm")) and _dir_writable(_SIDECAR_DIR)
     return True
 
 
@@ -920,10 +931,25 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _start_sidecar(self) -> None:
         if not (_SIDECAR_DIR / "node_modules").exists():
-            raise RuntimeError(
-                f"Photon sidecar deps not installed. Run: "
-                f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"
+            # Cold install (NS-606): on hosted/managed images the install
+            # tree is immutable and the user has no CLI to run
+            # `hermes photon setup`, so the connect path must be able to
+            # bootstrap the deps itself. _SIDECAR_DIR has already been
+            # resolved to a writable location (or mirrored to the data
+            # volume) by sidecar_paths.resolve_sidecar_dir; `npm ci` off
+            # the committed lockfile is deterministic and bounded by
+            # _NPM_REINSTALL_TIMEOUT.
+            logger.info(
+                "[photon] sidecar deps not installed; installing into %s",
+                _SIDECAR_DIR,
             )
+            await asyncio.to_thread(_reinstall_sidecar_deps)
+            if not (_SIDECAR_DIR / "node_modules").exists():
+                raise RuntimeError(
+                    f"Photon sidecar deps could not be installed into "
+                    f"{_SIDECAR_DIR} (see log for the npm error). "
+                    f"Run: cd {_SIDECAR_DIR} && npm ci   (or `hermes photon setup`)"
+                )
         # A `hermes update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
         # spawns against stale deps and dies on every reconnect (the v8 patch

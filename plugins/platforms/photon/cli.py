@@ -29,8 +29,11 @@ from pathlib import Path
 from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
+from .sidecar_paths import resolve_sidecar_dir
 
-_SIDECAR_DIR = Path(__file__).parent / "sidecar"
+# Writable sidecar runtime dir (mirrors to HERMES_HOME on immutable
+# installs — NS-606). All npm/setup work happens here.
+_SIDECAR_DIR = resolve_sidecar_dir()
 
 
 # ---------------------------------------------------------------------------

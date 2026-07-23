@@ -11237,6 +11237,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
 
+        if canonical in {"delete-project", "deleteproject", "rmproject"}:
+            args = event.get_command_args().strip()
+            target_info = args
+            if not target_info:
+                try:
+                    from hermes_cli import projects_db as pdb
+                    conn = pdb.connect()
+                    try:
+                        active_id = pdb.get_active_id(conn)
+                        proj_found = pdb.get_project(conn, active_id) if active_id else None
+                        if not proj_found:
+                            proj_found = pdb.project_for_path(conn, os.getcwd())
+                        if proj_found:
+                            target_info = f"'{proj_found.name}' (slug: {proj_found.slug}, id: {proj_found.id}, folders: {[f.path for f in proj_found.folders]})"
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            if not target_info:
+                target_info = f"the project in directory: {os.getcwd()}"
+
+            prompt = (
+                f"The user ran /delete-project to delete {target_info}. "
+                "Please inspect the project details (folders, files, projects.db entry, active/past sessions), "
+                "clearly list everything that will be deleted to the user, and ask the user for explicit confirmation before deleting anything. "
+                "Upon receiving explicit confirmation from the user, proceed to delete all project files/directories, remove the project from projects.db, and clean up any associated project metadata."
+            )
+            event.text = prompt
+
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
@@ -16700,20 +16729,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                        f"\n[Image attached at: {path}]\n[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
                     )
                 else:
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
+                        f"\n[Image attached at: {path}]\n[The user sent an image but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
+                    f"\n[Image attached at: {path}]\n[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
                     f"with vision_analyze using image_url: {path}]"
                 )

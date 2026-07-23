@@ -6657,7 +6657,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"  {_DIM}✓ image analyzed{_RST}")
                 else:
                     enriched_parts.append(
-                        f"[The user attached an image but it couldn't be analyzed. "
+                        f"
+[Image attached at: {img_path}]
+[The user attached an image but it couldn't be analyzed. "
                         f"You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]"
                     )
@@ -6665,7 +6667,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
             except Exception as e:
                 enriched_parts.append(
-                    f"[The user attached an image but analysis failed ({e}). "
+                    f"
+[Image attached at: {img_path}]
+[The user attached an image but analysis failed ({e}). "
                     f"You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]"
                 )
@@ -9322,6 +9326,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical in {"delete-project", "deleteproject", "rmproject"}:
+            self._handle_delete_project_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]

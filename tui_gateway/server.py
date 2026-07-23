@@ -13301,6 +13301,9 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "learn",
         "compress",
         "compact",
+        "delete-project",
+        "deleteproject",
+        "rmproject",
     }
 )
 
@@ -13614,6 +13617,36 @@ def _(rid, params: dict) -> dict:
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
+
+    if name in {"delete-project", "deleteproject", "rmproject"}:
+        target_info = arg.strip()
+        if not target_info:
+            try:
+                from hermes_cli import projects_db as pdb
+                conn = pdb.connect()
+                try:
+                    active_id = pdb.get_active_id(conn)
+                    proj_found = pdb.get_project(conn, active_id) if active_id else None
+                    if not proj_found:
+                        cwd = (session.get("cwd") if session else None) or os.getcwd()
+                        proj_found = pdb.project_for_path(conn, cwd)
+                    if proj_found:
+                        target_info = f"'{proj_found.name}' (slug: {proj_found.slug}, id: {proj_found.id}, folders: {[f.path for f in proj_found.folders]})"
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+        if not target_info:
+            cwd = (session.get("cwd") if session else None) or os.getcwd()
+            target_info = f"the project in directory: {cwd}"
+
+        prompt = (
+            f"The user ran /delete-project to delete {target_info}. "
+            "Please inspect the project details (folders, files, projects.db entry, active/past sessions), "
+            "clearly list everything that will be deleted to the user, and ask the user for explicit confirmation before deleting anything. "
+            "Upon receiving explicit confirmation from the user, proceed to delete all project files/directories, remove the project from projects.db, and clean up any associated project metadata."
+        )
+        return _ok(rid, {"type": "send", "message": prompt})
 
     if name in {"queue", "q"}:
         if not arg:

@@ -1176,18 +1176,67 @@ class GatewayStreamConsumer:
         return final_text
 
     @staticmethod
+    def _balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
+        """Close orphaned ``` fences at each chunk boundary and reopen on the next.
+
+        When a split lands inside a triple-backtick code block, the head chunk
+        would render everything after the orphaned fence as code, and the tail
+        chunk's content would lose its code formatting.  Mirror
+        ``BasePlatformAdapter.truncate_message``'s contract: close the fence at
+        the end of the chunk and reopen it (with the original language tag) at
+        the start of the next one, so EVERY delivered chunk is fence-balanced
+        on its own.
+        """
+        if len(chunks) <= 1:
+            return chunks
+        out: "list[str]" = []
+        carry_lang: "Optional[str]" = None
+        for chunk in chunks:
+            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+            in_code = carry_lang is not None
+            lang = carry_lang or ""
+            for line in chunk.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if in_code:
+                        in_code = False
+                        lang = ""
+                    else:
+                        in_code = True
+                        tag = stripped[3:].strip()
+                        lang = tag.split()[0] if tag else ""
+            body = prefix + chunk
+            if in_code:
+                body += "\n```"
+                carry_lang = lang
+            else:
+                carry_lang = None
+            out.append(body)
+        return out
+
+    @staticmethod
     def _split_text_chunks(
         text: str,
         limit: int,
         len_fn: "Callable[[str], int]" = len,
     ) -> list[str]:
-        """Split text into reasonably sized chunks for fallback sends."""
+        """Split text into reasonably sized chunks for fallback sends.
+
+        Chunks are fence-balanced: a split inside a ``` code block closes the
+        fence on the head chunk and reopens it on the tail, so no chunk leaves
+        the rest of a message rendering as one giant code block.
+        """
         if len_fn(text) <= limit:
             return [text]
+        # Reserve headroom for the close/reopen fence markers the balancing
+        # pass may add, so balanced chunks stay within the platform limit.
+        split_limit = limit
+        if "```" in text:
+            split_limit = max(limit - 16, limit // 2, 1)
         chunks: list[str] = []
         remaining = text
-        while len_fn(remaining) > limit:
-            _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
+        while len_fn(remaining) > split_limit:
+            _cp_budget = _custom_unit_to_cp(remaining, split_limit, len_fn)
             split_at = remaining.rfind("\n", 0, _cp_budget)
             if split_at < _cp_budget // 2:
                 split_at = _cp_budget
@@ -1195,7 +1244,7 @@ class GatewayStreamConsumer:
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:
             chunks.append(remaining)
-        return chunks
+        return GatewayStreamConsumer._balance_fences_across_chunks(chunks)
 
     def _truncate_for_stream(
         self,

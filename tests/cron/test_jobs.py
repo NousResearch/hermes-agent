@@ -251,6 +251,25 @@ class TestJobCRUD:
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
 
+    def test_create_with_dedup_key_is_idempotent(self, tmp_cron_dir):
+        first = create_job(
+            prompt="Recover the failed build",
+            schedule="30m",
+            name="Recovery attempt",
+            dedup_key="recovery:chain-123:1",
+        )
+        second = create_job(
+            prompt="This second payload must not create a duplicate",
+            schedule=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            name="Duplicate recovery attempt",
+            dedup_key="recovery:chain-123:1",
+        )
+
+        assert second["id"] == first["id"]
+        assert second["prompt"] == first["prompt"]
+        assert first["dedup_key"] == "recovery:chain-123:1"
+        assert len(load_jobs()) == 1
+
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")
         create_job(prompt="Job 2", schedule="every 2h")

@@ -456,6 +456,27 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     # even when codex doesn't report durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
 
+    def _stable_call_id(item: dict, name: str) -> str:
+        """Deterministic tool_call id mirroring CodexEventProjector, so a
+        live TUI tool card correlates with the same tool call after the
+        session is resumed and history is projected."""
+        from agent.transports.codex_event_projector import _deterministic_call_id
+
+        item_id = item.get("id") or ""
+        item_type = item.get("type") or ""
+        if item_type == "commandExecution":
+            return _deterministic_call_id("exec", item_id)
+        if item_type == "fileChange":
+            return _deterministic_call_id("apply_patch", item_id)
+        if item_type == "mcpToolCall":
+            server = item.get("server") or "mcp"
+            tool = item.get("tool") or "unknown"
+            return _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
+        if item_type == "dynamicToolCall":
+            tool = item.get("tool") or "unknown"
+            return _deterministic_call_id(f"dyn_{tool}", item_id)
+        return _deterministic_call_id(name, item_id)
+
     def _fire_tool_started(item: dict) -> None:
         item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
@@ -463,15 +484,26 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if item_id:
             started[item_id] = (name, args, time.monotonic())
         cb = getattr(agent, "tool_progress_callback", None)
-        if cb is None:
-            return
-        try:
-            cb("tool.started", name, _codex_item_to_preview(item), args)
-        except Exception:
-            logger.debug(
-                "tool_progress_callback raised on tool.started for %s",
-                name, exc_info=True,
-            )
+        if cb is not None:
+            try:
+                cb("tool.started", name, _codex_item_to_preview(item), args)
+            except Exception:
+                logger.debug(
+                    "tool_progress_callback raised on tool.started for %s",
+                    name, exc_info=True,
+                )
+        # Authoritative stable-ID tool card (TUI / desktop). Fires
+        # alongside tool_progress so surfaces that render structured tool
+        # cards (not just progress bubbles) stay correlated with the
+        # projected history entry after a resume.
+        start_cb = getattr(agent, "tool_start_callback", None)
+        if start_cb is not None:
+            try:
+                start_cb(_stable_call_id(item, name), name, args)
+            except Exception:
+                logger.debug(
+                    "tool_start_callback raised for %s", name, exc_info=True,
+                )
 
     def _fire_tool_completed(item: dict) -> None:
         item_id = item.get("id") or ""
@@ -489,16 +521,24 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
             duration = time.monotonic() - prior[2]
         result, is_error = _codex_item_completion_payload(item)
         cb = getattr(agent, "tool_progress_callback", None)
-        if cb is None:
-            return
-        try:
-            cb("tool.completed", name, None, None,
-               duration=duration, is_error=is_error, result=result)
-        except Exception:
-            logger.debug(
-                "tool_progress_callback raised on tool.completed for %s",
-                name, exc_info=True,
-            )
+        if cb is not None:
+            try:
+                cb("tool.completed", name, None, None,
+                   duration=duration, is_error=is_error, result=result)
+            except Exception:
+                logger.debug(
+                    "tool_progress_callback raised on tool.completed for %s",
+                    name, exc_info=True,
+                )
+        complete_cb = getattr(agent, "tool_complete_callback", None)
+        if complete_cb is not None:
+            args = prior[1] if prior is not None else _codex_item_to_args(item)
+            try:
+                complete_cb(_stable_call_id(item, name), name, args, result)
+            except Exception:
+                logger.debug(
+                    "tool_complete_callback raised for %s", name, exc_info=True,
+                )
 
     def _fire_text_delta(params: dict) -> None:
         text = params.get("delta") or params.get("text") or ""
@@ -553,7 +593,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if method == "item/agentMessage/delta":
             _fire_text_delta(params)
             return
-        if method == "item/reasoning/delta":
+        if method in {"item/reasoning/delta", "item/reasoning/summaryDelta"}:
             _fire_reasoning_delta(params)
             return
         item = params.get("item")
@@ -662,6 +702,16 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        _user_interrupted = bool(
+            getattr(agent, "_interrupt_requested", False)
+        )
+        _interrupt_message = (
+            getattr(agent, "_interrupt_message", None)
+            if _user_interrupted
+            else None
+        )
+        if _user_interrupted:
+            agent.clear_interrupt()
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -671,8 +721,26 @@ def run_codex_app_server_turn(
             "api_calls": 0,
             "completed": False,
             "partial": True,
+            "interrupted": _user_interrupted,
+            **(
+                {"interrupt_message": _interrupt_message}
+                if _interrupt_message
+                else {}
+            ),
             "error": str(exc),
         }
+
+    # This runtime bypasses the normal conversation-loop finalizer. Mirror its
+    # interrupt handoff/cleanup so a hard stop cannot poison the next turn and a
+    # message-bearing compatibility interrupt can still be replayed by callers.
+    _user_interrupted = bool(
+        turn.interrupted and getattr(agent, "_interrupt_requested", False)
+    )
+    _interrupt_message = (
+        getattr(agent, "_interrupt_message", None) if _user_interrupted else None
+    )
+    if _user_interrupted:
+        agent.clear_interrupt()
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
@@ -779,6 +847,12 @@ def run_codex_app_server_turn(
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
+        "interrupted": _user_interrupted,
+        **(
+            {"interrupt_message": _interrupt_message}
+            if _interrupt_message
+            else {}
+        ),
         "error": turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages

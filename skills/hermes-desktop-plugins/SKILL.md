@@ -15,8 +15,12 @@ metadata:
 Write plugins for the Hermes desktop app: statusbar items, layout panes,
 command-palette commands, keybinds, routes, and themes. A plugin is a single
 plain-JavaScript ESM file the app loads at runtime — no build step, no repo
-changes. This skill does not cover backend plugins (`~/.hermes/plugins/`);
-those are Python and documented separately.
+changes. A plugin can also talk to its own Python backend namespace
+(`ctx.rest`/`ctx.socket` → `/api/plugins/<id>`); the general Python plugin
+system (`~/.hermes/plugins/`) is otherwise documented separately.
+
+Full human reference (every export, area payloads, backend, security):
+`website/docs/developer-guide/desktop-plugin-sdk.md`.
 
 ## When to Use
 
@@ -79,6 +83,30 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
+- `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
+  to your plugin (never edit core `en.ts`). Values are literal strings or
+  interpolator functions; nested trees are addressed by dot-path. Read them
+  reactively in components with `usePluginI18n(id)` returning `t('key', ...args)`
+  (re-renders on a locale switch), or via `ctx.i18n.t` in handlers/stores.
+  Resolution follows the app's active locale, then your `en`, then the raw key.
+- Data: `useQuery`/`useMutation`/`useQueryClient`/`queryClient` (the app's ONE
+  React Query client — cache, dedupe, `refetchInterval`, invalidate like core;
+  never hand-roll a poll loop), plus `atom`/`computed` for plugin-local state.
+- Backend: if the plugin ships a Python `plugin_api.py` (under
+  `~/.hermes/plugins/<id>/dashboard/`, manifest `"api": "plugin_api.py"`), reach
+  it with `ctx.rest('/path', { method?, body?, timeoutMs? })` and its live twin
+  `ctx.socket('/events', onMessage)` — both scoped to `/api/plugins/<id>` by
+  construction (traversal rejected). `ctx.socket` is a **no-op on OAuth
+  remotes**, so always keep a polling fallback. The Python backend is imported
+  only when the plugin is in `plugins.enabled` in `config.yaml` (separate from
+  the in-app enable toggle). For gateway-wide data use `host.request` /
+  `host.onEvent` instead.
+- `Contribute` (mount-scoped): render `jsx(Contribute, { area, id, children })`
+  inside a component so page-owned chrome (e.g. a titlebar control in
+  `TITLEBAR_AREAS.center`) leaves when the page unmounts — `ctx.register` is for
+  permanent contributions.
+- `defaultEnabled: false` on the default export ships an opt-in plugin: it
+  inventories in Settings → Plugins, off until the user flips it on.
 - Users manage plugins in Settings → Plugins (enable/disable live, reveal
   folder). A disabled plugin stays disabled across restarts — don't fight
   it; the user turned you off.

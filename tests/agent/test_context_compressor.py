@@ -245,7 +245,9 @@ class TestCompress:
         assert "Summary generation was unavailable" in combined
         assert "removed to free context space but could not be summarized" not in combined
         assert c._last_summary_fallback_used is True
-        assert c._last_summary_dropped_count == 3
+        # The assistant immediately before the latest actionable user turn is
+        # retained as a role bridge, so only the two genuinely older rows drop.
+        assert c._last_summary_dropped_count == 2
 
     def test_fallback_summary_does_not_triplicate_latest_user_ask(self):
         """Regression for #49307: the deterministic fallback summary used to
@@ -719,7 +721,9 @@ class TestNonStringContent:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
 
-        assert summary == f"{SUMMARY_PREFIX}\nplain summary text"
+        assert summary.startswith(f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n")
+        assert "do something" in summary
+        assert summary.endswith("plain summary text")
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -761,8 +765,107 @@ class TestNonStringContent:
         assert "Do NOT respond" not in prompt
         assert "DIFFERENT assistant" not in prompt
         assert "different assistant" not in prompt
+        assert "refactor the auth module" not in prompt
+        assert "JWT instead of sessions" not in prompt
         assert "Treat the conversation turns below as source material" in prompt
         assert "structured checkpoint summary" in prompt
+
+    def test_summary_task_snapshot_is_grounded_to_latest_user_turn(self):
+        """Regression for a copied prompt example becoming the active task.
+
+        A real #26 run showed the summarizer emitting the old template example
+        "Now refactor the auth module to use JWT instead of sessions". The
+        compacted turns did not contain that request, so the summary must
+        replace it with the deterministic latest user turn before the handoff
+        becomes live context.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = """## Historical Task Snapshot
+User asked: 'Now refactor the auth module to use JWT instead of sessions'
+
+## Goal
+Continue the task.
+
+## Completed Actions
+None.
+"""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        latest = "RUN_LONG_REAL_26_SCORE_V3B_WITH_FACTUALITY_SMOKE"
+        messages = [
+            {"role": "user", "content": latest},
+            {"role": "assistant", "content": "I will inspect the loop harness."},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        assert "refactor the auth module" not in summary
+        assert "JWT instead of sessions" not in summary
+        assert latest in summary
+        assert "deterministic, from compacted turns" in summary
+
+    def test_task_snapshot_skips_synthetic_user_scaffolding(self):
+        """Grounding must anchor on the human ask, not runtime scaffolding.
+
+        Todo snapshots, truncation notices, and background-process reports
+        are injected with role="user"; if the newest user turn is one of
+        those, the deterministic snapshot must look past it to the real ask
+        (and return None when no real ask exists at all).
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "fix the login bug on prod"},
+            {"role": "assistant", "content": "on it"},
+            {
+                "role": "user",
+                "content": "[Your active task list was preserved across context compression]\n- item",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+        snapshot = c._latest_user_task_snapshot(messages)
+        assert snapshot is not None
+        assert "fix the login bug on prod" in snapshot
+        assert "task list was preserved" not in snapshot
+
+        only_synthetic = [
+            {"role": "user", "content": "[System: Your previous response was truncated ...]"},
+        ]
+        assert c._latest_user_task_snapshot(only_synthetic) is None
+
+    def test_grounding_preserves_following_sections_across_regrounding(self):
+        """The snapshot rewrite must keep later headings intact — twice.
+
+        A replacement that consumes the section's trailing newlines glues the
+        next "## " heading mid-line; on the following iterative compaction the
+        heading is no longer at line start, the regex matches through \\Z, and
+        every later section is silently deleted.
+        """
+        import re as _re
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        summary = (
+            f"{HISTORICAL_TASK_HEADING}\n"
+            "User asked: stale example\n\n"
+            "## Historical Remaining Work\n- keep me\n\n"
+            "## Goal\nfinish"
+        )
+        turns = [{"role": "user", "content": "real ask"}]
+
+        first = c._ground_historical_task_snapshot(summary, turns)
+        assert _re.search(r"(?m)^## Historical Remaining Work$", first)
+        assert "- keep me" in first and "## Goal" in first
+
+        second = c._ground_historical_task_snapshot(first, turns)
+        assert "- keep me" in second and "## Goal" in second
+        assert second.count(HISTORICAL_TASK_HEADING) == 1
 
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
@@ -3064,6 +3167,207 @@ class TestUpdateModelResetsCalibration:
         assert comp._summary_failure_cooldown_until == cooldown_until
 
 
+class TestThresholdTokensCap:
+    """Tests for the absolute token cap (compression.threshold_tokens).
+
+    The cap takes the lower of the ratio-based threshold and the absolute
+    count. It must survive model switches (update_model re-applies it)
+    and be clamped to the model's context length.
+    """
+
+    def test_cap_lower_than_ratio_uses_cap(self):
+        """When the cap is lower than the ratio-based threshold, the cap wins."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=50_000,
+            )
+        # Ratio-based: 200000 * 0.50 = 100000. Cap: 50000. Effective: 50000.
+        assert comp.threshold_tokens == 50_000
+
+    def test_cap_higher_than_ratio_uses_ratio(self):
+        """When the cap is higher than the ratio-based threshold, the ratio wins."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=2_000_000,
+            )
+        # Ratio-based: 1000000 * 0.50 = 500000. Cap: 2000000, clamped to 1000000.
+        # Effective: min(500000, 1000000) = 500000.
+        assert comp.threshold_tokens == 500_000
+
+    def test_no_cap_uses_ratio_only(self):
+        """Without a cap, the ratio-based threshold is used."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+            )
+        assert comp.threshold_tokens == 500_000
+        assert comp.threshold_tokens_cap is None
+
+    def test_cap_survives_model_switch(self):
+        """The cap must be re-applied after update_model() switches to a
+        different context length. This is the core sweeper feedback: the
+        old PR's post-construction patch was undone by update_model()
+        restoring _configured_threshold_percent."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=40_000,
+            )
+        assert comp.threshold_tokens == 40_000  # cap wins on 200K model
+
+        # Switch to a 100K model — ratio-based would be 50000, but cap is 40000
+        comp.update_model("model-b", context_length=100_000)
+        assert comp.threshold_tokens == 40_000  # cap still wins
+
+    def test_cap_survives_model_switch_to_smaller_window(self):
+        """When switching to a model whose ratio-based threshold is below
+        the cap, the ratio-based threshold wins (cap is a ceiling, not a floor)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=50_000,
+            )
+        assert comp.threshold_tokens == 50_000  # cap wins on 200K (ratio=100K)
+
+        # Switch to a 64K model — ratio-based floor is 64000 (MINIMUM_CONTEXT_LENGTH)
+        # which is > 50000 cap, so... actually 64000 > 50000 means cap still wins
+        # Let's test with a 80K model: ratio=40000, cap=50000 → ratio wins
+        comp.update_model("model-b", context_length=80_000)
+        assert comp.threshold_tokens <= 50_000  # cap is a ceiling
+        # 80000 * 0.50 = 40000, floored to 64000, cap 50000 → min(64000, 50000) = 50000
+        # The floor raises it to 64000, then cap clamps to 50000
+        assert comp.threshold_tokens == 50_000
+
+    def test_cap_clamped_to_context_length(self):
+        """A cap larger than the context length is clamped, so the
+        ratio-based threshold wins for small-context models."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=64_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=500_000,
+            )
+        # 64000 * 0.50 = 32000, floored to 64000 (MINIMUM_CONTEXT_LENGTH),
+        # degenerate: floored >= window → 85% of 64000 = 54400.
+        # Cap 500000 clamped to 64000. min(54400, 64000) = 54400.
+        assert comp.threshold_tokens == 54400  # ratio-based wins
+
+    def test_cap_with_max_tokens_reservation(self):
+        """The cap applies after max_tokens reservation is factored in."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                max_tokens=32_768,
+                threshold_tokens_cap=50_000,
+            )
+        # effective_window = 200000 - 32768 = 167232
+        # ratio: 167232 * 0.50 = 83616, floored to max(83616, 64000) = 83616
+        # cap: min(50000, 200000) = 50000. min(83616, 50000) = 50000.
+        assert comp.threshold_tokens == 50_000
+
+    def test_cap_survives_model_switch_with_max_tokens(self):
+        """The cap survives model switch even when max_tokens changes."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                max_tokens=32_768,
+                threshold_tokens_cap=50_000,
+            )
+        assert comp.threshold_tokens == 50_000
+
+        # Switch to a smaller model with different max_tokens
+        comp.update_model("model-b", context_length=100_000, max_tokens=16_384)
+        # effective_window = 100000 - 16384 = 83616
+        # ratio: 83616 * 0.50 = 41808, floored to max(41808, 64000) = 64000
+        # degenerate: floored (64000) >= effective_window (83616)? No, 64000 < 83616.
+        # So threshold = 64000. cap: min(50000, 100000) = 50000. min(64000, 50000) = 50000.
+        assert comp.threshold_tokens == 50_000
+
+    def test_invalid_cap_treated_as_none(self):
+        """Non-numeric, zero, or negative cap values are treated as None."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp0 = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=0,
+            )
+            assert comp0.threshold_tokens_cap is None
+            assert comp0.threshold_tokens == 500_000
+
+            comp_neg = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=-100,
+            )
+            assert comp_neg.threshold_tokens_cap is None
+
+            comp_str = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap="not-a-number",
+            )
+            assert comp_str.threshold_tokens_cap is None
+
+    def test_should_compress_fires_at_cap_below_ratio_threshold(self):
+        """Behavioral: with a cap below the ratio-based threshold,
+        should_compress() fires once usage crosses the cap — even though
+        the percentage threshold has not been reached (first-fires-wins)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=200_000,
+            )
+        # Ratio-based would be 500K; cap pulls the trigger down to 200K.
+        assert comp.should_compress(150_000) is False   # below cap
+        assert comp.should_compress(200_000) is True    # at cap (below 500K pct)
+        assert comp.should_compress(250_000) is True    # above cap
+
+    def test_default_config_disabled_and_no_behavior_change(self):
+        """DEFAULT_CONFIG ships threshold_tokens=None (disabled) and both
+        None and 0 leave the ratio-based trigger byte-identical."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["compression"]["threshold_tokens"] is None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            baseline = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+            )
+            comp_none = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=None,
+            )
+            comp_zero = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=0,
+            )
+        assert comp_none.threshold_tokens == baseline.threshold_tokens
+        assert comp_zero.threshold_tokens == baseline.threshold_tokens
+        # And after a model switch, still identical to baseline.
+        baseline.update_model("model-b", context_length=200_000)
+        comp_none.update_model("model-b", context_length=200_000)
+        comp_zero.update_model("model-b", context_length=200_000)
+        assert comp_none.threshold_tokens == baseline.threshold_tokens
+        assert comp_zero.threshold_tokens == baseline.threshold_tokens
+
+    def test_pct_floor_unaffected_by_cap(self):
+        """The small-context pct floor (raise-only to 0.75 under 512K) is
+        computed independently of the cap: the cap clamps the resulting
+        token threshold but never changes threshold_percent, and a
+        cap-free small-context model keeps the floored pct."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=100_000,
+            )
+        # Floor raised pct to 0.75 (200K < 512K) regardless of the cap.
+        assert comp.threshold_percent == 0.75
+        # Cap clamps the token trigger below the floored pct value (150K).
+        assert comp.threshold_tokens == 100_000
+        # Switching to a large-context model drops the pct back to the
+        # configured 0.50 — cap presence doesn't perturb the re-derivation.
+        comp.update_model("model-b", context_length=1_000_000)
+        assert comp.threshold_percent == 0.50
+        assert comp.threshold_tokens == 100_000  # cap still wins over 500K
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 
@@ -3593,6 +3897,35 @@ class TestDoubleCompactionSummaryRole:
             f"first non-system message must be role=user for Anthropic "
             f"compatibility, got role={non_system[0]['role']!r}"
         )
+
+    def test_restart_handoff_without_system_still_starts_with_user(self):
+        """When decayed head protection leaves no head, the visible transcript
+        must still begin with a user role for Anthropic/Bedrock compatibility.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary of resumed turns"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2,
+            )
+
+        msgs = [
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\nold persisted summary"},
+            {"role": "assistant", "content": "handoff acknowledged"},
+            {"role": "user", "content": "new work after restart"},
+            {"role": "assistant", "content": "new answer after restart"},
+            {"role": "user", "content": "more new work after restart"},
+            {"role": "assistant", "content": "more new answer after restart"},
+            {"role": "user", "content": "tail request"},
+            {"role": "assistant", "content": "tail answer"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert result[0]["role"] == "user"
+        assert "summary of resumed turns" in (result[0].get("content") or "")
 
     def test_double_compaction_user_tail_merges_into_tail(self):
         """When the summary is forced to role=user (system-only head) and

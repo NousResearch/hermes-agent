@@ -5,7 +5,10 @@ import {
   appendAssistantTextPart,
   appendReasoningPart,
   chatMessageText,
+  collectUnspokenTurnSpeech,
+  mergeFinalAssistantText,
   preserveLocalAssistantErrors,
+  reasoningPart,
   renderMediaTags,
   toChatMessages,
   upsertToolPart
@@ -536,6 +539,37 @@ describe('upsertToolPart', () => {
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
   })
 
+  it('pairs a terminal completion with its context-only start when event IDs differ', () => {
+    const started = upsertToolPart(
+      [],
+      { context: 'echo "Hello from the terminal"', name: 'terminal', tool_id: 'terminal-start' },
+      'running'
+    )
+
+    const completed = upsertToolPart(
+      started,
+      {
+        args: { command: 'echo "Hello from the terminal"' },
+        name: 'terminal',
+        result: { exit_code: 0, stdout: 'Hello from the terminal' },
+        tool_id: 'terminal-complete'
+      },
+      'complete'
+    )
+
+    const terminalParts = completed.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'terminal'
+    )
+
+    expect(terminalParts).toHaveLength(1)
+    expect(terminalParts[0]?.toolCallId).toBe('terminal-complete')
+    expect(terminalParts[0] && 'result' in terminalParts[0] ? terminalParts[0].result : undefined).toMatchObject({
+      exit_code: 0,
+      stdout: 'Hello from the terminal'
+    })
+  })
+
   it('preserves query args when completion payload omits context', () => {
     const started = upsertToolPart(
       [],
@@ -783,5 +817,143 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+describe('mergeFinalAssistantText', () => {
+  it('removes all text parts and appends the final text', () => {
+    const parts = [
+      { type: 'text' as const, text: 'streamed delta 1' },
+      { type: 'text' as const, text: 'streamed delta 2' },
+      { type: 'tool-call' as const, toolCallId: 'tc1', toolName: 'terminal', args: {} as never, argsText: '{}' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'final answer')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.some(p => p.type === 'tool-call')).toBe(true)
+  })
+
+  it('drops reasoning that the final text fully covers (reasoning ⊆ final)', () => {
+    const parts = [reasoningPart('Let me check the files.'), { type: 'text' as const, text: 'streamed' }]
+
+    const result = mergeFinalAssistantText(parts, 'Let me check the files. Everything looks good.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+  })
+
+  it('keeps a longer reasoning block when the final text is only a short prefix', () => {
+    // #61447: a short final ("Done.") must NOT swallow a longer reasoning block
+    // that merely starts with it.
+    const parts = [
+      reasoningPart(
+        'Done. The root cause was a bare catch block swallowing Stripe errors. The fix adds proper error logging.'
+      ),
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Done.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'Done.' })
+  })
+
+  it('keeps non-restating reasoning', () => {
+    const parts = [
+      reasoningPart('I analyzed the issue and found a race condition in the event loop.'),
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Fixed the race condition.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+  })
+
+  it('handles empty final text', () => {
+    const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
+
+    const result = mergeFinalAssistantText(parts, '')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+})
+
+describe('collectUnspokenTurnSpeech', () => {
+  const assistant = (id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: text ? [{ type: 'text', text }] : [],
+    ...extra
+  })
+
+  const user = (id: string, text: string): ChatMessage => ({
+    id,
+    role: 'user',
+    parts: [{ type: 'text', text }]
+  })
+
+  it('includes sealed interim narration AND the final answer of a tool-calling turn', () => {
+    const messages = [
+      user('u1', 'what time is it?'),
+      assistant('a1', 'Let me check the clock.', { interim: true }),
+      assistant('a2', 'It is 9 PM.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech).not.toBeNull()
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Let me check the clock.\n\nIt is 9 PM.')
+    expect(speech?.pending).toBe(false)
+  })
+
+  it('keeps the binding id stable while later bubbles stream in', () => {
+    const turnStart = [user('u1', 'go'), assistant('a1', 'Let me check.', { interim: true })]
+    const first = collectUnspokenTurnSpeech(turnStart, null)
+
+    const turnLater = [...turnStart, assistant('a2', 'Still work', { pending: true })]
+    const later = collectUnspokenTurnSpeech(turnLater, null)
+
+    expect(first?.id).toBe('a1')
+    expect(later?.id).toBe('a1')
+    // The earlier snapshot's text is a prefix of the later one — the live
+    // session appends by length, so aggregation must be append-only.
+    expect(later?.text.startsWith(first?.text ?? '')).toBe(true)
+    expect(later?.pending).toBe(true)
+  })
+
+  it('starts after the last spoken message and skips hidden/empty bubbles', () => {
+    const messages = [
+      assistant('a0', 'Spoken last turn.'),
+      user('u1', 'next'),
+      assistant('a1', '', { pending: false }),
+      assistant('a2', 'hidden note', { hidden: true }),
+      assistant('a3', 'The real reply.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, 'a0')
+
+    expect(speech?.id).toBe('a3')
+    expect(speech?.text).toBe('The real reply.')
+  })
+
+  it('reports pending from the newest assistant bubble even when it has no text yet', () => {
+    const messages = [assistant('a1', 'Narration done.', { interim: true }), assistant('a2', '', { pending: true })]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Narration done.')
+    expect(speech?.pending).toBe(true)
+  })
+
+  it('returns null when everything is spoken or there is no assistant text', () => {
+    expect(collectUnspokenTurnSpeech([], null)).toBeNull()
+    expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
+    expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
 })

@@ -265,6 +265,25 @@ hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
+:::note Where an unblocked task lands
+`unblock` itself only ever moves a task to **`ready`** (all parents `done`) or
+**`todo`** (a parent is still open — the task is dependency-gated and the
+dispatcher auto-promotes it once the parent finishes). It never routes to
+`triage`.
+
+If you unblock a task and it later shows up in **`triage`**, the unblock is not
+what put it there. A subsequent *re-block for the same reason* did: after a task
+is blocked → unblocked → re-blocked for the same cause `BLOCK_RECURRENCE_LIMIT`
+times (default `2`), the unblock-loop breaker stops sending it back to `blocked`
+— where a cron would just keep unblocking it — and routes it to `triage` for a
+human decision. This is a deterministic DB guard, not an LLM judgment call, and
+a task's body text cannot opt out of it: the recurrence counter deliberately
+survives each unblock (it resets only on a successful `complete`). To keep an
+unblocked task in the work pool, resolve *why it keeps re-blocking* (unfinished
+parent, missing input, unmet capability) before unblocking, or raise
+`BLOCK_RECURRENCE_LIMIT` if the loop is expected.
+:::
+
 ## How workers interact with the board
 
 **Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
@@ -279,7 +298,7 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
-| `kanban_unblock` | (Orchestrators) move a blocked task back to `ready`. | `task_id` |
+| `kanban_unblock` | (Orchestrators) move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. | `task_id` |
 
 A typical worker turn looks like:
 

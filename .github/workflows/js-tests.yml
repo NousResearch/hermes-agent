@@ -8,6 +8,7 @@ jobs:
   workspaces:
     name: List npm workspaces
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       packages: ${{ steps.set-matrix.outputs.packages }}
     steps:
@@ -32,6 +33,7 @@ jobs:
     name: Typecheck & Test
     needs: workspaces
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         package: ${{ fromJson(needs.workspaces.outputs.packages) }}

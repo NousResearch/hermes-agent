@@ -17,31 +17,11 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { publishSessionState, setWatchdogClearFn } from '@/store/session-states'
+import { publishSessionState } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
-// Shallow per-message identity check. When a flush carries no transcript
-// changes, `preserveLocalAssistantErrors` returns the same message objects in
-// the same order, so reference equality per slot is enough to detect "nothing
-// to publish" and avoid a needless `$messages` churn.
-function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
-  if (a === b) {
-    return true
-  }
-
-  if (a.length !== b.length) {
-    return false
-  }
-
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) {
-      return false
-    }
-  }
-
-  return true
-}
+import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null
@@ -105,6 +85,16 @@ export function useSessionStateCache({
 
         sessionStateByRuntimeIdRef.current.set(sessionId, updated)
 
+        // Drop the obsolete stored→runtime reverse mapping as soon as the id
+        // rotates (e.g. auto-compression forks a continuation). Leaving the
+        // stale key lets getRuntimeIdForStoredSession resolve the old stored id
+        // to this runtime, which the compression route-follow logic relies on
+        // being absent. The rotation signal itself is emitted centrally from
+        // handleTransition (session-states.ts) off the published diff.
+        if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+        }
+
         if (storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
         }
@@ -149,7 +139,12 @@ export function useSessionStateCache({
     // the transcript. That churns ChatView → runtimeMessageRepository → the
     // assistant-ui runtime → the virtualizer, which re-measures and visibly
     // jerks the scroll position while the user is reading. Skip the publish when
-    // the merged result is content-identical to what's already on screen.
+    // the merged result is content-equivalent to what's already on screen.
+    // Deep comparison (not just reference equality) is needed because the warm
+    // resume path's `reconcileAuthoritativeMessages` creates new message objects
+    // via `toChatMessages` even when the content hasn't changed — reference
+    // equality would fail and cause a redundant second paint (the "warm resume
+    // jitter" bug).
     const currentMessages = $messages.get()
 
     // On a thread switch `$messages` still holds the *previous* thread, so
@@ -162,7 +157,7 @@ export function useSessionStateCache({
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
-    if (!sameMessageList(nextMessages, currentMessages)) {
+    if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
       setMessages(nextMessages)
     }
 
@@ -278,33 +273,6 @@ export function useSessionStateCache({
 
     return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
   }, [])
-
-  // Wire the watchdog's force-clear callback to our cache. When the watchdog
-  // fires (8 min of stream silence — a hung or looping turn that never
-  // delivered its terminal event), it calls this to clear the session's busy
-  // state. Clearing the sidebar dot alone would leave the composer wedged on
-  // "Thinking"/Stop; updateSessionState propagates the clear to $sessionStates
-  // → $workingSessionIds (computed) follows automatically, and
-  // syncSessionStateToView re-syncs $busy when the healed session is the one
-  // on screen.
-  useEffect(() => {
-    setWatchdogClearFn(runtimeId => {
-      const state = sessionStateByRuntimeIdRef.current.get(runtimeId)
-
-      if (!state?.busy) {
-        return
-      }
-
-      updateSessionState(runtimeId, current => ({
-        ...current,
-        awaitingResponse: false,
-        busy: false,
-        needsInput: false
-      }))
-    })
-
-    return () => setWatchdogClearFn(null)
-  }, [updateSessionState])
 
   return {
     activeSessionIdRef,

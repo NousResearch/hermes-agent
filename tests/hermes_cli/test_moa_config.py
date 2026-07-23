@@ -1,3 +1,6 @@
+import pytest
+
+from agent.errors import MoAPresetNotFoundError
 from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
@@ -203,6 +206,46 @@ def test_resolve_moa_preset_returns_requested_model_set():
     assert resolve_moa_preset(cfg, "review")["reference_models"] == [
         {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
     ]
+
+
+def test_resolve_missing_moa_preset_has_actionable_error():
+    cfg = {
+        "default_preset": "日常对话-高峰",
+        "presets": {"日常对话-高峰": {}, "日常对话-非高峰": {}},
+    }
+
+    with pytest.raises(MoAPresetNotFoundError) as exc_info:
+        resolve_moa_preset(cfg, "日常对话-高峰期")
+
+    message = str(exc_info.value)
+    assert "日常对话-高峰期" in message
+    assert "日常对话-高峰" in message
+    assert "日常对话-非高峰" in message
+    assert "hermes moa list" in message
+
+
+def test_resolve_missing_moa_preset_does_not_silently_fallback():
+    cfg = {
+        "default_preset": "日常对话-高峰",
+        "presets": {"日常对话-高峰": {}},
+    }
+
+    with pytest.raises(MoAPresetNotFoundError):
+        resolve_moa_preset(cfg, "renamed-preset")
+
+
+def test_missing_moa_preset_is_non_retryable():
+    from agent.error_classifier import FailoverReason, classify_api_error
+
+    result = classify_api_error(
+        MoAPresetNotFoundError("MoA preset 'old' was not found"),
+        provider="moa",
+        model="old",
+    )
+
+    assert result.reason == FailoverReason.model_not_found
+    assert result.retryable is False
+    assert result.should_fallback is False
 
 
 def test_build_moa_turn_prompt_encodes_one_shot_default_preset():

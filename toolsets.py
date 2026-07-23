@@ -56,19 +56,12 @@ _HERMES_ALWAYS_CORE_TOOLS = [
     "session_search",
     # Basic lookups — low schema weight, used constantly
     "web_search", "web_extract",
-    "vision_analyze",
-    # Orchestration engine — delegate tasks to workers with the right toolset
-    "delegate_task",
-    "terminal",
-    "read_file",
-    "search_files",
-]
-
-_HERMES_DEFERRABLE_CORE_TOOLS = [
-    # Terminal & process management
-    "process", "read_terminal",
-    # Close agent's read-only terminal tab (gated on HERMES_DESKTOP via check_fn)
-    "close_terminal",
+    # Terminal + process management
+    "terminal", "process",
+    # Desktop GUI affordances: read the embedded terminal pane, close an agent's
+    # read-only terminal tab, open a URL/file in the preview pane, and focus a
+    # pane (all gated on HERMES_DESKTOP via check_fn — hidden outside the GUI).
+    "read_terminal", "close_terminal", "open_preview", "focus_pane",
     # File manipulation
     "write_file", "patch",
     # Skills management

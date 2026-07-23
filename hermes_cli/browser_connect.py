@@ -174,6 +174,75 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     return False
 
 
+# Both loopback literals: Windows (and some Linux setups) can hand the IPv4
+# loopback to one process and the IPv6 loopback to another. Chrome asked to
+# bind :9222 while e.g. VS Code's js-debug holds 127.0.0.1:9222 will come up
+# on [::1]:9222 only — reachable, but invisible to an IPv4-only probe.
+_LOOPBACK_PROBE_HOSTS = ("127.0.0.1", "[::1]")
+_LOOPBACK_SOCKET_HOSTS = ("127.0.0.1", "::1")
+
+
+def discover_local_cdp_url(port: int, timeout: float = 1.0) -> str | None:
+    """Return the first loopback URL (IPv4 first, then IPv6) speaking CDP.
+
+    Dual-stack discovery: when another application squats the IPv4
+    loopback on ``port``, a debug browser launched with
+    ``--remote-debugging-port`` may bind only ``[::1]``. Probing both
+    literals finds it either way. Returns ``None`` when neither
+    loopback exposes a CDP discovery endpoint.
+    """
+    for host in _LOOPBACK_PROBE_HOSTS:
+        url = f"http://{host}:{port}"
+        if is_browser_debug_ready(url, timeout=timeout):
+            return url
+    return None
+
+
+def local_port_in_use(port: int, timeout: float = 0.5) -> bool:
+    """Return True when either loopback accepts TCP on ``port``.
+
+    Callers use this AFTER a failed CDP probe to distinguish "port is
+    free, we can launch a browser on it" from "another application
+    (IDE debugger, dev server) is squatting the port and a launch
+    would fight it".
+    """
+    import socket
+
+    for host in _LOOPBACK_SOCKET_HOSTS:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def find_free_debug_port(preferred: int = DEFAULT_BROWSER_CDP_PORT, attempts: int = 10) -> int:
+    """Return the first port after ``preferred`` bindable on both loopbacks.
+
+    Used when ``preferred`` is occupied by a non-CDP application: rather
+    than launching a browser into a bind conflict, pick a nearby free
+    port. Falls back to ``preferred + 1`` if nothing binds (the launch
+    will then fail with a clear browser-side error instead of silently
+    doing nothing).
+    """
+    import socket
+
+    for port in range(preferred + 1, preferred + 1 + attempts):
+        bindable = True
+        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            try:
+                with socket.socket(family, socket.SOCK_STREAM) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.bind((host, port))
+            except OSError:
+                bindable = False
+                break
+        if bindable:
+            return port
+    return preferred + 1
+
+
 def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> str | None:
     system = system or platform.system()
     candidates = get_chrome_debug_candidates(system)
@@ -213,11 +282,12 @@ def _wait_for_browser_debug_ready_or_exit(
     candidate binary exists but exits immediately before exposing the CDP port.
     Slower browsers can still finish starting after this grace window.
     """
-    cdp_url = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + timeout
 
     while time.monotonic() < deadline:
-        if is_browser_debug_ready(cdp_url, timeout=min(interval, 0.2)):
+        # Dual-stack: a squatter on the IPv4 loopback can push the browser
+        # to bind [::1] only — check both so a successful launch is seen.
+        if discover_local_cdp_url(port, timeout=min(interval, 0.2)):
             return "ready"
         if proc.poll() is not None:
             return "exited"

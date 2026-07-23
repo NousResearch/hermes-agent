@@ -14,11 +14,20 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { useI18n } from '@/i18n'
+import { generatedImageFromResult } from '@/lib/generated-images'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 
-const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
+const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
+  const { args, result } = props
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
+
+  // The image card owns successful generations. Failed or malformed results
+  // still need the normal tool row: it extracts the error text and gives the
+  // user an honest, expandable failure rather than silently dropping the call.
+  if (result !== undefined && !generatedImageFromResult(result)) {
+    return <ToolFallback {...props} />
+  }
 
   return (
     <div className="mt-1.5">

@@ -31,6 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { recordBridgeEvent } from './bridge_events.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -427,6 +428,7 @@ async function startSocket() {
       connectionState = 'disconnected';
 
       if (reason === DisconnectReason.loggedOut) {
+        recordBridgeEvent(SESSION_DIR, 'logged_out', { reason: reason ?? null });
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
         if (!PAIR_JSON) {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
@@ -434,6 +436,7 @@ async function startSocket() {
         process.exit(1);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
+        recordBridgeEvent(SESSION_DIR, 'disconnected', { reason: reason ?? null });
         emitPairEvent({ event: 'disconnected', reason });
         if (!PAIR_JSON) {
           if (reason === 515) {
@@ -446,6 +449,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      recordBridgeEvent(SESSION_DIR, 'connected', {});
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,
@@ -1096,6 +1100,7 @@ if (PAIR_ONLY) {
   });
 } else {
   app.listen(PORT, '127.0.0.1', () => {
+    recordBridgeEvent(SESSION_DIR, 'bridge_started', { mode: WHATSAPP_MODE, port: PORT });
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {

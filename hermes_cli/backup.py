@@ -1014,87 +1014,111 @@ def create_quick_snapshot(
             while stack:
                 current = stack.pop()
                 try:
-                    entries = list(os.scandir(current))
+                    scandir_it = os.scandir(current)
                 except OSError as exc:
                     _record_failure(_rel_for(current), str(exc))
                     continue
 
-                for entry in entries:
-                    entries_visited += 1
-                    if entries_visited > _QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES:
-                        _record_failure(
-                            _rel_for(current),
-                            f"traversal work budget exceeded "
-                            f"({_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES} "
-                            f"entries) — possible directory cycle",
-                        )
-                        budget_exceeded = True
-                        break
+                # Iterate the ScandirIterator directly — NOT
+                # list(os.scandir(current)) — so the budget is checked per
+                # yield, before the entry is processed. list() would
+                # eagerly materialize the WHOLE directory listing first: a
+                # lazy high-fan-out cycle (a junction whose listing itself
+                # yields thousands+ self-referential entries) would blow
+                # past the budget — or exhaust memory — inside that single
+                # list() call, before entries_visited is ever incremented
+                # (#68907 review, pass 6). Advancing via next() (instead of
+                # a plain `for entry in scandir_it:`) lets an OSError raised
+                # WHILE iterating — not just on open — be routed through
+                # _record_failure() too (scandir can fail mid-iteration on
+                # some filesystems); this mirrors CPython's own os.walk()
+                # implementation. `with` guarantees the OS handle is closed
+                # even when the budget cuts iteration short.
+                with scandir_it:
+                    while True:
+                        try:
+                            entry = next(scandir_it)
+                        except StopIteration:
+                            break
+                        except OSError as exc:
+                            _record_failure(_rel_for(current), str(exc))
+                            break
 
-                    entry_path = Path(entry.path)
+                        entries_visited += 1
+                        if entries_visited > _QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES:
+                            _record_failure(
+                                _rel_for(current),
+                                f"traversal work budget exceeded "
+                                f"({_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES} "
+                                f"entries) — possible directory cycle",
+                            )
+                            budget_exceeded = True
+                            break
 
-                    try:
-                        is_dir = entry.is_dir()
-                    except OSError as exc:
-                        _record_failure(_rel_for(entry_path), str(exc))
-                        continue
+                        entry_path = Path(entry.path)
 
-                    if is_dir:
-                        # Skip heavy, regenerable per-board subtrees
-                        # (scratch workspaces and task attachments can be
-                        # large); we only need the board databases + their
-                        # metadata to restore a board. These names are
-                        # always directory roots in this codebase (see
-                        # kanban_db.py's workspaces_root() /
-                        # attachments_root()) — never plain files — so
-                        # this check is intentionally directory-only; a
-                        # FILE literally named "workspaces"/"attachments"
-                        # is not a layout this codebase produces and is
-                        # captured normally. Pruned BEFORE descent so an
-                        # unreadable workspaces/attachments subtree can
-                        # never mark the snapshot incomplete — nothing
-                        # under it belongs in the snapshot anyway (#68907
-                        # review, Finding 2).
-                        if entry.name in ("workspaces", "attachments"):
+                        try:
+                            is_dir = entry.is_dir()
+                        except OSError as exc:
+                            _record_failure(_rel_for(entry_path), str(exc))
                             continue
-                        # Don't follow symlinked directories — matches the
-                        # followlinks=False convention every other os.walk()
-                        # call site in this file uses. os.path.islink()
-                        # never raises (swallows OSError, returns False).
-                        if os.path.islink(entry.path):
-                            continue
-                        stack.append(entry_path)
-                        continue
 
-                    try:
-                        is_file = entry.is_file()
-                    except OSError as exc:
-                        _record_failure(_rel_for(entry_path), str(exc))
-                        continue
-                    if not is_file:
-                        continue
-
-                    sub = entry_path
-                    sub_rel = _rel_for(sub)
-                    if _too_large(sub, sub_rel):
-                        continue
-                    dst = snap_dir / sub_rel
-                    try:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        # Route SQLite DBs through the WAL-safe backup() path so a
-                        # board DB with an open WAL (the gateway may hold it at
-                        # snapshot time) is captured consistently.
-                        if sub.suffix == ".db":
-                            ok, err = _safe_copy_db(sub, dst)
-                            if not ok:
-                                _record_failure(sub_rel, err or "SQLite safe copy failed")
+                        if is_dir:
+                            # Skip heavy, regenerable per-board subtrees
+                            # (scratch workspaces and task attachments can be
+                            # large); we only need the board databases + their
+                            # metadata to restore a board. These names are
+                            # always directory roots in this codebase (see
+                            # kanban_db.py's workspaces_root() /
+                            # attachments_root()) — never plain files — so
+                            # this check is intentionally directory-only; a
+                            # FILE literally named "workspaces"/"attachments"
+                            # is not a layout this codebase produces and is
+                            # captured normally. Pruned BEFORE descent so an
+                            # unreadable workspaces/attachments subtree can
+                            # never mark the snapshot incomplete — nothing
+                            # under it belongs in the snapshot anyway (#68907
+                            # review, Finding 2).
+                            if entry.name in ("workspaces", "attachments"):
                                 continue
-                        else:
-                            shutil.copy2(sub, dst)
-                        manifest[sub_rel] = dst.stat().st_size
-                    except (OSError, PermissionError) as exc:
-                        logger.warning("Could not snapshot %s: %s", sub_rel, exc)
-                        _record_failure(sub_rel, str(exc))
+                            # Don't follow symlinked directories — matches the
+                            # followlinks=False convention every other os.walk()
+                            # call site in this file uses. os.path.islink()
+                            # never raises (swallows OSError, returns False).
+                            if os.path.islink(entry.path):
+                                continue
+                            stack.append(entry_path)
+                            continue
+
+                        try:
+                            is_file = entry.is_file()
+                        except OSError as exc:
+                            _record_failure(_rel_for(entry_path), str(exc))
+                            continue
+                        if not is_file:
+                            continue
+
+                        sub = entry_path
+                        sub_rel = _rel_for(sub)
+                        if _too_large(sub, sub_rel):
+                            continue
+                        dst = snap_dir / sub_rel
+                        try:
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            # Route SQLite DBs through the WAL-safe backup() path so a
+                            # board DB with an open WAL (the gateway may hold it at
+                            # snapshot time) is captured consistently.
+                            if sub.suffix == ".db":
+                                ok, err = _safe_copy_db(sub, dst)
+                                if not ok:
+                                    _record_failure(sub_rel, err or "SQLite safe copy failed")
+                                    continue
+                            else:
+                                shutil.copy2(sub, dst)
+                            manifest[sub_rel] = dst.stat().st_size
+                        except (OSError, PermissionError) as exc:
+                            logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                            _record_failure(sub_rel, str(exc))
 
                 if budget_exceeded:
                     break

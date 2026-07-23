@@ -17,6 +17,36 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _FakeScandirIterator:
+    """A faithful stand-in for os.scandir()'s return value: an ITERATOR
+    (supports direct next(), not just `for x in it`) AND a context manager
+    (create_quick_snapshot() does ``with scandir_it:`` then advances via
+    next(), matching CPython's own os.walk() implementation — see #68907
+    review pass 6). A plain list supports neither: no __enter__/__exit__,
+    and calling next() on a list itself (rather than iter(list)) raises
+    TypeError. Tests that fake os.scandir() must wrap their entries in
+    this so they exercise the real code path instead of an unrelated
+    protocol mismatch."""
+
+    def __init__(self, entries):
+        self._it = iter(entries)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def close(self):
+        pass
+
+
 def _make_hermes_tree(root: Path) -> None:
     """Create a realistic ~/.hermes directory structure for testing."""
     (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
@@ -2022,32 +2052,6 @@ class TestQuickSnapshot:
             def is_file(self, *args, **kwargs):
                 return self._real.is_file(*args, **kwargs)
 
-        class _FakeScandirIterator:
-            """A faithful stand-in for os.scandir()'s return value: iterable
-            AND a context manager (os.walk() does ``with scandir_it:``), so
-            the RED proof against the pre-Finding-1 os.walk(onerror=...)
-            code exercises the real internal mechanism (entry.is_dir()
-            raising, swallowed without calling onerror) instead of an
-            unrelated TypeError from an incompatible stand-in."""
-
-            def __init__(self, entries):
-                self._it = iter(entries)
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                return next(self._it)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc_info):
-                return False
-
-            def close(self):
-                pass
-
         real_scandir = backup_mod.os.scandir
 
         def fake_scandir(path):
@@ -2293,7 +2297,9 @@ class TestQuickSnapshot:
         real_scandir = backup_mod.os.scandir
 
         def fake_scandir(path):
-            return [_ZeroIdentityEntry(e) for e in real_scandir(path)]
+            return _FakeScandirIterator(
+                [_ZeroIdentityEntry(e) for e in real_scandir(path)]
+            )
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
             snap_id = create_quick_snapshot(hermes_home=hermes_home)
@@ -2401,7 +2407,7 @@ class TestQuickSnapshot:
                 )
             p = Path(path)
             if p == pairing_dir or p.name == "loop":
-                return [_LoopEntry(p / "loop")]
+                return _FakeScandirIterator([_LoopEntry(p / "loop")])
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2508,10 +2514,10 @@ class TestQuickSnapshot:
                 )
             p = Path(path)
             if p == pairing_dir or p.name in ("a", "b"):
-                return [
+                return _FakeScandirIterator([
                     _BranchEntry(p / "a", "a"),
                     _BranchEntry(p / "b", "b"),
-                ]
+                ])
             return real_scandir(path)
 
         with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
@@ -2541,6 +2547,134 @@ class TestQuickSnapshot:
         assert prior.is_dir(), (
             "prior complete snapshot was pruned despite an unbounded "
             "branching cycle"
+        )
+
+    def test_lazy_high_fan_out_scandir_is_not_eagerly_drained(
+        self, hermes_home, monkeypatch
+    ):
+        """A SINGLE os.scandir() call whose listing itself yields many
+        entries — a junction whose target directory has high fan-out —
+        must have the traversal budget checked PER YIELD, not after the
+        whole listing has been pulled.
+
+        A prior version of this guard did
+        ``entries = list(os.scandir(current))``: that fully DRAINS the
+        directory listing before entries_visited is ever incremented.
+        Neither the binary-cycle test above nor the linear-cycle test can
+        catch this — both simulate the cycle across MANY separate
+        os.scandir() calls (one entry per call), so even an eager list()
+        of a 1-element listing is trivially cheap either way. This test
+        isolates the eager-vs-lazy question specifically: ONE scandir()
+        call, many entries (#68907 review, pass 6).
+
+        Reproduced with a Python generator (the same lazy, pull-based
+        shape a real ScandirIterator has under the hood) that yields
+        entries one at a time and raises a distinct sentinel exception if
+        ever pulled past 100 yields. The production budget is patched
+        down to 50. A correct (lazy) implementation stops pulling at
+        ~entries_visited + 1 (to detect the overrun) — the generator must
+        NEVER be asked for its 60th+ item, let alone its 100th. An eager
+        implementation (list(os.scandir(...))) drains the whole
+        generator up front to build the list, tripping the sentinel with
+        entries_visited still at 0 — the unambiguous RED signal.
+        """
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.backup import create_quick_snapshot
+
+        monkeypatch.setattr(
+            backup_mod, "_QUICK_SNAPSHOT_MAX_TRAVERSAL_ENTRIES", 50, raising=False
+        )
+
+        prior = hermes_home / "state-snapshots" / "20200101-000000"
+        prior.mkdir(parents=True)
+        (prior / "manifest.json").write_text(
+            '{"id": "20200101-000000", "files": {}}'
+        )
+
+        pairing_dir = hermes_home / "pairing"
+        pairing_dir.mkdir()
+
+        class _LazyOverdrawn(Exception):
+            """Raised only if the generator below is pulled past
+            SENTINEL_AFTER — proves entries were drained without the
+            budget ever stopping the pull (eager materialization), not a
+            real resource limit or an infinite hang."""
+
+        class _ChildEntry:
+            """A synthetic subdirectory entry — never actually descended
+            into either way (a correct implementation aborts the whole
+            traversal before popping any of these off the stack; an
+            eager implementation crashes on _LazyOverdrawn before ever
+            reaching the stack at all)."""
+
+            def __init__(self, path, name):
+                self.path = str(path)
+                self.name = name
+
+            def is_dir(self, *args, **kwargs):
+                return True
+
+            def is_file(self, *args, **kwargs):
+                return False
+
+        yielded = {"n": 0}
+        SENTINEL_AFTER = 100  # far above the patched budget (50)
+
+        def lazy_children():
+            """Yields _ChildEntry objects ONE AT A TIME from a single
+            (simulated) directory listing — exactly how a real
+            ScandirIterator behaves: it does not pre-build a list
+            internally either."""
+            i = 0
+            while True:
+                yielded["n"] += 1
+                if yielded["n"] > SENTINEL_AFTER:
+                    raise _LazyOverdrawn(
+                        f"generator was pulled {yielded['n']} times — the "
+                        "traversal budget did not stop the pull; entries "
+                        "were drained eagerly instead of lazily"
+                    )
+                yield _ChildEntry(pairing_dir / f"child-{i}", f"child-{i}")
+                i += 1
+
+        real_scandir = backup_mod.os.scandir
+
+        def fake_scandir(path):
+            if Path(path) == pairing_dir:
+                return _FakeScandirIterator(lazy_children())
+            return real_scandir(path)
+
+        with patch.object(backup_mod.os, "scandir", side_effect=fake_scandir):
+            snap_id = create_quick_snapshot(hermes_home=hermes_home, keep=1)
+
+        assert snap_id is not None
+        assert yielded["n"] <= SENTINEL_AFTER, (
+            "the generator's own sentinel had to intervene — the "
+            "production code drained more entries than the budget "
+            "should ever have allowed"
+        )
+        # The real assertion: pulls stop close to the patched budget (50),
+        # nowhere near the generator's full 100-yield sentinel. A margin
+        # (not exact equality) avoids coupling the test to the "+1 to
+        # detect overrun" implementation detail.
+        assert yielded["n"] <= 60, (
+            f"generator was pulled {yielded['n']} times for a budget of "
+            f"50 — entries were not stopped promptly (looks eager, not "
+            f"lazy)"
+        )
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+
+        assert "failed" in meta, "traversal budget was exceeded but not recorded"
+        assert any("cycle" in reason for reason in meta["failed"].values()), (
+            meta["failed"]
+        )
+
+        assert prior.is_dir(), (
+            "prior complete snapshot was pruned despite an unbounded "
+            "high-fan-out listing"
         )
 
 # ---------------------------------------------------------------------------

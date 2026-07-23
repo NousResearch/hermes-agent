@@ -513,6 +513,46 @@ class RelayAdapter(BasePlatformAdapter):
             error=result.get("error"),
         )
 
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Egress a typing indicator through the connector.
+
+        The base class spawns ``_keep_typing`` for every adapter (a 2s refresh
+        loop for the life of the turn), but the relay adapter inherited the
+        base no-op ``send_typing`` — so hosted/relay chats never showed
+        "is typing…" even though the wire contract (``OutboundOp "typing"``)
+        and every connector-side sender (Discord ``POST /channels/{id}/typing``,
+        Telegram ``sendChatAction``, Signal ``sendTyping``, Slack assistant
+        status) already implement it. This bridges the loop's tick onto the
+        existing outbound frame.
+
+        Two details are load-bearing, mirroring ``send()``:
+          - ``_with_scope``: the connector's egress guard wraps ALL ops
+            (routedEgressGuard), so a typing frame without a resolvable tenant
+            discriminator (metadata.scope_id, or user_id for DMs) is declined
+            exactly like a bare send would be.
+          - the per-frame ``platform`` tag (Phase 1.5): a multi-platform
+            gateway must egress typing through the platform the chat lives on.
+
+        Best-effort: failures are swallowed (``_keep_typing`` already treats
+        send_typing errors as non-fatal, and an older connector that rejects
+        the op just returns an unsuccessful result we ignore). Each call is
+        one-shot — Discord/Telegram indicators self-expire, so there is no
+        state to clean up and the base no-op ``stop_typing`` stays correct.
+        """
+        if self._transport is None:
+            return
+        try:
+            await self._transport.send_outbound(
+                {
+                    "op": "typing",
+                    "chat_id": chat_id,
+                    "metadata": self._with_scope(chat_id, metadata),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:  # noqa: BLE001 - typing is cosmetic, never breaks a turn
+            logger.debug("relay send_typing failed for %s", chat_id, exc_info=True)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
         if self._transport is None:

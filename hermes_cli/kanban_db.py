@@ -6661,6 +6661,9 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Workers are machine sessions: mark them so the skills.platform_enabled
+    # index allowlist applies instead of the full interactive skills index.
+    env.setdefault("HERMES_PLATFORM", "cron")
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:

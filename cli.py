@@ -5199,7 +5199,11 @@ class HermesCLI:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
-                platform="cli",
+                # HERMES_PLATFORM lets a parent process (e.g. the cron
+                # scheduler running script jobs) mark spawned CLI sessions as
+                # machine-platform so the skills.platform_enabled allowlist
+                # applies; explicit agent.platform otherwise wins over env.
+                platform=os.getenv("HERMES_PLATFORM") or "cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),

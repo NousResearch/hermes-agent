@@ -993,6 +993,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     run_env = os.environ.copy()
     run_env["HERMES_HOME"] = str(_get_hermes_home())
+    # Script jobs spawn their own `hermes` subprocesses; without this they
+    # resolve as platform=cli and bypass the skills.platform_enabled.cron
+    # index allowlist, carrying the full interactive skills index.
+    run_env.setdefault("HERMES_PLATFORM", "cron")
     try:
         from hermes_constants import get_subprocess_home
 

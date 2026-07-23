@@ -340,7 +340,9 @@ def _run_agent(
         model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
-        platform="cli",
+        # Machine parents (cron scheduler, kanban dispatcher) mark spawned
+        # oneshots via HERMES_PLATFORM so the skills index allowlist applies.
+        platform=os.getenv("HERMES_PLATFORM") or "cli",
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,

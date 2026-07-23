@@ -300,3 +300,95 @@ class TestResolveSessionAgentRuntimePriority:
              }):
             model, _runtime = runner._resolve_session_agent_runtime(source=source)
         assert model == "parent/model"
+
+
+class TestFormatSessionInfoChannelOverride:
+    """_format_session_info should reflect channel_overrides, not just global config."""
+
+    def test_shows_channel_override_model(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "chan_1": ChannelOverride(
+                            model="channel/model",
+                            provider="openrouter",
+                        ),
+                    },
+                ),
+            },
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chan_1",
+            user_id="u1",
+        )
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}), \
+             patch("gateway.run._load_gateway_config", return_value=None), \
+             patch("agent.model_metadata.get_model_context_length", return_value=128000):
+            info = runner._format_session_info(source=source)
+        assert "channel/model" in info
+        assert "global/model" not in info
+
+    def test_shows_global_model_without_override(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(enabled=True),
+            },
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="unknown_chan",
+            user_id="u1",
+        )
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}), \
+             patch("gateway.run._load_gateway_config", return_value=None), \
+             patch("agent.model_metadata.get_model_context_length", return_value=128000):
+            info = runner._format_session_info(source=source)
+        assert "global/model" in info
+
+    def test_no_source_shows_global_model(self):
+        """Backward compat: no source arg → global model."""
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}), \
+             patch("gateway.run._load_gateway_config", return_value=None), \
+             patch("agent.model_metadata.get_model_context_length", return_value=128000):
+            info = runner._format_session_info()
+        assert "global/model" in info
+
+    def test_thread_inherits_parent_override(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "parent_chan": ChannelOverride(model="parent/model"),
+                    },
+                ),
+            },
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread_1",
+            chat_type="thread",
+            parent_chat_id="parent_chan",
+            user_id="u1",
+        )
+        with patch("gateway.run._resolve_gateway_model", return_value="global/model"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}), \
+             patch("gateway.run._load_gateway_config", return_value=None), \
+             patch("agent.model_metadata.get_model_context_length", return_value=128000):
+            info = runner._format_session_info(source=source)
+        assert "parent/model" in info
+        assert "global/model" not in info

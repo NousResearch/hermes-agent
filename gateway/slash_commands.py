@@ -1444,7 +1444,7 @@ class GatewaySlashCommandsMixin:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from gateway.run import _hermes_home, _load_gateway_config
+        from gateway.run import _hermes_home, _load_gateway_config, _get_channel_override
         import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags_detailed,
@@ -1517,6 +1517,34 @@ class GatewaySlashCommandsMixin:
                     excluded_provs = _excl
         except Exception:
             pass
+
+        # Apply channel_overrides so /model reflects the effective model for
+        # this channel, not just the global config (#issue).
+        cfg_obj = getattr(self, "config", None)
+        if cfg_obj is not None and source is not None:
+            chat_id = str(source.chat_id) if source.chat_id else ""
+            thread_id = (
+                str(source.thread_id)
+                if getattr(source, "thread_id", None)
+                else None
+            )
+            parent_id = (
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            )
+            ch_ov = _get_channel_override(
+                cfg_obj,
+                source.platform,
+                chat_id,
+                thread_id=thread_id,
+                parent_id=parent_id,
+            )
+            if ch_ov is not None:
+                if ch_ov.model:
+                    current_model = ch_ov.model
+                if ch_ov.provider:
+                    current_provider = ch_ov.provider
 
         # Check for session override. Normalize the source the same way a normal
         # message turn does

@@ -13952,15 +13952,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source=source)
+        return self._format_session_info(source=source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, *, source: Optional[SessionSource] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When ``source`` is provided, ``channel_overrides`` are applied so the
+        block reflects the effective model for this channel, not just the
+        global config.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
@@ -13998,6 +14002,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     custom_provs = data.get("custom_providers")
         except Exception:
             pass
+
+        # Apply channel_overrides so the session info reflects the effective
+        # model for this channel, not just the global config.
+        cfg_obj = getattr(self, "config", None)
+        if cfg_obj is not None and source is not None:
+            chat_id = str(source.chat_id) if source.chat_id else ""
+            thread_id = (
+                str(source.thread_id)
+                if getattr(source, "thread_id", None)
+                else None
+            )
+            parent_id = (
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            )
+            ch_ov = _get_channel_override(
+                cfg_obj,
+                source.platform,
+                chat_id,
+                thread_id=thread_id,
+                parent_id=parent_id,
+            )
+            if ch_ov is not None:
+                if ch_ov.model:
+                    model = ch_ov.model
+                    configured_model = ch_ov.model
+                if ch_ov.provider:
+                    provider = ch_ov.provider
+                    configured_provider = ch_ov.provider
 
         # Resolve runtime credentials for probing
         try:

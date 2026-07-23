@@ -10661,6 +10661,74 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _update_hermes_home_clone(
+    git_cmd: list[str],
+    branch: str,
+) -> None:
+    """After updating the install clone, also update the ``$HERMES_HOME/hermes-agent``
+    clone if it exists and is a different path from the install directory.
+
+    The desktop app reads its git status and performs update checks against
+    ``$HERMES_HOME/hermes-agent``, so keeping only the install clone current
+    leaves the desktop showing a stale behind count (issue #68819).
+    """
+    try:
+        from hermes_constants import get_hermes_home as _get_hermes_home
+
+        home_clone = _get_hermes_home() / "hermes-agent"
+        if not home_clone.exists():
+            return
+        git_dir = home_clone / ".git"
+        if not git_dir.exists():
+            return
+        if home_clone.resolve() == PROJECT_ROOT.resolve():
+            return  # same clone, nothing extra to do
+
+        print()
+        print("→ Updating $HERMES_HOME/hermes-agent clone...")
+
+        # Fetch the target branch
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "origin", branch],
+            cwd=home_clone,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            stderr = fetch_result.stderr.strip()[:120]
+            print(f"  ⚠ Failed to fetch: {stderr}")
+            return
+
+        # Try fast-forward pull first
+        pull_result = subprocess.run(
+            git_cmd + ["pull", "--ff-only", "origin", branch],
+            cwd=home_clone,
+            capture_output=True,
+            text=True,
+        )
+        if pull_result.returncode == 0:
+            print("  ✓ $HERMES_HOME/hermes-agent updated")
+            return
+
+        # ff-only failed — history likely diverged or was force-pushed;
+        # reset to match remote exactly.
+        print("  ⚠ Fast-forward not possible, resetting to match remote...")
+        reset_result = subprocess.run(
+            git_cmd + ["reset", "--hard", f"origin/{branch}"],
+            cwd=home_clone,
+            capture_output=True,
+            text=True,
+        )
+        if reset_result.returncode == 0:
+            print("  ✓ $HERMES_HOME/hermes-agent updated (reset)")
+        else:
+            stderr = reset_result.stderr.strip()[:120]
+            print(f"  ⚠ Failed to reset: {stderr}")
+    except Exception:
+        # Never let a secondary clone update failure break the main update.
+        logger.debug("$HERMES_HOME/hermes-agent clone update failed", exc_info=True)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -11046,6 +11114,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
                 print("✓ Already up to date!")
+
+            # Update the $HERMES_HOME/hermes-agent clone if it exists and
+            # differs from the install directory (issue #68819).
+            _update_hermes_home_clone(git_cmd, branch)
+
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
@@ -11305,6 +11378,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("✓ Code updated!")
+
+        # Update the $HERMES_HOME/hermes-agent clone if it exists and
+        # differs from the install directory. The desktop app reads its
+        # git status from this clone; keeping only PROJECT_ROOT current
+        # leaves the desktop showing a stale behind count (issue #68819).
+        _update_hermes_home_clone(git_cmd, branch)
 
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at

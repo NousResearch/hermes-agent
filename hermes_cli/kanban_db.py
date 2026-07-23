@@ -276,6 +276,35 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+def _resolve_pr_guard_window_seconds() -> int:
+    """Return the active-PR respawn-guard window in seconds.
+
+    Reads ``HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS`` from the environment;
+    falls back to ``_RESPAWN_GUARD_PR_WINDOW`` when absent, empty,
+    non-integer, or negative. A value of 0 disables the guard — useful for
+    operators whose deployment never opens PRs (or who are hitting the
+    false-positive class below) and who therefore want the card to respawn
+    immediately rather than being parked for a full day (#67249).
+
+    The sibling rate-limit guard already has an equivalent override
+    (``_resolve_rate_limit_cooldown_seconds`` / the
+    ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` env var). This one mirrors
+    that so both respawn guards are operator-tunable without patching the
+    installed file. The default window stays 24h.
+    """
+    raw = os.environ.get(
+        "HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return _RESPAWN_GUARD_PR_WINDOW
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -7787,13 +7816,18 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    pr_window = _resolve_pr_guard_window_seconds()
+    if pr_window <= 0:
+        # Guard disabled via HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS=0.
+        pass
+    else:
+        pr_cutoff = now - pr_window
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import hermes_cli.main as m
+import pytest
 
 
 def test_marker_round_trip(tmp_path, monkeypatch):
@@ -300,3 +301,159 @@ def test_recovery_output_goes_to_stderr(tmp_path, monkeypatch, capfd):
     assert "interrupted mid-install" not in out
     assert "interrupted mid-install" in err
     assert "recovered" in err
+
+
+def test_stale_setuptools_is_bootstrapped_before_editable_install(tmp_path, monkeypatch):
+    """Recovery must satisfy [build-system] before reading editable metadata."""
+    import json
+    import subprocess
+
+    from packaging.markers import default_environment
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[build-system]\n"
+        'requires = ["setuptools>=77.0,<83"]\n'
+        'build-backend = "setuptools.build_meta"\n'
+    )
+    monkeypatch.setattr(m, "_is_windows", lambda: False)
+    target_python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(
+        m, "_resolve_install_target_python", lambda prefix, env: target_python
+    )
+
+    probe_env = {}
+
+    def report_stale_setuptools(*args, **kwargs):
+        probe_env.update(kwargs["env"])
+        payload = json.dumps(
+            {"version": "65.5.0", "environment": default_environment()}
+        )
+        return subprocess.CompletedProcess(args[0], 0, payload, "")
+
+    monkeypatch.setattr(
+        m.subprocess,
+        "run",
+        report_stale_setuptools,
+    )
+
+    events = []
+
+    def record_backend(cmd, *, env=None, **kwargs):
+        events.append(("backend", cmd, env))
+
+    def record_editable(cmd, *, env=None, scripts_dir=None):
+        events.append(("editable", cmd, env))
+
+    monkeypatch.setattr(m, "_run_install_with_heartbeat", record_backend)
+    monkeypatch.setattr(m, "_run_quarantined_install", record_editable)
+    monkeypatch.setattr(m, "_verify_console_scripts_installed", lambda *a, **k: None)
+
+    env = {
+        "VIRTUAL_ENV": str(tmp_path / "venv"),
+        "PYTHONPATH": "/running/hermes/venv",
+    }
+    m._install_python_dependencies_with_optional_fallback(
+        ["uv", "pip"], env=env
+    )
+
+    assert events == [
+        (
+            "backend",
+            ["uv", "pip", "install", "setuptools>=77.0,<83"],
+            env,
+        ),
+        (
+            "editable",
+            ["uv", "pip", "install", "-e", ".[all]"],
+            env,
+        ),
+    ]
+    assert "PYTHONPATH" not in probe_env
+
+
+def test_current_build_backend_is_not_reinstalled(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    from packaging.markers import default_environment
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[build-system]\n"
+        'requires = ["setuptools>=77.0,<83"]\n'
+    )
+    monkeypatch.setattr(
+        m,
+        "_resolve_install_target_python",
+        lambda prefix, env: tmp_path / "venv" / "bin" / "python",
+    )
+    monkeypatch.setattr(
+        m.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0],
+            0,
+            json.dumps(
+                {"version": "81.0.0", "environment": default_environment()}
+            ),
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        m,
+        "_run_install_with_heartbeat",
+        lambda *a, **k: pytest.fail("healthy build backend must stay unchanged"),
+    )
+
+    m._ensure_build_system_requirements(
+        ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "venv")}
+    )
+
+
+def test_target_environment_controls_build_requirement_marker(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    from packaging.markers import default_environment
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[build-system]\n"
+        'requires = ["setuptools>=77.0,<83; python_version == \'9.9\'"]\n'
+    )
+    monkeypatch.setattr(
+        m,
+        "_resolve_install_target_python",
+        lambda prefix, env: tmp_path / "venv" / "bin" / "python",
+    )
+    target_environment = default_environment()
+    target_environment["python_version"] = "9.9"
+    target_environment["python_full_version"] = "9.9.0"
+    payload = json.dumps(
+        {"version": "65.5.0", "environment": target_environment}
+    )
+    monkeypatch.setattr(
+        m.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, payload, ""),
+    )
+    calls = []
+    monkeypatch.setattr(
+        m,
+        "_run_install_with_heartbeat",
+        lambda cmd, **kwargs: calls.append(cmd),
+    )
+
+    m._ensure_build_system_requirements(
+        ["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path / "venv")}
+    )
+
+    assert calls == [
+        [
+            "uv",
+            "pip",
+            "install",
+            "setuptools>=77.0,<83; python_version == '9.9'",
+        ]
+    ]

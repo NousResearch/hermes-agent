@@ -8246,6 +8246,126 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _load_build_system_requirements() -> list[str]:
+    """Return the PEP 517 backend requirements declared by this checkout."""
+    try:
+        import tomllib
+
+        with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
+            requires = tomllib.load(handle).get("build-system", {}).get("requires", [])
+    except Exception as exc:
+        logger.debug("Could not read build-system requirements: %s", exc)
+        return []
+
+    if not isinstance(requires, list):
+        return []
+    return [requirement for requirement in requires if isinstance(requirement, str)]
+
+
+def _build_requirement_is_satisfied(
+    requirement: str,
+    install_cmd_prefix: list[str],
+    env: dict[str, str] | None,
+) -> bool:
+    """Check one build requirement in the environment the install targets."""
+    try:
+        import json
+
+        from packaging.requirements import Requirement
+
+        parsed = Requirement(requirement)
+        target_python = _resolve_install_target_python(install_cmd_prefix, env)
+        if target_python is None:
+            # Do not add a new install side effect when the caller does not
+            # expose a target interpreter (notably dry-run/test and custom
+            # installer paths). The editable install remains authoritative.
+            return True
+        probe_env = dict(env) if env is not None else dict(os.environ)
+        # The Desktop launcher may carry the running Hermes venv on
+        # PYTHONPATH. Letting that leak into the target interpreter makes an
+        # old target setuptools look healthy because it imports the running
+        # environment's newer copy instead.
+        probe_env.pop("PYTHONPATH", None)
+        probe_env.pop("PYTHONHOME", None)
+        probe_script = (
+            "import importlib.metadata as md, json, os, platform, sys\n"
+            "iv = sys.implementation.version\n"
+            "suffix = {'alpha': 'a', 'beta': 'b', 'candidate': 'rc'}.get(iv.releaselevel, '')\n"
+            "implementation_version = f'{iv.major}.{iv.minor}.{iv.micro}'\n"
+            "if suffix: implementation_version += suffix + str(iv.serial)\n"
+            "try: installed = md.version(sys.argv[1])\n"
+            "except md.PackageNotFoundError: installed = None\n"
+            "environment = {\n"
+            " 'implementation_name': sys.implementation.name,\n"
+            " 'implementation_version': implementation_version,\n"
+            " 'os_name': os.name,\n"
+            " 'platform_machine': platform.machine(),\n"
+            " 'platform_python_implementation': platform.python_implementation(),\n"
+            " 'platform_release': platform.release(),\n"
+            " 'platform_system': platform.system(),\n"
+            " 'platform_version': platform.version(),\n"
+            " 'python_full_version': platform.python_version(),\n"
+            " 'python_version': '.'.join(platform.python_version_tuple()[:2]),\n"
+            " 'sys_platform': sys.platform,\n"
+            "}\n"
+            "print(json.dumps({'version': installed, 'environment': environment}))\n"
+        )
+        result = subprocess.run(
+            [
+                str(target_python),
+                "-c",
+                probe_script,
+                parsed.name,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=probe_env,
+        )
+        if result.returncode != 0:
+            return False
+        payload = json.loads(result.stdout)
+        marker_environment = payload.get("environment")
+        if not isinstance(marker_environment, dict):
+            return False
+        if parsed.marker is not None and not parsed.marker.evaluate(
+            environment=marker_environment
+        ):
+            return True
+        installed = payload.get("version")
+        if not isinstance(installed, str):
+            return False
+        return not parsed.specifier or parsed.specifier.contains(
+            installed, prereleases=True
+        )
+    except Exception:
+        return False
+
+
+def _ensure_build_system_requirements(
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None
+) -> None:
+    """Establish the declared build backend before editable metadata is read.
+
+    Build isolation normally installs these requirements in a temporary
+    environment. Recovery cannot rely on that default, though: an inherited
+    no-isolation setting or an older installer can execute ``build_editable``
+    against the target venv. In that state setuptools 65.5 rejects Hermes'
+    PEP 639 license metadata before the normal editable install can repair it.
+    """
+    requirements = _load_build_system_requirements()
+    if not requirements or all(
+        _build_requirement_is_satisfied(requirement, install_cmd_prefix, env)
+        for requirement in requirements
+    ):
+        return
+
+    print("  → Bootstrapping the declared Python build backend...")
+    _run_install_with_heartbeat(
+        install_cmd_prefix + ["install", *requirements], env=env
+    )
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -8262,6 +8382,7 @@ def _install_python_dependencies_with_optional_fallback(
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
     """
+    _ensure_build_system_requirements(install_cmd_prefix, env=env)
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:

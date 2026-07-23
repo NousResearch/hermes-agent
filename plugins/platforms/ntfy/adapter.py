@@ -180,6 +180,7 @@ class NtfyAdapter(BasePlatformAdapter):
 
         # Message deduplication: msg_id -> timestamp
         self._seen_messages: Dict[str, float] = {}
+        self._last_seen_id: Optional[str] = None
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -239,6 +240,8 @@ class NtfyAdapter(BasePlatformAdapter):
         """Open an HTTP streaming connection and dispatch events."""
         # poll=false keeps a persistent streaming connection alive with keepalive events
         params = {"poll": "false"}
+        if self._last_seen_id:
+            params["since"] = self._last_seen_id
         async with self._http_client.stream(
             "GET",
             url,
@@ -311,6 +314,8 @@ class NtfyAdapter(BasePlatformAdapter):
         if self._is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
+        if event.get("id"):
+            self._last_seen_id = event["id"]
 
         # Echo-loop prevention: skip messages tagged by this adapter.
         tags = event.get("tags") or []

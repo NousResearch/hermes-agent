@@ -5,8 +5,24 @@ import json
 import os
 import shlex
 import sys
+from pathlib import Path
 
 import pytest
+
+# The subprocess-boundary tests below spawn ``sys.executable -c`` with a tmp
+# cwd. Without an explicit PYTHONPATH the child resolves ``hermes_cli`` /
+# ``agent`` through whatever install is on sys.path (in a worktree that is the
+# MAIN checkout's editable install, which may not contain the code under
+# test). Pin the repo root so the child always imports the tree being tested.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _python_with_repo_path(code: str) -> str:
+    """Build a shell command running *code* with the repo under test on PYTHONPATH."""
+    return (
+        f"PYTHONPATH={shlex.quote(str(_REPO_ROOT))} "
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    )
 
 
 def _make_running_kanban_task(monkeypatch, tmp_path):
@@ -365,7 +381,7 @@ def test_delegate_child_local_execute_cannot_complete_parent_via_kanban_cli(
     try:
         with delegated_child_context():
             result = env.execute(
-                f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
+                _python_with_repo_path(code),
                 timeout=15,
             )
     finally:
@@ -416,7 +432,7 @@ def test_delegate_child_subprocess_cannot_complete_parent_by_importing_kanban_db
     try:
         with delegated_child_context():
             result = env.execute(
-                f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
+                _python_with_repo_path(code),
                 timeout=15,
             )
     finally:
@@ -463,7 +479,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     try:
         with delegated_child_context():
             result = env.execute(
-                f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
+                _python_with_repo_path(code),
                 timeout=15,
             )
     finally:

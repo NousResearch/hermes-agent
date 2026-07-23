@@ -234,6 +234,27 @@ class TestSubdirectoryHintTracker:
         # Should be capped
         assert len(result) < 20_000
 
+    def test_total_hint_cap_multiple_ancestors(self, tmp_path):
+        """Total hints from multiple ancestors should be capped."""
+        # Create nested dirs: a/b/c/d/e/file.py, each with a large AGENTS.md
+        # _MAX_ANCESTOR_WALK=5 so 5 ancestor levels get scanned
+        d = tmp_path
+        for name in ["a", "b", "c"]:
+            d = d / name
+            d.mkdir(exist_ok=True)
+            (d / "AGENTS.md").write_text("X" * 8_000)
+        deep_file = d / "file.py"
+        deep_file.write_text("# test")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(deep_file)})
+        assert result is not None
+        # Without the total cap, this would be ~24k chars (3 × 8k)
+        # With the cap, it should be <= _MAX_TOTAL_HINT_CHARS + marker
+        from agent.subdirectory_hints import _MAX_TOTAL_HINT_CHARS
+        assert len(result) <= _MAX_TOTAL_HINT_CHARS + 100
+        assert "truncated" in result.lower()
+
     def test_empty_args(self, project):
         """Empty args should not crash."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

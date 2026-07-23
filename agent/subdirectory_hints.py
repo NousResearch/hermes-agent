@@ -35,6 +35,11 @@ _HINT_FILENAMES = [
 # Maximum chars per hint file to prevent context bloat
 _MAX_HINT_CHARS = 8_000
 
+# Maximum total chars for all hints appended to a single tool result.
+# Prevents massive output inflation when multiple ancestor directories
+# each contribute hint files (e.g. 5 ancestors × 3 files × 8k = 120k).
+_MAX_TOTAL_HINT_CHARS = 16_000
+
 # Tool argument keys that typically contain file paths
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 
@@ -95,7 +100,13 @@ class SubdirectoryHintTracker:
         if not all_hints:
             return None
 
-        return "\n\n" + "\n\n".join(all_hints)
+        combined = "\n\n" + "\n\n".join(all_hints)
+        if len(combined) > _MAX_TOTAL_HINT_CHARS:
+            combined = (
+                combined[:_MAX_TOTAL_HINT_CHARS]
+                + "\n\n[...subdirectory hints truncated to save context]"
+            )
+        return combined
 
     def _extract_directories(
         self, tool_name: str, args: Dict[str, Any]

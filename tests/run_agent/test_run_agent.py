@@ -5688,6 +5688,82 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_truncated_tool_json_after_tool_batch_closes_tool_tail(self, agent):
+        """finish_reason=tool_calls + truncated args after a real tool must close tool→user."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"ok.md","content":"x"}',
+            call_id="c_ok",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[good_tc],
+        )
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c_bad",
+        )
+        bad_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[bad_tc],
+        )
+        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write then truncate")
+
+        assert result.get("partial") is True
+        msgs = result.get("messages") or []
+        assert msgs[-1].get("role") == "assistant"
+        assert "truncated" in (msgs[-1].get("content") or "").lower()
+        assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
+
+    def test_length_truncated_tool_exhaustion_after_tool_batch_closes_tool_tail(self, agent):
+        """Length-handler truncated-tool exhaustion after a tool batch must close tool→user."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"ok.md","content":"x"}',
+            call_id="c_ok",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[good_tc],
+        )
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c_bad",
+        )
+        bad_resp = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        # One successful tool turn, then 4 truncated retries + 5th exhaustion.
+        agent.client.chat.completions.create.side_effect = [
+            good_resp,
+            bad_resp, bad_resp, bad_resp, bad_resp, bad_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write then hit length truncate")
+
+        assert result.get("partial") is True
+        assert "truncated due to output length limit" in (result.get("error") or "")
+        msgs = result.get("messages") or []
+        assert msgs[-1].get("role") == "assistant"
+        assert "truncated" in (msgs[-1].get("content") or "").lower()
+
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must signal the dispatcher when its
         iteration budget is exhausted, otherwise the task silently re-runs

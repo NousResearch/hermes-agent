@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: gmail
+category: email
+description: Read, search, send, and manage Gmail messages via Google's official MCP server.
+source: https://github.com/GongRzhe/Gmail-MCP-Server
+
+# Gmail via community npm package `@gongrzhe/server-gmail-autoauth-mcp`,
+# which handles Google OAuth locally and stores tokens under
+# ~/.gmail-mcp/credentials.json. First run triggers browser auth.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "@gongrzhe/server-gmail-autoauth-mcp@1.1.11"
+
+auth:
+  type: oauth
+  provider: google
+  scopes:
+    - https://www.googleapis.com/auth/gmail.modify
+
+post_install: |
+  On first run, Gmail MCP will open a browser to authenticate with Google.
+  You need a Google Cloud project with the Gmail API enabled and OAuth
+  credentials downloaded as ~/.gmail-mcp/gcp-oauth.keys.json.
+
+  Full setup:
+    1. https://console.cloud.google.com → create/select project
+    2. APIs & Services → enable Gmail API
+    3. OAuth consent screen → external, add your email as test user
+    4. Credentials → create OAuth client (desktop app)
+    5. Download JSON → save as ~/.gmail-mcp/gcp-oauth.keys.json
+    6. Restart your Hermes session

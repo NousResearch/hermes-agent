@@ -173,26 +173,28 @@ _DESKTOP_WINDOW_NAMES = (
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
 
-def _cua_no_overlay() -> bool:
-    """True when Hermes should pass ``--no-overlay`` to cua-driver.
-
-    Reads ``computer_use.no_overlay`` from config.yaml.  Default is
-    ``None`` (auto-detect): disable the overlay where idle CPU burn is a
-    known failure mode — macOS (cursor-overlay vImage redraw loop,
-    #28152/#47032), headless Linux / WSL2 / containers — and keep it on
-    Windows / desktop Linux with a display. Explicit ``True`` / ``False``
-    in config overrides auto-detection.
-    """
+def _computer_use_cfg() -> Dict[str, Any]:
+    """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     try:
         from hermes_cli.config import load_config
 
-        cfg = load_config() or {}
-        cu = cfg.get("computer_use") or {}
-        val = cu.get("no_overlay")
-        if val is not None:
-            return bool(val)
+        return (load_config() or {}).get("computer_use") or {}
     except Exception:
-        pass
+        return {}
+
+
+def _cua_no_overlay() -> bool:
+    """True when Hermes should pass ``--no-overlay`` to cua-driver.
+
+    Reads ``computer_use.no_overlay``. Default ``None`` (auto-detect):
+    disable the overlay where idle CPU burn is a known failure mode —
+    macOS (cursor-overlay vImage redraw loop, #28152/#47032), headless
+    Linux / WSL2 / containers — and keep it on Windows / desktop Linux
+    with a display. Explicit ``True`` / ``False`` overrides auto-detection.
+    """
+    val = _computer_use_cfg().get("no_overlay")
+    if val is not None:
+        return bool(val)
     # Auto-detect: macOS overlay can peg a core indefinitely after a
     # computer_use session (#47032). Prefer off until the driver teardown
     # is solid; set computer_use.no_overlay: false to keep the cursor.
@@ -214,20 +216,24 @@ def _cua_no_overlay() -> bool:
 def _cua_telemetry_disabled() -> bool:
     """True when Hermes should disable cua-driver telemetry for this user.
 
-    Reads ``computer_use.cua_telemetry`` from config.yaml. Default is False
-    (telemetry off). Any failure to read config fails SAFE — toward the
-    privacy-preserving default of telemetry disabled.
+    Reads ``computer_use.cua_telemetry`` (default False → telemetry off).
+    Unreadable config falls SAFE toward disabling telemetry.
+    """
+    # opt-in flag: True => user wants telemetry => do NOT disable.
+    return not bool(_computer_use_cfg().get("cua_telemetry", False))
+
+
+def _computer_use_max_image_dimension() -> Optional[int]:
+    """Longest-edge cap for cua-driver screenshots, or None to leave unset.
+
+    Reads ``computer_use.max_image_dimension`` (default 1456, matching the
+    aux-vision downscale). ``0`` / negative / non-numeric → None.
     """
     try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config() or {}
-        cu = cfg.get("computer_use") or {}
-        # opt-in flag: True => user wants telemetry => do NOT disable.
-        return not bool(cu.get("cua_telemetry", False))
-    except Exception:
-        # Config unreadable — default to disabling telemetry (fail safe).
-        return True
+        dim = int(_computer_use_cfg().get("max_image_dimension", 1456))
+    except (TypeError, ValueError):
+        return 1456
+    return dim if dim > 0 else None
 
 
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -1575,16 +1581,26 @@ class CuaDriverBackend(ComputerUseBackend):
         except Exception as e:
             logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
 
-        # Belt-and-suspenders when --no-overlay is unsupported or ignored:
-        # hide the agent cursor overlay via the session API so macOS idle
-        # redraw loops cannot keep burning CPU after the first action. Only
-        # once the handshake flipped `_started` — otherwise call_tool would
-        # re-enter session.start() (see _LIFECYCLE_CALLS).
-        if _cua_no_overlay() and self._session._started:
-            try:
-                self.set_agent_cursor_enabled(False, cursor_id=self._session_id)
-            except Exception as e:
-                logger.debug("cua-driver set_agent_cursor_enabled failed: %s", e)
+        # Post-handshake session tuning. Both guard on `_started`: before the
+        # handshake flips it, call_tool would re-enter session.start() (see
+        # _LIFECYCLE_CALLS) and tests that stub start() would recurse.
+        if self._session._started:
+            # Cap screenshot size so every later get_window_state / SOM
+            # capture pays less over the daemon socket and in the model turn.
+            max_dim = _computer_use_max_image_dimension()
+            if max_dim:
+                try:
+                    self.set_config(max_image_dimension=max_dim)
+                except Exception as e:
+                    logger.debug("cua-driver set_config(max_image_dimension) failed: %s", e)
+            # Belt-and-suspenders when --no-overlay is unsupported or ignored:
+            # hide the agent cursor overlay via the session API so macOS idle
+            # redraw loops cannot keep burning CPU after the first action.
+            if _cua_no_overlay():
+                try:
+                    self.set_agent_cursor_enabled(False, cursor_id=self._session_id)
+                except Exception as e:
+                    logger.debug("cua-driver set_agent_cursor_enabled failed: %s", e)
 
     def stop(self) -> None:
         # Tear the cua-driver session down before disconnecting so the

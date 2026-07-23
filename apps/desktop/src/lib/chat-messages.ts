@@ -150,6 +150,59 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
+export interface UnspokenTurnSpeech {
+  /** First unspoken assistant bubble — stable for the turn, the live speech session binds to it. */
+  id: string
+  /** Whether the newest assistant bubble is still streaming. */
+  pending: boolean
+  /** All unspoken assistant text in message order, bubbles joined on a blank line. */
+  text: string
+}
+
+/**
+ * Collect every unspoken assistant bubble after `lastSpokenId`, in order.
+ *
+ * A turn with tool calls produces several assistant bubbles — narration
+ * ("Let me check…") sealed as interims, then the final answer as a fresh
+ * bubble. Voice conversation speaks a turn through ONE live session bound to
+ * one response id, so it needs all of that text as a single growing string;
+ * selecting only one bubble silently drops everything after it. The blank-line
+ * join is a sentence boundary for the server's cutter, so a sealed bubble's
+ * tail is flushed as soon as the next bubble starts.
+ */
+export function collectUnspokenTurnSpeech(
+  messages: ChatMessage[],
+  lastSpokenId: string | null
+): UnspokenTurnSpeech | null {
+  const spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
+
+  let id: string | null = null
+  let pending = false
+  const parts: string[] = []
+
+  for (const message of messages.slice(spokenIndex + 1)) {
+    if (message.role !== 'assistant' || message.hidden) {
+      continue
+    }
+
+    pending = Boolean(message.pending)
+    const text = chatMessageText(message).trim()
+
+    if (!text) {
+      continue
+    }
+
+    id ??= message.id
+    parts.push(text)
+  }
+
+  if (!id) {
+    return null
+  }
+
+  return { id, pending, text: parts.join('\n\n') }
+}
+
 const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 /**

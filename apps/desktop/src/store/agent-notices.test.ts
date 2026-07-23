@@ -52,7 +52,14 @@ test('sticky notices never auto-dismiss', () => {
 })
 
 test('ttl notice carries its ttl_ms as the duration', () => {
-  const toast = noticeToToast({ key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ restored', ttl_ms: 8000 })
+  const toast = noticeToToast({
+    key: 'credits.restored',
+    kind: 'ttl',
+    level: 'success',
+    text: '✓ restored',
+    ttl_ms: 8000
+  })
+
   expect(toast?.durationMs).toBe(8000)
 })
 
@@ -118,8 +125,12 @@ test('usageFraction derives $used / $cap from the notice text', () => {
 test('usage accent stays muted below 75%, then ramps orange → red', () => {
   expect(noticeAccent(usage({ text: "• You've used $10.00 of your $20.00 cap" }))).toBeUndefined() // 50%
   expect(noticeAccent(usage({ text: "• You've used $14.80 of your $20.00 cap" }))).toBeUndefined() // 74%
-  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $15.00 of your $20.00 cap" }))).toBe('var(--ui-orange)') // 75%
-  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $17.80 of your $20.00 cap" }))).toBe('var(--ui-orange)') // 89%
+  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $15.00 of your $20.00 cap" }))).toBe(
+    'var(--ui-orange)'
+  ) // 75%
+  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $17.80 of your $20.00 cap" }))).toBe(
+    'var(--ui-orange)'
+  ) // 89%
   expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $18.00 of your $20.00 cap" }))).toBe('var(--ui-red)') // 90%
   expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $20.00 of your $20.00 cap" }))).toBe('var(--ui-red)') // 100%
 })

@@ -215,9 +215,7 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
         {notification.title && <AlertTitle className="col-start-auto">{notification.title}</AlertTitle>}
         <AlertDescription className="col-start-auto">
           <p className="m-0">{renderMessage(notification.message, accent)}</p>
-          {notification.meta && (
-            <p className="m-0 text-xs text-muted-foreground tabular-nums">{notification.meta}</p>
-          )}
+          {notification.meta && <p className="m-0 text-xs text-muted-foreground tabular-nums">{notification.meta}</p>}
           {hasDetail && <NotificationDetail detail={notification.detail || ''} />}
           {notification.action && (
             <Button

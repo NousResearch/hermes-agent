@@ -22,8 +22,13 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     """Return the model's wire-compatible reasoning config."""
     if not isinstance(reasoning_config, dict):
         return reasoning_config
+    normalized_model = (model or "").lower()
+    ultra_uses_max = any(
+        token in normalized_model
+        for token in ("gpt-5.6", "glm-5.2", "glm-5-2", "glm-5p2")
+    )
     if (
-        "gpt-5.6" in (model or "").lower()
+        ultra_uses_max
         and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
     ):
         normalized = dict(reasoning_config)

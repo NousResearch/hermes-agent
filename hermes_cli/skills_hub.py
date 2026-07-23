@@ -655,7 +655,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         source_url=source_url_for_bundle(bundle),
         cache_dir=HUB_DIR / "scan-cache",
     )
-    c.print(format_scan_report(result))
+    c.print(format_scan_report(result), markup=False)
     freshness = "fresh" if scan_provenance["fresh"] else "cached"
     c.print(
         f"[dim]Scan provenance: {freshness}; scanner "
@@ -1101,7 +1101,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             continue
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
-        c.print(format_scan_report(result))
+        c.print(format_scan_report(result), markup=False)
 
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
@@ -1481,7 +1481,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     # Self-scan before publishing
     c.print(f"[bold]Scanning '{name}' before publish...[/]")
     result = scan_skill(path, source="self")
-    c.print(format_scan_report(result))
+    c.print(format_scan_report(result), markup=False)
     if result.verdict == "dangerous":
         c.print("[bold red]Cannot publish a skill with DANGEROUS verdict.[/]\n")
         return

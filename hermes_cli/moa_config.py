@@ -105,6 +105,9 @@ def _clean_slot(slot: Any) -> dict[str, Any] | None:
     effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
     if effort:
         clean["reasoning_effort"] = effort
+    extra_body = slot.get("extra_body")
+    if isinstance(extra_body, dict) and extra_body:
+        clean["extra_body"] = dict(extra_body)
     return clean
 
 

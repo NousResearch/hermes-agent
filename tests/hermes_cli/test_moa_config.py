@@ -125,6 +125,56 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
     assert preset["aggregator"]["reasoning_effort"] == "xhigh"
 
 
+def test_normalize_moa_config_preserves_slot_extra_body():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.6-sol",
+                            "extra_body": {"service_tier": "priority"},
+                        },
+                    ],
+                    "aggregator": {
+                        "provider": "openai-codex",
+                        "model": "gpt-5.6-sol",
+                        "extra_body": {"reasoning": {"effort": "high"}},
+                    },
+                }
+            }
+        }
+    )
+
+    preset = cfg["presets"]["p"]
+    assert preset["reference_models"][0]["extra_body"] == {"service_tier": "priority"}
+    assert preset["aggregator"]["extra_body"] == {"reasoning": {"effort": "high"}}
+
+
+def test_normalize_moa_config_drops_invalid_extra_body():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "extra_body": "not-a-dict"},
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "extra_body": {}},
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "extra_body": None},
+                    ],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                }
+            }
+        }
+    )
+
+    preset = cfg["presets"]["p"]
+    assert "extra_body" not in preset["reference_models"][0]
+    assert "extra_body" not in preset["reference_models"][1]
+    assert "extra_body" not in preset["reference_models"][2]
+    assert "extra_body" not in preset["aggregator"]
+
+
 def test_normalize_moa_config_coerces_numeric_strings():
     """Valid numeric strings (e.g. from YAML round-trip) must coerce correctly."""
     cfg = normalize_moa_config({"max_tokens": "8192", "reference_temperature": "0.9"})

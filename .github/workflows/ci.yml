@@ -130,7 +130,10 @@ jobs:
   docker:
     name: Build&Test Docker image
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
+    # Trusted main pushes run docker.yml directly so its container-publish
+    # environment secrets never cross this reusable-workflow call. PR runs
+    # remain build/test-only and secret-free.
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true')
     uses: ./.github/workflows/docker.yml
 
   supply-chain:

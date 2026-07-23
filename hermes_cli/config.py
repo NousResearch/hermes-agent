@@ -1129,6 +1129,42 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Autonomous heartbeat (Consciousness Loop) — off by default.
+        # When enabled, the agent runs a self-scheduling L2 tick loop
+        # between user messages so it can act on due reminders, advance
+        # long-running tasks, or make its own decision about when to
+        # speak up. Heartbeat prompts explicitly tell the model that
+        # ordinary assistant text is *private working text* and that
+        # only send_message-style calls actually reach anyone.
+        #
+        # Adapted from BaiLongma (MIT). See NOTICE.md.
+        "heartbeat": {
+            # Master switch. False = do not construct the loop at all.
+            "enabled": False,
+            # Base tick interval in seconds when idle (no messages, no
+            # custom cadence, no awakening). Bounded [10, 3600].
+            "base_tick_interval_seconds": 60,
+            # Watchdog: if a single run_turn call exceeds this many
+            # seconds, abort the underlying LLM call and re-schedule so
+            # the loop can never permanently stall on a stuck tool.
+            "run_turn_watchdog_seconds": 300,
+            # Fire one immediate L2 tick on startup (used to boot the
+            # startup self-check). Off by default so enabling the
+            # feature never surprises users with an immediate tick.
+            "run_immediate_tick_on_start": False,
+            # Cap on autonomous ticks per calendar day (soft budget).
+            # 0 disables the cap. The runtime honours whatever the loop
+            # returns; this only exists so a runaway configuration can't
+            # burn credits unattended.
+            "max_daily_ticks": 288,
+            # Quiet hours in local time (HH:MM 24h). When set, the loop
+            # keeps scheduling but skips autonomous ticks inside the
+            # window (user messages still preempt normally). Empty
+            # strings disable the window.
+            "quiet_hours_start": "",
+            "quiet_hours_end": "",
+        },
     },
 
     "terminal": {
@@ -3537,6 +3573,19 @@ DEFAULT_CONFIG = {
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 33,
+
+    # Federation: cross-machine agent communication.
+    # Enabled peers can discover each other and delegate tasks across machines.
+    # Each peer exposes {url}/federation/ping and {url}/federation/task endpoints.
+    # Auth is HMAC-SHA256 with a shared_secret per peer (empty = no auth).
+    "federation": {
+        "enabled": False,
+        "peers": [
+            # Example peer configuration:
+            # {"name": "hermes-gpu-1", "url": "http://10.0.0.5:8642",
+            #  "shared_secret": "", "enabled": True, "tags": ["gpu"]},
+        ],
+    },
 }
 
 # =============================================================================

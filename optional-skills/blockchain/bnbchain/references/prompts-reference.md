@@ -1,6 +1,6 @@
 # MCP prompts reference
 
-The BNB Chain MCP server exposes **prompts** that return guided analysis or explanations. Use these prompt names when invoking MCP prompts (e.g. from Cursor or Claude).
+The BNB Chain MCP server exposes **prompts** that return guided analysis or explanations. Use these prompt names when invoking MCP prompts through Hermes.
 
 | Prompt name | When to use |
 |-------------|-------------|

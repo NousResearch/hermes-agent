@@ -1839,15 +1839,43 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
 
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
+            # llama.cpp exposes its runtime window as ``meta.n_ctx`` and uses
+            # the GGUF path as the model id.  A single-model llama.cpp server
+            # therefore cannot match a user-facing configured alias, but its
+            # sole entry is still authoritative for this endpoint.
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("data", [])
-                for m in models_list:
-                    if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                matching_model = next(
+                    (
+                        m for m in models_list
+                        if _model_id_matches(m.get("id", ""), model)
+                    ),
+                    None,
+                )
+                if matching_model is None and len(models_list) == 1:
+                    sole_model = models_list[0]
+                    sole_meta = sole_model.get("meta") if isinstance(sole_model, dict) else None
+                    if isinstance(sole_meta, dict) and (
+                        sole_meta.get("n_ctx") or sole_meta.get("n_ctx_train")
+                    ):
+                        matching_model = sole_model
+                if isinstance(matching_model, dict):
+                    ctx = (
+                        matching_model.get("max_model_len")
+                        or matching_model.get("context_length")
+                        or matching_model.get("max_tokens")
+                    )
+                    if not (ctx and isinstance(ctx, (int, float))):
+                        meta = matching_model.get("meta")
+                        if isinstance(meta, dict):
+                            # ``n_ctx`` is llama.cpp's configured runtime
+                            # window; ``n_ctx_train`` is only the model's
+                            # training limit and may be larger.
+                            ctx = meta.get("n_ctx") or meta.get("n_ctx_train")
+                    if ctx and isinstance(ctx, (int, float)):
+                        return int(ctx)
     except Exception:
         pass
 

@@ -262,6 +262,37 @@ class TestBlueBubblesMentionGating:
         assert response.status == 200
         assert [event.text for event in handled] == ["hello from a dm"]
 
+    @pytest.mark.asyncio
+    async def test_dm_read_receipt_uses_webhook_chat_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=True)
+        read_targets = []
+
+        async def fake_handle_message(event):
+            return None
+
+        async def fake_mark_read(chat_id):
+            read_targets.append(chat_id)
+            return True
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [
+                    {"guid": "any;-;+15551234567", "chatIdentifier": "+15551234567"}
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert read_targets == ["any;-;+15551234567"]
+
 
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):

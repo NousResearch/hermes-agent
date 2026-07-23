@@ -1,0 +1,8 @@
+# Static chart renderer dependencies. Keep ranges bounded so an unrelated
+# major release cannot silently change generated chart output.
+matplotlib>=3.10,<4
+seaborn>=0.13,<0.14
+japanize-matplotlib>=1.1.3,<1.2
+# japanize-matplotlib imports distutils; setuptools provides the compatible
+# implementation on Python 3.12+ where distutils is no longer in stdlib.
+setuptools>=77,<83

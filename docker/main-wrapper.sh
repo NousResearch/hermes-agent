@@ -53,14 +53,16 @@ fi
 # to the hermes user's home before dropping privileges so libraries that
 # resolve paths via $HOME (e.g. discord lockfile under XDG_STATE_HOME)
 # don't try to write to /root.
-export HOME=/opt/data
+# When HERMES_REAL_HOME is set (e.g. for custom bind-mount layouts),
+# use it instead of the default /opt/data.
+export HOME=${HERMES_REAL_HOME:-/opt/data}
 
 # Save the Docker -w (or default) working directory before init
-# scripts cd to /opt/data, so the container starts in the
+# scripts cd to the home directory, so the container starts in the
 # directory the user requested.
 _hermes_orig_cwd="${HERMES_ORIG_CWD:-$PWD}"
 
-cd /opt/data
+cd "${HERMES_REAL_HOME:-/opt/data}"
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
 

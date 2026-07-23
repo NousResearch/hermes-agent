@@ -547,7 +547,7 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     assert run_path.is_file()
     assert run_path.stat().st_mode & 0o111  # executable
     run_text = run_path.read_text()
-    assert "export HOME=/opt/data" in run_text
+    assert 'export HOME=${HERMES_REAL_HOME:-/opt/data}' in run_text
     assert "hermes -p coder gateway run" in run_text
     assert "s6-setuidgid hermes" in run_text
     # Sentinel marking this as the supervised-child invocation. Without
@@ -676,8 +676,26 @@ def test_render_run_script_resets_home_before_exec() -> None:
 
     run_text = S6ServiceManager._render_run_script("coder", {})
 
-    assert "export HOME=/opt/data" in run_text
+    assert 'export HOME=${HERMES_REAL_HOME:-/opt/data}' in run_text
     assert "exec s6-setuidgid hermes hermes -p coder gateway run --replace" in run_text
+
+
+def test_render_run_script_uses_hermes_real_home_when_set() -> None:
+    """When HERMES_REAL_HOME is set in the container environment, the
+    gateway s6 run script should use it for HOME instead of /opt/data.
+
+    This allows custom bind-mount layouts (e.g. /home/agent) to work
+    without hardcoded paths in the run script.
+    """
+    run_text = S6ServiceManager._render_run_script("coder", {})
+
+    # The script uses shell parameter expansion: ${HERMES_REAL_HOME:-/opt/data}
+    # When HERMES_REAL_HOME is set, it's used; otherwise falls back to /opt/data.
+    assert 'export HOME=${HERMES_REAL_HOME:-/opt/data}' in run_text
+    assert 'cd "${HERMES_REAL_HOME:-/opt/data}"' in run_text
+    # Must NOT contain the old hardcoded path
+    assert 'export HOME=/opt/data"' not in run_text
+    assert '"cd /opt/data"' not in run_text
 
 
 def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:

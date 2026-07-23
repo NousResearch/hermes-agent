@@ -20,10 +20,11 @@ case "${HERMES_DASHBOARD:-}" in
 esac
 
 # with-contenv repopulates HOME from /init as /root. Reset it before
-# dropping privileges so HOME-anchored state lands under /opt/data.
-export HOME=/opt/data
+# dropping privileges so HOME-anchored state lands under the correct directory.
+# When HERMES_REAL_HOME is set, use it instead of the default /opt/data.
+export HOME=${HERMES_REAL_HOME:-/opt/data}
 
-cd /opt/data
+cd "${HERMES_REAL_HOME:-/opt/data}"
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
 

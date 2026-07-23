@@ -82,6 +82,6 @@ fi
 # this, $HOME stays /root and any library that resolves paths off $HOME
 # (XDG caches, lockfiles, .config writes) will try to write to /root and
 # fail with EACCES. Mirrors main-wrapper.sh.
-export HOME=/opt/data
+export HOME=${HERMES_REAL_HOME:-/opt/data}
 
 exec "$S6_SUID" hermes "$REAL" "$@"

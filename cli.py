@@ -15730,6 +15730,241 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _external_cli_worker_evidence_dir(task_id: str) -> Path:
+    root = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    safe_task_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", task_id.strip()).strip(".-")[:80] or "task"
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:12]}"
+    return Path(root) / "cache" / "external_cli_adapter" / safe_task_id / run_id
+
+
+def _build_external_cli_worker_prompt(task) -> str:
+    parts = [task.title or ""]
+    if getattr(task, "body", None):
+        parts.append(task.body)
+    body = "\n\n".join(part.strip() for part in parts if part and part.strip()).strip()
+    return body or f"Kanban task {getattr(task, 'id', 'unknown')}"
+
+
+
+
+def _set_external_cli_worker_result(
+    cli: "HermesCLI",
+    *,
+    failed: bool,
+    response: str,
+    failure_reason: str | None = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    cli._last_chat_result = {
+        "failed": failed,
+        "final_response": "" if failed else response,
+        "error": response if failed else None,
+        "failure_reason": failure_reason,
+        "external_cli": metadata or {},
+    }
+
+
+def _run_external_cli_worker_once(cli: "HermesCLI") -> tuple[bool, Optional[str]]:
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return False, None
+
+    from hermes_cli.config import load_config
+    from hermes_cli.external_cli_adapter import (
+        ExternalCliAgentAdapter,
+        ExternalCliExecutionRequest,
+        load_external_cli_worker_config,
+    )
+    from hermes_cli import kanban_db as _kb
+
+    try:
+        worker_cfg = load_external_cli_worker_config(load_config())
+    except ValueError as exc:
+        error = f"External CLI worker config invalid: {exc}"
+        _set_external_cli_worker_result(
+            cli,
+            failed=True,
+            response=error,
+            failure_reason="external_cli",
+            metadata={"status": "FAILED_INVALID_INVOCATION"},
+        )
+        return True, f"Error: {error}"
+
+    if worker_cfg.execution_backend != "external_cli":
+        return False, None
+
+    conn = _kb.connect()
+    try:
+        task = _kb.get_task(conn, task_id)
+        if task is None:
+            error = f"Kanban task not found: {task_id}"
+            _set_external_cli_worker_result(
+                cli,
+                failed=True,
+                response=error,
+                failure_reason="external_cli",
+                metadata={"status": "FAILED_INVALID_INVOCATION"},
+            )
+            return True, f"Error: {error}"
+
+        workspace = (os.environ.get("HERMES_KANBAN_WORKSPACE") or os.getcwd()).strip()
+        evidence_dir = _external_cli_worker_evidence_dir(task_id)
+        adapter = ExternalCliAgentAdapter()
+        result = adapter.run(
+            worker_cfg,
+            ExternalCliExecutionRequest(
+                task_id=task_id,
+                profile_name=(task.assignee or "default"),
+                prompt=_build_external_cli_worker_prompt(task),
+                workspace_path=workspace,
+                timeout_seconds=task.max_runtime_seconds,
+                evidence_dir=str(evidence_dir),
+                model=None,
+                cancellation_requested=(
+                    (lambda: bool(cli.agent and getattr(cli.agent, "_interrupt_requested", False)))
+                    if getattr(cli, "agent", None) is not None
+                    else None
+                ),
+            ),
+        )
+        metadata = result.as_metadata()
+
+        if result.status == "COMPLETED" and result.structured_payload is not None:
+            payload = result.structured_payload
+            if payload.action == "complete":
+                summary = payload.summary or f"Completed by {worker_cfg.executable}"
+                if not _kb.complete_task(
+                    conn,
+                    task_id,
+                    result=summary,
+                    summary=summary,
+                    metadata=payload.metadata,
+                ):
+                    error = f"External CLI completion could not close task {task_id}"
+                    _set_external_cli_worker_result(
+                        cli,
+                        failed=True,
+                        response=error,
+                        failure_reason="external_cli",
+                        metadata={**metadata, "status": "FAILED_INTERNAL"},
+                    )
+                    return True, f"Error: {error}"
+                _set_external_cli_worker_result(
+                    cli,
+                    failed=False,
+                    response=summary,
+                    metadata=metadata,
+                )
+                return True, summary
+
+            reason = payload.reason or payload.summary or f"Blocked by {worker_cfg.executable}"
+            kind = payload.block_kind or "needs_input"
+            if not _kb.block_task(conn, task_id, reason=reason, kind=kind):
+                error = f"External CLI block could not transition task {task_id}"
+                _set_external_cli_worker_result(
+                    cli,
+                    failed=True,
+                    response=error,
+                    failure_reason="external_cli",
+                    metadata={**metadata, "status": "FAILED_INTERNAL"},
+                )
+                return True, f"Error: {error}"
+            _set_external_cli_worker_result(
+                cli,
+                failed=False,
+                response=reason,
+                metadata=metadata,
+            )
+            return True, reason
+
+        if result.status == "BLOCKED_AUTH":
+            reason = f"{worker_cfg.executable} requires a CLI-managed login session before this task can run."
+            if not _kb.block_task(conn, task_id, reason=reason, kind="capability"):
+                error = f"External CLI auth block could not transition task {task_id}"
+                _set_external_cli_worker_result(
+                    cli,
+                    failed=True,
+                    response=error,
+                    failure_reason="external_cli",
+                    metadata={**metadata, "status": "FAILED_INTERNAL"},
+                )
+                return True, f"Error: {error}"
+            _set_external_cli_worker_result(cli, failed=False, response=reason, metadata=metadata)
+            return True, reason
+
+        if result.status == "BLOCKED_PERMISSION":
+            reason = f"{worker_cfg.executable} could not access the required workspace or permissions."
+            if not _kb.block_task(conn, task_id, reason=reason, kind="capability"):
+                error = f"External CLI permission block could not transition task {task_id}"
+                _set_external_cli_worker_result(
+                    cli,
+                    failed=True,
+                    response=error,
+                    failure_reason="external_cli",
+                    metadata={**metadata, "status": "FAILED_INTERNAL"},
+                )
+                return True, f"Error: {error}"
+            _set_external_cli_worker_result(cli, failed=False, response=reason, metadata=metadata)
+            return True, reason
+
+        if result.status == "BLOCKED_QUOTA":
+            error = f"{worker_cfg.executable} reported subscription quota exhaustion."
+            _set_external_cli_worker_result(
+                cli,
+                failed=True,
+                response=error,
+                failure_reason="billing",
+                metadata=metadata,
+            )
+            return True, f"Error: {error}"
+
+        error_map = {
+            "FAILED_TIMEOUT": f"{worker_cfg.executable} timed out before producing a valid structured result.",
+            "FAILED_CANCELLED": f"{worker_cfg.executable} was cancelled before producing a valid structured result.",
+            "FAILED_EXECUTABLE_MISSING": f"{worker_cfg.executable} is not available on PATH for this worker.",
+            "FAILED_INVALID_INVOCATION": f"{worker_cfg.executable} rejected the worker invocation.",
+            "FAILED_MALFORMED_OUTPUT": f"{worker_cfg.executable} did not return the required structured JSON contract.",
+        }
+        error = error_map.get(result.status, f"{worker_cfg.executable} failed before Hermes could normalize a task result.")
+        # The adapter has reached a terminal result, so the formal worker must
+        # not return while Hermes's canonical task remains running. Quota is
+        # intentionally handled by the existing exit-75 dispatcher path; all
+        # other adapter failures are terminal for this no-retry invocation.
+        block_kind = (
+            "capability"
+            if result.status in {
+                "FAILED_EXECUTABLE_MISSING",
+                "FAILED_INVALID_INVOCATION",
+            }
+            else "transient"
+        )
+        if not _kb.block_task(conn, task_id, reason=error, kind=block_kind):
+            transition_error = (
+                f"External CLI failure could not transition task {task_id}"
+            )
+            _set_external_cli_worker_result(
+                cli,
+                failed=True,
+                response=transition_error,
+                failure_reason="external_cli",
+                metadata={**metadata, "status": "FAILED_INTERNAL"},
+            )
+            return True, f"Error: {transition_error}"
+        _set_external_cli_worker_result(
+            cli,
+            failed=True,
+            response=error,
+            failure_reason="external_cli",
+            metadata=metadata,
+        )
+        return True, f"Error: {error}"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -15959,8 +16194,29 @@ def main(
     # process group, then SIGKILL after 1 s), then raise KeyboardInterrupt
     # so main unwinds normally.  HERMES_SIGTERM_GRACE overrides the 1.5 s
     # default for debugging.
+    from hermes_cli.external_cli_adapter import (
+        active_external_cli_registry as _active_external_cli_registry,
+    )
+
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
+        # If an external CLI child (claude/codex) is currently running, its
+        # process group is separate from ours (start_new_session=True) and the
+        # adapter owns its own cleanup path. Set the cancellation flag and
+        # return immediately instead of falling into the sleep+os._exit(0)
+        # path below: that path can terminate this process before the
+        # interrupted adapter poll loop ever resumes to kill and reap the
+        # child, orphaning it (#P0-F M2).
+        try:
+            if _active_external_cli_registry.request_cancel():
+                logger.debug(
+                    "External CLI adapter active; deferring exit for signal %s "
+                    "until its child process is terminated and reaped",
+                    signum,
+                )
+                return
+        except Exception:
+            pass  # never block signal handling
         try:
             _agent = getattr(cli, "agent", None)
             if _agent is not None:
@@ -16059,6 +16315,22 @@ def main(
                 except Exception as _exc:
                     # Best-effort enrichment; never block worker startup on it.
                     logger.debug("kanban image-ref extraction failed: %s", _exc)
+            _handled_external_cli, _external_cli_response = _run_external_cli_worker_once(cli)
+            if _handled_external_cli:
+                if _external_cli_response:
+                    print(_external_cli_response)
+                if quiet:
+                    print("", file=sys.stderr)
+                    print(f"session_id: {cli.session_id}", file=sys.stderr)
+                else:
+                    cli._print_exit_summary()
+                if os.environ.get("HERMES_KANBAN_TASK"):
+                    sys.exit(
+                        kanban_worker_exit_code(
+                            getattr(cli, "_last_chat_result", None)
+                        )
+                    )
+                return
             if quiet:
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.

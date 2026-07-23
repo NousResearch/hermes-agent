@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"fixture-thread"}
+{"type":"turn.started"}
+{"type":"error","message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\",\"message\":\"Invalid schema for response_format 'codex_output_schema': metadata.required must include changed_files.\",\"param\":\"text.format.schema\"},\"status\":400}"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\",\"message\":\"Invalid schema for response_format 'codex_output_schema': metadata.required must include changed_files.\",\"param\":\"text.format.schema\"},\"status\":400}"}}

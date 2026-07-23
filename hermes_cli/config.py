@@ -909,6 +909,17 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "worker": {
+        "execution_backend": "hermes_internal",
+        "external_cli": {
+            "executable": "",
+            "args": [],
+            "authentication_mode": "",
+            "output_mode": "auto",
+            "timeout_mode": "task_budget",
+            "allow_resume": False,
+        },
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
@@ -5297,6 +5308,22 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "warning",
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
+            ))
+
+    try:
+        from hermes_cli.external_cli_adapter import validate_external_cli_worker_config
+    except ImportError as exc:
+        issues.append(ConfigIssue(
+            "error",
+            f"external CLI worker validation unavailable: {exc}",
+            "Restore hermes_cli.external_cli_adapter before using worker.execution_backend=external_cli",
+        ))
+    else:
+        for message in validate_external_cli_worker_config(config):
+            issues.append(ConfigIssue(
+                "error",
+                f"worker config invalid: {message}",
+                "Fix worker.execution_backend / worker.external_cli to match the supported external CLI schema",
             ))
 
     return issues

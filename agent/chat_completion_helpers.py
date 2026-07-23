@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
@@ -1900,6 +1900,63 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return agent._try_activate_fallback(reason)  # try next in chain
 
 
+def _iteration_limit_summary_failure(agent, error: Exception) -> tuple[str, str, int | None]:
+    """Build a safe, actionable response when the final summary call fails.
+
+    The exception may contain credentials and provider-internal metadata. Classify
+    it for user guidance, but never interpolate its raw string into the response
+    or warning log.
+    """
+    try:
+        classified = classify_api_error(
+            error,
+            provider=str(getattr(agent, "provider", "") or ""),
+            model=str(getattr(agent, "model", "") or ""),
+        )
+        reason = classified.reason
+        status_code = classified.status_code
+    except Exception:
+        reason = FailoverReason.unknown
+        raw_status_code = getattr(error, "status_code", None)
+        status_code = raw_status_code if isinstance(raw_status_code, int) else None
+
+    prefix = (
+        f"I reached the maximum number of tool-calling iterations "
+        f"({agent.max_iterations}), and "
+    )
+    preserved_work = " Work completed before the limit remains in the conversation."
+
+    if reason in {FailoverReason.rate_limit, FailoverReason.upstream_rate_limit}:
+        message = (
+            prefix
+            + "the model provider's usage limit prevented the final summary request."
+            + preserved_work
+            + " Retry after the provider limit resets, or switch to another model or provider."
+        )
+    elif reason == FailoverReason.billing:
+        message = (
+            prefix
+            + "the model provider's billing or credit limit prevented the final summary request."
+            + preserved_work
+            + " Check the provider account, or switch to another model or provider."
+        )
+    elif reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
+        message = (
+            prefix
+            + "provider authentication failed during the final summary request."
+            + preserved_work
+            + " Check the configured credentials, or switch to another model or provider."
+        )
+    else:
+        message = (
+            prefix
+            + "an error prevented the final summary request."
+            + preserved_work
+            + " Retry the turn, or switch to another model or provider."
+        )
+
+    return message, reason.value, status_code
+
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
@@ -2146,8 +2203,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
     except Exception as e:
-        logger.warning(f"Failed to get summary response: {e}")
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        final_response, failure_reason, status_code = _iteration_limit_summary_failure(agent, e)
+        logger.warning(
+            "Failed to get iteration-limit summary "
+            "(error_type=%s, reason=%s, status=%s)",
+            type(e).__name__,
+            failure_reason,
+            status_code,
+        )
 
     return final_response
 
